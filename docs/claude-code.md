@@ -63,6 +63,18 @@ token from the environment):
 `SWITCHBOARD_TOKEN` is inherited from the shell, so keep it in your own
 environment rather than in the committed file.
 
+If the workspace uses [end-to-end encryption](encryption.md), `SWITCHBOARD_KEY`
+needs the same treatment, plus a Claude-Code-specific catch: the MCP bridge is
+a subprocess Claude Code spawns once, at session start, inheriting whatever is
+already in your shell at that moment. The `SessionStart` hook in step 5 runs
+*after* that, so it cannot hand the bridge a key the bridge already needed.
+**Export `SWITCHBOARD_KEY` before you launch Claude Code** — not from inside a
+hook, and not by putting it in a prompt (it's a long-lived secret with no safe
+in-place rotation, so treat it like any other credential, not like something
+disposable). See [Getting the key to the
+agents](encryption.md#getting-the-key-to-the-agents) for getting it to cloud
+sessions and CI the same way.
+
 Or add it per-machine:
 
 ```bash
