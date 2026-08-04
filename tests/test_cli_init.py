@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from switchboard.cli import main
+from switchboard.cli import MANAGED_HUB_URL, main
 
 
 def run_init(monkeypatch, capsys, tmp_path, *extra_args):
@@ -25,8 +25,13 @@ def run_init(monkeypatch, capsys, tmp_path, *extra_args):
     return code, out
 
 
+# `--local` opts into the old self-hosted behaviour (dev token, .env, the
+# machine-only warning). Bare `init` now defaults to the managed hub instead —
+# see the "managed by default" tests below.
+
+
 def test_fresh_repo_writes_everything(monkeypatch, capsys, tmp_path):
-    code, out = run_init(monkeypatch, capsys, tmp_path)
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
     assert code == 0
 
     mcp = json.loads((tmp_path / ".mcp.json").read_text())
@@ -50,10 +55,10 @@ def test_fresh_repo_writes_everything(monkeypatch, capsys, tmp_path):
 
 
 def test_idempotent(monkeypatch, capsys, tmp_path):
-    run_init(monkeypatch, capsys, tmp_path)
+    run_init(monkeypatch, capsys, tmp_path, "--local")
     first_token = (tmp_path / ".env").read_text()
 
-    code, out = run_init(monkeypatch, capsys, tmp_path)
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
     assert code == 0
     assert (tmp_path / ".env").read_text() == first_token
 
@@ -113,7 +118,10 @@ def test_malformed_mcp_json_is_left_alone(monkeypatch, capsys, tmp_path):
 
 
 def test_skip_flags(monkeypatch, capsys, tmp_path):
-    run_init(monkeypatch, capsys, tmp_path, "--skip-mcp", "--skip-hooks", "--skip-claude-md")
+    run_init(
+        monkeypatch, capsys, tmp_path,
+        "--local", "--skip-mcp", "--skip-hooks", "--skip-claude-md",
+    )
     assert not (tmp_path / ".mcp.json").exists()
     assert not (tmp_path / ".claude" / "settings.json").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
@@ -149,13 +157,13 @@ def test_explicit_workspace_and_url_override_inference(monkeypatch, capsys, tmp_
 
 
 def test_local_hub_warns_it_is_machine_only(monkeypatch, capsys, tmp_path):
-    code, out = run_init(monkeypatch, capsys, tmp_path)
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
     assert code == 0
     assert "only reachable from this machine" in out
     assert "docs/deployment.md" in out
 
 
-def test_remote_hub_has_no_local_only_warning(monkeypatch, capsys, tmp_path):
+def test_remote_hub_has_no_local_only_or_managed_warning(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
@@ -164,6 +172,7 @@ def test_remote_hub_has_no_local_only_warning(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert code == 0
     assert "only reachable from this machine" not in out
+    assert "shared public hub" not in out
 
 
 def test_json_output_includes_local_hub_note(monkeypatch, capsys, tmp_path):
@@ -171,7 +180,7 @@ def test_json_output_includes_local_hub_note(monkeypatch, capsys, tmp_path):
     monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
-    code = main(["--json", "init"])
+    code = main(["--json", "init", "--local"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert "only reachable from this machine" in payload["note"]
@@ -182,7 +191,7 @@ def test_json_output(monkeypatch, capsys, tmp_path):
     monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
-    code = main(["--json", "init"])
+    code = main(["--json", "init", "--local"])
     out = capsys.readouterr().out
     assert code == 0
     payload = json.loads(out)
@@ -196,12 +205,55 @@ def test_reuses_existing_token(monkeypatch, capsys, tmp_path, existing_token):
     if existing_token == "from-env":
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("SWITCHBOARD_TOKEN", "env-token-value")
-        code = main(["init"])
+        code = main(["init", "--local"])
         capsys.readouterr()
         assert code == 0
         mcp_env = (tmp_path / ".env")
         assert not mcp_env.exists()
     else:
         (tmp_path / ".env").write_text("SWITCHBOARD_TOKEN=preexisting-token\n")
-        run_init(monkeypatch, capsys, tmp_path)
+        run_init(monkeypatch, capsys, tmp_path, "--local")
         assert (tmp_path / ".env").read_text() == "SWITCHBOARD_TOKEN=preexisting-token\n"
+
+
+# --- managed by default -------------------------------------------------
+
+
+def test_bare_init_defaults_to_the_managed_hub(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+
+    mcp = json.loads((tmp_path / ".mcp.json").read_text())
+    assert mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_URL"] == MANAGED_HUB_URL
+    # No self-hosted dev token: nothing here can issue one for a hub it doesn't run.
+    assert not (tmp_path / ".env").exists()
+    assert "shared public hub" in out
+    assert "one token everyone uses" in out
+    assert "--local" in out
+
+
+def test_managed_default_json_output(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    code = main(["--json", "init"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["url"] == MANAGED_HUB_URL
+    assert "shared public hub" in payload["note"]
+
+
+def test_local_flag_and_explicit_url_are_mutually_exclusive(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = main(["--url", "https://hub.example.com", "init", "--local"])
+    err = capsys.readouterr().err
+    assert code != 0
+    assert "mutually exclusive" in err
+
+
+def test_local_flag_points_at_localhost_without_url_flag(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
+    assert code == 0
+    mcp = json.loads((tmp_path / ".mcp.json").read_text())
+    assert mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_URL"] == "http://127.0.0.1:8787"
