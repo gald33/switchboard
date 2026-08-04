@@ -85,7 +85,7 @@ claude mcp add switchboard \
 ```
 
 Verify with `/mcp` inside Claude Code — you should see `switchboard` connected
-with 13 tools.
+with 14 tools.
 
 ## 4. Tell the agent to use it
 
@@ -175,6 +175,36 @@ own. Releasing eagerly just frees the resource sooner.
 | `inbox` | Collect messages (set `wait` to block for them) |
 | `history` | Catch up on a channel you just joined |
 | `board_set` / `board_get` / `board_list` | Hand off structured context |
+| `keygen` | Starting a private side-conversation with specific peers — see below |
+
+### Ad hoc side channels
+
+`say`, `dm`, `inbox`, `claim` and `release` all accept an optional
+`custom_scope: {workspace, key}` argument that redirects that one call to a
+private workspace instead of your default one — everything else you do is
+unaffected. Call `keygen` to mint the pair, then tell it directly to exactly
+the agents you want included (a prompt, a `dm`, however you already trust
+them) and have each of you pass it as `custom_scope`.
+
+This is deliberately **not** a lifecycle you open and close — there is no
+"join channel" step. Whichever agents share the same `(workspace, key)`
+automatically compute the same blinded identifiers and land in the same
+place; whichever don't, don't. Two rules make it safe to reach for without
+it becoming how you normally coordinate:
+
+- **Never invent a scope unilaterally.** Only use one you and your peers
+  already agreed on outside Switchboard — an agreement one side doesn't
+  know about isn't one.
+- **Always mint a fresh workspace, never reuse your default one.** Reusing
+  it with a different key trips the mismatch warning in `roster` for
+  everyone else already there — right for an accidental misconfiguration,
+  wrong for something intentional.
+
+`dm` needs the recipient's *side-scope* blinded id, which `roster` doesn't
+have (there's no roster for a scope nobody registered presence in). Get it
+from a message: have the other agent `say` something in the side channel
+first, then read their id off that message's `from` field and address `dm`
+with it directly.
 
 ## Worked example: two agents, one migration
 

@@ -268,3 +268,88 @@ def test_bad_arguments_are_reported_cleanly(hub):
     payload, is_error = call(make_bridge(hub), "claim", wrong_arg=1)
     assert is_error is True
     assert payload["error"] == "bad_arguments"
+
+
+# --- keygen and custom_scope: agent-initiated side channels ------------------
+
+
+def test_keygen_returns_a_key_and_an_opaque_workspace(hub):
+    a1 = make_bridge(hub, "a1")
+    payload, is_error = call(a1, "keygen")
+    assert is_error is False
+    assert len(payload["key"]) > 20
+    assert payload["workspace"].startswith("w_")
+
+    second, _ = call(a1, "keygen")
+    assert second["key"] != payload["key"]
+    assert second["workspace"] != payload["workspace"]
+
+
+def test_keygen_needs_no_prior_registration(hub):
+    """Purely local — no hub call, so it works before whoami/register ever run."""
+    payload, is_error = call(make_bridge(hub, "fresh"), "keygen")
+    assert is_error is False
+    assert payload["key"]
+
+
+def test_custom_scope_say_and_inbox_reach_only_peers_who_know_it(hub):
+    a1, a2, outsider = (make_bridge(hub, n) for n in ("a1", "a2", "outsider"))
+    pair, _ = call(a1, "keygen")
+    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+
+    call(a1, "say", channel="plan", message="side conversation", custom_scope=scope)
+
+    assert call(outsider, "inbox", channels=["plan"])[0]["count"] == 0
+    payload, _ = call(a2, "inbox", channels=["plan"], custom_scope=scope)
+    assert payload["count"] == 1
+    assert payload["messages"][0]["body"] == "side conversation"
+
+
+def test_custom_scope_claim_excludes_within_the_side_channel_only(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    pair, _ = call(a1, "keygen")
+    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+
+    assert call(a1, "claim", resource="shared", custom_scope=scope)[0]["acquired"] is True
+    # The same resource string on the default scope is untouched.
+    assert call(a2, "claim", resource="shared")[0]["acquired"] is True
+    # But within the side channel, a2 is excluded.
+    payload, _ = call(a2, "claim", resource="shared", custom_scope=scope)
+    assert payload["acquired"] is False
+
+    assert call(a1, "release", resource="shared", custom_scope=scope)[0]["released"] is True
+    assert call(a2, "claim", resource="shared", custom_scope=scope)[0]["acquired"] is True
+
+
+def test_custom_scope_dm_after_discovering_a_peer_via_say(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    pair, _ = call(a1, "keygen")
+    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+
+    call(a2, "say", channel="hello", message="a2 here", custom_scope=scope)
+    inbox, _ = call(a1, "inbox", channels=["hello"], custom_scope=scope)
+    a2_side_id = inbox["messages"][0]["from"]
+
+    call(a1, "dm", to=a2_side_id, message="just you", custom_scope=scope)
+    got, _ = call(a2, "inbox", custom_scope=scope)
+    assert got["count"] == 1
+    assert got["messages"][0]["body"] == "just you"
+
+
+def test_custom_scope_missing_workspace_is_a_bad_argument(hub):
+    payload, is_error = call(
+        make_bridge(hub), "say", channel="x", message="y", custom_scope={"key": "z"}
+    )
+    assert is_error is True
+    assert payload["error"] == "bad_arguments"
+
+
+def test_custom_scope_tool_schemas_are_all_optional(hub):
+    """custom_scope must never become required — every existing call, with no
+    knowledge of it, has to keep working exactly as before."""
+    covered = {"claim", "release", "say", "dm", "inbox"}
+    for tool in TOOLS:
+        if tool["name"] in covered:
+            props = tool["inputSchema"]["properties"]
+            assert "custom_scope" in props, tool["name"]
+            assert "custom_scope" not in tool["inputSchema"]["required"], tool["name"]

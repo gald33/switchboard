@@ -228,6 +228,12 @@ def _is_labelled(opened: Any) -> bool:
         and isinstance(opened["ch"], str)
 
 
+#: Sentinel distinguishing "caller did not pass a cipher" from "caller
+#: explicitly passed None" (meaning: this one call is unencrypted). Needed
+#: because ``WorkspaceCipher | None`` already uses ``None`` for the latter.
+_UNSET: Any = object()
+
+
 class _Base:
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
                  key: str | None = None) -> None:
@@ -248,6 +254,33 @@ class _Base:
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
+
+    def _resolve_scope(
+        self, custom_scope: dict[str, str] | None, workspace: str | None,
+    ) -> tuple[str, WorkspaceCipher | None, str]:
+        """Workspace, cipher and blinded agent id to use for one call.
+
+        ``custom_scope`` is a complete, atomic override of all three — set it
+        only when you and the specific peers you are coordinating with have
+        already agreed, *outside* Switchboard, on a shared workspace and key
+        for a private conversation. An agreement one side does not know about
+        is not one; never invent a scope unilaterally and expect a peer to
+        find their way into it.
+
+        It replaces the ambient workspace and key for this call only. The
+        hub and token are unchanged — a custom scope is a different
+        namespace and confidentiality boundary on the same hub, not a
+        different hub.
+        """
+        if custom_scope is None:
+            return self._ws(workspace), self.cipher, self.agent_id
+        ws = custom_scope.get("workspace")
+        if not ws:
+            raise TypeError("custom_scope requires a non-empty 'workspace'")
+        key = custom_scope.get("key")
+        cipher = WorkspaceCipher.from_key(key, ws) if key else None
+        agent_id = cipher.blind(self.local_agent_id, "agent") if cipher else self.local_agent_id
+        return ws, cipher, agent_id
 
     # --- the encryption boundary -------------------------------------------
     #
@@ -293,14 +326,20 @@ class _Base:
                 out.append(a)
         return out
 
-    def _blind_channel(self, channel: str) -> str:
-        return self.cipher.blind_channel(channel) if self.cipher else channel
+    def _blind_channel(self, channel: str, cipher: Any = _UNSET) -> str:
+        if cipher is _UNSET:
+            cipher = self.cipher
+        return cipher.blind_channel(channel) if cipher else channel
 
-    def _blind(self, value: str, domain: str) -> str:
-        return self.cipher.blind(value, domain) if self.cipher else value
+    def _blind(self, value: str, domain: str, cipher: Any = _UNSET) -> str:
+        if cipher is _UNSET:
+            cipher = self.cipher
+        return cipher.blind(value, domain) if cipher else value
 
-    def _seal_request(self, path: str, kwargs: dict[str, Any]) -> dict[str, Any]:
-        if self.cipher is None:
+    def _seal_request(
+        self, path: str, kwargs: dict[str, Any], cipher: WorkspaceCipher | None,
+    ) -> dict[str, Any]:
+        if cipher is None:
             return kwargs
         body = kwargs.get("json")
         if isinstance(body, dict):
@@ -316,19 +355,19 @@ class _Base:
             for field, context in _SEAL_BODY.get(path, {}).items():
                 if body.get(field) is not None:
                     body[field] = (
-                        self.cipher.seal(body[field], context)
+                        cipher.seal(body[field], context)
                         if context in _JSON_VALUED
-                        else self.cipher.seal_text(body[field], context)
+                        else cipher.seal_text(body[field], context)
                     )
             for field, domain in _BLIND_BODY.get(path, {}).items():
                 value = body.get(field)
                 if isinstance(value, str):
-                    body[field] = (self._blind_channel(value) if domain == "channel"
-                                   else self._blind(value, domain))
+                    body[field] = (self._blind_channel(value, cipher) if domain == "channel"
+                                   else self._blind(value, domain, cipher))
                 elif isinstance(value, list):
                     body[field] = [
-                        self._blind_channel(v) if domain == "channel"
-                        else self._blind(v, domain) for v in value
+                        self._blind_channel(v, cipher) if domain == "channel"
+                        else self._blind(v, domain, cipher) for v in value
                     ]
             kwargs["json"] = body
 
@@ -337,14 +376,14 @@ class _Base:
             params = dict(params)
             channels = params["channel"]
             params["channel"] = (
-                [self._blind_channel(c) for c in channels]
-                if isinstance(channels, list) else self._blind_channel(channels)
+                [self._blind_channel(c, cipher) for c in channels]
+                if isinstance(channels, list) else self._blind_channel(channels, cipher)
             )
             kwargs["params"] = params
         return kwargs
 
-    def _open_response(self, payload: Any) -> Any:
-        if self.cipher is None or not isinstance(payload, dict):
+    def _open_response(self, payload: Any, cipher: WorkspaceCipher | None) -> Any:
+        if cipher is None or not isinstance(payload, dict):
             return payload
         for key, fields in _OPEN_RESPONSE.items():
             if key not in payload or payload[key] is None:
@@ -359,9 +398,9 @@ class _Base:
                         continue
                     try:
                         opened = (
-                            self.cipher.unseal(item[field], context)
+                            cipher.unseal(item[field], context)
                             if context in _JSON_VALUED
-                            else self.cipher.unseal_text(item[field], context)
+                            else cipher.unseal_text(item[field], context)
                         )
                     except DecryptionError:
                         if key not in _TOLERATE_UNREADABLE:
@@ -400,11 +439,14 @@ class Client(_Base):
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        kwargs = self._seal_request(path, kwargs)
+    def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
+              ) -> dict[str, Any]:
+        if cipher is _UNSET:
+            cipher = self.cipher
+        kwargs = self._seal_request(path, kwargs, cipher)
         response = self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json())
+        return self._open_response(response.json(), cipher)
 
     # --- meta ---
     def health(self) -> dict[str, Any]:
@@ -440,10 +482,12 @@ class Client(_Base):
 
     # --- leases ---
     def acquire(self, resource: str, *, note: str | None = None, ttl: float | None = None,
-                workspace: str | None = None) -> dict[str, Any]:
-        return self._call("POST", "/leases/acquire", json={
-            "workspace": self._ws(workspace), "resource": resource,
-            "agent_id": self.agent_id, "note": note, "ttl": ttl,
+                workspace: str | None = None,
+                custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        return self._call("POST", "/leases/acquire", cipher=cipher, json={
+            "workspace": ws, "resource": resource,
+            "agent_id": agent_id, "note": note, "ttl": ttl,
         })["lease"]
 
     def renew(self, resource: str, *, ttl: float | None = None,
@@ -454,10 +498,12 @@ class Client(_Base):
         })["lease"]
 
     def release(self, resource: str, *, force: bool = False,
-                workspace: str | None = None) -> bool:
-        return self._call("POST", "/leases/release", json={
-            "workspace": self._ws(workspace), "resource": resource,
-            "agent_id": self.agent_id, "force": force,
+                workspace: str | None = None,
+                custom_scope: dict[str, str] | None = None) -> bool:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        return self._call("POST", "/leases/release", cipher=cipher, json={
+            "workspace": ws, "resource": resource,
+            "agent_id": agent_id, "force": force,
         })["released"]
 
     def leases(self, *, holder: str | None = None,
@@ -469,9 +515,11 @@ class Client(_Base):
 
     # --- messages ---
     def post(self, channel: str, body: Any, *, type: str = "note", thread: str | None = None,
-             ttl: float | None = None, workspace: str | None = None) -> dict[str, Any]:
-        return self._call("POST", "/messages", json={
-            "workspace": self._ws(workspace), "channel": channel, "agent_id": self.agent_id,
+             ttl: float | None = None, workspace: str | None = None,
+             custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        return self._call("POST", "/messages", cipher=cipher, json={
+            "workspace": ws, "channel": channel, "agent_id": agent_id,
             "body": body, "type": type, "thread": thread, "ttl": ttl,
         })["message"]
 
@@ -481,14 +529,16 @@ class Client(_Base):
 
     def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
               limit: int = 100, peek: bool = False, include_own: bool = False,
-              workspace: str | None = None) -> list[dict[str, Any]]:
+              workspace: str | None = None,
+              custom_scope: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
         params: dict[str, Any] = {
-            "workspace": self._ws(workspace), "agent_id": self.agent_id,
+            "workspace": ws, "agent_id": agent_id,
             "wait": wait, "limit": limit, "peek": peek, "include_own": include_own,
         }
         if channels:
             params["channel"] = list(channels)
-        return self._call("GET", "/inbox", params=params)["messages"]
+        return self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
 
     def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
@@ -560,11 +610,14 @@ class AsyncClient(_Base):
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        kwargs = self._seal_request(path, kwargs)
+    async def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
+                    ) -> dict[str, Any]:
+        if cipher is _UNSET:
+            cipher = self.cipher
+        kwargs = self._seal_request(path, kwargs, cipher)
         response = await self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json())
+        return self._open_response(response.json(), cipher)
 
     async def health(self) -> dict[str, Any]:
         return await self._call("GET", "/health")
@@ -601,10 +654,12 @@ class AsyncClient(_Base):
         return result["removed"]
 
     async def acquire(self, resource: str, *, note: str | None = None, ttl: float | None = None,
-                      workspace: str | None = None) -> dict[str, Any]:
-        result = await self._call("POST", "/leases/acquire", json={
-            "workspace": self._ws(workspace), "resource": resource,
-            "agent_id": self.agent_id, "note": note, "ttl": ttl,
+                      workspace: str | None = None,
+                      custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        result = await self._call("POST", "/leases/acquire", cipher=cipher, json={
+            "workspace": ws, "resource": resource,
+            "agent_id": agent_id, "note": note, "ttl": ttl,
         })
         return result["lease"]
 
@@ -617,10 +672,12 @@ class AsyncClient(_Base):
         return result["lease"]
 
     async def release(self, resource: str, *, force: bool = False,
-                      workspace: str | None = None) -> bool:
-        result = await self._call("POST", "/leases/release", json={
-            "workspace": self._ws(workspace), "resource": resource,
-            "agent_id": self.agent_id, "force": force,
+                      workspace: str | None = None,
+                      custom_scope: dict[str, str] | None = None) -> bool:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        result = await self._call("POST", "/leases/release", cipher=cipher, json={
+            "workspace": ws, "resource": resource,
+            "agent_id": agent_id, "force": force,
         })
         return result["released"]
 
@@ -634,9 +691,11 @@ class AsyncClient(_Base):
 
     async def post(self, channel: str, body: Any, *, type: str = "note",
                    thread: str | None = None, ttl: float | None = None,
-                   workspace: str | None = None) -> dict[str, Any]:
-        result = await self._call("POST", "/messages", json={
-            "workspace": self._ws(workspace), "channel": channel, "agent_id": self.agent_id,
+                   workspace: str | None = None,
+                   custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
+        result = await self._call("POST", "/messages", cipher=cipher, json={
+            "workspace": ws, "channel": channel, "agent_id": agent_id,
             "body": body, "type": type, "thread": thread, "ttl": ttl,
         })
         return result["message"]
@@ -646,14 +705,16 @@ class AsyncClient(_Base):
 
     async def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
                     limit: int = 100, peek: bool = False, include_own: bool = False,
-                    workspace: str | None = None) -> list[dict[str, Any]]:
+                    workspace: str | None = None,
+                    custom_scope: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
         params: dict[str, Any] = {
-            "workspace": self._ws(workspace), "agent_id": self.agent_id,
+            "workspace": ws, "agent_id": agent_id,
             "wait": wait, "limit": limit, "peek": peek, "include_own": include_own,
         }
         if channels:
             params["channel"] = list(channels)
-        result = await self._call("GET", "/inbox", params=params)
+        result = await self._call("GET", "/inbox", cipher=cipher, params=params)
         return result["messages"]
 
     async def history(self, channel: str, *, limit: int = 50,
