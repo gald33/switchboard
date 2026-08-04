@@ -131,13 +131,17 @@ switchboard-only Caddy in front of it:
 
 ```yaml
 # docker-compose.tls.yml — run alongside docker-compose.yml:
-#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build caddy
 services:
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: .
+      dockerfile: Caddyfile.Dockerfile
     restart: unless-stopped
     ports:
-      - "${SWITCHBOARD_TLS_PORT:-8443}:8443"
+      - "${SWITCHBOARD_TLS_PORT:-8444}:8444"
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - switchboard-caddy-data:/data
@@ -148,12 +152,36 @@ volumes:
   switchboard-caddy-data:
 ```
 
+**The obvious version of this — a stock `caddy:2-alpine` image, letting Caddy
+issue its own cert automatically — does not work, and the reason is worth
+understanding rather than rediscovering.** HTTP-01 and TLS-ALPN-01 (Caddy's
+two automatic challenge types) are both hard-pinned by the ACME spec to
+validate against ports 80 and 443 of the identifier, respectively — the CA
+dials those ports itself, regardless of what port your service actually
+listens on. Neither can be redirected to :8444. If :80/:443 are already the
+other app's, both challenge types fail with an authorization error, no matter
+how the Caddyfile is written.
+
+The fix is **DNS-01**: prove domain control by creating a TXT record instead
+of answering an HTTP/TLS connection, so it doesn't care what port you're
+serving on. It needs a Caddy build with your DNS provider's plugin (not in
+the stock image) and an API token scoped to edit DNS on your zone:
+
+```dockerfile
+# Caddyfile.Dockerfile
+FROM caddy:2-builder-alpine AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2-alpine
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+```
+
 ```caddyfile
-# Caddyfile — the port MUST be in the site address: Caddy only issues a cert
-# for the address it's told to serve, and on a non-443 port that means
-# TLS-ALPN-01 (works with :80 closed — no separate HTTP challenge listener
-# needed).
-switchboard.example.com:8443 {
+# Caddyfile
+switchboard.example.com:8444 {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
     reverse_proxy switchboard:8787 {
         transport http {
             read_timeout 60s
@@ -162,9 +190,29 @@ switchboard.example.com:8443 {
 }
 ```
 
-Result: `https://switchboard.example.com:8443`, a cert Caddy manages itself,
-and zero lines changed in the other app's ingress config. The port has to be
-in every client's `SWITCHBOARD_URL` too — it's not optional the way :443 is.
+(Swap `caddy-dns/cloudflare` and the `dns` line for your own provider —
+[Caddy's DNS provider list](https://caddyserver.com/download) has ~80 of
+them, same shape.)
+
+Result: `https://switchboard.example.com:8444`, a real publicly-trusted cert,
+and zero lines changed in the other app's ingress config.
+
+### A non-standard port may not be reachable at all
+
+Getting a valid cert on :8444 is necessary but not sufficient. Some networks
+— notably some cloud coding-agent sandboxes' outbound egress — only permit
+standard-port HTTPS and reset anything else at the TLS layer, cert or no
+cert. This isn't hypothetical: verified directly by a Claude Code cloud
+session that could reach a hub through a CDN on :443 but got a mid-handshake
+reset connecting to the same hub's :8444 directly.
+
+If your hub's clients include cloud agent sessions, don't stop at "the cert
+works" — confirm reachability on the actual client network, or route through
+whatever already proxies your domain (Cloudflare, etc.) on standard :443 with
+an origin rule rewriting to :8444, rather than exposing the non-standard port
+directly. The DNS-01 cert above still matters either way — it's what lets
+the CDN validate the origin connection as Full (strict) instead of falling
+back to an unencrypted or unverified hop.
 
 ## Security
 
