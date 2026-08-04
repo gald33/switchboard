@@ -10,7 +10,7 @@ does the wiring below for you in one command — see
 ## 1. Start a hub
 
 ```bash
-pip install "agent-switchboard[server]"
+pip install "agent-switchboard[server] @ git+https://github.com/gald33/switchboard.git"
 
 export SWITCHBOARD_TOKEN="dev-token"
 switchboard serve --port 8787

@@ -58,26 +58,31 @@ with nobody having to remember anything.
 
 ## Install
 
+Not yet on PyPI — install straight from GitHub for now:
+
 ```bash
 # Agent side: client + CLI only (one dependency, httpx)
-pip install agent-switchboard
+pip install "agent-switchboard @ git+https://github.com/gald33/switchboard.git"
 
 # Hub side: also the server
-pip install "agent-switchboard[server]"
+pip install "agent-switchboard[server] @ git+https://github.com/gald33/switchboard.git"
 
 # With end-to-end encryption
-pip install "agent-switchboard[crypto]"
+pip install "agent-switchboard[crypto] @ git+https://github.com/gald33/switchboard.git"
 
 # With the MCP bridge for Claude Code / any MCP client
-pip install "agent-switchboard[all]"
+pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"
 ```
+
+Pin a commit or tag instead of tracking `main` once you depend on this for
+real — append it to the URL: `git+https://github.com/gald33/switchboard.git@v0.1.0`.
 
 ## The fast path
 
 From the root of a repo:
 
 ```bash
-pip install "agent-switchboard[all]"
+pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"
 switchboard init
 ```
 
@@ -121,10 +126,13 @@ export SWITCHBOARD_TOKEN="$(python -c 'import secrets;print(secrets.token_urlsaf
 switchboard serve --host 0.0.0.0 --port 8787 --db ./switchboard.db
 ```
 
-Or with Docker:
+Or with Docker — no published image yet, so build it from a clone
+(`docker-compose.yml` does the same thing):
 
 ```bash
-docker run -p 8787:8787 -e SWITCHBOARD_TOKEN=secret -v swb:/data ghcr.io/gald33/switchboard
+git clone https://github.com/gald33/switchboard.git && cd switchboard
+docker build -t agent-switchboard .
+docker run -p 8787:8787 -e SWITCHBOARD_TOKEN=secret -v swb:/data agent-switchboard
 ```
 
 The hub is one process and one SQLite file. It holds no source code and no
