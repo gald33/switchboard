@@ -6,7 +6,7 @@ native tools rather than as shell commands they have to remember to run.
 ## The fast path
 
 ```bash
-pip install "agent-switchboard[all]"
+pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"
 switchboard init
 ```
 
@@ -25,10 +25,10 @@ you want to understand or hand-customize any of the pieces.
 
 ## 1. Install
 
-On every machine that runs an agent:
+On every machine that runs an agent (not yet on PyPI, so install from GitHub):
 
 ```bash
-pip install agent-switchboard        # client + CLI + MCP bridge, one dependency
+pip install "agent-switchboard @ git+https://github.com/gald33/switchboard.git"
 ```
 
 The MCP bridge has no SDK dependency — it speaks the MCP stdio protocol

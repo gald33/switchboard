@@ -6,10 +6,10 @@ lifecycle automation, different config file.
 
 ## 1. Install
 
-On every machine that runs an agent:
+On every machine that runs an agent (not yet on PyPI, so install from GitHub):
 
 ```bash
-pip install agent-switchboard        # client + CLI + MCP bridge, one dependency
+pip install "agent-switchboard @ git+https://github.com/gald33/switchboard.git"
 ```
 
 ## 2. Point it at a hub
