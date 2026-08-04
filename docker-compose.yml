@@ -1,0 +1,19 @@
+# A hub your agents can reach. Put a TLS-terminating proxy in front of it
+# before exposing it beyond localhost — see docs/deployment.md.
+services:
+  switchboard:
+    build: .
+    image: agent-switchboard:latest
+    container_name: switchboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Required. Generate with: python -c 'import secrets;print(secrets.token_urlsafe(32))'
+      SWITCHBOARD_TOKEN: ${SWITCHBOARD_TOKEN:?set SWITCHBOARD_TOKEN}
+      SWITCHBOARD_DB: /data/switchboard.db
+    volumes:
+      - switchboard-data:/data
+
+volumes:
+  switchboard-data:

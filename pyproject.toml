@@ -1,0 +1,74 @@
+[project]
+name = "agent-switchboard"
+version = "0.1.0"
+description = "An ephemeral orchestration hub for AI coding agents: presence, leases, messaging and a shared blackboard, all with TTLs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Switchboard contributors" }]
+keywords = ["agents", "orchestration", "mcp", "claude", "coordination"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+]
+
+# The client, CLI and MCP bridge intentionally depend only on httpx. The MCP
+# bridge speaks the stdio protocol directly (see mcp_server.py) rather than
+# taking an SDK dependency that can rename its API between majors.
+dependencies = [
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+server = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pydantic>=2.6",
+]
+all = [
+  "agent-switchboard[server]",
+]
+dev = [
+  "agent-switchboard[server]",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+switchboard = "switchboard.cli:main"
+swb = "switchboard.cli:main"
+switchboard-mcp = "switchboard.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/gald33/switchboard"
+Issues = "https://github.com/gald33/switchboard/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/switchboard"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency injection is expressed as call-in-default (Query(...),
+# Header(...), Depends(...)). B008 exists to catch accidental shared mutable
+# defaults, which this is not.
+"src/switchboard/server.py" = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

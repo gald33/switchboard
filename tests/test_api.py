@@ -1,0 +1,315 @@
+"""HTTP-level tests, driven through the real FastAPI app."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from switchboard.config import ServerConfig
+from switchboard.server import create_app
+from switchboard.store import Store
+
+WS = "api-ws"
+
+
+@pytest.fixture
+def client(tmp_path):
+    store = Store(str(tmp_path / "api.db"))
+    app = create_app(ServerConfig(db_path=str(tmp_path / "api.db")), store=store)
+    with TestClient(app) as c:
+        yield c
+    store.close()
+
+
+@pytest.fixture
+def secured(tmp_path):
+    store = Store(str(tmp_path / "sec.db"))
+    app = create_app(ServerConfig(db_path=str(tmp_path / "sec.db"), token="s3cret"), store=store)
+    with TestClient(app) as c:
+        yield c
+    store.close()
+
+
+def _register(client, agent_id: str, **kw):
+    payload = {"workspace": WS, "agent_id": agent_id, "name": agent_id}
+    payload.update(kw)
+    response = client.post("/agents/register", json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()["agent"]
+
+
+# --- meta / auth ------------------------------------------------------------
+
+
+def test_health_is_open(client):
+    body = client.get("/health").json()
+    assert body["ok"] is True
+
+
+def test_token_is_required_when_configured(secured):
+    assert secured.get("/agents", params={"workspace": WS}).status_code == 401
+    assert secured.get("/health").status_code == 200
+    ok = secured.get(
+        "/agents", params={"workspace": WS}, headers={"Authorization": "Bearer s3cret"}
+    )
+    assert ok.status_code == 200
+
+
+def test_wrong_token_is_rejected(secured):
+    response = secured.get(
+        "/agents", params={"workspace": WS}, headers={"Authorization": "Bearer nope"}
+    )
+    assert response.status_code == 401
+
+
+# --- presence ---------------------------------------------------------------
+
+
+def test_register_then_appear_in_roster(client):
+    _register(client, "a1", branch="feat/x", task="wiring")
+    agents = client.get("/agents", params={"workspace": WS}).json()["agents"]
+    assert [a["agent_id"] for a in agents] == ["a1"]
+    assert agents[0]["branch"] == "feat/x"
+    assert agents[0]["expires_in"] > 0
+
+
+def test_heartbeat_for_unknown_agent_is_404(client):
+    response = client.post(
+        "/agents/heartbeat", json={"workspace": WS, "agent_id": "ghost"}
+    )
+    assert response.status_code == 404
+
+
+def test_heartbeat_returns_held_leases(client):
+    _register(client, "a1")
+    client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
+    body = client.post("/agents/heartbeat", json={"workspace": WS, "agent_id": "a1"}).json()
+    assert [le["resource"] for le in body["leases"]] == ["r"]
+
+
+def test_deregister_removes_agent_and_leases(client):
+    _register(client, "a1")
+    client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
+    client.delete("/agents/a1", params={"workspace": WS})
+    assert client.get("/agents", params={"workspace": WS}).json()["count"] == 0
+    assert client.get("/leases", params={"workspace": WS}).json()["count"] == 0
+
+
+# --- leases -----------------------------------------------------------------
+
+
+def test_second_claim_gets_409_naming_the_holder(client):
+    _register(client, "a1")
+    _register(client, "a2")
+    client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
+    response = client.post(
+        "/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a2"}
+    )
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"] == "lease_conflict"
+    assert body["holder"] == "a1"
+    assert body["expires_in"] > 0
+
+
+def test_release_then_reclaim(client):
+    client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
+    released = client.post(
+        "/leases/release", json={"workspace": WS, "resource": "r", "agent_id": "a1"}
+    )
+    assert released.json()["released"] is True
+    again = client.post(
+        "/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a2"}
+    )
+    assert again.status_code == 200
+
+
+def test_releasing_someone_elses_lease_is_409(client):
+    client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
+    response = client.post(
+        "/leases/release", json={"workspace": WS, "resource": "r", "agent_id": "a2"}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"] == "not_lease_holder"
+
+
+def test_lease_ttl_is_clamped_to_the_ceiling(client):
+    body = client.post("/leases/acquire", json={
+        "workspace": WS, "resource": "r", "agent_id": "a1", "ttl": 999_999_999,
+    }).json()
+    assert body["lease"]["expires_in"] <= 86_400 + 1
+
+
+def test_nonpositive_ttl_is_rejected(client):
+    response = client.post("/leases/acquire", json={
+        "workspace": WS, "resource": "r", "agent_id": "a1", "ttl": 0,
+    })
+    assert response.status_code == 422
+
+
+def test_lease_resource_may_contain_slashes(client):
+    client.post(
+        "/leases/acquire",
+        json={"workspace": WS, "resource": "backend/alembic/0142", "agent_id": "a1"},
+    )
+    body = client.get(f"/leases/{'backend/alembic/0142'}", params={"workspace": WS}).json()
+    assert body["held"] is True
+    assert body["lease"]["holder"] == "a1"
+
+
+# --- messaging --------------------------------------------------------------
+
+
+def test_channel_message_reaches_a_subscriber(client):
+    _register(client, "a1", channels=["build"])
+    _register(client, "a2", channels=["build"])
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "heads up",
+    })
+    body = client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()
+    assert [m["body"] for m in body["messages"]] == ["heads up"]
+
+
+def test_inbox_includes_the_agents_own_direct_channel(client):
+    _register(client, "a1")
+    client.post("/messages", json={
+        "workspace": WS, "channel": "@a1", "agent_id": "a2", "body": "just for you",
+    })
+    body = client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()
+    assert [m["body"] for m in body["messages"]] == ["just for you"]
+    assert "@a1" in body["channels"]
+
+
+def test_inbox_is_drained_once(client):
+    _register(client, "a1", channels=["build"])
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "x",
+    })
+    first = client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()
+    second = client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()
+    assert first["count"] == 1 and second["count"] == 0
+
+
+def test_peek_leaves_the_message_unread(client):
+    _register(client, "a1", channels=["build"])
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "x",
+    })
+    peeked = client.get(
+        "/inbox", params={"workspace": WS, "agent_id": "a1", "peek": True}
+    ).json()
+    assert peeked["count"] == 1
+    assert client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()["count"] == 1
+
+
+def test_inbox_without_agent_or_channel_is_400(client):
+    assert client.get("/inbox", params={"workspace": WS}).status_code == 400
+
+
+def test_structured_message_bodies_survive(client):
+    _register(client, "a1", channels=["build"])
+    payload = {"files": ["a.py"], "status": "done", "count": 2}
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2",
+        "body": payload, "type": "handoff",
+    })
+    got = client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()["messages"][0]
+    assert got["body"] == payload
+    assert got["type"] == "handoff"
+
+
+def test_channel_history_does_not_consume(client):
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "one",
+    })
+    _register(client, "a1", channels=["build"])
+    history = client.get("/channels/build", params={"workspace": WS}).json()
+    assert [m["body"] for m in history["messages"]] == ["one"]
+    assert client.get("/inbox", params={"workspace": WS, "agent_id": "a1"}).json()["count"] == 1
+
+
+def test_channels_listing(client):
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "x",
+    })
+    names = [c["channel"] for c in client.get(
+        "/channels", params={"workspace": WS}
+    ).json()["channels"]]
+    assert names == ["build"]
+
+
+def test_long_poll_returns_promptly_when_a_message_arrives(client):
+    """The wait path must return the message, not stall out to the deadline."""
+    import threading
+    import time
+
+    _register(client, "a1", channels=["build"])
+
+    def post_soon() -> None:
+        time.sleep(0.3)
+        client.post("/messages", json={
+            "workspace": WS, "channel": "build", "agent_id": "a2", "body": "late",
+        })
+
+    thread = threading.Thread(target=post_soon)
+    thread.start()
+    started = time.monotonic()
+    body = client.get(
+        "/inbox", params={"workspace": WS, "agent_id": "a1", "wait": 10}
+    ).json()
+    elapsed = time.monotonic() - started
+    thread.join()
+    assert [m["body"] for m in body["messages"]] == ["late"]
+    assert elapsed < 5, "long poll should wake on arrival, not run to the deadline"
+
+
+# --- blackboard -------------------------------------------------------------
+
+
+def test_board_round_trip(client):
+    client.put("/board", json={
+        "workspace": WS, "key": "plan/migration", "agent_id": "a1",
+        "value": {"steps": ["a", "b"]},
+    })
+    entry = client.get("/board/plan/migration", params={"workspace": WS}).json()["entry"]
+    assert entry["value"] == {"steps": ["a", "b"]}
+    assert entry["revision"] == 1
+
+
+def test_board_missing_key_is_404(client):
+    assert client.get("/board/nope", params={"workspace": WS}).status_code == 404
+
+
+def test_board_revision_conflict_is_409(client):
+    client.put("/board", json={"workspace": WS, "key": "k", "agent_id": "a1", "value": 1})
+    response = client.put("/board", json={
+        "workspace": WS, "key": "k", "agent_id": "a2", "value": 2, "if_revision": 99,
+    })
+    assert response.status_code == 409
+
+
+def test_board_prefix_listing(client):
+    for key in ("plan/a", "plan/b", "other"):
+        client.put("/board", json={"workspace": WS, "key": key, "agent_id": "a1", "value": 1})
+    entries = client.get(
+        "/board", params={"workspace": WS, "prefix": "plan/"}
+    ).json()["entries"]
+    assert [e["key"] for e in entries] == ["plan/a", "plan/b"]
+
+
+def test_board_delete(client):
+    client.put("/board", json={"workspace": WS, "key": "k", "agent_id": "a1", "value": 1})
+    assert client.delete("/board/k", params={"workspace": WS}).json()["deleted"] is True
+    assert client.get("/board/k", params={"workspace": WS}).status_code == 404
+
+
+# --- isolation --------------------------------------------------------------
+
+
+def test_workspaces_do_not_leak(client):
+    _register(client, "a1")
+    client.post("/agents/register", json={
+        "workspace": "other", "agent_id": "b1", "name": "b1",
+    })
+    assert client.get("/agents", params={"workspace": WS}).json()["count"] == 1
+    assert client.get("/agents", params={"workspace": "other"}).json()["count"] == 1

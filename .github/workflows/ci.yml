@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: pytest -q
+
+  # The client, CLI and MCP bridge must install and work with httpx alone.
+  # This job fails if a server-only import leaks into them.
+  minimal-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: import client, CLI and MCP bridge without server extras
+        run: |
+          python -c "import switchboard, switchboard.cli, switchboard.mcp_server"
+          python -c "
+          import importlib.util as u
+          assert u.find_spec('fastapi') is None, 'fastapi leaked into the base install'
+          "
+      - run: switchboard --version
+      - name: the MCP bridge must answer initialize with no hub running
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            | switchboard-mcp | grep -q '"serverInfo"'
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t agent-switchboard:ci .
+      - name: hub answers /health
+        run: |
+          docker run -d --name swb -p 8787:8787 -e SWITCHBOARD_TOKEN=ci agent-switchboard:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8787/health && break || sleep 1
+          done
+          curl -sf http://127.0.0.1:8787/health | grep -q '"ok":true'
+          docker rm -f swb
