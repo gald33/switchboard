@@ -117,6 +117,55 @@ The read timeout is the setting people get wrong. `inbox --wait` holds a
 request open for up to 25 seconds; a proxy with a shorter idle timeout will
 sever it and agents will see spurious errors.
 
+## Sharing a VM with another app (no free :443)
+
+If the hub lives on the same box as an app that already owns :443 — its own
+Caddy or nginx, terminating TLS for its own domains — don't fight it for the
+port and don't edit its config to add a route. Give the hub its own small,
+dedicated proxy on a different public port instead. It never touches the
+other app's ingress, and it's one compose file to remove cleanly if the hub
+moves later.
+
+`docker-compose.yml` already binds the hub to `127.0.0.1:8787`. Add a second,
+switchboard-only Caddy in front of it:
+
+```yaml
+# docker-compose.tls.yml — run alongside docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${SWITCHBOARD_TLS_PORT:-8443}:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - switchboard-caddy-data:/data
+    depends_on:
+      - switchboard
+
+volumes:
+  switchboard-caddy-data:
+```
+
+```caddyfile
+# Caddyfile — the port MUST be in the site address: Caddy only issues a cert
+# for the address it's told to serve, and on a non-443 port that means
+# TLS-ALPN-01 (works with :80 closed — no separate HTTP challenge listener
+# needed).
+switchboard.example.com:8443 {
+    reverse_proxy switchboard:8787 {
+        transport http {
+            read_timeout 60s
+        }
+    }
+}
+```
+
+Result: `https://switchboard.example.com:8443`, a cert Caddy manages itself,
+and zero lines changed in the other app's ingress config. The port has to be
+in every client's `SWITCHBOARD_URL` too — it's not optional the way :443 is.
+
 ## Security
 
 **Always set a token before exposing a hub.** Without `SWITCHBOARD_TOKEN` the
