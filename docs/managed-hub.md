@@ -155,6 +155,49 @@ Beyond the resolver seam that already exists:
 None of this belongs in the open-source hub except (3) and (4), which are
 genuinely useful self-hosted too.
 
+### A self-issued key is not automatically better than the shared one
+
+The obvious-looking shortcut to stage 1's "no issuance path defined" gap: let
+each user generate their own key locally (the same way `switchboard keygen`
+already does for the encryption key) and have the hub register it the first
+time it's used against a workspace — no operator, no signup form, no key
+store to build. Worth being precise about when this actually helps, because
+the naive version of it doesn't.
+
+**A workspace name is an address, not a lock.** It is plaintext by
+construction — the hub has to route by it — and [encryption.md](encryption.md)
+already makes it opaque. But opacity only matters to a caller who *isn't*
+already unrestricted. A caller holding `SharedTokenResolver`'s one token *is*
+unrestricted (`workspaces=None`), by definition, regardless of whether
+workspace names are guessable. So the shared token protects against people
+who never had it — the general internet — and does nothing between two people
+who *do* have it: either can list every active workspace on `GET /stats` and
+write into any of them, because nothing about the token scopes them apart.
+Encryption stops the second person *reading* the first's messages, but per
+["What end-to-end encryption changes about all of this"](#what-end-to-end-encryption-changes-about-all-of-this)
+below, it was never claimed to stop writing, spamming a channel, or squatting
+a lease.
+
+Given that, a self-issued key is worthless *unless binding it also scopes
+it* — `Principal(workspaces={that one})`, exactly what `StaticKeyResolver`
+already enforces for an operator-issued key. A self-issued key that stays
+unrestricted after registration is just a second string that means "you know
+this," which an opaque workspace name already provides for free. The value
+was never "another secret"; it was always the restriction.
+
+That reframes what stage 2 minimally needs, if built self-service rather than
+via an operator: not just "accept and remember a token," but "first token to
+claim a workspace name owns it, and every claim narrows `Principal.workspaces`
+to exactly that name" — plus a policy for the case that makes this a real
+feature rather than a CLI trick: two different tokens racing to claim the
+same workspace name (first wins; the loser needs a different name, the same
+way a squatted username would). That policy, and where the claims persist,
+is genuinely new server-side state — the first thing in this document's
+history that would touch the hub's storage rather than only the resolver
+seam — which is exactly why it stays in the "designed, not built" column
+until something makes the manual, operator-curated version (`--keys-file`,
+already shipped) a real bottleneck rather than a hypothetical one.
+
 ---
 
 ## Stage 3 — priority under congestion
