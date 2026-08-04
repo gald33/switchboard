@@ -93,6 +93,9 @@ class StaticKeyResolver:
     def __init__(self, keys: dict[str, Principal]) -> None:
         self._keys = dict(keys)
 
+    def __len__(self) -> int:
+        return len(self._keys)
+
     def resolve(self, token: str | None) -> Principal | None:
         if token is None:
             return None
@@ -109,3 +112,49 @@ def _constant_time_eq(a: str, b: str) -> bool:
     import hmac
 
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+def load_static_keys(path: str) -> StaticKeyResolver:
+    """Build a :class:`StaticKeyResolver` from a JSON keys file.
+
+    File shape — token -> {"workspaces": [...], "label": "...", "tier": "..."}::
+
+        {
+          "the-bearer-token-for-acme": {"workspaces": ["acme/app"], "label": "acme"}
+        }
+
+    ``workspaces`` is required and must be non-empty: an entry with no
+    workspaces would be indistinguishable from a typo that dropped the field,
+    and silently granting ``unrestricted`` access on a *missing* key is
+    exactly the failure mode this file exists to prevent. ``label`` and
+    ``tier`` are optional; ``key_id`` is derived from ``label`` if given,
+    else a truncated hash of the token (never the token itself — this ends
+    up in logs).
+    """
+    import hashlib
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: expected a JSON object mapping token -> key config")
+
+    keys: dict[str, Principal] = {}
+    for token, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: entry for a key must be an object, got {type(entry)!r}")
+        workspaces = entry.get("workspaces")
+        if not isinstance(workspaces, list) or not workspaces:
+            raise ValueError(
+                f"{path}: key {entry.get('label', '<unlabeled>')!r} needs a non-empty "
+                "\"workspaces\" list — omitting it is not the same as \"all workspaces\""
+            )
+        label = entry.get("label")
+        key_id = label or hashlib.sha256(token.encode()).hexdigest()[:12]
+        keys[token] = Principal(
+            key_id=key_id,
+            workspaces=frozenset(workspaces),
+            tier=entry.get("tier", DEFAULT_TIER),
+            label=label,
+        )
+    return StaticKeyResolver(keys)

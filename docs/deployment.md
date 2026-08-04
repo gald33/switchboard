@@ -253,9 +253,40 @@ SWITCHBOARD_WORKSPACE=my-org/api      # team A
 SWITCHBOARD_WORKSPACE=my-org/frontend # team B
 ```
 
-Agents in different workspaces cannot see each other at all. Run separate hubs
-only when you want separate *tokens* — that is the boundary a workspace does
-not give you.
+Agents in different workspaces cannot see each other at all — with the
+default `SWITCHBOARD_TOKEN` setup, that isolation is a *namespace*: it keeps
+projects from tripping over each other's keys and channel names, but every
+caller with the token can reach every workspace. That's the right shape when
+everyone using the hub already trusts each other (a team, a single org).
+
+### Multi-tenant: parties that don't trust each other
+
+If the hub is serving people who *shouldn't* see each other's workspaces —
+a hub you operate for others, not just your own team — swap
+`SWITCHBOARD_TOKEN` for `SWITCHBOARD_KEYS_FILE`:
+
+```bash
+switchboard serve --keys-file keys.json
+```
+
+```json
+{
+  "the-bearer-token-for-acme": {"workspaces": ["acme/app"], "label": "acme"},
+  "the-bearer-token-for-globex": {"workspaces": ["globex/app"], "label": "globex"}
+}
+```
+
+Now workspaces are a *boundary*, not just a namespace — a key can only reach
+the workspaces it's listed against, enforced once for every route (see
+`auth.py`). `--keys-file` and `--token` are mutually exclusive: a hub is
+either single-token or multi-tenant, not both.
+
+This only wires up the resolver — issuing, storing, revoking, or billing for
+keys is deliberately left to you (see `auth.py`'s module docstring). The
+minimal version: each party generates their own token
+(`python -c 'import secrets;print(secrets.token_urlsafe(32))'`) and gives it
+to you to add to `keys.json`; a restart picks up changes, same as rotating
+`SWITCHBOARD_TOKEN` does today.
 
 ## Monitoring
 
