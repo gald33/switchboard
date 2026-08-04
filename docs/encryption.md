@@ -329,8 +329,8 @@ somewhere nobody reads, and its leases land on different rows so **exclusion
 silently stops working**. Measured, not assumed: two agents on different keys
 both acquired `backend/alembic` and neither was told.
 
-So each agent publishes a short **key fingerprint** in the roster, and clients
-check it:
+So clients check, on every roster read, whether they can open each peer's
+name — and say so when they cannot:
 
 ```
 $ switchboard agents
@@ -345,18 +345,30 @@ do not exclude each other. Check SWITCHBOARD_KEY matches on every agent.
 
 The command exits non-zero, so a hook notices too, and the MCP `roster` tool
 returns the same warning so an agent raises it with the user rather than
-quietly coordinating with nobody.
+quietly coordinating with nobody. It fires in both directions, including for
+an agent running with **no** key in an encrypted workspace — which is the more
+likely misconfiguration, and the one more likely to be looking.
 
-The roster works because it is keyed by the *plaintext* workspace — it is the
-one view that survives a key change. Entries an agent cannot decrypt are
-marked unreadable and listed anyway rather than failing the call, which was a
-real bug found while building this: raising there both blocked the diagnostic
-and made the roster useless for the agents whose key was correct.
+The roster works for this because it is keyed by the *plaintext* workspace: it
+is the one view that survives a key change. Entries an agent cannot decrypt
+are marked unreadable and listed anyway rather than failing the call. Raising
+there was a real bug found while building this — it both blocked the
+diagnostic and made the roster useless for the agents whose key was correct.
 
-The fingerprint is a truncated HKDF output over a 256-bit secret, so it cannot
-be inverted or brute-forced, and it differs per workspace so it cannot
-correlate one tenant across workspaces. It does tell the hub which agents
-share a key — which the hub can already infer from who talks to whom.
+**Nothing extra is published to make this work**, and that is deliberate. An
+earlier version had each agent publish a short key fingerprint in the roster.
+It was strictly worse on three counts, and was removed:
+
+- **It caught less.** An agent with no key publishes no fingerprint, so a
+  plaintext agent in an encrypted workspace went entirely unflagged.
+- **It was a claim, not a demonstration.** Opening a peer's ciphertext proves
+  shared key possession. A fingerprint field can simply be copied by a peer
+  that does not hold the key.
+- **It told the hub something new** — which agents share a key, and when a key
+  changed. Neither was inferable before, and neither is needed by anyone.
+
+Detecting by "can I open this" costs the hub nothing, because that ciphertext
+was already there.
 
 ### If an agent loses its key
 

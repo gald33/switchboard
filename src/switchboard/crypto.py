@@ -130,24 +130,6 @@ class WorkspaceCipher:
     workspace: str
     _payload_key: bytes
     _blind_key: bytes
-    #: A short, non-secret tag for *which key this is*, published openly in the
-    #: agent roster.
-    #:
-    #: It exists because a key mismatch is otherwise completely silent. An
-    #: agent holding the wrong key blinds every channel differently, so its
-    #: inbox is simply empty — indistinguishable from "nothing new" — and its
-    #: leases land on different rows, so exclusion quietly stops working. That
-    #: was measured, not assumed.
-    #:
-    #: The roster is the one view that survives a key change, because it is
-    #: keyed by the plaintext workspace. Publishing a fingerprint there turns
-    #: an invisible partition into a visible one: peers with a different tag
-    #: are peers you cannot see.
-    #:
-    #: Safe to publish — it is a truncated HKDF output over a 256-bit secret,
-    #: so it cannot be inverted or brute-forced. It tells the hub which agents
-    #: share a key, which the hub can already infer from who talks to whom.
-    fingerprint: str = ""
     #: Pad plaintext to a size bucket before sealing. On by default: the point
     #: of encrypting is privacy, and an unpadded ciphertext announces its
     #: plaintext length to the byte.
@@ -177,9 +159,6 @@ class WorkspaceCipher:
             workspace=workspace,
             _payload_key=_derive(raw, b"switchboard/v1/payload", workspace),
             _blind_key=_derive(raw, b"switchboard/v1/identifier", workspace),
-            fingerprint=_b64e(
-                _derive(raw, b"switchboard/v1/fingerprint", workspace)[:6]
-            ),
             pad=pad,
         )
 

@@ -518,7 +518,7 @@ def test_a_mismatched_key_is_visible_in_the_roster(hub, key):
     An agent on the wrong key blinds every channel differently, so its inbox is
     simply empty and its leases land on different rows. Nothing raises. The
     roster is the one view that survives a key change — it is keyed by the
-    plaintext workspace — so the fingerprint published there is what makes the
+    plaintext workspace — so failing to open a peer's name is what makes the
     partition visible.
     """
     http, _, _ = hub
@@ -526,12 +526,38 @@ def test_a_mismatched_key_is_visible_in_the_roster(hub, key):
     current.register(name="alpha", channels=["build"])
     stale.register(name="beta", channels=["build"])
 
-    assert current.cipher.fingerprint != stale.cipher.fingerprint
     flagged = current.key_mismatches(current.agents())
-    assert len(flagged) == 1
-    assert flagged[0]["agent_id"] == stale.agent_id
+    assert [a["agent_id"] for a in flagged] == [stale.agent_id]
     # ...and symmetrically, so whichever agent looks first finds out.
     assert len(stale.key_mismatches(stale.agents())) == 1
+
+
+def test_an_unencrypted_agent_in_an_encrypted_workspace_is_flagged(hub, key):
+    """The case a published key fingerprint could not catch.
+
+    An agent running with no key publishes no fingerprint, so a scheme based on
+    comparing published fingerprints missed it entirely. Detecting by "can we
+    open this peer's fields" catches it, because its name arrives as plaintext
+    where an envelope was expected.
+    """
+    http, _, _ = hub
+    encrypted, plain = bound(http, key, "a1"), bound(http, None, "a2")
+    encrypted.register(name="alpha")
+    plain.register(name="beta")
+
+    flagged = encrypted.key_mismatches(encrypted.agents())
+    assert [a["agent_id"] for a in flagged] == [plain.agent_id]
+
+
+def test_the_unencrypted_side_is_told_too(hub, key):
+    """Seen from the side more likely to BE the misconfigured one."""
+    http, _, _ = hub
+    encrypted, plain = bound(http, key, "a1"), bound(http, None, "a2")
+    encrypted.register(name="alpha")
+    plain.register(name="beta")
+
+    flagged = plain.key_mismatches(plain.agents())
+    assert [a["agent_id"] for a in flagged] == [encrypted.agent_id]
 
 
 def test_matching_keys_raise_no_false_alarm(hub, key):
@@ -542,20 +568,41 @@ def test_matching_keys_raise_no_false_alarm(hub, key):
     assert a1.key_mismatches(a1.agents()) == []
 
 
-def test_an_unencrypted_client_never_reports_a_mismatch(hub):
-    """Plaintext workspaces have no fingerprints, and must not be nagged."""
+def test_an_all_plaintext_workspace_raises_no_alarm(hub):
+    """Nobody encrypts; nothing to warn about."""
     http, _, _ = hub
-    plain = bound(http, None, "a1")
-    plain.register(name="alpha")
-    assert plain.key_mismatches(plain.agents()) == []
+    a1, a2 = bound(http, None, "a1"), bound(http, None, "a2")
+    a1.register(name="alpha")
+    a2.register(name="beta")
+    assert a1.key_mismatches(a1.agents()) == []
 
 
-def test_the_fingerprint_reveals_nothing_about_the_key(key):
-    """It is published openly, so it must not be the key or derived visibly."""
-    c = WorkspaceCipher.from_key(key, WS)
-    assert c.fingerprint
-    assert c.fingerprint not in key and key not in c.fingerprint
-    assert len(c.fingerprint) < 16
-    # Same key, different workspace -> different fingerprint, so it cannot be
-    # used to correlate one tenant's key across workspaces either.
-    assert WorkspaceCipher.from_key(key, "other").fingerprint != c.fingerprint
+def test_the_roster_still_lists_peers_it_cannot_read(hub, key):
+    """Raising here would block the diagnostic AND break correctly-keyed peers."""
+    http, _, _ = hub
+    a1, a2, a3 = (bound(http, key, "a1"), bound(http, key, "a2"),
+                  bound(http, generate_key(), "a3"))
+    a1.register(name="alpha")
+    a2.register(name="beta")
+    a3.register(name="gamma")
+
+    roster = a1.agents()
+    assert len(roster) == 3, "the whole roster must survive one unreadable entry"
+    readable = {a["name"] for a in roster if not a.get("unreadable")}
+    assert readable == {"alpha", "beta"}
+
+
+def test_nothing_extra_is_published_to_detect_a_mismatch(hub, key):
+    """Detection must cost the hub no additional information.
+
+    An earlier version published a key fingerprint in the agent's meta. It was
+    strictly worse — it missed unencrypted agents, it was a self-asserted claim
+    rather than a demonstration of key possession, and it told the hub which
+    agents share a key and when a key changed.
+    """
+    http, _, store = hub
+    a1 = bound(http, key, "a1")
+    a1.register(name="alpha", meta={"host": "laptop"})
+    stored = store.list_agents(workspace=WS)[0]
+    assert "key_fp" not in stored.meta
+    assert set(stored.meta) <= {"host"}

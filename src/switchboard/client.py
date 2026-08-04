@@ -7,6 +7,7 @@ one, the MCP bridge uses the async one.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import socket
@@ -18,7 +19,7 @@ from typing import Any, Sequence
 import httpx
 
 from .config import ClientConfig
-from .crypto import DecryptionError, WorkspaceCipher
+from .crypto import DecryptionError, WorkspaceCipher, is_sealed
 
 __all__ = [
     "SwitchboardError",
@@ -198,6 +199,25 @@ _JSON_VALUED = {"message.body", "board.value"}
 _TOLERATE_UNREADABLE = {"agents", "agent"}
 
 
+def _looks_sealed(value: Any) -> bool:
+    """Is this value an envelope, in either form it travels in?
+
+    Payload fields carry an envelope dict; text fields (an agent's name, a
+    lease note) carry the envelope *serialized to a string*, because the wire
+    schema types them as strings. A check that only knew about the dict form
+    silently returned False for every text field — which is exactly the form
+    an unencrypted client meets when it looks at an encrypted peer.
+    """
+    if is_sealed(value):
+        return True
+    if isinstance(value, str) and value.startswith("{"):
+        try:
+            return is_sealed(json.loads(value))
+        except ValueError:
+            return False
+    return False
+
+
 def _is_labelled(opened: Any) -> bool:
     """Is this an opened message body carrying its own channel label?
 
@@ -236,37 +256,40 @@ class _Base:
     # two chances to forget a field, and a forgotten field is plaintext on the
     # wire that nothing would ever flag.
 
-    def _stamp(self, meta: dict[str, Any] | None) -> dict[str, Any]:
-        """Publish which key this agent holds, so a mismatch is visible.
-
-        `meta` is not encrypted — it is the one field that must stay readable
-        across a key change, because that is exactly when you need to see who
-        you have stopped being able to talk to.
-        """
-        stamped = dict(meta or {})
-        if self.cipher:
-            stamped["key_fp"] = self.cipher.fingerprint
-        return stamped
-
     def key_mismatches(self, agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Roster entries holding a different key from ours.
+        """Roster entries whose key differs from ours.
 
-        A different fingerprint means a partition: their messages never reach
-        our inbox, ours never reach theirs, and neither side's leases exclude
-        the other. None of that raises, so somebody has to look.
+        Detection is simply *can we open this peer's name*, which every agent
+        publishes on registration. Nothing extra is transmitted to make this
+        work, and that is the point — an earlier version published a key
+        fingerprint in the roster, which turned out to be strictly worse:
+
+        * It caught a subset. An agent running with NO key publishes no
+          fingerprint at all, so a plaintext agent in an encrypted workspace
+          went unflagged — while its unopenable-to-us name catches it.
+        * It was a self-asserted claim rather than a demonstration. Opening a
+          peer's ciphertext proves shared key possession; a fingerprint field
+          can simply be copied by a peer that does not hold the key.
+        * It told the hub which agents share a key, and when a key changed,
+          neither of which the hub had any way to know before.
+
+        A mismatch is a partition: their messages never reach our inbox, ours
+        never reach theirs, and neither side's leases exclude the other. None
+        of that raises, so somebody has to look.
         """
-        if not self.cipher:
-            return []
-        mine = self.cipher.fingerprint
         out = []
         for a in agents:
             if a.get("agent_id") == self.agent_id:
                 continue
-            fingerprint = (a.get("meta") or {}).get("key_fp")
-            # An unreadable entry is a mismatch even if it published no
-            # fingerprint — an older client, or one that registered before
-            # fingerprints existed.
-            if a.get("unreadable") or fingerprint not in (None, mine):
+            if self.cipher:
+                # We encrypt; a peer whose fields we cannot open does not
+                # share our key — or holds none at all.
+                if a.get("unreadable"):
+                    out.append(a)
+            elif _looks_sealed(a.get("name")) or _looks_sealed(a.get("branch")):
+                # We do NOT encrypt but this peer does. Same partition, seen
+                # from the other side — and the side more likely to be the
+                # one that is misconfigured.
                 out.append(a)
         return out
 
@@ -398,7 +421,7 @@ class Client(_Base):
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": self._stamp(meta), "ttl": ttl,
+            "meta": meta or {}, "ttl": ttl,
         })["agent"]
 
     def heartbeat(self, *, task: str | None = None, ttl: float | None = None,
@@ -556,7 +579,7 @@ class AsyncClient(_Base):
         result = await self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": self._stamp(meta), "ttl": ttl,
+            "meta": meta or {}, "ttl": ttl,
         })
         return result["agent"]
 
