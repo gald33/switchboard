@@ -203,9 +203,9 @@ body    = {"$swb":1,"n":"ARyT0f4DEQnXsJ2C","c":"4yTX0Vd1QuD_5Y38U7gkkZ5A…"}
 
 The hub needs **no changes and no configuration** to support this — it cannot
 tell an encrypted workspace from a plaintext one, so it cannot be
-misconfigured into weakening one. It still sees metadata: message sizes,
-timing, and which opaque tokens are equal. [Full detail, including what
-remains inferable](docs/encryption.md).
+misconfigured into weakening one. Plaintext is padded to size buckets before sealing, so message *length* does
+not leak either. What remains is timing, volume, and which opaque tokens are
+equal — [what that reveals, and what hiding more would cost](docs/encryption.md).
 
 ## Sharing a hub between teams that don't trust each other
 

@@ -358,3 +358,59 @@ def test_a_dict_body_is_not_mistaken_for_a_label_wrapper(hub, key):
     tricky = {"b": "looks like a wrapper", "ch": "but is not one"}
     a2.post("build", tricky)
     assert a1.inbox()[0]["body"] == tricky
+
+
+# --- length padding ---------------------------------------------------------
+
+
+def test_padding_makes_similar_messages_indistinguishable(key):
+    """AEAD preserves length exactly, so without padding the size IS the leak.
+
+    Measured on real traffic before this landed: 18- and 19-character messages
+    produced 143- and 144-byte rows. An operator could read message lengths to
+    the byte.
+    """
+    c = WorkspaceCipher.from_key(key, WS)
+    sizes = {len(json.dumps(c.seal("a" * n, "message.body"))) for n in range(1, 56)}
+    assert len(sizes) == 1, f"length still leaks: {sorted(sizes)}"
+
+
+def test_padding_still_buckets_larger_payloads(key):
+    c = WorkspaceCipher.from_key(key, WS)
+    small = len(json.dumps(c.seal("a" * 100, "message.body")))
+    also_small = len(json.dumps(c.seal("a" * 120, "message.body")))
+    large = len(json.dumps(c.seal("a" * 900, "message.body")))
+    assert small == also_small
+    assert large > small, "buckets must still grow, or big payloads cost nothing to hide"
+
+
+def test_padding_is_exact_for_every_shape(key):
+    """The filler must never bleed into the value."""
+    c = WorkspaceCipher.from_key(key, WS)
+    for value in ["", "x", "a" * 5000, {"a": [1, 2, 3]}, [], None, 0, False,
+                  {"nested": {"deep": [None, True]}}]:
+        assert c.unseal(c.seal(value, "message.body"), "message.body") == value
+
+
+def test_padded_and_unpadded_clients_interoperate(key):
+    """Padding is detected from the payload, not from the reader's setting."""
+    padded = WorkspaceCipher.from_key(key, WS, pad=True)
+    plain = WorkspaceCipher.from_key(key, WS, pad=False)
+    assert plain.unseal(padded.seal("from padded", "message.body"),
+                        "message.body") == "from padded"
+    assert padded.unseal(plain.seal("from unpadded", "message.body"),
+                         "message.body") == "from unpadded"
+
+
+def test_padding_is_on_by_default(key):
+    assert WorkspaceCipher.from_key(key, WS).pad is True
+
+
+def test_a_truncated_padded_payload_is_rejected(key):
+    """A declared length beyond the payload must raise, not slice silently."""
+    from switchboard.crypto import DecryptionError, _pad, _unpad
+
+    framed = _pad(b'"hello"')
+    corrupt = framed[:3] + b"\xff\xff" + framed[5:]
+    with pytest.raises(DecryptionError):
+        _unpad(corrupt)

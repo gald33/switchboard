@@ -52,7 +52,7 @@ into weakening one. Nothing server-side has to be trusted to get this right.
 |---|---|---|
 | **Encrypted** | message bodies, blackboard values, lease notes, agent name / branch / task | AES-256-GCM, key never leaves the agent |
 | **Blinded** | channel names, lease resources, blackboard keys, agent ids | HMAC-SHA256, deterministic so the hub can still compare |
-| **Visible** | workspace, timestamps, TTLs, sequence numbers, message sizes | the hub must route, expire and order |
+| **Visible** | workspace, timestamps, TTLs, sequence numbers, padded sizes | the hub must route, expire and order |
 
 Identifiers are blinded rather than encrypted because the hub has to *compare*
 them — that is how a lease excludes a second holder and how a channel
@@ -67,7 +67,8 @@ though it cannot read them. From that, plus timing and sizes, it can infer:
 
 - how many distinct channels and resources a workspace uses, and how busy each is
 - when agents are active, and roughly how many there are
-- approximately how long each message is
+- which size *bucket* a message fell into — not its length, since padding
+  makes everything from 1 to 55 bytes identical
 - which agent is talking to which
 
 It cannot read a single word of content, a resource name, a branch name, or a
@@ -78,8 +79,124 @@ and enforce leases at all. A design that hid it would have to stop doing those
 things. If it matters for your threat model, **run your own hub** — which is
 why self-hosting is the primary deployment and always will be.
 
-If message length matters to you, pad before sending: bodies are arbitrary
-JSON, so a `{"pad": "..."}` field costs nothing but bytes.
+Message length is **already handled**: plaintext is padded to a size bucket
+before sealing, so a 1-byte and a 55-byte message are stored identically. See
+"Hiding more" below for what is left and what it would cost.
+
+## Hiding more, and what each option costs
+
+The question this section answers: can a hub operator be denied the *usage
+pattern* too, not just the content — and does hiding it break routing?
+
+### The one principle that decides everything
+
+**Routing is an equality test.** The hub delivers a message by matching its
+channel token against subscribers, and enforces a lease by matching its
+resource token against the live one. Those are the only two things it does
+with an identifier, and both are `==`.
+
+So the cost of hiding a piece of metadata depends entirely on whether the hub
+needs it *to answer that question, right now*:
+
+| Hide… | Cost to routing | Status |
+|---|---|---|
+| message length | **none** | done — padded to size buckets |
+| the workspace's *name* | **none** | free, see below |
+| which tokens were equal **last week** | **none** | designed, not built (see rotation) |
+| which tokens are equal **right now** | **routing stops working** | not viable |
+| when messages are sent, and how many | none to routing; costs capacity | see cover traffic |
+
+The third and fourth rows are the interesting pair. The hub only ever needs
+equality *within the window it is currently routing over*. Equality across
+weeks is something it gets for free and has no use for — which means
+long-term linkability can be removed at essentially no cost, while
+short-term unlinkability cannot be removed at any sane cost.
+
+### Free today: use an opaque workspace name
+
+The workspace is the shard and routing key, so it is plaintext by
+construction. But **nothing requires it to be meaningful**:
+
+```bash
+export SWITCHBOARD_WORKSPACE=w_7f3ca91b4e2d8065      # not "acme/billing"
+```
+
+Zero code, zero cost, and it removes the single most descriptive plaintext
+string a hub holds. Keep the readable name in your own notes; the hub only
+ever needs it to be *distinct*.
+
+This is worth doing even without encryption.
+
+### Designed, not built: rotating the blinding
+
+Today `blind(channel)` is stable forever, so an operator can watch one channel
+across months. Deriving it per epoch instead —
+`blind(epoch || channel)`, epoch = `floor(now / period)` — means tokens change
+on a schedule and nothing links traffic across a boundary.
+
+Routing cost is genuinely near zero: both sides compute the same epoch from
+the clock, and readers subscribe to the current and previous epoch to cover
+the seam. Cursors reset per epoch, which is fine because messages expire in an
+hour anyway.
+
+**It is not built because leases make it dangerous.** A lease's identifier
+must stay stable for the lease's whole life, and exclusion is the one property
+in this system that must never quietly weaken. If a token rotates mid-lease,
+two agents can hold what they both believe is the same resource under
+different tokens, and **nothing errors** — the second acquire simply succeeds.
+That is the worst failure this system can have, and it would appear only under
+a clock boundary, which is exactly when nobody is watching.
+
+Three ways to make it safe, none free:
+
+1. **Epoch period well above the maximum lease TTL** (currently 24h), so a
+   lease cannot span a boundary. Simple, but a 48-hour epoch buys much less
+   unlinkability than an hourly one.
+2. **Acquire under both epochs near a boundary.** Correct, and doubles the
+   lease bookkeeping at exactly the moment it is hardest to reason about.
+3. **Rotate channels and agent ids only, never resources.** Cheap and safe,
+   but leaves resource names linkable — and a resource name like
+   `backend/alembic` is as descriptive as anything else here.
+
+(3) is probably where this should land, with (1) as a bound. It is a real
+feature with a real hazard, so it needs a decision rather than a default.
+
+### Possible, but you pay for it: cover traffic
+
+Timing and volume can only be hidden by generating traffic that is not real —
+agents posting dummy messages on a fixed schedule so the pattern is constant.
+
+Routing is unaffected. But the cost lands on **the hub's capacity**, which the
+operator pays for, and connections are the scarce resource
+([managed-hub.md](managed-hub.md)). You would be paying, in the resource that
+actually constrains you, to hide information from yourself. That may be worth
+it for a specific customer; it should not be a default.
+
+### Not viable: unlinkability within a routing window
+
+The maximal version — every message carries a fresh random token, and only
+subscribers can test whether one is theirs — removes equality from the hub
+entirely. It also removes the hub's ability to *index*: every reader must
+fetch every message in the workspace and trial-decrypt each one, turning an
+O(1) lookup into O(n) per reader. That is private-information-retrieval
+territory, and it costs orders of magnitude more than everything Switchboard
+does put together.
+
+If your threat model needs it, the honest answer is the next section.
+
+### The alternative that hides everything: run your own hub
+
+Switchboard is self-hostable first, and this is why. One process, one SQLite
+file, no account. A managed hub and a self-hosted one speak the same protocol,
+so the choice is per workspace and costs one environment variable:
+
+```bash
+SWITCHBOARD_URL=https://hub.example.com   # ordinary work
+SWITCHBOARD_URL=http://10.0.0.4:8787      # the sensitive workspace
+```
+
+Nothing about the hosted option is designed to make this harder, and nothing
+ever should be.
 
 ## Key management
 

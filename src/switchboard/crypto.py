@@ -59,6 +59,28 @@ except ImportError:  # pragma: no cover - exercised by the no-extra install
 ENVELOPE_KEY = "$swb"
 ENVELOPE_VERSION = 1
 
+#: Pad plaintext up to a bucket before sealing, so ciphertext length stops
+#: reporting plaintext length. AEAD preserves length exactly: measured on real
+#: traffic, 18- and 19-character messages produced 143- and 144-byte rows, so
+#: an operator can read message lengths to the byte. Buckets are powers of two
+#: from 64 up to 4096, then multiples of 4096 — the storage cost is trivial
+#: (everything expires within a day) and the leak it closes is not.
+PAD_MIN = 64
+PAD_MAX_POWER = 4096
+
+
+def pad_bucket(length: int) -> int:
+    """The size a plaintext of ``length`` bytes is padded up to."""
+    if length <= PAD_MIN:
+        return PAD_MIN
+    if length >= PAD_MAX_POWER:
+        return ((length // PAD_MAX_POWER) + 1) * PAD_MAX_POWER
+    size = PAD_MIN
+    while size < length:
+        size *= 2
+    return size
+
+
 #: 16 bytes = 128 bits of HMAC output. Long enough that a collision between two
 #: channel names is not a thing that happens; short enough to stay readable in
 #: a log line.
@@ -108,9 +130,14 @@ class WorkspaceCipher:
     workspace: str
     _payload_key: bytes
     _blind_key: bytes
+    #: Pad plaintext to a size bucket before sealing. On by default: the point
+    #: of encrypting is privacy, and an unpadded ciphertext announces its
+    #: plaintext length to the byte.
+    pad: bool = True
 
     @classmethod
-    def from_key(cls, key: str | bytes, workspace: str) -> WorkspaceCipher:
+    def from_key(cls, key: str | bytes, workspace: str,
+                 pad: bool = True) -> WorkspaceCipher:
         if not AVAILABLE:
             raise CryptoError(_MISSING)
         raw = key if isinstance(key, bytes) else _decode_key(key)
@@ -123,6 +150,7 @@ class WorkspaceCipher:
             workspace=workspace,
             _payload_key=_derive(raw, b"switchboard/v1/payload", workspace),
             _blind_key=_derive(raw, b"switchboard/v1/identifier", workspace),
+            pad=pad,
         )
 
     # --- payloads ---
@@ -135,7 +163,8 @@ class WorkspaceCipher:
         moving a message body onto a blackboard key, say. Without it the
         ciphertext would be authentic but relocatable, which is its own bug.
         """
-        plaintext = json.dumps(value, separators=(",", ":")).encode()
+        plaintext = _pad(json.dumps(value, separators=(",", ":")).encode()) \
+            if self.pad else json.dumps(value, separators=(",", ":")).encode()
         nonce = os.urandom(12)
         ciphertext = AESGCM(self._payload_key).encrypt(
             nonce, plaintext, self._aad(context)
@@ -172,7 +201,9 @@ class WorkspaceCipher:
                 f"could not open the value at {context!r}: wrong workspace key, "
                 f"tampering, or a mismatched context"
             ) from exc
-        return json.loads(plaintext)
+        # Padding is detected from the payload itself rather than from this
+        # client's setting, so a padded and an unpadded agent interoperate.
+        return json.loads(_unpad(plaintext))
 
     def seal_text(self, text: str | None, context: str) -> str | None:
         """Seal a value that has to stay a string on the wire (notes, names)."""
@@ -234,6 +265,27 @@ class WorkspaceCipher:
         # The workspace is bound in too, so a ciphertext cannot be replayed
         # into a different workspace on a shared hub.
         return f"switchboard/v1\x00{self.workspace}\x00{context}".encode()
+
+
+#: Marks a padded plaintext. Chosen as a byte that cannot begin a JSON
+#: document, so an unpadded payload from another client is unambiguous.
+_PAD_MARKER = 0x00
+
+
+def _pad(plaintext: bytes) -> bytes:
+    """``\\x00`` + 4-byte length + data + filler, out to a size bucket."""
+    framed = len(plaintext).to_bytes(4, "big") + plaintext
+    target = pad_bucket(len(framed) + 1)
+    return bytes([_PAD_MARKER]) + framed + bytes(target - len(framed) - 1)
+
+
+def _unpad(plaintext: bytes) -> bytes:
+    if not plaintext or plaintext[0] != _PAD_MARKER:
+        return plaintext          # written by a client with padding off
+    length = int.from_bytes(plaintext[1:5], "big")
+    if length > len(plaintext) - 5:
+        raise DecryptionError("padded payload declares a length beyond its own size")
+    return plaintext[5:5 + length]
 
 
 def is_sealed(value: Any) -> bool:
