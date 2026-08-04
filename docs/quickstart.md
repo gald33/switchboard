@@ -2,6 +2,11 @@
 
 Hub running and two agents coordinating, in about five minutes.
 
+This walks the raw CLI so you can see each primitive on its own. If you're
+setting up a repo for Claude Code agents specifically, `switchboard init`
+does the wiring below for you in one command — see
+[Claude Code setup](claude-code.md#the-fast-path).
+
 ## 1. Start a hub
 
 ```bash

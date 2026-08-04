@@ -3,6 +3,26 @@
 Switchboard ships an MCP server, so Claude Code agents get coordination as
 native tools rather than as shell commands they have to remember to run.
 
+## The fast path
+
+```bash
+pip install "agent-switchboard[all]"
+switchboard init
+```
+
+This does steps 1–5 below in one shot: it writes `.mcp.json`, installs the
+`SessionStart`/`Stop` hooks into `.claude/settings.json`, appends the
+"Coordinating with other agents" section to `CLAUDE.md`, and — if you have
+not already pointed it at a hub — generates a dev token into a gitignored
+`.env`. It merges into whatever is already in those files, so it is safe to
+run again (e.g. after a teammate adds their own MCP server to `.mcp.json`).
+Pass `--url`/`--token`/`--workspace` to point it at an existing hub instead
+of the local default, or `--skip-mcp`/`--skip-hooks`/`--skip-claude-md` to
+opt out of a step. Run `switchboard init --help` for the full list.
+
+The rest of this page is what `init` does for you, spelled out — read it if
+you want to understand or hand-customize any of the pieces.
+
 ## 1. Install
 
 On every machine that runs an agent:

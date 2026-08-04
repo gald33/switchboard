@@ -69,6 +69,24 @@ pip install "agent-switchboard[server]"
 pip install "agent-switchboard[all]"
 ```
 
+## The fast path
+
+From the root of a repo:
+
+```bash
+pip install "agent-switchboard[all]"
+switchboard init
+```
+
+That's one command instead of hand-editing three files: it writes `.mcp.json`,
+adds the `SessionStart`/`Stop` lifecycle hooks to `.claude/settings.json`,
+appends a coordination section to `CLAUDE.md`, and — if you didn't already
+point it at a hub — generates a dev token into a gitignored `.env` so
+`docker compose up -d` just works. It merges into whatever is already in
+those files and is safe to run again. See
+[Use it from Claude Code](#use-it-from-claude-code) below for what it wires
+up and why, or skip straight to `switchboard init --help`.
+
 ## Run a hub
 
 ```bash
