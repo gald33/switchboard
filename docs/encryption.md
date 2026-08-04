@@ -197,6 +197,65 @@ silent failures are the expensive kind. Revisit if someone's threat model
 actually turns on cross-week channel linkage — at which point the honest
 answer is more likely to be the next section but one.
 
+### Already there: a salt or pepper would add nothing
+
+A natural next thought is to mix in a second secret — a salt or pepper shared
+out of band — on top of the key. It does not help here, and it is worth being
+precise about why rather than adding it because it sounds stronger.
+
+**The blinding key is already a secret the hub does not have.** Tokens are
+`HMAC(blind_key, domain || identifier)`, and `blind_key` is derived from the
+workspace key by HKDF. That is already a pseudorandom function under a secret
+key: without the key the hub cannot compute a token, cannot invert one, and
+cannot confirm a guess about what an identifier says.
+
+A pepper would be distributed exactly the way the key is, held exactly where
+the key is held, and lost exactly when the key is lost. It would add a second
+thing to manage and change nothing an adversary can observe.
+
+The two jobs a salt normally does are both already covered:
+
+- **Stopping precomputation across scopes.** The workspace is bound into the
+  HKDF info, so the same key in two workspaces produces different tokens for
+  the same channel — no per-workspace salt to distribute.
+- **Protecting a low-entropy secret.** HKDF is not a password KDF and a salt
+  would not make it one. The real defence is refusing weak input: keys must be
+  at least 32 bytes, and a key with almost no distinct bytes (`hex:0000…`, the
+  shape a forgotten placeholder takes) is rejected outright. That guard found
+  a degenerate key in this project's own test suite the moment it was added.
+
+This is also why passphrases are not accepted. A memorable secret needs a slow
+KDF *and* a shared salt, and getting either wrong fails silently.
+`switchboard keygen` avoids the whole category.
+
+### Already there: encryption is non-deterministic
+
+Sealing draws a fresh random 96-bit nonce each time, so two identical
+plaintexts produce two unrelated ciphertexts — a hub cannot tell that the same
+message was sent twice, or that two agents said the same thing.
+
+The failure mode to protect against here is a future "optimisation" to a fixed
+or derived nonce. AES-GCM nonce reuse leaks the XOR of the plaintexts and
+permits forgery, and nothing about it is visible from outside, so two tests
+guard it directly: identical plaintexts must seal differently, and 5,000 seals
+must produce 5,000 distinct nonces.
+
+Random 96-bit nonces carry a birthday bound, so for completeness:
+
+| messages under one key | P(nonce collision) |
+|---|---|
+| 1 million | ~6 × 10⁻¹⁸ |
+| 1 billion | ~6 × 10⁻¹² |
+| 2³² (NIST's guidance limit) | ~1 × 10⁻¹⁰ |
+
+No workspace will approach this — everything expires within a day, so the
+stored volume never accumulates. If a deployment ever did, the remedy is to
+**rotate the workspace key**, which is worth distinguishing from rotating
+*tokens*: re-keying is safe. Nothing in the protocol depends on a key being
+long-lived, old data expires within a day, and the failure mode if an agent is
+missed is loud — it cannot read the new traffic and says so — rather than the
+silent double-hold that token rotation produces.
+
 ### Possible, but you pay for it: cover traffic
 
 Timing and volume can only be hidden by generating traffic that is not real —

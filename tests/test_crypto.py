@@ -180,7 +180,11 @@ def test_generated_keys_are_distinct():
 
 
 def test_hex_keys_are_accepted():
-    c = WorkspaceCipher.from_key("hex:" + "ab" * 32, WS)
+    # A real 32-byte key in hex. Note "ab" * 32 would NOT do: that is one byte
+    # repeated, and the placeholder guard rejects it — correctly.
+    import secrets as _secrets
+
+    c = WorkspaceCipher.from_key("hex:" + _secrets.token_bytes(32).hex(), WS)
     assert c.unseal(c.seal("x", "message.body"), "message.body") == "x"
 
 
@@ -455,3 +459,51 @@ def test_keygen_emits_a_key_and_an_opaque_workspace():
     with contextlib.redirect_stdout(second):
         cmd_keygen(args)
     assert json.loads(second.getvalue())["workspace"] != payload["workspace"]
+
+
+# --- properties a "salt or pepper" would be reaching for ---------------------
+
+
+def test_encryption_is_already_non_deterministic(key):
+    """Identical plaintexts must not produce identical ciphertexts.
+
+    A fresh random nonce per seal is what provides this. If anyone ever
+    "optimises" to a fixed or derived nonce, AES-GCM nonce reuse leaks the XOR
+    of the plaintexts and permits forgery — catastrophic, and invisible from
+    the outside. Nothing else in the suite would notice, so this test is the
+    guard.
+    """
+    c = WorkspaceCipher.from_key(key, WS)
+    first = c.seal("identical plaintext", "message.body")
+    second = c.seal("identical plaintext", "message.body")
+    assert first["c"] != second["c"]
+    assert first["n"] != second["n"]
+
+
+def test_nonces_do_not_repeat(key):
+    c = WorkspaceCipher.from_key(key, WS)
+    nonces = {c.seal("x", "message.body")["n"] for _ in range(5000)}
+    assert len(nonces) == 5000
+
+
+def test_the_same_key_in_two_workspaces_blinds_differently(key):
+    """Workspace separation without needing a per-workspace salt to distribute.
+
+    The workspace is bound into the HKDF info, so even a key reused across two
+    workspaces does not let a hub correlate a channel between them.
+    """
+    a = WorkspaceCipher.from_key(key, "tenant-a")
+    b = WorkspaceCipher.from_key(key, "tenant-b")
+    assert a.blind("build", "channel") != b.blind("build", "channel")
+    assert a.blind("backend/alembic", "resource") != b.blind("backend/alembic", "resource")
+
+
+def test_a_placeholder_key_is_refused():
+    """No salt rescues a key with no entropy, so reject it outright."""
+    from switchboard.crypto import CryptoError
+
+    for placeholder in ("hex:" + "00" * 32, "hex:" + "11" * 32, "hex:" + "0f" * 32):
+        with pytest.raises(CryptoError, match="placeholder"):
+            WorkspaceCipher.from_key(placeholder, WS)
+    # A genuine key with all-distinct-ish bytes is still fine.
+    WorkspaceCipher.from_key(generate_key(), WS)

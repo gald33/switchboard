@@ -146,6 +146,15 @@ class WorkspaceCipher:
                 f"workspace key must be at least 32 bytes, got {len(raw)}; "
                 "generate one with `switchboard keygen`"
             )
+        if len(set(raw)) <= 2:
+            # A placeholder like hex:0000... passes the length check and
+            # produces a perfectly valid-looking cipher with no secrecy at all.
+            # No amount of salting rescues a key with no entropy; refusing it
+            # is the only thing that helps.
+            raise CryptoError(
+                "workspace key looks like a placeholder (almost no distinct "
+                "bytes); generate a real one with `switchboard keygen`"
+            )
         return cls(
             workspace=workspace,
             _payload_key=_derive(raw, b"switchboard/v1/payload", workspace),
