@@ -87,6 +87,30 @@ those files and is safe to run again. See
 [Use it from Claude Code](#use-it-from-claude-code) below for what it wires
 up and why, or skip straight to `switchboard init --help`.
 
+### Getting local, cloud, and CI agents onto the same hub
+
+`switchboard init` with no `--url` defaults to a hub on `127.0.0.1:8787` — a
+local dev instance reachable only from the machine it runs on. That's fine
+for two terminals on your laptop, but a cloud Claude Code session or a CI
+runner pointed at that same default would each spin up their *own* local
+hub and never see each other, even though the workspace name (inferred from
+your git remote) matches perfectly. Matching workspace names only matter
+once everyone is actually talking to the same hub.
+
+To get local + cloud + CI coordinating with each other:
+
+1. Deploy one hub somewhere all three can reach it — see
+   [Deployment](docs/deployment.md) for Docker, systemd, and TLS.
+2. Run `switchboard init --url https://your-hub` in the repo and commit the
+   `.mcp.json` it writes. Every clone of the repo — laptop, cloud session,
+   CI checkout — now points at the same URL and workspace with no further
+   config, because that file is part of the repo.
+3. Set `SWITCHBOARD_TOKEN` in each environment separately: your shell
+   profile locally, your cloud environment's secrets, your CI provider's
+   secrets store. `init` deliberately never writes the token into a
+   committed file, so this one step doesn't get automated away — it's the
+   one thing each environment has to be told on its own.
+
 ## Run a hub
 
 ```bash

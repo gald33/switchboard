@@ -148,6 +148,35 @@ def test_explicit_workspace_and_url_override_inference(monkeypatch, capsys, tmp_
     assert not (tmp_path / ".env").exists()
 
 
+def test_local_hub_warns_it_is_machine_only(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "only reachable from this machine" in out
+    assert "docs/deployment.md" in out
+
+
+def test_remote_hub_has_no_local_only_warning(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    code = main(["--url", "https://hub.example.com", "init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "only reachable from this machine" not in out
+
+
+def test_json_output_includes_local_hub_note(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    code = main(["--json", "init"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert "only reachable from this machine" in payload["note"]
+
+
 def test_json_output(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SWITCHBOARD_URL", raising=False)

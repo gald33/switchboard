@@ -614,8 +614,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not args.skip_claude_md:
         steps.append(_init_claude_md(directory))
 
+    local_hub_note = (
+        "this hub is only reachable from this machine — a cloud session or CI runner "
+        "pointed at it would start its own separate, empty hub and never see agents "
+        "here. To coordinate across machines, deploy one shared hub (see "
+        "docs/deployment.md) and re-run `switchboard init --url https://your-hub` so "
+        "that URL is what gets committed."
+    )
+
     if args.json:
-        _print_json({"workspace": workspace, "url": url, "steps": steps})
+        payload: dict[str, Any] = {"workspace": workspace, "url": url, "steps": steps}
+        if local_hub:
+            payload["note"] = local_hub_note
+        _print_json(payload)
         return EXIT_OK
 
     fmt = Fmt(_use_color(sys.stdout))
@@ -624,6 +635,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         for step in steps:
             marker = fmt.dim("·") if step.startswith("left ") else fmt.green("+")
             print(f"  {marker} {step}")
+        if local_hub:
+            print()
+            print(fmt.yellow("Note: ") + local_hub_note)
         print()
         print(fmt.bold("Next"))
         n = 1
