@@ -148,19 +148,31 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
-    """Print a fresh workspace key. It never goes near a hub."""
+    """Print a fresh workspace key, and an opaque workspace name to go with it.
+
+    The workspace name is the one thing a hub sees in the clear — it is the
+    shard and routing key, so it cannot be encrypted. But nothing requires it
+    to be *meaningful*, and "acme/billing" tells an operator more than any
+    other single string they hold. Emitting an opaque one here is the cheapest
+    privacy win available, and it costs nothing to take.
+    """
     key = generate_key()
+    workspace = "w_" + generate_key()[:16]
     if args.json:
-        _print_json({"key": key})
+        _print_json({"key": key, "workspace": workspace})
         return EXIT_OK
     print(key)
     if sys.stdout.isatty():
         print(
-            "\nShare this with the agents in the workspace and nobody else.\n"
-            "  export SWITCHBOARD_KEY=" + key + "\n"
-            "The hub never receives it, so it cannot read this workspace — and\n"
+            "\nShare this with the agents in the workspace and nobody else:\n"
+            f"  export SWITCHBOARD_KEY={key}\n"
+            "\nThe hub never receives it, so it cannot read this workspace — and\n"
             "cannot help you recover it either. Everything expires within a day,\n"
-            "so losing it costs less here than almost anywhere else.",
+            "so losing it costs less here than almost anywhere else.\n"
+            "\nThe workspace name is NOT encrypted — it is how the hub routes.\n"
+            "Use an opaque one and it stops being the most descriptive thing\n"
+            "the hub holds. Keep the readable name in your own notes:\n"
+            f"  export SWITCHBOARD_WORKSPACE={workspace}",
             file=sys.stderr,
         )
     return EXIT_OK

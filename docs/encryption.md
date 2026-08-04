@@ -6,9 +6,11 @@ task descriptions are sealed before they leave the agent; channel names, lease
 resources and agent ids are replaced by opaque tokens.
 
 ```bash
-switchboard keygen              # prints a key; the hub never receives it
-export SWITCHBOARD_KEY=<key>    # same key on every agent in the workspace
+switchboard keygen   # prints a key, plus an opaque workspace name to pair with it
 ```
+
+Set `SWITCHBOARD_KEY` and `SWITCHBOARD_WORKSPACE` on every agent in the
+workspace. The key never reaches the hub.
 
 That is the whole setup. Everything else — `claim`, `say`, `inbox`, `checkin`,
 the MCP tools — behaves exactly as before.
@@ -102,7 +104,7 @@ needs it *to answer that question, right now*:
 |---|---|---|
 | message length | **none** | done — padded to size buckets |
 | the workspace's *name* | **none** | free, see below |
-| which tokens were equal **last week** | **none** | designed, not built (see rotation) |
+| which tokens were equal **last week** | **none** | measured, recommended against — see rotation |
 | which tokens are equal **right now** | **routing stops working** | not viable |
 | when messages are sent, and how many | none to routing; costs capacity | see cover traffic |
 
@@ -112,54 +114,88 @@ weeks is something it gets for free and has no use for — which means
 long-term linkability can be removed at essentially no cost, while
 short-term unlinkability cannot be removed at any sane cost.
 
-### Free today: use an opaque workspace name
+### Done: opaque workspace names
 
 The workspace is the shard and routing key, so it is plaintext by
-construction. But **nothing requires it to be meaningful**:
+construction — the hub cannot route without it. But **nothing requires it to
+be meaningful**, and `switchboard keygen` now emits one alongside the key:
 
-```bash
-export SWITCHBOARD_WORKSPACE=w_7f3ca91b4e2d8065      # not "acme/billing"
+```
+key:       5VmLec01WiLdena0O6uVI4Nr5K0A5gGaSuK5J-VGcxY
+workspace: w_xGs11CGt4fPf5P0R
 ```
 
-Zero code, zero cost, and it removes the single most descriptive plaintext
-string a hub holds. Keep the readable name in your own notes; the hub only
-ever needs it to be *distinct*.
+Keep the readable name in your own notes; the hub only ever needs it to be
+*distinct*. This costs nothing and is worth doing even without encryption —
+`acme/billing` is otherwise the single most descriptive string a hub holds.
 
-This is worth doing even without encryption.
+### Measured, and recommended against: rotating the blinding
 
-### Designed, not built: rotating the blinding
+The idea is sound and the routing cost really is near zero: derive tokens per
+epoch — `blind(epoch || channel)`, epoch = `floor(now / period)` — and nothing
+links traffic across a boundary. Both sides compute the same epoch from the
+clock; readers cover the seam by reading the current and previous epoch.
 
-Today `blind(channel)` is stable forever, so an operator can watch one channel
-across months. Deriving it per epoch instead —
-`blind(epoch || channel)`, epoch = `floor(now / period)` — means tokens change
-on a schedule and nothing links traffic across a boundary.
+It was prototyped against the real store before being written up here, and it
+is **safe for exactly one of the four identifier kinds.** The other three each
+break something, and two of them break it silently.
 
-Routing cost is genuinely near zero: both sides compute the same epoch from
-the clock, and readers subscribe to the current and previous epoch to cover
-the seam. Cursors reset per epoch, which is fine because messages expire in an
-hour anyway.
+**Lease resources — do not rotate.** Exclusion is enforced by the resource
+being a primary key. Rotate it and the same logical resource becomes two rows:
 
-**It is not built because leases make it dangerous.** A lease's identifier
-must stay stable for the lease's whole life, and exclusion is the one property
-in this system that must never quietly weaken. If a token rotates mid-lease,
-two agents can hold what they both believe is the same resource under
-different tokens, and **nothing errors** — the second acquire simply succeeds.
-That is the worst failure this system can have, and it would appear only under
-a clock boundary, which is exactly when nobody is watching.
+```
+alice holds backend/alembic under epoch 100
+bob ALSO acquired backend/alembic under epoch 101  <-- DOUBLE HOLD
+hub now holds 2 live leases for ONE logical resource
+```
 
-Three ways to make it safe, none free:
+No error, no warning — `acquire` simply succeeds for both. This is the one
+property in the system that must never weaken quietly.
 
-1. **Epoch period well above the maximum lease TTL** (currently 24h), so a
-   lease cannot span a boundary. Simple, but a 48-hour epoch buys much less
-   unlinkability than an hourly one.
-2. **Acquire under both epochs near a boundary.** Correct, and doubles the
-   lease bookkeeping at exactly the moment it is hardest to reason about.
-3. **Rotate channels and agent ids only, never resources.** Cheap and safe,
-   but leaves resource names linkable — and a resource name like
-   `backend/alembic` is as descriptive as anything else here.
+And the obvious mitigation makes it *worse*. Lengthening the epoch reduces how
+often a lease spans a boundary — 25% at a 1-hour epoch with 15-minute leases,
+1% at 24 hours — which converts a bug that fires constantly into one that
+fires rarely, at an unpredictable hour, with no symptom but two agents editing
+the same file. Rare silent corruption is harder to find than frequent silent
+corruption, not safer.
 
-(3) is probably where this should land, with (1) as a bound. It is a real
-feature with a real hazard, so it needs a decision rather than a default.
+**Agent ids — do not rotate.** An agent's own leases are renewed by matching
+`holder == agent_id`. Rotate the id and its heartbeat stops finding them:
+
+```
+heartbeat under the new-epoch id found the agent: False
+leases renewed by that heartbeat: 0   <-- its own lease is orphaned
+```
+
+The lease then expires mid-work and another agent takes the resource. That is
+a *safe* failure in the sense that nothing is corrupted, but it is a
+disruptive one, and it arrives on a clock rather than on anything the agent
+did.
+
+*(An earlier draft of this document claimed agent ids were safe to rotate.
+They are not, and the prototype is what showed it.)*
+
+**Blackboard keys — do not rotate.** A handoff written before a boundary is
+simply not found after it. Visible rather than silent, but the blackboard
+exists precisely to survive the gap between one session and the next, which is
+the thing rotation would break.
+
+**Channels — safe, and not obviously worth it.** No exclusion semantics, no
+renewal semantics, and messages expire within the hour, so a dual-epoch read
+covers the seam completely.
+
+But weigh what it buys against what it adds. Stable channel tokens tell an
+operator "this workspace has a busy channel and a quiet one" and roughly when
+each is active — real, but modest, and resource and agent tokens stay linkable
+regardless, since neither can be rotated. Against that, dual-epoch reads and
+per-epoch cursors introduce a new way for a message to go undelivered at a
+boundary, which is its own quiet failure.
+
+**Recommendation: do not build it.** It trades a modest metadata gain for a
+new class of silent failure, in a system whose whole design premise is that
+silent failures are the expensive kind. Revisit if someone's threat model
+actually turns on cross-week channel linkage — at which point the honest
+answer is more likely to be the next section but one.
 
 ### Possible, but you pay for it: cover traffic
 

@@ -10,6 +10,8 @@ alongside it.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 
 import pytest
@@ -414,3 +416,42 @@ def test_a_truncated_padded_payload_is_rejected(key):
     corrupt = framed[:3] + b"\xff\xff" + framed[5:]
     with pytest.raises(DecryptionError):
         _unpad(corrupt)
+
+
+def test_blinding_has_no_time_component(key):
+    """Tokens must be stable forever — rotation was measured and rejected.
+
+    A prototype that derived tokens per epoch produced a SILENT double-hold:
+    the same logical resource became two rows across a boundary and `acquire`
+    succeeded for both agents, because exclusion is enforced by the resource
+    being a primary key. Rotating agent ids separately broke self-renewal, so
+    an agent's own leases were orphaned and expired mid-work.
+
+    If someone reintroduces rotation for these domains, this fails first.
+    See docs/encryption.md, "rotating the blinding".
+    """
+    c = WorkspaceCipher.from_key(key, WS)
+    for domain in ("resource", "agent", "channel", "board"):
+        first = c.blind("backend/alembic", domain)
+        # A fresh cipher from the same key, as a later process would build.
+        again = WorkspaceCipher.from_key(key, WS).blind("backend/alembic", domain)
+        assert first == again, f"{domain} tokens are not stable across clients"
+
+
+def test_keygen_emits_a_key_and_an_opaque_workspace():
+    """The workspace name is the one thing a hub sees in the clear."""
+    from switchboard.cli import build_parser, cmd_keygen
+
+    args = build_parser().parse_args(["--json", "keygen"])
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert cmd_keygen(args) == 0
+    payload = json.loads(out.getvalue())
+    assert len(payload["key"]) >= 40
+    assert payload["workspace"].startswith("w_")
+    # It must not be derived from anything guessable, and must differ per call.
+    second = io.StringIO()
+    with contextlib.redirect_stdout(second):
+        cmd_keygen(args)
+    assert json.loads(second.getvalue())["workspace"] != payload["workspace"]

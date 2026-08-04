@@ -180,9 +180,13 @@ A hub only ever needs to *route* and *compare*, never to read. So it doesn't
 have to:
 
 ```bash
-switchboard keygen              # prints a key; the hub never receives it
-export SWITCHBOARD_KEY=<key>    # same key on every agent in the workspace
+switchboard keygen   # prints a key, plus an opaque workspace name to pair with it
 ```
+
+Set both on every agent in the workspace. The key never reaches the hub. The
+workspace name *does* — it is the routing key and cannot be encrypted — which
+is why `keygen` hands you an opaque one rather than letting `acme/billing`
+become the most descriptive string the hub holds.
 
 Message bodies, blackboard values, lease notes, branch names and task
 descriptions are sealed with AES-256-GCM before they leave the agent. Channel
