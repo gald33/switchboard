@@ -507,3 +507,55 @@ def test_a_placeholder_key_is_refused():
             WorkspaceCipher.from_key(placeholder, WS)
     # A genuine key with all-distinct-ish bytes is still fine.
     WorkspaceCipher.from_key(generate_key(), WS)
+
+
+# --- key mismatch must be loud ----------------------------------------------
+
+
+def test_a_mismatched_key_is_visible_in_the_roster(hub, key):
+    """The scenario that was previously silent in every direction.
+
+    An agent on the wrong key blinds every channel differently, so its inbox is
+    simply empty and its leases land on different rows. Nothing raises. The
+    roster is the one view that survives a key change — it is keyed by the
+    plaintext workspace — so the fingerprint published there is what makes the
+    partition visible.
+    """
+    http, _, _ = hub
+    current, stale = bound(http, key, "a1"), bound(http, generate_key(), "a2")
+    current.register(name="alpha", channels=["build"])
+    stale.register(name="beta", channels=["build"])
+
+    assert current.cipher.fingerprint != stale.cipher.fingerprint
+    flagged = current.key_mismatches(current.agents())
+    assert len(flagged) == 1
+    assert flagged[0]["agent_id"] == stale.agent_id
+    # ...and symmetrically, so whichever agent looks first finds out.
+    assert len(stale.key_mismatches(stale.agents())) == 1
+
+
+def test_matching_keys_raise_no_false_alarm(hub, key):
+    http, _, _ = hub
+    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1.register(name="alpha")
+    a2.register(name="beta")
+    assert a1.key_mismatches(a1.agents()) == []
+
+
+def test_an_unencrypted_client_never_reports_a_mismatch(hub):
+    """Plaintext workspaces have no fingerprints, and must not be nagged."""
+    http, _, _ = hub
+    plain = bound(http, None, "a1")
+    plain.register(name="alpha")
+    assert plain.key_mismatches(plain.agents()) == []
+
+
+def test_the_fingerprint_reveals_nothing_about_the_key(key):
+    """It is published openly, so it must not be the key or derived visibly."""
+    c = WorkspaceCipher.from_key(key, WS)
+    assert c.fingerprint
+    assert c.fingerprint not in key and key not in c.fingerprint
+    assert len(c.fingerprint) < 16
+    # Same key, different workspace -> different fingerprint, so it cannot be
+    # used to correlate one tenant's key across workspaces either.
+    assert WorkspaceCipher.from_key(key, "other").fingerprint != c.fingerprint

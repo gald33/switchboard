@@ -226,6 +226,7 @@ def cmd_register(args: argparse.Namespace) -> int:
 def cmd_agents(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         agents = hub.agents()
+        mismatched = hub.key_mismatches(agents)
     if args.json:
         _print_json(agents)
         return EXIT_OK
@@ -241,6 +242,21 @@ def cmd_agents(args: argparse.Namespace) -> int:
             f"{a['agent_id'][:33]:<34} {a['kind'][:6]:<7} "
             f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} {a.get('task') or ''}"
         )
+    if mismatched:
+        # A key mismatch is otherwise completely silent: their messages never
+        # reach this inbox, this agent's never reach theirs, and neither
+        # side's leases exclude the other. Nothing raises, so say it here.
+        print(
+            "\n" + fmt.red(
+                f"warning: {len(mismatched)} agent(s) here hold a DIFFERENT "
+                f"workspace key."
+            )
+            + "\nYou cannot see their messages and they cannot see yours, and "
+              "your leases\ndo not exclude each other. Check SWITCHBOARD_KEY "
+              "matches on every agent.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     return EXIT_OK
 
 

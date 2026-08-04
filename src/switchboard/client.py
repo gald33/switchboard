@@ -18,7 +18,7 @@ from typing import Any, Sequence
 import httpx
 
 from .config import ClientConfig
-from .crypto import WorkspaceCipher
+from .crypto import DecryptionError, WorkspaceCipher
 
 __all__ = [
     "SwitchboardError",
@@ -184,6 +184,19 @@ _OPEN_RESPONSE: dict[str, dict[str, str]] = {
 #: envelope dict instead of a serialized string.
 _JSON_VALUED = {"message.body", "board.value"}
 
+#: Response keys where a value we cannot open is EXPECTED rather than alarming,
+#: and must not fail the whole call.
+#:
+#: The roster is the one place agents holding different keys legitimately meet
+#: — that is what makes it the right place to detect a key mismatch. Raising
+#: there defeats the purpose twice over: it blocks the diagnostic, and it makes
+#: the roster unusable for the peers whose key *is* correct.
+#:
+#: Everywhere else stays strict. A message body we cannot open never reaches us
+#: in the first place (a mismatched sender blinds to a different channel), so
+#: an unopenable one is genuinely suspicious and should still raise.
+_TOLERATE_UNREADABLE = {"agents", "agent"}
+
 
 def _is_labelled(opened: Any) -> bool:
     """Is this an opened message body carrying its own channel label?
@@ -222,6 +235,40 @@ class _Base:
     # client methods. Two copies of that logic — one sync, one async — would be
     # two chances to forget a field, and a forgotten field is plaintext on the
     # wire that nothing would ever flag.
+
+    def _stamp(self, meta: dict[str, Any] | None) -> dict[str, Any]:
+        """Publish which key this agent holds, so a mismatch is visible.
+
+        `meta` is not encrypted — it is the one field that must stay readable
+        across a key change, because that is exactly when you need to see who
+        you have stopped being able to talk to.
+        """
+        stamped = dict(meta or {})
+        if self.cipher:
+            stamped["key_fp"] = self.cipher.fingerprint
+        return stamped
+
+    def key_mismatches(self, agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Roster entries holding a different key from ours.
+
+        A different fingerprint means a partition: their messages never reach
+        our inbox, ours never reach theirs, and neither side's leases exclude
+        the other. None of that raises, so somebody has to look.
+        """
+        if not self.cipher:
+            return []
+        mine = self.cipher.fingerprint
+        out = []
+        for a in agents:
+            if a.get("agent_id") == self.agent_id:
+                continue
+            fingerprint = (a.get("meta") or {}).get("key_fp")
+            # An unreadable entry is a mismatch even if it published no
+            # fingerprint — an older client, or one that registered before
+            # fingerprints existed.
+            if a.get("unreadable") or fingerprint not in (None, mine):
+                out.append(a)
+        return out
 
     def _blind_channel(self, channel: str) -> str:
         return self.cipher.blind_channel(channel) if self.cipher else channel
@@ -287,11 +334,21 @@ class _Base:
                 for field, context in fields.items():
                     if item.get(field) is None:
                         continue
-                    opened = (
-                        self.cipher.unseal(item[field], context)
-                        if context in _JSON_VALUED
-                        else self.cipher.unseal_text(item[field], context)
-                    )
+                    try:
+                        opened = (
+                            self.cipher.unseal(item[field], context)
+                            if context in _JSON_VALUED
+                            else self.cipher.unseal_text(item[field], context)
+                        )
+                    except DecryptionError:
+                        if key not in _TOLERATE_UNREADABLE:
+                            raise
+                        # A peer on a different key. Mark it and keep going, so
+                        # the roster still lists everyone and the mismatch can
+                        # be reported precisely instead of as a raw crypto error.
+                        item[field] = None
+                        item["unreadable"] = True
+                        continue
                     if context == "message.body" and _is_labelled(opened):
                         # Restore the readable channel name that travelled
                         # sealed alongside the body.
@@ -341,7 +398,7 @@ class Client(_Base):
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "ttl": ttl,
+            "meta": self._stamp(meta), "ttl": ttl,
         })["agent"]
 
     def heartbeat(self, *, task: str | None = None, ttl: float | None = None,
@@ -499,7 +556,7 @@ class AsyncClient(_Base):
         result = await self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "ttl": ttl,
+            "meta": self._stamp(meta), "ttl": ttl,
         })
         return result["agent"]
 

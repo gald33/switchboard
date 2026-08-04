@@ -249,12 +249,7 @@ Random 96-bit nonces carry a birthday bound, so for completeness:
 | 2³² (NIST's guidance limit) | ~1 × 10⁻¹⁰ |
 
 No workspace will approach this — everything expires within a day, so the
-stored volume never accumulates. If a deployment ever did, the remedy is to
-**rotate the workspace key**, which is worth distinguishing from rotating
-*tokens*: re-keying is safe. Nothing in the protocol depends on a key being
-long-lived, old data expires within a day, and the failure mode if an agent is
-missed is loud — it cannot read the new traffic and says so — rather than the
-silent double-hold that token rotation produces.
+stored volume never accumulates.
 
 ### Possible, but you pay for it: cover traffic
 
@@ -300,19 +295,117 @@ matches the trust model the rest of Switchboard already assumes: agents in a
 workspace share a codebase, so they are not kept apart from each other — they
 are kept apart from everyone else.
 
-- **Generate** with `switchboard keygen`. It is 32 random bytes, base64url.
-  Hex is accepted too (`hex:...`).
-- **Distribute** however you distribute any shared secret — a password
-  manager, your CI secret store, `.env` files you already protect.
-- **Rotate** by changing the key everywhere. There is no re-encryption step,
-  because everything expires within a day anyway; agents on the old key simply
-  stop seeing new traffic.
-- **Losing it** costs a day of coordination state and nothing else. The hub
-  cannot help you recover it — that is the point.
+### Getting the key to the agents
 
-Passphrases are deliberately not accepted. A passphrase needs a slow KDF and a
-shared salt, which is a materially easier thing to get wrong, and the failure
-is silent. `keygen` sidesteps it.
+There is no key exchange, deliberately. A hub that helped distribute keys would
+be a hub that could hold them, which is the whole thing this avoids.
+
+```bash
+switchboard keygen        # run ONCE, by whoever sets the workspace up
+```
+
+It prints a key and an opaque workspace name. Both go to every agent, by
+whatever means you already use for secrets:
+
+| Agent runs on | Put it in |
+|---|---|
+| a developer machine | the shell profile, or a `.env` your tooling already loads |
+| CI | the repository's secret store (`SWITCHBOARD_KEY`, `SWITCHBOARD_WORKSPACE`) |
+| a cloud coding session | the session's environment settings |
+| a container | the orchestrator's secret mechanism, not the image |
+
+Two rules, both the ordinary ones: it never goes in the repository, and it
+never goes to the hub. Nothing else about it is special — it is a shared
+secret like any other, and the tools you already trust with those are the right
+tools for this.
+
+### Confirming an agent got the right key
+
+This is the part worth having, because getting it wrong is otherwise invisible.
+
+An agent holding the wrong key blinds every identifier differently. Its inbox
+is simply empty — indistinguishable from "nothing new" — its messages go
+somewhere nobody reads, and its leases land on different rows so **exclusion
+silently stops working**. Measured, not assumed: two agents on different keys
+both acquired `backend/alembic` and neither was told.
+
+So each agent publishes a short **key fingerprint** in the roster, and clients
+check it:
+
+```
+$ switchboard agents
+AGENT                    KIND    BRANCH        SEEN     TASK
+lQoth7Cc6xKbBx...        local   feat/billing  2s ago   migrating orders
+t2gjDnEknQVqwQ...        cloud   -             1s ago
+
+warning: 1 agent(s) here hold a DIFFERENT workspace key.
+You cannot see their messages and they cannot see yours, and your leases
+do not exclude each other. Check SWITCHBOARD_KEY matches on every agent.
+```
+
+The command exits non-zero, so a hook notices too, and the MCP `roster` tool
+returns the same warning so an agent raises it with the user rather than
+quietly coordinating with nobody.
+
+The roster works because it is keyed by the *plaintext* workspace — it is the
+one view that survives a key change. Entries an agent cannot decrypt are
+marked unreadable and listed anyway rather than failing the call, which was a
+real bug found while building this: raising there both blocked the diagnostic
+and made the roster useless for the agents whose key was correct.
+
+The fingerprint is a truncated HKDF output over a 256-bit secret, so it cannot
+be inverted or brute-forced, and it differs per workspace so it cannot
+correlate one tenant across workspaces. It does tell the hub which agents
+share a key — which the hub can already infer from who talks to whom.
+
+### If an agent loses its key
+
+Nothing breaks and nothing needs recovering. The agent re-reads it from
+wherever the others got it. There is no re-encryption step and no migration,
+because everything in a workspace expires within a day.
+
+If *everyone* loses it, the workspace's remaining data is unreadable and then
+gone within a day. The hub cannot help — it never had the key. Start a new
+workspace with `switchboard keygen`; the cost is the coordination state of the
+last few hours, which is the shortest-lived data in the system. This is the
+one place where "everything expires" turns a catastrophe into an
+inconvenience.
+
+### Rotating the key
+
+**There is no seamless in-place rotation, and adding one would be a mistake.**
+
+Changing the key changes every blinded identifier, which makes it the same
+operation as rotating tokens — with the same measured hazards. Agents that
+have not yet picked up the new key are partitioned from the rest, and their
+leases stop excluding anyone. An earlier version of this document claimed key
+rotation was safe because it "fails loudly". That was wrong: it was tested and
+it fails **silently**, exactly like the token rotation the previous section
+rejects.
+
+What is safe is treating rotation as **moving to a new workspace**:
+
+1. `switchboard keygen` — new key *and* new workspace name, which is why it
+   emits both together.
+2. Distribute both, and restart the agents.
+3. The old workspace drains and expires on its own within a day.
+
+The two workspaces are separate namespaces in the hub, so there is no
+half-migrated state and no double-hold: an agent is wholly in one or wholly in
+the other. During the changeover, agents split across the two do not
+coordinate — and the fingerprint warning above is what tells them so.
+
+Rotate when a key has actually been exposed. There is no benefit to rotating
+on a schedule here: the data a leaked key could decrypt is gone within a day
+anyway, so the exposure window closes by itself.
+
+### What is deliberately not supported
+
+Passphrases. A memorable secret needs a slow KDF *and* a shared salt, and
+getting either wrong fails silently. `switchboard keygen` avoids the whole
+category. Keys must be at least 32 bytes, and a key with almost no distinct
+bytes — the shape a forgotten `hex:0000…` placeholder takes — is refused
+outright.
 
 ## Design notes
 
