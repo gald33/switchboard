@@ -4,25 +4,32 @@ Run it with::
 
     switchboard serve --db ./switchboard.db --token "$SWITCHBOARD_TOKEN"
 
-Auth is a single shared bearer token. That is deliberate: a hub coordinates
-agents that already share a codebase, so per-agent identity is for *telling
-them apart*, not for keeping them apart. Do not expose a hub publicly without
-a token set.
+By default auth is a single shared bearer token and every caller may use every
+workspace. For a hub coordinating agents that already share a codebase that is
+the right shape: per-agent identity is for *telling them apart*, not for
+keeping them apart. Do not expose such a hub publicly without a token set.
+
+For a hub shared between parties that do not trust each other, pass a
+different :class:`~switchboard.auth.PrincipalResolver` to :func:`create_app`.
+Workspaces then become a boundary rather than a namespace, enforced once in
+``require_principal`` for every guarded route. See ``auth.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .auth import Principal, PrincipalResolver, SharedTokenResolver
 from .config import (
     DEFAULT_AGENT_TTL,
     DEFAULT_BOARD_TTL,
@@ -37,6 +44,7 @@ from .config import (
     ServerConfig,
     clamp_ttl,
 )
+from .notify import Notifier
 from .store import (
     Agent,
     BoardEntry,
@@ -182,16 +190,70 @@ def dump_board(e: BoardEntry, now: float) -> dict[str, Any]:
 # --- app --------------------------------------------------------------------
 
 
-def create_app(config: ServerConfig | None = None, store: Store | None = None) -> FastAPI:
+def create_app(
+    config: ServerConfig | None = None,
+    store: Store | None = None,
+    resolver: PrincipalResolver | None = None,
+) -> FastAPI:
     config = config or ServerConfig.from_env()
     store = store or Store(config.db_path)
+    notifier = Notifier()
+    resolver = resolver or SharedTokenResolver(config.token)
 
-    def require_token(authorization: str | None = Header(default=None)) -> None:
-        if not config.token:
-            return
-        expected = f"Bearer {config.token}"
-        if authorization != expected:
+    async def _requested_workspace(request: Request) -> str | None:
+        """The workspace this request is about, from wherever it carries it.
+
+        Reading the body here is safe: Starlette caches it on the Request, so
+        FastAPI's own parsing of the same request still sees it.
+        """
+        if "workspace" in request.query_params:
+            return request.query_params["workspace"]
+        if request.method in ("POST", "PUT", "PATCH"):
+            body = await request.body()
+            if body:
+                try:
+                    payload = json.loads(body)
+                except ValueError:
+                    return None
+                if isinstance(payload, dict) and isinstance(payload.get("workspace"), str):
+                    return payload["workspace"]
+        return None
+
+    async def require_principal(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> Principal:
+        """Authenticate, then authorize the workspace — for every guarded route.
+
+        Doing the workspace check inside the shared dependency rather than in
+        each handler is deliberate. There are ~19 endpoints that take a
+        workspace; a per-handler check is one forgotten line away from a
+        cross-tenant read that nothing would ever surface. Here it cannot be
+        forgotten, and `test_auth.py` walks the whole route table to prove it.
+        """
+        token = None
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization[len("Bearer "):]
+        principal = resolver.resolve(token)
+        if principal is None:
             raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+        if principal.unrestricted:
+            return principal
+
+        workspace = await _requested_workspace(request)
+        if workspace is None:
+            # A scoped key may not ask questions that span every tenant, which
+            # is what an absent workspace means (e.g. GET /stats).
+            raise HTTPException(
+                status_code=403,
+                detail="this key is scoped to specific workspaces; name one explicitly",
+            )
+        if not principal.may_access(workspace):
+            raise HTTPException(
+                status_code=403,
+                detail=f"key {principal.key_id!r} has no access to workspace {workspace!r}",
+            )
+        return principal
 
     async def sweeper() -> None:
         while True:
@@ -218,7 +280,8 @@ def create_app(config: ServerConfig | None = None, store: Store | None = None) -
     )
     app.state.store = store
     app.state.config = config
-    guard = [Depends(require_token)]
+    app.state.notifier = notifier
+    guard = [Depends(require_principal)]
 
     @app.exception_handler(LeaseConflict)
     async def _lease_conflict(_, exc: LeaseConflict) -> JSONResponse:
@@ -252,7 +315,12 @@ def create_app(config: ServerConfig | None = None, store: Store | None = None) -
 
     @app.get("/stats", dependencies=guard)
     def stats(workspace: str | None = None) -> dict[str, Any]:
-        return store.stats(workspace=workspace)
+        payload = store.stats(workspace=workspace)
+        # Held long-poll connections, not row counts, are what a hub actually
+        # runs out of — see docs/managed-hub.md. Reporting it is what lets an
+        # operator autoscale on the real constraint instead of a proxy for it.
+        payload["waiting_readers"] = notifier.waiting
+        return payload
 
     # --- presence ----------------------------------------------------------
 
@@ -365,9 +433,12 @@ def create_app(config: ServerConfig | None = None, store: Store | None = None) -
 
     # --- messages ----------------------------------------------------------
 
+    # async, not sync: the write goes to a worker thread, but waking the
+    # waiters touches asyncio futures and must happen on the loop thread.
     @app.post("/messages", dependencies=guard)
-    def post_message(payload: PostIn) -> dict[str, Any]:
-        msg = store.post(
+    async def post_message(payload: PostIn) -> dict[str, Any]:
+        msg = await run_in_threadpool(
+            store.post,
             workspace=payload.workspace,
             channel=payload.channel,
             sender=payload.agent_id,
@@ -376,6 +447,7 @@ def create_app(config: ServerConfig | None = None, store: Store | None = None) -
             thread=payload.thread,
             ttl=clamp_ttl(payload.ttl, DEFAULT_MESSAGE_TTL, MAX_MESSAGE_TTL),
         )
+        notifier.notify(payload.workspace, payload.channel)
         return {"message": dump_message(msg)}
 
     def _resolve_channels(workspace: str, agent_id: str | None,
@@ -425,14 +497,40 @@ def create_app(config: ServerConfig | None = None, store: Store | None = None) -
                 commit_cursor=not peek,
             )
 
-        messages = await run_in_threadpool(drain)
-        if not messages and wait > 0:
-            deadline = time.monotonic() + min(wait, MAX_WAIT_SECONDS)
-            while time.monotonic() < deadline:
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        if wait <= 0:
+            messages = await run_in_threadpool(drain)
+        else:
+            # Register interest BEFORE the first read. A write landing between
+            # the read and the sleep resolves this future, so the sleep returns
+            # at once and we re-drain — rather than sleeping through a message
+            # that arrived microseconds too early.
+            waiter = notifier.register(workspace, channels)
+            try:
                 messages = await run_in_threadpool(drain)
-                if messages:
-                    break
+                deadline = time.monotonic() + min(wait, MAX_WAIT_SECONDS)
+                while not messages:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        # Woken by a writer, or by the slow floor. The floor is
+                        # what makes this correct across multiple workers,
+                        # where an in-process notifier sees nothing.
+                        await asyncio.wait_for(
+                            asyncio.shield(waiter),
+                            timeout=min(remaining, POLL_INTERVAL_SECONDS),
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    messages = await run_in_threadpool(drain)
+                    if not messages and waiter.done():
+                        # Consumed this wakeup without finding anything of
+                        # ours (another channel, or our own message filtered
+                        # out). Re-arm so the next write can still wake us.
+                        notifier.unregister(workspace, channels, waiter)
+                        waiter = notifier.register(workspace, channels)
+            finally:
+                notifier.unregister(workspace, channels, waiter)
         return {
             "messages": [dump_message(m) for m in messages],
             "count": len(messages),

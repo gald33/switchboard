@@ -168,6 +168,33 @@ with Client(agent_id=me.agent_id) as hub:
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [HTTP API](docs/api.md) — every endpoint
+- [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
+
+## Sharing a hub between teams that don't trust each other
+
+By default a hub has one token and every caller may use every workspace —
+workspaces are a *namespace*, for keeping one team's coordination out of
+another's way. That is the right shape for a hub your own agents share, and it
+is what you get if you change nothing.
+
+If a hub is shared by parties that shouldn't see each other's traffic,
+workspaces become a *boundary* instead. Give `create_app` a resolver that maps
+each key to the workspaces it may touch:
+
+```python
+from switchboard import Principal, StaticKeyResolver
+from switchboard.server import create_app   # server extra; not at the package root
+
+app = create_app(resolver=StaticKeyResolver({
+    "key-acme":   Principal(key_id="acme",   workspaces=frozenset({"acme/app"})),
+    "key-globex": Principal(key_id="globex", workspaces=frozenset({"globex/api"})),
+    "key-ops":    Principal(key_id="ops",    workspaces=None),   # unrestricted
+}))
+```
+
+Every workspace-bearing endpoint then returns 403 outside a key's scope,
+enforced in one shared dependency rather than per-handler — see
+[docs/managed-hub.md](docs/managed-hub.md). Clients need no changes.
 
 ## What this is not
 
@@ -176,8 +203,10 @@ with Client(agent_id=me.agent_id) as hub:
   in your issue tracker.
 - **Not an audit log.** It forgets on purpose. Decisions that should outlive the
   work still belong in a commit message, a PR, or a doc.
-- **Not a permission system.** One shared token per hub. Agents that share a hub
-  are assumed to trust each other, because they already share a codebase.
+- **Not an identity system.** Keys scope *which workspaces* a caller may touch;
+  within a workspace, agents are assumed to trust each other, because they
+  already share a codebase. Agent ids tell agents apart, they don't keep them
+  apart.
 - **Not a scheduler.** It will tell you a resource is taken. It will not decide
   who should have taken it.
 

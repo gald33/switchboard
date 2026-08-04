@@ -14,6 +14,13 @@ forever whether or not it was ever meant to be.
 
 from __future__ import annotations
 
+from .auth import (
+    DEFAULT_TIER,
+    Principal,
+    PrincipalResolver,
+    SharedTokenResolver,
+    StaticKeyResolver,
+)
 from .client import (
     AsyncClient,
     Client,
@@ -23,6 +30,7 @@ from .client import (
     detect_identity,
 )
 from .config import ClientConfig, ServerConfig
+from .notify import Notifier
 from .store import (
     Agent,
     BoardEntry,
@@ -48,6 +56,13 @@ __all__ = [
     # config
     "ClientConfig",
     "ServerConfig",
+    # auth — workspaces as a boundary, for shared hubs
+    "Principal",
+    "PrincipalResolver",
+    "SharedTokenResolver",
+    "StaticKeyResolver",
+    "DEFAULT_TIER",
+    "Notifier",
     # store
     "Store",
     "StoreError",
