@@ -12,8 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import secrets
+import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
@@ -495,6 +499,216 @@ def cmd_health(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- init ---------------------------------------------------------------
+#
+# Everything below wires up a repo so agents pick up a hub with zero manual
+# copy-pasting from docs: an .mcp.json entry, lifecycle hooks, and the
+# CLAUDE.md section that tells an agent when to use them. Every writer here
+# merges into whatever is already on disk and is safe to run more than once.
+
+_LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
+
+_SESSION_START_CMD = "switchboard register --quiet -c build || true"
+_STOP_CMD = (
+    'switchboard claims --holder "$(switchboard whoami --json | '
+    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" --json | "
+    "python -c 'import sys,json,subprocess;"
+    "[subprocess.run([\"switchboard\",\"release\",l[\"resource\"],\"--quiet\"]) "
+    "for l in json.load(sys.stdin)]' "
+    "|| true"
+)
+
+_CLAUDE_MD_MARKER = "## Coordinating with other agents"
+_CLAUDE_MD_SECTION = f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive and hands you anything other agents have said. If you stop calling it,
+  your claims expire and free themselves — which is correct if you have
+  crashed and wrong if you are still working.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message. Messages are for signals; the blackboard is
+  for payloads.
+
+Switchboard is ephemeral by design. Anything that should outlive the work
+still belongs in a commit message, a PR body, or a doc — not in a channel.
+"""
+
+
+def _git_remote_workspace(directory: Path) -> str | None:
+    """Guess `org/repo` from the git remote, or None if there isn't one."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    match = re.search(r"[:/]([^/:]+/[^/:]+?)(\.git)?$", url)
+    return match.group(1) if match else None
+
+
+def _default_workspace(directory: Path) -> str:
+    return _git_remote_workspace(directory) or directory.resolve().name
+
+
+def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
+    """Resolve a dev token for a local hub, generating and persisting one if needed."""
+    if token:
+        return token, "using the provided token"
+    env_token = os.environ.get("SWITCHBOARD_TOKEN")
+    if env_token:
+        return env_token, "using SWITCHBOARD_TOKEN from your environment"
+    env_path = directory / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith("SWITCHBOARD_TOKEN="):
+                return line.split("=", 1)[1].strip(), "reused the token already in .env"
+    generated = secrets.token_urlsafe(32)
+    with env_path.open("a") as f:
+        f.write(f"SWITCHBOARD_TOKEN={generated}\n")
+    return generated, "generated a dev token, saved to .env (already gitignored)"
+
+
+def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
+    path = directory / ".mcp.json"
+    entry = {
+        "command": "switchboard-mcp",
+        "env": {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace},
+    }
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except ValueError as exc:
+            return f"left .mcp.json alone: existing file is not valid JSON ({exc})"
+        servers = data.setdefault("mcpServers", {})
+        if "switchboard" in servers:
+            return 'left .mcp.json alone: a "switchboard" server is already registered'
+        servers["switchboard"] = entry
+    else:
+        data = {"mcpServers": {"switchboard": entry}}
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return "wrote .mcp.json"
+
+
+def _add_hook(data: dict[str, Any], event: str, command: str) -> bool:
+    entries = data.setdefault("hooks", {}).setdefault(event, [])
+    for group in entries:
+        for h in group.get("hooks", []):
+            if "switchboard" in h.get("command", ""):
+                return False
+    entries.append({"hooks": [{"type": "command", "command": command}]})
+    return True
+
+
+def _init_claude_settings(directory: Path) -> str:
+    path = directory / ".claude" / "settings.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except ValueError as exc:
+            return f"left .claude/settings.json alone: existing file is not valid JSON ({exc})"
+    else:
+        data = {}
+    added_start = _add_hook(data, "SessionStart", _SESSION_START_CMD)
+    added_stop = _add_hook(data, "Stop", _STOP_CMD)
+    if not added_start and not added_stop:
+        return "left .claude/settings.json alone: switchboard hooks are already there"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return "wrote .claude/settings.json (SessionStart + Stop hooks)"
+
+
+def _init_claude_md(directory: Path) -> str:
+    path = directory / "CLAUDE.md"
+    if path.exists():
+        text = path.read_text()
+        if _CLAUDE_MD_MARKER in text:
+            return "left CLAUDE.md alone: coordination section is already there"
+        sep = "\n" if text.endswith("\n\n") else ("\n\n" if text.endswith("\n") else "\n\n\n")
+        path.write_text(text + sep + _CLAUDE_MD_SECTION)
+        return "appended a coordination section to CLAUDE.md"
+    path.write_text("# CLAUDE.md\n\n" + _CLAUDE_MD_SECTION)
+    return "wrote CLAUDE.md"
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Wire up a repo end to end: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token."""
+    directory = Path(args.dir or ".").resolve()
+    workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
+        directory
+    )
+    url = (args.url or os.environ.get("SWITCHBOARD_URL") or "http://127.0.0.1:8787").rstrip("/")
+    local_hub = url in _LOCAL_HUB_URLS
+
+    steps: list[str] = []
+    token: str | None = None
+    if local_hub:
+        token, msg = _init_token(directory, args.token)
+        steps.append(msg)
+    if not args.skip_mcp:
+        steps.append(_init_mcp_json(directory, url, workspace))
+    if not args.skip_hooks:
+        steps.append(_init_claude_settings(directory))
+    if not args.skip_claude_md:
+        steps.append(_init_claude_md(directory))
+
+    local_hub_note = (
+        "this hub is only reachable from this machine — a cloud session or CI runner "
+        "pointed at it would start its own separate, empty hub and never see agents "
+        "here. To coordinate across machines, deploy one shared hub (see "
+        "docs/deployment.md) and re-run `switchboard init --url https://your-hub` so "
+        "that URL is what gets committed."
+    )
+
+    if args.json:
+        payload: dict[str, Any] = {"workspace": workspace, "url": url, "steps": steps}
+        if local_hub:
+            payload["note"] = local_hub_note
+        _print_json(payload)
+        return EXIT_OK
+
+    fmt = Fmt(_use_color(sys.stdout))
+    if not args.quiet:
+        print(fmt.bold(f"switchboard init — workspace {fmt.cyan(workspace)}, hub {url}"))
+        for step in steps:
+            marker = fmt.dim("·") if step.startswith("left ") else fmt.green("+")
+            print(f"  {marker} {step}")
+        if local_hub:
+            print()
+            print(fmt.yellow("Note: ") + local_hub_note)
+        print()
+        print(fmt.bold("Next"))
+        n = 1
+        if local_hub:
+            print(f"  {n}. start the hub — either:")
+            print("       docker compose up -d          # reads the token from .env")
+            print("     or:")
+            print(f"       export SWITCHBOARD_TOKEN={token}")
+            print("       switchboard serve")
+            n += 1
+        print(f"  {n}. export SWITCHBOARD_TOKEN={token or '<token>'} in every agent's shell")
+        n += 1
+        print(f"  {n}. restart Claude Code and check `/mcp` — switchboard should show connected")
+    return EXIT_OK
+
+
 # --- parser -----------------------------------------------------------------
 
 
@@ -524,6 +738,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help="SQLite path (env: SWITCHBOARD_DB)")
     p.add_argument("--log-level", default="info")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser(
+        "init", help="wire up this repo: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token"
+    )
+    p.add_argument("--dir", help="target repo directory (default: current directory)")
+    p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
+    p.add_argument(
+        "--skip-hooks", action="store_true", help="do not write .claude/settings.json hooks"
+    )
+    p.add_argument("--skip-claude-md", action="store_true", help="do not touch CLAUDE.md")
+    p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
     p.set_defaults(func=cmd_whoami)
