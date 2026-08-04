@@ -52,3 +52,32 @@ def test_valid_keys_file_starts_the_server_with_a_static_resolver(tmp_path, caps
     assert code == 0
     assert "app" in captured
     assert "loaded 1 scoped key(s)" in capsys.readouterr().err
+
+
+# --- --self-issued-keys: the three server auth modes are mutually exclusive -
+
+
+def test_token_and_self_issued_keys_together_is_rejected(capsys):
+    code = main(["--token", "tok", "serve", "--self-issued-keys"])
+    assert code != 0
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_keys_file_and_self_issued_keys_together_is_rejected(tmp_path, capsys):
+    code = main(["serve", "--keys-file", "/nonexistent.json", "--self-issued-keys"])
+    assert code != 0
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_self_issued_keys_starts_the_server_with_that_resolver(tmp_path, capsys, monkeypatch):
+    captured = {}
+
+    def fake_run(app, **kwargs):
+        captured["app"] = app
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    code = main(["serve", "--self-issued-keys", "--db", str(tmp_path / "s.db")])
+    assert code == 0
+    assert "app" in captured
+    assert "self-issued keys enabled" in capsys.readouterr().err
+    assert isinstance(captured["app"].state.config, object)  # sanity: app actually built

@@ -6,7 +6,14 @@ import threading
 
 import pytest
 
-from switchboard.store import LeaseConflict, NotLeaseHolder, Store, StoreError
+from switchboard.store import (
+    KeyAlreadyBound,
+    LeaseConflict,
+    NotLeaseHolder,
+    Store,
+    StoreError,
+    WorkspaceAlreadyClaimed,
+)
 
 WS = "test-ws"
 
@@ -304,3 +311,67 @@ def test_sweep_is_not_required_for_correct_reads(store):
     """Expiry is enforced at read time; the sweeper only reclaims disk."""
     store.acquire_lease(workspace=WS, resource="r", holder="a1", ttl=10, now=1000.0)
     assert store.get_lease(workspace=WS, resource="r", now=1020.0) is None
+
+
+# --- key bindings -------------------------------------------------------
+
+
+def test_bind_key_first_claim_wins(store):
+    workspace = store.bind_key(token_hash="hash-a", workspace="acme/app")
+    assert workspace == "acme/app"
+    assert store.lookup_key_binding("hash-a") == "acme/app"
+
+
+def test_bind_key_same_token_same_workspace_is_idempotent(store):
+    store.bind_key(token_hash="hash-a", workspace="acme/app")
+    # A teammate re-registering the key they were handed must succeed again.
+    workspace = store.bind_key(token_hash="hash-a", workspace="acme/app")
+    assert workspace == "acme/app"
+
+
+def test_bind_key_same_token_different_workspace_is_rejected(store):
+    store.bind_key(token_hash="hash-a", workspace="acme/app")
+    with pytest.raises(KeyAlreadyBound) as exc_info:
+        store.bind_key(token_hash="hash-a", workspace="acme/other")
+    assert exc_info.value.workspace == "acme/app"
+
+
+def test_bind_key_different_token_same_workspace_is_rejected(store):
+    store.bind_key(token_hash="hash-a", workspace="acme/app")
+    with pytest.raises(WorkspaceAlreadyClaimed) as exc_info:
+        store.bind_key(token_hash="hash-b", workspace="acme/app")
+    assert exc_info.value.workspace == "acme/app"
+
+
+def test_unbound_token_looks_up_to_none(store):
+    assert store.lookup_key_binding("never-bound") is None
+
+
+def test_key_bindings_survive_sweep(store):
+    """Unlike everything else in the store, a binding is a credential, not
+    coordination state — it must not expire just because sweep() ran."""
+    store.bind_key(token_hash="hash-a", workspace="acme/app", now=1000.0)
+    store.sweep(now=10_000_000.0)
+    assert store.lookup_key_binding("hash-a") == "acme/app"
+
+
+def test_concurrent_bind_to_same_workspace_yields_exactly_one_winner(store):
+    """The property the whole first-claim-wins design rests on."""
+    winners: list[str] = []
+    barrier = threading.Barrier(12)
+
+    def attempt(n: int) -> None:
+        barrier.wait()
+        try:
+            store.bind_key(token_hash=f"hash-{n}", workspace="contested")
+            winners.append(f"hash-{n}")
+        except WorkspaceAlreadyClaimed:
+            pass
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(winners) == 1
+    assert store.lookup_key_binding(winners[0]) == "contested"

@@ -16,8 +16,10 @@ from fastapi.testclient import TestClient
 
 from switchboard.auth import (
     Principal,
+    SelfIssuedKeyResolver,
     SharedTokenResolver,
     StaticKeyResolver,
+    hash_token,
     load_static_keys,
 )
 from switchboard.config import ServerConfig
@@ -92,6 +94,26 @@ def test_static_resolver_rejects_unknown_and_absent_keys():
     assert r.resolve("k") is not None
     assert r.resolve("other") is None
     assert r.resolve(None) is None
+
+
+def test_self_issued_resolver_looks_up_a_bound_token(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    store.bind_key(token_hash=hash_token("tok-a"), workspace=MINE)
+    r = SelfIssuedKeyResolver(store)
+
+    principal = r.resolve("tok-a")
+    assert principal is not None
+    assert principal.workspaces == frozenset({MINE})
+    assert not principal.unrestricted  # the whole point — see managed-hub.md
+    store.close()
+
+
+def test_self_issued_resolver_rejects_unbound_and_absent_tokens(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    r = SelfIssuedKeyResolver(store)
+    assert r.resolve("never-registered") is None
+    assert r.resolve(None) is None
+    store.close()
 
 
 # --- backwards compatibility ------------------------------------------------
@@ -281,3 +303,114 @@ def test_load_static_keys_rejects_non_object_entry(tmp_path):
     path.write_text(json.dumps({"tok": "not-a-dict"}))
     with pytest.raises(ValueError, match="must be an object"):
         load_static_keys(str(path))
+
+
+# --- self-issued keys: the /keys/register endpoint --------------------------
+
+
+@pytest.fixture
+def self_issued(tmp_path):
+    """A hub running --self-issued-keys: no operator-curated file at all."""
+    store = Store(str(tmp_path / "si.db"))
+    resolver = SelfIssuedKeyResolver(store)
+    app = create_app(ServerConfig(db_path=str(tmp_path / "si.db")), store=store,
+                     resolver=resolver)
+    with TestClient(app) as c:
+        yield c
+    store.close()
+
+
+def test_register_key_binds_a_fresh_token(self_issued):
+    r = self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("tok-new-00000000"))
+    assert r.status_code == 200
+    assert r.json()["workspace"] == MINE
+
+
+def test_registered_key_can_then_be_used_normally(self_issued):
+    self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("tok-new-00000000"))
+    r = self_issued.post("/agents/register", json={
+        "workspace": MINE, "agent_id": "a1", "name": "a1"}, headers=h("tok-new-00000000"))
+    assert r.status_code == 200
+
+
+def test_registered_key_is_denied_a_different_workspace(self_issued):
+    self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("tok-new-00000000"))
+    denied = self_issued.get("/agents", params={"workspace": THEIRS}, headers=h("tok-new-00000000"))
+    assert denied.status_code == 403
+
+
+def test_registered_key_cannot_ask_hub_wide_questions(self_issued):
+    """Same rule as a StaticKeyResolver key — see managed-hub.md on why a
+    self-issued key that stayed unrestricted would be worthless."""
+    self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("tok-new-00000000"))
+    denied = self_issued.get("/stats", headers=h("tok-new-00000000"))
+    assert denied.status_code == 403
+
+
+def test_re_registering_the_same_key_same_workspace_is_a_no_op(self_issued):
+    tok = h("tok-a-0000000000")
+    first = self_issued.post("/keys/register", json={"workspace": MINE}, headers=tok)
+    second = self_issued.post("/keys/register", json={"workspace": MINE}, headers=tok)
+    assert first.status_code == second.status_code == 200
+
+
+def test_registering_a_taken_workspace_with_a_different_key_conflicts(self_issued):
+    self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("tok-a-0000000000"))
+    squat = self_issued.post(
+        "/keys/register", json={"workspace": MINE}, headers=h("tok-b-0000000000")
+    )
+    assert squat.status_code == 409
+
+
+def test_rebinding_a_registered_key_to_a_new_workspace_conflicts(self_issued):
+    tok = h("tok-a-0000000000")
+    self_issued.post("/keys/register", json={"workspace": MINE}, headers=tok)
+    rebind = self_issued.post("/keys/register", json={"workspace": THEIRS}, headers=tok)
+    assert rebind.status_code == 409
+
+
+def test_register_key_requires_a_bearer_token(self_issued):
+    r = self_issued.post("/keys/register", json={"workspace": MINE})
+    assert r.status_code == 401
+
+
+def test_register_key_rejects_a_trivially_short_token(self_issued):
+    r = self_issued.post("/keys/register", json={"workspace": MINE}, headers=h("short"))
+    assert r.status_code == 400
+
+
+def test_register_key_route_does_not_exist_on_a_shared_token_hub(shared):
+    """Not mounted at all for a hub not running this mode — see server.py's
+    conditional route registration."""
+    r = shared.post("/keys/register", json={"workspace": MINE}, headers=h("tok"))
+    assert r.status_code == 404
+
+
+def test_register_key_route_does_not_exist_on_a_static_keys_hub(multi):
+    r = multi.post("/keys/register", json={"workspace": MINE}, headers=h("key-acme"))
+    assert r.status_code == 404
+
+
+# --- /health reports auth status correctly across every resolver ------------
+
+
+def test_health_reports_auth_true_for_shared_token(shared):
+    assert shared.get("/health").json()["auth"] is True
+
+
+def test_health_reports_auth_false_for_an_open_hub(tmp_path):
+    store = Store(str(tmp_path / "open.db"))
+    app = create_app(ServerConfig(db_path=str(tmp_path / "open.db")), store=store)
+    with TestClient(app) as c:
+        assert c.get("/health").json()["auth"] is False
+    store.close()
+
+
+def test_health_reports_auth_true_for_static_keys(multi):
+    # Regression: config.token is unset in this mode, so `bool(config.token)`
+    # alone (the pre-fix behaviour) would have wrongly reported False here.
+    assert multi.get("/health").json()["auth"] is True
+
+
+def test_health_reports_auth_true_for_self_issued_keys(self_issued):
+    assert self_issued.get("/health").json()["auth"] is True
