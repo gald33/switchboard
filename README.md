@@ -65,6 +65,9 @@ pip install agent-switchboard
 # Hub side: also the server
 pip install "agent-switchboard[server]"
 
+# With end-to-end encryption
+pip install "agent-switchboard[crypto]"
+
 # With the MCP bridge for Claude Code / any MCP client
 pip install "agent-switchboard[all]"
 ```
@@ -173,6 +176,71 @@ with Client(agent_id=me.agent_id) as hub:
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [HTTP API](docs/api.md) — every endpoint
+- [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
+- [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
+
+## Encrypt it, and the hub can't read it either
+
+A hub only ever needs to *route* and *compare*, never to read. So it doesn't
+have to:
+
+```bash
+switchboard keygen   # prints a key, plus an opaque workspace name to pair with it
+```
+
+Set both on every agent in the workspace. The key never reaches the hub. The
+workspace name *does* — it is the routing key and cannot be encrypted — which
+is why `keygen` hands you an opaque one rather than letting `acme/billing`
+become the most descriptive string the hub holds.
+
+Message bodies, blackboard values, lease notes, branch names and task
+descriptions are sealed with AES-256-GCM before they leave the agent. Channel
+names, lease resources and agent ids become opaque tokens the hub can still
+compare for equality — which is all it needs to deliver a message or exclude a
+second lease holder.
+
+Costs 1.1µs to encrypt and 0.7µs to decrypt a message, against a ~1000µs
+network round trip. Everything else — `claim`, `inbox`, `checkin`, the MCP
+tools — behaves exactly as before.
+
+What the hub stores once you do this:
+
+```
+channel = mYkpn3DkU7rhr_Qjk_objQ
+body    = {"$swb":1,"n":"ARyT0f4DEQnXsJ2C","c":"4yTX0Vd1QuD_5Y38U7gkkZ5A…"}
+```
+
+The hub needs **no changes and no configuration** to support this — it cannot
+tell an encrypted workspace from a plaintext one, so it cannot be
+misconfigured into weakening one. Plaintext is padded to size buckets before sealing, so message *length* does
+not leak either. What remains is timing, volume, and which opaque tokens are
+equal — [what that reveals, and what hiding more would cost](docs/encryption.md).
+
+## Sharing a hub between teams that don't trust each other
+
+By default a hub has one token and every caller may use every workspace —
+workspaces are a *namespace*, for keeping one team's coordination out of
+another's way. That is the right shape for a hub your own agents share, and it
+is what you get if you change nothing.
+
+If a hub is shared by parties that shouldn't see each other's traffic,
+workspaces become a *boundary* instead. Give `create_app` a resolver that maps
+each key to the workspaces it may touch:
+
+```python
+from switchboard import Principal, StaticKeyResolver
+from switchboard.server import create_app   # server extra; not at the package root
+
+app = create_app(resolver=StaticKeyResolver({
+    "key-acme":   Principal(key_id="acme",   workspaces=frozenset({"acme/app"})),
+    "key-globex": Principal(key_id="globex", workspaces=frozenset({"globex/api"})),
+    "key-ops":    Principal(key_id="ops",    workspaces=None),   # unrestricted
+}))
+```
+
+Every workspace-bearing endpoint then returns 403 outside a key's scope,
+enforced in one shared dependency rather than per-handler — see
+[docs/managed-hub.md](docs/managed-hub.md). Clients need no changes.
 
 ## What this is not
 
@@ -181,8 +249,13 @@ with Client(agent_id=me.agent_id) as hub:
   in your issue tracker.
 - **Not an audit log.** It forgets on purpose. Decisions that should outlive the
   work still belong in a commit message, a PR, or a doc.
-- **Not a permission system.** One shared token per hub. Agents that share a hub
-  are assumed to trust each other, because they already share a codebase.
+- **Not confidential from your own agents.** One key per workspace: everyone in
+  it reads everything in it. The encryption keeps out the hub and other
+  tenants, not your own colleagues.
+- **Not an identity system.** Keys scope *which workspaces* a caller may touch;
+  within a workspace, agents are assumed to trust each other, because they
+  already share a codebase. Agent ids tell agents apart, they don't keep them
+  apart.
 - **Not a scheduler.** It will tell you a resource is taken. It will not decide
   who should have taken it.
 

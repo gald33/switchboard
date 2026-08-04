@@ -7,6 +7,8 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_URL          hub base URL (client)
     SWITCHBOARD_WORKSPACE    default workspace (client)
     SWITCHBOARD_AGENT_ID     stable identity for this agent (client)
+    SWITCHBOARD_KEY          workspace key for end-to-end encryption (client only —
+                             a hub must never be given one, and has no use for it)
 """
 
 from __future__ import annotations
@@ -32,7 +34,15 @@ MAX_BOARD_TTL = 7 * 86400
 # Long-poll ceiling for `GET /inbox?wait=`. Kept under the 30s that most
 # proxies use as an idle-read timeout.
 MAX_WAIT_SECONDS = 25.0
-POLL_INTERVAL_SECONDS = 0.25
+
+# A waiting reader is woken directly by any write to a channel it cares about
+# (see notify.py), so it does not poll in order to find messages. It still
+# re-checks on this slow floor, because the notifier is in-process and cannot
+# see writes made by another worker or another hub instance sharing the same
+# database. Delivery correctness rests on this interval; the notifier only
+# makes the common case fast. Lower it if you run multiple workers and care
+# more about worst-case latency than about idle query load.
+POLL_INTERVAL_SECONDS = 5.0
 
 # How often the background sweeper hard-deletes expired rows. Reads already
 # filter on expiry, so this is about reclaiming space, not correctness.
@@ -74,6 +84,10 @@ class ClientConfig:
     token: str | None = None
     workspace: str = "default"
     agent_id: str | None = None
+    #: Workspace key for end-to-end encryption. When set, payloads are sealed
+    #: and identifiers blinded before anything leaves this process. It is never
+    #: transmitted; the hub cannot read the workspace with or without it.
+    key: str | None = None
 
     @classmethod
     def from_env(cls) -> ClientConfig:
@@ -82,6 +96,7 @@ class ClientConfig:
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
             workspace=os.environ.get("SWITCHBOARD_WORKSPACE", "default"),
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
+            key=os.environ.get("SWITCHBOARD_KEY") or None,
         )
 
 

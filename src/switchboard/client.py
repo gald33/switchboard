@@ -7,6 +7,7 @@ one, the MCP bridge uses the async one.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import socket
@@ -18,6 +19,7 @@ from typing import Any, Sequence
 import httpx
 
 from .config import ClientConfig
+from .crypto import DecryptionError, WorkspaceCipher, is_sealed
 
 __all__ = [
     "SwitchboardError",
@@ -143,22 +145,248 @@ def _headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+#: Which body fields, at which paths, are payloads to seal — and under what
+#: context label. The context is bound into the ciphertext, so a hub cannot
+#: move a sealed value from one field to another and have it still open.
+_SEAL_BODY: dict[str, dict[str, str]] = {
+    "/agents/register": {"name": "agent.name", "branch": "agent.branch",
+                         "task": "agent.task"},
+    "/agents/heartbeat": {"task": "agent.task"},
+    "/leases/acquire": {"note": "lease.note"},
+    "/leases/renew": {"note": "lease.note"},
+    "/messages": {"body": "message.body"},
+    "/board": {"value": "board.value"},
+}
+
+#: Which body fields are identifiers the hub must *compare* but need not read,
+#: and which blinding domain each belongs to.
+_BLIND_BODY: dict[str, dict[str, str]] = {
+    "/agents/register": {"channels": "channel"},
+    "/leases/acquire": {"resource": "resource"},
+    "/leases/renew": {"resource": "resource"},
+    "/leases/release": {"resource": "resource"},
+    "/messages": {"channel": "channel"},
+    "/board": {"key": "board"},
+}
+
+#: Response keys that carry sealed fields, and the context each was sealed under.
+_OPEN_RESPONSE: dict[str, dict[str, str]] = {
+    "agents": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task"},
+    "agent": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task"},
+    "leases": {"note": "lease.note"},
+    "lease": {"note": "lease.note"},
+    "messages": {"body": "message.body"},
+    "message": {"body": "message.body"},
+    "entries": {"value": "board.value"},
+    "entry": {"value": "board.value"},
+}
+
+#: Fields that are arbitrary JSON rather than strings, so they travel as an
+#: envelope dict instead of a serialized string.
+_JSON_VALUED = {"message.body", "board.value"}
+
+#: Response keys where a value we cannot open is EXPECTED rather than alarming,
+#: and must not fail the whole call.
+#:
+#: The roster is the one place agents holding different keys legitimately meet
+#: — that is what makes it the right place to detect a key mismatch. Raising
+#: there defeats the purpose twice over: it blocks the diagnostic, and it makes
+#: the roster unusable for the peers whose key *is* correct.
+#:
+#: Everywhere else stays strict. A message body we cannot open never reaches us
+#: in the first place (a mismatched sender blinds to a different channel), so
+#: an unopenable one is genuinely suspicious and should still raise.
+_TOLERATE_UNREADABLE = {"agents", "agent"}
+
+
+def _looks_sealed(value: Any) -> bool:
+    """Is this value an envelope, in either form it travels in?
+
+    Payload fields carry an envelope dict; text fields (an agent's name, a
+    lease note) carry the envelope *serialized to a string*, because the wire
+    schema types them as strings. A check that only knew about the dict form
+    silently returned False for every text field — which is exactly the form
+    an unencrypted client meets when it looks at an encrypted peer.
+    """
+    if is_sealed(value):
+        return True
+    if isinstance(value, str) and value.startswith("{"):
+        try:
+            return is_sealed(json.loads(value))
+        except ValueError:
+            return False
+    return False
+
+
+def _is_labelled(opened: Any) -> bool:
+    """Is this an opened message body carrying its own channel label?
+
+    Checked structurally rather than assumed, so a body that happens to be a
+    dict from an older client still round-trips instead of being mangled.
+    """
+    return isinstance(opened, dict) and set(opened) == {"b", "ch"} \
+        and isinstance(opened["ch"], str)
+
+
 class _Base:
-    def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None) -> None:
+    def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
+                 key: str | None = None) -> None:
         self.config = config or ClientConfig.from_env()
-        self.agent_id = agent_id or self.config.agent_id or f"agent-{uuid.uuid4().hex[:12]}"
         self.workspace = self.config.workspace
+        local = agent_id or self.config.agent_id or f"agent-{uuid.uuid4().hex[:12]}"
+
+        key = key if key is not None else self.config.key
+        self.cipher = WorkspaceCipher.from_key(key, self.workspace) if key else None
+        #: What this agent calls itself. Never leaves the process when encrypting.
+        self.local_agent_id = local
+        #: What the hub knows this agent as. Blinding here rather than at each
+        #: call site means every existing `agent_id` reference — DM channels,
+        #: lease holders, read cursors — is blinded automatically and
+        #: consistently, and a roster entry can be handed straight back to
+        #: `dm()` because it is already in hub form.
+        self.agent_id = self.cipher.blind(local, "agent") if self.cipher else local
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
+
+    # --- the encryption boundary -------------------------------------------
+    #
+    # Done once here, at the transport edge, rather than in each of the ~28
+    # client methods. Two copies of that logic — one sync, one async — would be
+    # two chances to forget a field, and a forgotten field is plaintext on the
+    # wire that nothing would ever flag.
+
+    def key_mismatches(self, agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Roster entries whose key differs from ours.
+
+        Detection is simply *can we open this peer's name*, which every agent
+        publishes on registration. Nothing extra is transmitted to make this
+        work, and that is the point — an earlier version published a key
+        fingerprint in the roster, which turned out to be strictly worse:
+
+        * It caught a subset. An agent running with NO key publishes no
+          fingerprint at all, so a plaintext agent in an encrypted workspace
+          went unflagged — while its unopenable-to-us name catches it.
+        * It was a self-asserted claim rather than a demonstration. Opening a
+          peer's ciphertext proves shared key possession; a fingerprint field
+          can simply be copied by a peer that does not hold the key.
+        * It told the hub which agents share a key, and when a key changed,
+          neither of which the hub had any way to know before.
+
+        A mismatch is a partition: their messages never reach our inbox, ours
+        never reach theirs, and neither side's leases exclude the other. None
+        of that raises, so somebody has to look.
+        """
+        out = []
+        for a in agents:
+            if a.get("agent_id") == self.agent_id:
+                continue
+            if self.cipher:
+                # We encrypt; a peer whose fields we cannot open does not
+                # share our key — or holds none at all.
+                if a.get("unreadable"):
+                    out.append(a)
+            elif _looks_sealed(a.get("name")) or _looks_sealed(a.get("branch")):
+                # We do NOT encrypt but this peer does. Same partition, seen
+                # from the other side — and the side more likely to be the
+                # one that is misconfigured.
+                out.append(a)
+        return out
+
+    def _blind_channel(self, channel: str) -> str:
+        return self.cipher.blind_channel(channel) if self.cipher else channel
+
+    def _blind(self, value: str, domain: str) -> str:
+        return self.cipher.blind(value, domain) if self.cipher else value
+
+    def _seal_request(self, path: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if self.cipher is None:
+            return kwargs
+        body = kwargs.get("json")
+        if isinstance(body, dict):
+            body = dict(body)
+            # Blinding is one-way, so a reader cannot recover "deploys" from
+            # the token the hub stores. Carry the label inside the ciphertext
+            # instead: the hub still sees only the blinded token for routing,
+            # and the recipient still gets a readable channel name. Without
+            # this, every message an agent reads is labelled with 22 opaque
+            # characters, which defeats the point of a coordination tool.
+            if path == "/messages" and isinstance(body.get("channel"), str):
+                body["body"] = {"b": body.get("body"), "ch": body["channel"]}
+            for field, context in _SEAL_BODY.get(path, {}).items():
+                if body.get(field) is not None:
+                    body[field] = (
+                        self.cipher.seal(body[field], context)
+                        if context in _JSON_VALUED
+                        else self.cipher.seal_text(body[field], context)
+                    )
+            for field, domain in _BLIND_BODY.get(path, {}).items():
+                value = body.get(field)
+                if isinstance(value, str):
+                    body[field] = (self._blind_channel(value) if domain == "channel"
+                                   else self._blind(value, domain))
+                elif isinstance(value, list):
+                    body[field] = [
+                        self._blind_channel(v) if domain == "channel"
+                        else self._blind(v, domain) for v in value
+                    ]
+            kwargs["json"] = body
+
+        params = kwargs.get("params")
+        if isinstance(params, dict) and params.get("channel"):
+            params = dict(params)
+            channels = params["channel"]
+            params["channel"] = (
+                [self._blind_channel(c) for c in channels]
+                if isinstance(channels, list) else self._blind_channel(channels)
+            )
+            kwargs["params"] = params
+        return kwargs
+
+    def _open_response(self, payload: Any) -> Any:
+        if self.cipher is None or not isinstance(payload, dict):
+            return payload
+        for key, fields in _OPEN_RESPONSE.items():
+            if key not in payload or payload[key] is None:
+                continue
+            target = payload[key]
+            items = target if isinstance(target, list) else [target]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                for field, context in fields.items():
+                    if item.get(field) is None:
+                        continue
+                    try:
+                        opened = (
+                            self.cipher.unseal(item[field], context)
+                            if context in _JSON_VALUED
+                            else self.cipher.unseal_text(item[field], context)
+                        )
+                    except DecryptionError:
+                        if key not in _TOLERATE_UNREADABLE:
+                            raise
+                        # A peer on a different key. Mark it and keep going, so
+                        # the roster still lists everyone and the mismatch can
+                        # be reported precisely instead of as a raw crypto error.
+                        item[field] = None
+                        item["unreadable"] = True
+                        continue
+                    if context == "message.body" and _is_labelled(opened):
+                        # Restore the readable channel name that travelled
+                        # sealed alongside the body.
+                        item["channel"] = opened["ch"]
+                        opened = opened["b"]
+                    item[field] = opened
+        return payload
 
 
 class Client(_Base):
     """Synchronous client."""
 
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
-                 timeout: float = 40.0) -> None:
-        super().__init__(config, agent_id=agent_id)
+                 timeout: float = 40.0, key: str | None = None) -> None:
+        super().__init__(config, agent_id=agent_id, key=key)
         self._http = httpx.Client(
             base_url=self.config.url, headers=_headers(self.config.token), timeout=timeout
         )
@@ -173,9 +401,10 @@ class Client(_Base):
         self._http.close()
 
     def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        kwargs = self._seal_request(path, kwargs)
         response = self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return response.json()
+        return self._open_response(response.json())
 
     # --- meta ---
     def health(self) -> dict[str, Any]:
@@ -263,7 +492,7 @@ class Client(_Base):
 
     def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
-        return self._call("GET", f"/channels/{channel}",
+        return self._call("GET", f"/channels/{self._blind_channel(channel)}",
                           params={"workspace": self._ws(workspace),
                                   "limit": limit})["messages"]
 
@@ -283,7 +512,7 @@ class Client(_Base):
     def board_get(self, key: str, *, default: Any = None,
                   workspace: str | None = None) -> Any:
         try:
-            entry = self._call("GET", f"/board/{key}",
+            entry = self._call("GET", f"/board/{self._blind(key, 'board')}",
                                params={"workspace": self._ws(workspace)})["entry"]
         except SwitchboardError as exc:
             if exc.status == 404:
@@ -293,7 +522,7 @@ class Client(_Base):
 
     def board_entry(self, key: str, *, workspace: str | None = None) -> dict[str, Any] | None:
         try:
-            return self._call("GET", f"/board/{key}",
+            return self._call("GET", f"/board/{self._blind(key, 'board')}",
                               params={"workspace": self._ws(workspace)})["entry"]
         except SwitchboardError as exc:
             if exc.status == 404:
@@ -308,7 +537,7 @@ class Client(_Base):
         return self._call("GET", "/board", params=params)["entries"]
 
     def board_delete(self, key: str, *, workspace: str | None = None) -> bool:
-        return self._call("DELETE", f"/board/{key}",
+        return self._call("DELETE", f"/board/{self._blind(key, 'board')}",
                           params={"workspace": self._ws(workspace)})["deleted"]
 
 
@@ -316,8 +545,8 @@ class AsyncClient(_Base):
     """Asynchronous client — same surface as :class:`Client`."""
 
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
-                 timeout: float = 40.0) -> None:
-        super().__init__(config, agent_id=agent_id)
+                 timeout: float = 40.0, key: str | None = None) -> None:
+        super().__init__(config, agent_id=agent_id, key=key)
         self._http = httpx.AsyncClient(
             base_url=self.config.url, headers=_headers(self.config.token), timeout=timeout
         )
@@ -332,9 +561,10 @@ class AsyncClient(_Base):
         await self._http.aclose()
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        kwargs = self._seal_request(path, kwargs)
         response = await self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return response.json()
+        return self._open_response(response.json())
 
     async def health(self) -> dict[str, Any]:
         return await self._call("GET", "/health")
@@ -428,7 +658,7 @@ class AsyncClient(_Base):
 
     async def history(self, channel: str, *, limit: int = 50,
                       workspace: str | None = None) -> list[dict[str, Any]]:
-        result = await self._call("GET", f"/channels/{channel}",
+        result = await self._call("GET", f"/channels/{self._blind_channel(channel)}",
                                   params={"workspace": self._ws(workspace), "limit": limit})
         return result["messages"]
 
@@ -449,7 +679,7 @@ class AsyncClient(_Base):
     async def board_get(self, key: str, *, default: Any = None,
                         workspace: str | None = None) -> Any:
         try:
-            result = await self._call("GET", f"/board/{key}",
+            result = await self._call("GET", f"/board/{self._blind(key, 'board')}",
                                       params={"workspace": self._ws(workspace)})
         except SwitchboardError as exc:
             if exc.status == 404:
@@ -466,6 +696,6 @@ class AsyncClient(_Base):
         return result["entries"]
 
     async def board_delete(self, key: str, *, workspace: str | None = None) -> bool:
-        result = await self._call("DELETE", f"/board/{key}",
+        result = await self._call("DELETE", f"/board/{self._blind(key, 'board')}",
                                   params={"workspace": self._ws(workspace)})
         return result["deleted"]

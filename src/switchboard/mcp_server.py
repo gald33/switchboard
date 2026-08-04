@@ -261,6 +261,7 @@ class Bridge:
         self._ensure_registered()
         agents = self.client.agents()
         leases = self.client.leases()
+        mismatched = self.client.key_mismatches(agents)
         by_holder: dict[str, list[str]] = {}
         for lease in leases:
             by_holder.setdefault(lease["holder"], []).append(lease["resource"])
@@ -281,6 +282,16 @@ class Bridge:
                 for a in agents
             ],
             "count": len(agents),
+            **({
+                "WARNING": (
+                    f"{len(mismatched)} agent(s) in this workspace hold a different "
+                    "encryption key. You cannot see their messages, they cannot see "
+                    "yours, and your leases do not exclude each other. Tell the user "
+                    "that SWITCHBOARD_KEY does not match across agents — coordination "
+                    "here is silently not working."
+                ),
+                "mismatched_agents": [a["agent_id"] for a in mismatched],
+            } if mismatched else {}),
         }
 
     def checkin(self, task: str | None = None, wait: float = 0.0) -> dict[str, Any]:
