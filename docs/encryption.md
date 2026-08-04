@@ -404,8 +404,20 @@ What is safe is treating rotation as **moving to a new workspace**:
 
 The two workspaces are separate namespaces in the hub, so there is no
 half-migrated state and no double-hold: an agent is wholly in one or wholly in
-the other. During the changeover, agents split across the two do not
-coordinate — and the fingerprint warning above is what tells them so.
+the other.
+
+**The mismatch warning does not help here, and it is worth being clear about
+why.** It compares agents *within one workspace*. Agents split across a
+workspace move are not in each other's roster at all, so neither side sees the
+other and neither is warned — verified, not assumed. A left-behind agent's only
+signal is finding itself alone in the old workspace, which looks exactly like
+being the first one to start.
+
+That is precisely why a rotation should be a **coordinated restart** rather
+than a gradual rollout: nothing detects a half-finished one. The warning covers
+the different failure of somebody changing the key but *not* the workspace
+name, which leaves two key-groups inside one workspace where they can see each
+other and be told.
 
 Rotate when a key has actually been exposed. There is no benefit to rotating
 on a schedule here: the data a leaked key could decrypt is gone within a day

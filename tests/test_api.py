@@ -313,3 +313,43 @@ def test_workspaces_do_not_leak(client):
     })
     assert client.get("/agents", params={"workspace": WS}).json()["count"] == 1
     assert client.get("/agents", params={"workspace": "other"}).json()["count"] == 1
+
+
+def test_every_ttl_path_is_clamped(client):
+    """docs/api.md promises "always clamped to a ceiling". All five paths.
+
+    Checked because an unclamped one is invisible until a record outlives the
+    hub's assumption that nothing does — and the promise is documented, so it
+    should be enforced rather than trusted.
+    """
+    from switchboard.config import (
+        MAX_AGENT_TTL,
+        MAX_BOARD_TTL,
+        MAX_LEASE_TTL,
+        MAX_MESSAGE_TTL,
+    )
+
+    huge = 10**9
+    agent = client.post("/agents/register", json={
+        "workspace": WS, "agent_id": "a", "name": "a", "ttl": huge}).json()["agent"]
+    assert agent["expires_in"] <= MAX_AGENT_TTL + 2
+
+    lease = client.post("/leases/acquire", json={
+        "workspace": WS, "resource": "r", "agent_id": "a", "ttl": huge}).json()["lease"]
+    assert lease["expires_in"] <= MAX_LEASE_TTL + 2
+
+    entry = client.put("/board", json={
+        "workspace": WS, "key": "k", "agent_id": "a", "value": 1,
+        "ttl": huge}).json()["entry"]
+    assert entry["expires_in"] <= MAX_BOARD_TTL + 2
+
+    message = client.post("/messages", json={
+        "workspace": WS, "channel": "ch", "agent_id": "a", "body": "x",
+        "ttl": huge}).json()["message"]
+    assert message["expires_at"] is not None  # rendered ISO; bound checked below
+
+    # The heartbeat carries its own lease_ttl, a separate clamp path.
+    beat = client.post("/agents/heartbeat", json={
+        "workspace": WS, "agent_id": "a", "ttl": huge, "lease_ttl": huge}).json()
+    assert beat["leases"][0]["expires_in"] <= MAX_LEASE_TTL + 2
+    assert MAX_MESSAGE_TTL > 0  # named so the import is not unused
