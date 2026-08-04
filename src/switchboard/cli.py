@@ -532,6 +532,10 @@ def cmd_health(args: argparse.Namespace) -> int:
 
 _LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
 
+#: The managed hub `switchboard init` points at by default. Self-host instead
+#: with `switchboard init --local` (or any other `--url`).
+MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
+
 _SESSION_START_CMD = "switchboard register --quiet -c build || true"
 _STOP_CMD = (
     'switchboard claims --holder "$(switchboard whoami --json | '
@@ -674,12 +678,20 @@ def _init_claude_md(directory: Path) -> str:
 
 def cmd_init(args: argparse.Namespace) -> int:
     """Wire up a repo end to end: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token."""
+    if args.local and args.url:
+        print("error: --local and --url are mutually exclusive — pick one.", file=sys.stderr)
+        return EXIT_ERROR
+
     directory = Path(args.dir or ".").resolve()
     workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
         directory
     )
-    url = (args.url or os.environ.get("SWITCHBOARD_URL") or "http://127.0.0.1:8787").rstrip("/")
+    if args.local:
+        url = "http://127.0.0.1:8787"
+    else:
+        url = (args.url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
     local_hub = url in _LOCAL_HUB_URLS
+    managed_hub = url == MANAGED_HUB_URL and not local_hub
 
     steps: list[str] = []
     token: str | None = None
@@ -698,13 +710,23 @@ def cmd_init(args: argparse.Namespace) -> int:
         "pointed at it would start its own separate, empty hub and never see agents "
         "here. To coordinate across machines, deploy one shared hub (see "
         "docs/deployment.md) and re-run `switchboard init --url https://your-hub` so "
-        "that URL is what gets committed."
+        "that URL is what gets committed, or self-host locally with `--local`."
+    )
+    managed_hub_note = (
+        f"{MANAGED_HUB_URL} is a shared public hub with one token everyone uses — "
+        "that's what makes it zero-setup, and it means every other user of the "
+        "default hub can see and post to your workspace too. Fine for trying "
+        "things out or low-stakes coordination; not a private space. For "
+        "privacy, self-host instead: `switchboard init --local` (or `--url` to "
+        "point at a hub you already deployed)."
     )
 
     if args.json:
         payload: dict[str, Any] = {"workspace": workspace, "url": url, "steps": steps}
         if local_hub:
             payload["note"] = local_hub_note
+        elif managed_hub:
+            payload["note"] = managed_hub_note
         _print_json(payload)
         return EXIT_OK
 
@@ -717,6 +739,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         if local_hub:
             print()
             print(fmt.yellow("Note: ") + local_hub_note)
+        elif managed_hub:
+            print()
+            print(fmt.yellow("Note: ") + managed_hub_note)
         print()
         print(fmt.bold("Next"))
         n = 1
@@ -773,6 +798,13 @@ def build_parser() -> argparse.ArgumentParser:
         "init", help="wire up this repo: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token"
     )
     p.add_argument("--dir", help="target repo directory (default: current directory)")
+    p.add_argument(
+        "--local",
+        action="store_true",
+        help="self-host instead of using the managed hub: point .mcp.json at "
+             "http://127.0.0.1:8787 and generate a dev token. Shorthand for "
+             "--url http://127.0.0.1:8787. Mutually exclusive with --url.",
+    )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(
         "--skip-hooks", action="store_true", help="do not write .claude/settings.json hooks"
