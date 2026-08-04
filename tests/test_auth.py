@@ -9,6 +9,8 @@ A cross-tenant read is exactly the kind of bug that never announces itself.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,6 +18,7 @@ from switchboard.auth import (
     Principal,
     SharedTokenResolver,
     StaticKeyResolver,
+    load_static_keys,
 )
 from switchboard.config import ServerConfig
 from switchboard.server import create_app
@@ -224,3 +227,57 @@ def test_every_guarded_route_enforces_workspace_scope(multi):
             checked += 1
     # Guard against the walk silently matching nothing.
     assert checked >= 15, f"only probed {checked} routes; the walk is not finding them"
+
+
+# --- load_static_keys: the file -> resolver loader used by `switchboard serve --keys-file` ---
+
+
+def test_load_static_keys_builds_a_working_resolver(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({
+        "tok-acme": {"workspaces": ["acme/app"], "label": "acme"},
+        "tok-both": {"workspaces": ["acme/app", "globex/app"]},
+    }))
+
+    resolver = load_static_keys(str(path))
+    assert len(resolver) == 2
+
+    acme = resolver.resolve("tok-acme")
+    assert acme.key_id == "acme"
+    assert acme.workspaces == frozenset({"acme/app"})
+    assert not acme.unrestricted
+
+    # No label -> key_id falls back to a hash prefix, never the raw token.
+    both = resolver.resolve("tok-both")
+    assert both.key_id != "tok-both"
+    assert both.workspaces == frozenset({"acme/app", "globex/app"})
+
+    assert resolver.resolve("not-a-real-token") is None
+
+
+def test_load_static_keys_rejects_missing_workspaces(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"tok": {"label": "oops"}}))
+    with pytest.raises(ValueError, match="workspaces"):
+        load_static_keys(str(path))
+
+
+def test_load_static_keys_rejects_empty_workspaces(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"tok": {"workspaces": []}}))
+    with pytest.raises(ValueError, match="workspaces"):
+        load_static_keys(str(path))
+
+
+def test_load_static_keys_rejects_non_object_top_level(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps(["not", "a", "dict"]))
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        load_static_keys(str(path))
+
+
+def test_load_static_keys_rejects_non_object_entry(tmp_path):
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"tok": "not-a-dict"}))
+    with pytest.raises(ValueError, match="must be an object"):
+        load_static_keys(str(path))
