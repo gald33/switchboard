@@ -140,6 +140,10 @@ See [`docs/claude-code.md`](docs/claude-code.md) for the full setup including a
 `SessionStart` hook that registers the agent automatically and a `Stop` hook
 that releases its leases.
 
+The same MCP server works from any MCP-speaking coding agent — see
+[`docs/codex-cli.md`](docs/codex-cli.md) for Codex CLI, which has an
+equivalent `config.toml`-based hook system.
+
 ## Use it from Python
 
 ```python
@@ -166,6 +170,7 @@ with Client(agent_id=me.agent_id) as hub:
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
 - [Concepts](docs/concepts.md) — the model, the TTL rules, and what Switchboard deliberately is *not*
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
+- [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [HTTP API](docs/api.md) — every endpoint
 
