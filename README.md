@@ -65,6 +65,9 @@ pip install agent-switchboard
 # Hub side: also the server
 pip install "agent-switchboard[server]"
 
+# With end-to-end encryption
+pip install "agent-switchboard[crypto]"
+
 # With the MCP bridge for Claude Code / any MCP client
 pip install "agent-switchboard[all]"
 ```
@@ -168,7 +171,41 @@ with Client(agent_id=me.agent_id) as hub:
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [HTTP API](docs/api.md) — every endpoint
+- [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
+
+## Encrypt it, and the hub can't read it either
+
+A hub only ever needs to *route* and *compare*, never to read. So it doesn't
+have to:
+
+```bash
+switchboard keygen              # prints a key; the hub never receives it
+export SWITCHBOARD_KEY=<key>    # same key on every agent in the workspace
+```
+
+Message bodies, blackboard values, lease notes, branch names and task
+descriptions are sealed with AES-256-GCM before they leave the agent. Channel
+names, lease resources and agent ids become opaque tokens the hub can still
+compare for equality — which is all it needs to deliver a message or exclude a
+second lease holder.
+
+Costs 1.1µs to encrypt and 0.7µs to decrypt a message, against a ~1000µs
+network round trip. Everything else — `claim`, `inbox`, `checkin`, the MCP
+tools — behaves exactly as before.
+
+What the hub stores once you do this:
+
+```
+channel = mYkpn3DkU7rhr_Qjk_objQ
+body    = {"$swb":1,"n":"ARyT0f4DEQnXsJ2C","c":"4yTX0Vd1QuD_5Y38U7gkkZ5A…"}
+```
+
+The hub needs **no changes and no configuration** to support this — it cannot
+tell an encrypted workspace from a plaintext one, so it cannot be
+misconfigured into weakening one. It still sees metadata: message sizes,
+timing, and which opaque tokens are equal. [Full detail, including what
+remains inferable](docs/encryption.md).
 
 ## Sharing a hub between teams that don't trust each other
 
@@ -203,6 +240,9 @@ enforced in one shared dependency rather than per-handler — see
   in your issue tracker.
 - **Not an audit log.** It forgets on purpose. Decisions that should outlive the
   work still belong in a commit message, a PR, or a doc.
+- **Not confidential from your own agents.** One key per workspace: everyone in
+  it reads everything in it. The encryption keeps out the hub and other
+  tenants, not your own colleagues.
 - **Not an identity system.** Keys scope *which workspaces* a caller may touch;
   within a workspace, agents are assumed to trust each other, because they
   already share a codebase. Agent ids tell agents apart, they don't keep them

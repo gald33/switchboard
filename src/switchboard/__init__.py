@@ -30,6 +30,12 @@ from .client import (
     detect_identity,
 )
 from .config import ClientConfig, ServerConfig
+from .crypto import (
+    CryptoError,
+    DecryptionError,
+    WorkspaceCipher,
+    generate_key,
+)
 from .notify import Notifier
 from .store import (
     Agent,
@@ -63,6 +69,11 @@ __all__ = [
     "StaticKeyResolver",
     "DEFAULT_TIER",
     "Notifier",
+    # end-to-end encryption — the hub never sees the key
+    "WorkspaceCipher",
+    "generate_key",
+    "CryptoError",
+    "DecryptionError",
     # store
     "Store",
     "StoreError",

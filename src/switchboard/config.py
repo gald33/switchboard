@@ -7,6 +7,8 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_URL          hub base URL (client)
     SWITCHBOARD_WORKSPACE    default workspace (client)
     SWITCHBOARD_AGENT_ID     stable identity for this agent (client)
+    SWITCHBOARD_KEY          workspace key for end-to-end encryption (client only —
+                             a hub must never be given one, and has no use for it)
 """
 
 from __future__ import annotations
@@ -82,6 +84,10 @@ class ClientConfig:
     token: str | None = None
     workspace: str = "default"
     agent_id: str | None = None
+    #: Workspace key for end-to-end encryption. When set, payloads are sealed
+    #: and identifiers blinded before anything leaves this process. It is never
+    #: transmitted; the hub cannot read the workspace with or without it.
+    key: str | None = None
 
     @classmethod
     def from_env(cls) -> ClientConfig:
@@ -90,6 +96,7 @@ class ClientConfig:
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
             workspace=os.environ.get("SWITCHBOARD_WORKSPACE", "default"),
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
+            key=os.environ.get("SWITCHBOARD_KEY") or None,
         )
 
 

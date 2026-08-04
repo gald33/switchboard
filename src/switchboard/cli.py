@@ -19,6 +19,7 @@ from typing import Any, Sequence
 from . import __version__
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
+from .crypto import CryptoError, generate_key
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -112,6 +113,8 @@ def _make_client(args: argparse.Namespace) -> Client:
         config.token = args.token
     if args.workspace:
         config.workspace = args.workspace
+    if getattr(args, "key", None):
+        config.key = args.key
     identity = detect_identity(agent_id=args.agent_id)
     return Client(config, agent_id=identity.agent_id)
 
@@ -144,9 +147,29 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_keygen(args: argparse.Namespace) -> int:
+    """Print a fresh workspace key. It never goes near a hub."""
+    key = generate_key()
+    if args.json:
+        _print_json({"key": key})
+        return EXIT_OK
+    print(key)
+    if sys.stdout.isatty():
+        print(
+            "\nShare this with the agents in the workspace and nobody else.\n"
+            "  export SWITCHBOARD_KEY=" + key + "\n"
+            "The hub never receives it, so it cannot read this workspace — and\n"
+            "cannot help you recover it either. Everything expires within a day,\n"
+            "so losing it costs less here than almost anywhere else.",
+            file=sys.stderr,
+        )
+    return EXIT_OK
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
+    encrypted = bool(args.key or config.key)
     payload = {
         "agent_id": identity.agent_id,
         "name": identity.name,
@@ -154,6 +177,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "branch": identity.branch,
         "workspace": args.workspace or config.workspace,
         "hub": args.url or config.url,
+        "encrypted": encrypted,
         "meta": identity.meta,
     }
     if args.json:
@@ -162,6 +186,9 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     for key in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
         print(f"{fmt.dim(key.rjust(10))}  {payload[key]}")
+    print(f"{fmt.dim('encrypted'.rjust(10))}  "
+          + (fmt.green("yes — the hub cannot read this workspace")
+             if encrypted else "no"))
     return EXIT_OK
 
 
@@ -453,6 +480,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token", help="bearer token (env: SWITCHBOARD_TOKEN)")
     parser.add_argument("-w", "--workspace", help="workspace (env: SWITCHBOARD_WORKSPACE)")
     parser.add_argument("--agent-id", help="override this agent's id")
+    parser.add_argument(
+        "--key",
+        help="workspace key for end-to-end encryption (env: SWITCHBOARD_KEY). "
+             "Never sent to the hub; generate one with `switchboard keygen`.",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress success chatter")
 
@@ -467,6 +499,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
     p.set_defaults(func=cmd_whoami)
+
+    p = sub.add_parser(
+        "keygen", help="generate a workspace key for end-to-end encryption")
+    p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)
@@ -573,6 +609,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LeaseHeld as exc:
         print(f"conflict: {exc}", file=sys.stderr)
         return EXIT_CONFLICT
+    except CryptoError as exc:
+        print(f"encryption error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     except SwitchboardError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

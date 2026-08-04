@@ -213,6 +213,33 @@ throttled by *that* number, not a proxy for it.
 
 ---
 
+## What end-to-end encryption changes about all of this
+
+[E2EE](encryption.md) shipped alongside stage 1, and it changes the pitch for
+a managed hub more than the multi-tenancy does.
+
+The workspace boundary keeps *tenants* out of each other's data, and it is
+enforced by code the operator controls. Encryption keeps the *operator* out,
+and is enforced by the operator not having the key. The second is a much
+easier thing to promise, because it does not depend on conduct, access
+controls, or breach response.
+
+It also simplifies the operational story considerably:
+
+- **A breach of the hub leaks metadata, not content.** Sizes, timing, and
+  which opaque tokens are equal. Not one word of a message, a branch name, or
+  a claimed resource.
+- **There is much less to be careful with.** The hub cannot log message bodies
+  even by accident, because it never has them.
+- **Telemetry is unaffected.** Everything a managed hub needs to bill and
+  autoscale — connection counts, request rates, workspace ids — is visible by
+  design. Nothing about encryption costs you the operational picture.
+
+None of it removes the need for the workspace boundary: encryption stops
+*reading* another tenant's data, but only authorization stops *writing* into
+it, or taking a lease that blocks their work. The two are complementary and
+the hub needs both.
+
 ## The commitment that makes this work
 
 The open-source hub must remain **completely usable with no managed service in
