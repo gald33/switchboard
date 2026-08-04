@@ -25,6 +25,7 @@ from typing import Any, Callable
 from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
+from .crypto import generate_key
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
 # for something else we answer with our newest and let it decide.
@@ -55,6 +56,33 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
         "required": required or [],
         "additionalProperties": False,
     }
+
+
+#: ADVANCED and deliberately loud about it. This redirects a single call to a
+#: private workspace/key instead of the default one — see the `keygen` tool.
+#: It is a field, not a mode: every other call you make is unaffected, and
+#: nothing about it is inferred or improvised — you only ever set this to a
+#: pair an agreement already exists for.
+_CUSTOM_SCOPE = {
+    "type": "object",
+    "description": (
+        "ADVANCED, rarely needed. Redirects this ONE call to a private workspace and "
+        "key instead of your default one. Only set this if you and the specific "
+        "agent(s) you are coordinating with have already agreed, outside of "
+        "Switchboard, on a shared workspace and key for a private conversation — get "
+        "one with the 'keygen' tool, then tell your peers the workspace and key "
+        "directly (a prompt, a dm, however you already trust them). Never invent one "
+        "unilaterally and expect a peer to find their way into it. Omit this for all "
+        "normal work; it does not change your default workspace for anything else "
+        "you do."
+    ),
+    "properties": {
+        "workspace": {**_STR, "description": "the agreed-upon private workspace name"},
+        "key": {**_STR, "description": "the agreed-upon private key (omit for no encryption)"},
+    },
+    "required": ["workspace"],
+    "additionalProperties": False,
+}
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -105,6 +133,7 @@ TOOLS: list[dict[str, Any]] = [
             "resource": {**_STR, "description": "resource key to claim"},
             "note": {**_STR, "description": "short reason, shown to other agents"},
             "ttl": {**_NUM, "description": "seconds to hold it (default 900)"},
+            "custom_scope": _CUSTOM_SCOPE,
         }, ["resource"]),
     },
     {
@@ -115,6 +144,7 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": _schema({
             "resource": {**_STR, "description": "resource key to release"},
+            "custom_scope": _CUSTOM_SCOPE,
         }, ["resource"]),
     },
     {
@@ -139,6 +169,7 @@ TOOLS: list[dict[str, Any]] = [
             "message": {**_STR, "description": "what to say"},
             "type": {**_STR, "description": "optional tag, e.g. 'warning', 'handoff'"},
             "ttl": {**_NUM, "description": "seconds to keep it (default 3600)"},
+            "custom_scope": _CUSTOM_SCOPE,
         }, ["channel", "message"]),
     },
     {
@@ -153,6 +184,7 @@ TOOLS: list[dict[str, Any]] = [
             "message": {**_STR, "description": "what to say"},
             "type": _STR,
             "ttl": _NUM,
+            "custom_scope": _CUSTOM_SCOPE,
         }, ["to", "message"]),
     },
     {
@@ -169,6 +201,7 @@ TOOLS: list[dict[str, Any]] = [
             },
             "wait": {**_NUM, "description": "seconds to long-poll (0-25)"},
             "peek": {**_BOOL, "description": "read without advancing your position"},
+            "custom_scope": _CUSTOM_SCOPE,
         }),
     },
     {
@@ -208,6 +241,20 @@ TOOLS: list[dict[str, Any]] = [
             "prefix. Use this to discover what context other agents have left behind."
         ),
         "inputSchema": _schema({"prefix": _STR}),
+    },
+    {
+        "name": "keygen",
+        "description": (
+            "Mint a fresh (key, workspace) pair for a private side-conversation with "
+            "specific other agents — a confidentiality boundary you set up yourself, not "
+            "a hub permission. Purely local: nothing is sent to the hub. Tell the pair "
+            "directly to exactly the peers you want included (a prompt, a dm, however you "
+            "already trust them), then have each of you pass it as 'custom_scope' on say / "
+            "dm / inbox / claim / release. Always mint a fresh workspace here rather than "
+            "reusing your default one — reusing it makes 'roster' wrongly warn everyone "
+            "else in that workspace about a key mismatch."
+        ),
+        "inputSchema": _schema({}),
     },
 ]
 
@@ -317,10 +364,11 @@ class Bridge:
         }
 
     def claim(self, resource: str, note: str | None = None,
-              ttl: float | None = None) -> dict[str, Any]:
+              ttl: float | None = None,
+              custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         self._ensure_registered()
         try:
-            lease = self.client.acquire(resource, note=note, ttl=ttl)
+            lease = self.client.acquire(resource, note=note, ttl=ttl, custom_scope=custom_scope)
         except LeaseHeld as exc:
             return {
                 "acquired": False,
@@ -339,9 +387,11 @@ class Bridge:
             "note": "Renewed automatically by checkin. Call release when you finish.",
         }
 
-    def release(self, resource: str) -> dict[str, Any]:
+    def release(self, resource: str,
+                custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         self._ensure_registered()
-        return {"released": self.client.release(resource), "resource": resource}
+        released = self.client.release(resource, custom_scope=custom_scope)
+        return {"released": released, "resource": resource}
 
     def claims(self, mine: bool = False) -> dict[str, Any]:
         self._ensure_registered()
@@ -362,24 +412,37 @@ class Bridge:
         }
 
     def say(self, channel: str, message: str, type: str = "note",
-            ttl: float | None = None) -> dict[str, Any]:
+            ttl: float | None = None,
+            custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         self._ensure_registered()
-        msg = self.client.post(channel, message, type=type, ttl=ttl)
+        msg = self.client.post(channel, message, type=type, ttl=ttl, custom_scope=custom_scope)
         return {"posted": True, "channel": msg["channel"], "seq": msg["seq"]}
 
     def dm(self, to: str, message: str, type: str = "note",
-           ttl: float | None = None) -> dict[str, Any]:
+           ttl: float | None = None,
+           custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         self._ensure_registered()
-        msg = self.client.send(to, message, type=type, ttl=ttl)
+        msg = self.client.send(to, message, type=type, ttl=ttl, custom_scope=custom_scope)
         return {"sent": True, "to": to, "seq": msg["seq"]}
 
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
-              peek: bool = False) -> dict[str, Any]:
+              peek: bool = False,
+              custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         self._ensure_registered()
         messages = self.client.inbox(
-            channels=channels, wait=min(max(wait, 0.0), 25.0), peek=peek
+            channels=channels, wait=min(max(wait, 0.0), 25.0), peek=peek,
+            custom_scope=custom_scope,
         )
         return {"messages": [self._msg(m) for m in messages], "count": len(messages)}
+
+    def keygen(self) -> dict[str, Any]:
+        """Mint a fresh (key, workspace) pair for a private side-conversation.
+
+        Purely local — no hub call, no registration needed first.
+        """
+        key = generate_key()
+        workspace = "w_" + generate_key()[:16]
+        return {"key": key, "workspace": workspace}
 
     def history(self, channel: str, limit: float = 30) -> dict[str, Any]:
         self._ensure_registered()

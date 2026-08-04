@@ -107,7 +107,7 @@ own. Releasing eagerly just frees the resource sooner.
 
 ## Tool reference
 
-Same 13 MCP tools as Claude Code — see the [tool reference in
+Same 14 MCP tools as Claude Code — see the [tool reference in
 `claude-code.md`](claude-code.md#tool-reference).
 
 ## Troubleshooting

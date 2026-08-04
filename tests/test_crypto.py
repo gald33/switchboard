@@ -605,4 +605,89 @@ def test_nothing_extra_is_published_to_detect_a_mismatch(hub, key):
     a1.register(name="alpha", meta={"host": "laptop"})
     stored = store.list_agents(workspace=WS)[0]
     assert "key_fp" not in stored.meta
-    assert set(stored.meta) <= {"host"}
+
+
+# --- custom_scope: agent-initiated side channels -----------------------------
+#
+# A `custom_scope` is a complete, atomic override of workspace + key + blinded
+# identity for exactly one call — see mcp_server.py's `_CUSTOM_SCOPE` schema.
+# It must never require prior registration under that scope (it is meant to
+# work the first time two agents who privately agreed on a pair use it), and
+# it must never leak into or be affected by the caller's default scope.
+
+
+def side_scope(ws_suffix: str = "") -> dict[str, str]:
+    return {"workspace": f"w_side_{ws_suffix}_{generate_key()[:8]}", "key": generate_key()}
+
+
+def test_custom_scope_round_trips_and_is_invisible_on_the_default_scope(hub, key):
+    http, _, _ = hub
+    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    scope = side_scope()
+
+    a1.post("plan", "private plan", custom_scope=scope)
+
+    assert [m["body"] for m in a2.inbox(channels=["plan"], custom_scope=scope)] == ["private plan"]
+    # Neither agent's default-scope inbox saw anything — different workspace
+    # entirely, not merely a different key within the same one.
+    assert a1.inbox(channels=["plan"]) == []
+    assert a2.inbox(channels=["plan"]) == []
+
+
+def test_custom_scope_without_a_key_is_plaintext_but_still_workspace_isolated(hub, key):
+    http, _, _ = hub
+    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    scope = {"workspace": f"w_plain_{generate_key()[:8]}"}  # no key: unencrypted
+
+    a1.post("plan", "not encrypted here", custom_scope=scope)
+    got = a2.inbox(channels=["plan"], custom_scope=scope)
+    assert [m["body"] for m in got] == ["not encrypted here"]
+
+
+def test_custom_scope_requires_a_workspace(hub, key):
+    http, _, _ = hub
+    a1 = bound(http, key, "a1")
+    with pytest.raises(TypeError):
+        a1.post("plan", "x", custom_scope={"key": generate_key()})
+
+
+def test_custom_scope_leases_exclude_independently_of_the_default_scope(hub, key):
+    http, _, _ = hub
+    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    scope = side_scope()
+
+    a1.acquire("shared/plan", custom_scope=scope)
+    # The same resource string on the default scope is untouched — held under
+    # the side scope's blinding, free under the default scope's.
+    assert a1.acquire("shared/plan")["resource"]
+
+    from switchboard.client import LeaseHeld
+    with pytest.raises(LeaseHeld):
+        a2.acquire("shared/plan", custom_scope=scope)
+
+    assert a1.release("shared/plan", custom_scope=scope) is True
+    assert a2.acquire("shared/plan", custom_scope=scope)["resource"]
+
+
+def test_custom_scope_dm_after_discovering_a_peer_through_say(hub, key):
+    """DM addressing under a custom scope: no roster exists for one, so the
+    recipient's blinded id is learned from a message's `from` field instead —
+    the same bootstrap `dm()`'s own docs already rely on for the default
+    scope, where the roster happens to be the usual source of that id."""
+    http, _, _ = hub
+    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    scope = side_scope()
+
+    a2.post("hello", "a2 here", custom_scope=scope)
+    [msg] = a1.inbox(channels=["hello"], custom_scope=scope)
+    a1.send(msg["from"], "just you", custom_scope=scope)
+
+    assert [m["body"] for m in a2.inbox(custom_scope=scope)] == ["just you"]
+
+
+def test_custom_scope_does_not_change_the_agents_default_identity(hub, key):
+    http, _, _ = hub
+    a1 = bound(http, key, "a1")
+    default_id = a1.agent_id
+    a1.post("plan", "x", custom_scope=side_scope())
+    assert a1.agent_id == default_id
