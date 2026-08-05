@@ -70,3 +70,28 @@ jobs:
           done
           curl -sf http://127.0.0.1:8787/health | grep -q '"ok":true'
           docker rm -f swb
+
+  # Dogfooding: this CI run announces itself on the same hub the rest of
+  # this project coordinates over, same as local/cloud agents do via the
+  # SessionStart hook `init` installs (see cli.py's _SESSION_START_CMD).
+  # Isolated to its own self-issued-keys workspace, not the interactive
+  # gald33/lucille one, so this credential's blast radius is CI-only and
+  # can be rotated without touching anything a human session depends on.
+  # Never gates the rest of CI: `|| true` on the one command that can fail.
+  register-switchboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Announce this CI run to the hub
+        env:
+          SWITCHBOARD_URL: https://switchboard.lucille-ai.com
+          SWITCHBOARD_WORKSPACE: w_gAbpTxVh-Jl0pjx0Hnqupw
+          SWITCHBOARD_TOKEN: ${{ secrets.SWITCHBOARD_TOKEN }}
+        run: |
+          switchboard -q register --kind ci -c build \
+            --task "${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}" \
+            || true
