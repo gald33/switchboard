@@ -8,11 +8,15 @@ so that is most of what these tests check.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from switchboard.cli import MANAGED_HUB_URL, main
+from switchboard.cli import _CLAUDE_MD_SECTION, MANAGED_HUB_URL, main
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def run_init(monkeypatch, capsys, tmp_path, *extra_args):
@@ -257,3 +261,40 @@ def test_local_flag_points_at_localhost_without_url_flag(monkeypatch, capsys, tm
     assert code == 0
     mcp = json.loads((tmp_path / ".mcp.json").read_text())
     assert mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_URL"] == "http://127.0.0.1:8787"
+
+
+# --- keeping the generated CLAUDE.md in sync with its own documentation -----
+#
+# `_CLAUDE_MD_SECTION` is what `init` actually writes into a repo;
+# docs/claude-code.md's fenced example is what a human reads to "understand
+# or hand-customize" it. Nothing keeps them in sync automatically, and they
+# have drifted apart silently before (found while investigating an unrelated
+# question) — assert equality directly so a change to one that forgets the
+# other fails CI instead of shipping a stale generator or a misleading doc.
+
+
+def _markdown_fence(doc_path: Path) -> str:
+    text = doc_path.read_text()
+    match = re.search(r"```markdown\n(.*?)\n```", text, re.S)
+    assert match, f"no ```markdown fence found in {doc_path}"
+    return match.group(1) + "\n"
+
+
+def _body_after_intro(section: str) -> str:
+    """Everything from the first bullet onward, skipping the marker line and
+    intro paragraph — the one place Claude Code's and Codex's wording is
+    legitimately allowed to differ ('Claude sessions' vs generic 'agents')."""
+    lines = section.splitlines()
+    first_bullet = next(i for i, line in enumerate(lines) if line.startswith("- **"))
+    return "\n".join(lines[first_bullet:])
+
+
+def test_claude_md_section_matches_its_own_documentation():
+    documented = _markdown_fence(REPO_ROOT / "docs" / "claude-code.md")
+    assert documented == _CLAUDE_MD_SECTION
+
+
+def test_claude_and_codex_coordination_snippets_stay_in_sync():
+    claude_doc = _markdown_fence(REPO_ROOT / "docs" / "claude-code.md")
+    codex_doc = _markdown_fence(REPO_ROOT / "docs" / "codex-cli.md")
+    assert _body_after_intro(claude_doc) == _body_after_intro(codex_doc)

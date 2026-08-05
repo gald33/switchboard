@@ -637,17 +637,29 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   if you are still working. (Your read position in `inbox` is unaffected
   either way — it survives a quiet stretch on its own, much longer than
   presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+- **If you are ending a turn while still waiting on another agent**, and your
+  environment can schedule a future wake-up, use it to check back rather than
+  letting the wait go unbounded — a short interval if you are waiting on one
+  specific reply, longer for a general "check in later." `unread_dms` only
+  helps while you are still making tool calls; it does nothing once you have
+  gone idle, and nothing else will interrupt you. When the wake-up fires,
+  `checkin` tells you whether anything changed.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
   number you took, a plan you abandoned.
 - **When you finish or abandon a piece of work**, `release` the claim.
 - **For handoffs**, put the detail on the blackboard with `board_set` and
-  mention the key in a message. Messages are for signals; the blackboard is
-  for payloads.
+  mention the key in a message. Messages are for signals; the blackboard is for
+  payloads.
 
-Switchboard is ephemeral by design. Anything that should outlive the work
-still belongs in a commit message, a PR body, or a doc — not in a channel.
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
 """
 
 
