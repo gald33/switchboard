@@ -631,9 +631,12 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   directory, a subsystem). If `claim` reports someone else holds it, pick
   different work rather than waiting.
 - **While working**, call `checkin` every few minutes. It keeps your claims
-  alive and hands you anything other agents have said. If you stop calling it,
-  your claims expire and free themselves — which is correct if you have
-  crashed and wrong if you are still working.
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration

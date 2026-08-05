@@ -27,6 +27,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Sequence
 
+from .config import DEFAULT_CURSOR_TTL
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -78,12 +80,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_read ON messages(workspace, channel, seq
 CREATE INDEX IF NOT EXISTS idx_messages_expiry ON messages(expires_at);
 
 CREATE TABLE IF NOT EXISTS cursors (
-    workspace TEXT NOT NULL,
-    agent_id  TEXT NOT NULL,
-    channel   TEXT NOT NULL,
-    last_seq  INTEGER NOT NULL,
+    workspace  TEXT NOT NULL,
+    agent_id   TEXT NOT NULL,
+    channel    TEXT NOT NULL,
+    last_seq   INTEGER NOT NULL,
+    expires_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace, agent_id, channel)
 );
+-- idx_cursors_expiry is created in Store.__post_init__, not here: a database
+-- from before this column existed needs an ALTER TABLE first, and an index
+-- creation on a not-yet-existing column would fail on that upgrade path.
 
 CREATE TABLE IF NOT EXISTS board (
     workspace  TEXT NOT NULL,
@@ -298,6 +304,22 @@ class Store:
             self._shared_lock = threading.RLock()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_cursors_expiry(conn)
+
+    def _migrate_cursors_expiry(self, conn: sqlite3.Connection) -> None:
+        """Add ``cursors.expires_at`` to databases created before it existed.
+
+        ``CREATE TABLE IF NOT EXISTS`` in SCHEMA is a no-op against an
+        existing table, so a cursors table from before this column existed
+        needs an explicit ALTER. On a fresh database the column is already
+        there from SCHEMA, so this is just a PRAGMA check plus a
+        redundant-but-harmless index creation — safe to run unconditionally
+        every time the store opens.
+        """
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(cursors)")}
+        if "expires_at" not in cols:
+            conn.execute("ALTER TABLE cursors ADD COLUMN expires_at REAL NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cursors_expiry ON cursors(expires_at)")
 
     def _new_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -641,6 +663,7 @@ class Store:
         limit: int = 100,
         include_own: bool = False,
         commit_cursor: bool = True,
+        cursor_ttl: float = DEFAULT_CURSOR_TTL,
         now: float | None = None,
     ) -> list[Message]:
         """Read messages on ``channels``.
@@ -649,6 +672,12 @@ class Store:
         agent that polls repeatedly sees each message exactly once. Passing an
         explicit ``since`` (or ``commit_cursor=False``) makes the read a
         non-destructive peek.
+
+        A cursor's own ``expires_at`` is independent of the agent's presence
+        row — an agent that goes quiet for a while (a long turn, a gap
+        between sessions) and later calls ``checkin`` must not come back to
+        find its read position reset and its whole history replayed. Only an
+        agent that never reads at all for ``cursor_ttl`` forfeits its place.
         """
         now = time.time() if now is None else now
         if not channels:
@@ -661,8 +690,8 @@ class Store:
                 elif agent_id:
                     row = conn.execute(
                         "SELECT last_seq FROM cursors WHERE workspace=? AND agent_id=? "
-                        "AND channel=?",
-                        (workspace, agent_id, channel),
+                        "AND channel=? AND expires_at > ?",
+                        (workspace, agent_id, channel, now),
                     ).fetchone()
                     start = row["last_seq"] if row else 0
                 else:
@@ -692,10 +721,12 @@ class Store:
                     new_cursor = msgs[-1].seq if len(msgs) == limit else (top or start)
                     if new_cursor and new_cursor > start:
                         conn.execute(
-                            "INSERT INTO cursors (workspace, agent_id, channel, last_seq) "
-                            "VALUES (?,?,?,?) ON CONFLICT(workspace, agent_id, channel) "
-                            "DO UPDATE SET last_seq=excluded.last_seq",
-                            (workspace, agent_id, channel, new_cursor),
+                            "INSERT INTO cursors (workspace, agent_id, channel, last_seq, "
+                            "expires_at) VALUES (?,?,?,?,?) "
+                            "ON CONFLICT(workspace, agent_id, channel) "
+                            "DO UPDATE SET last_seq=excluded.last_seq, "
+                            "expires_at=excluded.expires_at",
+                            (workspace, agent_id, channel, new_cursor, now + cursor_ttl),
                         )
         out.sort(key=lambda m: m.seq)
         return out
@@ -823,16 +854,9 @@ class Store:
         now = time.time() if now is None else now
         counts: dict[str, int] = {}
         with self._tx() as conn:
-            for table in ("agents", "leases", "messages", "board"):
+            for table in ("agents", "leases", "messages", "board", "cursors"):
                 cur = conn.execute(f"DELETE FROM {table} WHERE expires_at <= ?", (now,))  # noqa: S608
                 counts[table] = cur.rowcount
-            # Cursors pointing at swept messages are harmless but unbounded;
-            # drop the ones whose agent is gone.
-            cur = conn.execute(
-                "DELETE FROM cursors WHERE (workspace, agent_id) NOT IN "
-                "(SELECT workspace, id FROM agents)"
-            )
-            counts["cursors"] = cur.rowcount
         return counts
 
     def stats(self, *, workspace: str | None = None, now: float | None = None) -> dict[str, Any]:

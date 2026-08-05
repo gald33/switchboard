@@ -193,6 +193,44 @@ def test_peek_does_not_advance_the_cursor(store):
     assert [m.body for m in store.read(workspace=WS, channels=["c"], agent_id="a1")] == ["x"]
 
 
+def test_cursor_survives_agent_expiry_and_sweep(store):
+    """A quiet stretch that drops an agent off `roster` must not reset its
+    read position — an agent whose presence lapses but keeps reading has not
+    forfeited anything, only one that stops reading entirely has."""
+    store.register_agent(workspace=WS, agent_id="a1", name="A", ttl=10, now=1000.0)
+    store.post(workspace=WS, channel="c", sender="a2", body="seen", ttl=600, now=1000.0)
+    first = store.read(workspace=WS, channels=["c"], agent_id="a1", now=1001.0)
+    assert [m.body for m in first] == ["seen"]
+
+    # a1's presence lapses (ttl=10) and a sweep at +100s reaps the agent row —
+    # but a1 never stopped reading, so its cursor must not be caught up in it.
+    store.sweep(now=1100.0)
+    assert store.list_agents(workspace=WS, now=1100.0) == []
+
+    store.post(workspace=WS, channel="c", sender="a2", body="new", ttl=600, now=1100.0)
+    second = store.read(workspace=WS, channels=["c"], agent_id="a1", now=1101.0)
+    assert [m.body for m in second] == ["new"]  # not a replay of "seen"
+
+
+def test_cursor_expires_after_long_enough_silence(store):
+    """Unlike presence, a cursor's own ttl is independent and much longer —
+    but it is still finite: an agent that never reads at all eventually does
+    forfeit its place, rather than the cursor row living forever."""
+    store.post(workspace=WS, channel="c", sender="a2", body="one", ttl=100_000, now=1000.0)
+    store.read(workspace=WS, channels=["c"], agent_id="a1", cursor_ttl=50.0, now=1000.0)
+
+    # Still within the cursor's ttl: reads pick up only what is new.
+    store.post(workspace=WS, channel="c", sender="a2", body="two", ttl=100_000, now=1010.0)
+    assert [m.body for m in store.read(
+        workspace=WS, channels=["c"], agent_id="a1", cursor_ttl=50.0, now=1010.0,
+    )] == ["two"]
+
+    # Past the cursor's ttl with no read in between: treated as no cursor at
+    # all, so both messages (still unexpired themselves) are replayed.
+    later = [m.body for m in store.read(workspace=WS, channels=["c"], agent_id="a1", now=1200.0)]
+    assert later == ["one", "two"]
+
+
 def test_sender_does_not_receive_its_own_message(store):
     store.post(workspace=WS, channel="c", sender="a1", body="mine", ttl=60)
     assert store.read(workspace=WS, channels=["c"], agent_id="a1") == []
@@ -311,6 +349,16 @@ def test_sweep_is_not_required_for_correct_reads(store):
     """Expiry is enforced at read time; the sweeper only reclaims disk."""
     store.acquire_lease(workspace=WS, resource="r", holder="a1", ttl=10, now=1000.0)
     assert store.get_lease(workspace=WS, resource="r", now=1020.0) is None
+
+
+def test_sweep_deletes_expired_cursors_on_their_own_ttl(store):
+    """Cursors are swept on their own expiry, same as every other table — not
+    on whether the owning agent is currently present (see
+    test_cursor_survives_agent_expiry_and_sweep for why that would be wrong)."""
+    store.post(workspace=WS, channel="c", sender="x", body="m", ttl=100_000, now=1000.0)
+    store.read(workspace=WS, channels=["c"], agent_id="a1", cursor_ttl=10.0, now=1000.0)
+    assert store.sweep(now=1005.0)["cursors"] == 0
+    assert store.sweep(now=1020.0)["cursors"] == 1
 
 
 # --- key bindings -------------------------------------------------------
