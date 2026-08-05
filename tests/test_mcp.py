@@ -232,6 +232,64 @@ def test_checkin_recovers_from_expired_presence(hub):
     assert hub.get("/agents", params={"workspace": WS}).json()["count"] == 1
 
 
+# --- automatic presence + DM notice, on every op, not just checkin ----------
+
+
+def test_ops_report_unread_dms_without_waiting_for_checkin(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    assert call(a1, "say", channel="build", message="starting")[0]["unread_dms"] == 0
+
+    call(a2, "dm", to="a1", message="ping")
+
+    # a1 never calls checkin or inbox — an unrelated op is what surfaces it.
+    payload, _ = call(a1, "board_set", key="scratch/x", value=1)
+    assert payload["unread_dms"] == 1
+
+
+def test_the_unread_dm_signal_does_not_consume_the_message(hub):
+    """A cheap notice, not a read — the message must still be there for inbox."""
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    call(a2, "dm", to="a1", message="ping")
+
+    call(a1, "claim", resource="r")           # an unrelated op, sees the notice
+    call(a1, "claim", resource="r2")           # calling it again changes nothing
+
+    payload, _ = call(a1, "inbox")
+    assert payload["count"] == 1
+    assert payload["messages"][0]["body"] == "ping"
+
+
+def test_unread_dms_ignores_channel_traffic(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    a1.client.register(name="a1", channels=["build"])
+    call(a2, "say", channel="build", message="noisy but not a dm")
+    payload, _ = call(a1, "claim", resource="r")
+    assert payload["unread_dms"] == 0
+
+
+def test_a_non_checkin_op_recovers_from_expired_presence(hub):
+    """Every op relies on heartbeat now, so it needs checkin's same recovery."""
+    a1 = make_bridge(hub, "a1")
+    call(a1, "whoami")
+    hub.delete("/agents/a1", params={"workspace": WS})
+    payload, is_error = call(a1, "say", channel="build", message="still here")
+    assert not is_error
+    assert hub.get("/agents", params={"workspace": WS}).json()["count"] == 1
+
+
+def test_claim_conflict_still_reports_unread_dms(hub):
+    """The notice belongs on every branch of a tool's result, not just success."""
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "claim", resource="db")
+    call(a2, "whoami")
+    call(a1, "dm", to="a2", message="ping")
+    payload, _ = call(a2, "claim", resource="db")  # a2 conflicts with a1's hold
+    assert payload["acquired"] is False
+    assert payload["unread_dms"] == 1
+
+
 def test_board_tools_round_trip(hub):
     a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
     call(a1, "board_set", key="plan/x", value={"steps": [1, 2]})

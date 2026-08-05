@@ -146,6 +146,22 @@ def test_heartbeat_does_not_renew_other_agents_leases(store):
     assert still_held.expires_at == pytest.approx(1030.0)
 
 
+def test_heartbeat_with_renew_leases_false_leaves_leases_untouched(store):
+    """The presence-only bump every op now does must not extend leases too —
+    an agent could otherwise no longer let one claim lapse deliberately
+    while staying active elsewhere."""
+    store.register_agent(workspace=WS, agent_id="a1", name="A", ttl=60, now=1000.0)
+    store.acquire_lease(workspace=WS, resource="r", holder="a1", ttl=900, now=1000.0)
+    agent, renewed = store.heartbeat(
+        workspace=WS, agent_id="a1", ttl=60, renew_leases=False, now=1500.0,
+    )
+    assert agent.last_seen_at == 1500.0  # presence still bumped
+    assert renewed == []
+    untouched = store.get_lease(workspace=WS, resource="r", now=1500.0)
+    assert untouched.renewed_at == 1000.0
+    assert untouched.expires_at == 1900.0
+
+
 def test_deregistering_releases_leases(store):
     store.register_agent(workspace=WS, agent_id="a1", name="A", ttl=60)
     store.acquire_lease(workspace=WS, resource="r", holder="a1", ttl=60)
@@ -257,6 +273,33 @@ def test_limit_does_not_skip_messages(store):
 def test_expired_messages_are_not_delivered(store):
     store.post(workspace=WS, channel="c", sender="a2", body="stale", ttl=10, now=1000.0)
     assert store.read(workspace=WS, channels=["c"], agent_id="a1", now=1020.0) == []
+
+
+def test_count_unread_reflects_pending_messages_without_consuming_them(store):
+    store.post(workspace=WS, channel="c", sender="a2", body="one", ttl=60)
+    store.post(workspace=WS, channel="c", sender="a2", body="two", ttl=60)
+    assert store.count_unread(workspace=WS, channel="c", agent_id="a1") == 2
+    # Calling it again changes nothing — it must not touch the cursor.
+    assert store.count_unread(workspace=WS, channel="c", agent_id="a1") == 2
+    assert [m.body for m in store.read(workspace=WS, channels=["c"], agent_id="a1")] == [
+        "one", "two",
+    ]
+
+
+def test_count_unread_drops_to_zero_after_a_real_read(store):
+    store.post(workspace=WS, channel="c", sender="a2", body="x", ttl=60)
+    store.read(workspace=WS, channels=["c"], agent_id="a1")
+    assert store.count_unread(workspace=WS, channel="c", agent_id="a1") == 0
+
+
+def test_count_unread_excludes_the_agents_own_messages(store):
+    store.post(workspace=WS, channel="c", sender="a1", body="mine", ttl=60)
+    assert store.count_unread(workspace=WS, channel="c", agent_id="a1") == 0
+
+
+def test_count_unread_ignores_expired_messages(store):
+    store.post(workspace=WS, channel="c", sender="a2", body="stale", ttl=10, now=1000.0)
+    assert store.count_unread(workspace=WS, channel="c", agent_id="a1", now=1020.0) == 0
 
 
 def test_direct_messages_are_just_a_channel(store):

@@ -106,6 +106,11 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   alive and hands you anything other agents have said. If you stop calling it,
   your claims expire and free themselves — which is correct if you have
   crashed and wrong if you are still working.
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration

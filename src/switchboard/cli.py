@@ -610,12 +610,12 @@ _LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
 #: with `switchboard init --local` (or any other `--url`).
 MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
 
-_SESSION_START_CMD = "switchboard register --quiet -c build || true"
+_SESSION_START_CMD = "switchboard -q register -c build || true"
 _STOP_CMD = (
-    'switchboard claims --holder "$(switchboard whoami --json | '
-    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" --json | "
+    'switchboard --json claims --holder "$(switchboard --json whoami | '
+    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
     "python -c 'import sys,json,subprocess;"
-    "[subprocess.run([\"switchboard\",\"release\",l[\"resource\"],\"--quiet\"]) "
+    "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
     "for l in json.load(sys.stdin)]' "
     "|| true"
 )

@@ -87,6 +87,33 @@ def test_heartbeat_returns_held_leases(client):
     assert [le["resource"] for le in body["leases"]] == ["r"]
 
 
+def test_heartbeat_reports_unread_dms_without_consuming_them(client):
+    _register(client, "a1")
+    _register(client, "a2")
+    client.post("/messages", json={
+        "workspace": WS, "channel": "@a1", "agent_id": "a2", "body": "ping",
+    })
+    first = client.post("/agents/heartbeat", json={"workspace": WS, "agent_id": "a1"}).json()
+    assert first["unread_dms"] == 1
+    # Non-destructive: a second heartbeat sees the same pending DM.
+    second = client.post("/agents/heartbeat", json={"workspace": WS, "agent_id": "a1"}).json()
+    assert second["unread_dms"] == 1
+    # Actually reading the inbox is what clears it.
+    client.get("/inbox", params={"workspace": WS, "agent_id": "a1"})
+    third = client.post("/agents/heartbeat", json={"workspace": WS, "agent_id": "a1"}).json()
+    assert third["unread_dms"] == 0
+
+
+def test_heartbeat_does_not_count_channel_traffic_as_a_dm(client):
+    _register(client, "a1", channels=["build"])
+    _register(client, "a2")
+    client.post("/messages", json={
+        "workspace": WS, "channel": "build", "agent_id": "a2", "body": "noisy",
+    })
+    body = client.post("/agents/heartbeat", json={"workspace": WS, "agent_id": "a1"}).json()
+    assert body["unread_dms"] == 0
+
+
 def test_deregister_removes_agent_and_leases(client):
     _register(client, "a1")
     client.post("/leases/acquire", json={"workspace": WS, "resource": "r", "agent_id": "a1"})
