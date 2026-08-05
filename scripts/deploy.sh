@@ -15,7 +15,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 echo "==> Pre-flight: checking for local drift"
-dirty="$(git status --porcelain -- ':!.env' ':!*.bak*')"
+# --untracked-files=no on purpose: this checks for local MODIFICATIONS to
+# TRACKED files, which is the only thing that can conflict with the
+# fast-forward below. Untracked files (a deploy host's own Caddyfile,
+# docker-compose.tls.yml, .env.bak.* snapshots, etc.) can never conflict
+# with `git merge --ff-only` on tracked paths, so they don't belong in this
+# check at all — no need to enumerate every filename a real deploy host
+# happens to carry.
+dirty="$(git status --porcelain --untracked-files=no)"
 if [ -n "$dirty" ]; then
   echo "ERROR: tracked files have local changes not from git:" >&2
   echo "$dirty" >&2
