@@ -1,5 +1,12 @@
 # A hub your agents can reach. Put a TLS-terminating proxy in front of it
 # before exposing it beyond localhost — see docs/deployment.md.
+#
+# Auth mode is chosen entirely by which of these three you set in `.env`
+# (gitignored) — leave the other two unset. Setting more than one is
+# rejected at startup (`switchboard serve` refuses to start), never
+# silently merged. Because this file itself stays generic across all three
+# modes, a `git pull` never has to touch it — one less thing for an
+# automated deploy to stomp on.
 services:
   switchboard:
     build: .
@@ -9,8 +16,14 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     environment:
-      # Required. Generate with: python -c 'import secrets;print(secrets.token_urlsafe(32))'
-      SWITCHBOARD_TOKEN: ${SWITCHBOARD_TOKEN:?set SWITCHBOARD_TOKEN}
+      # Shared bearer token. Generate with:
+      #   python -c 'import secrets;print(secrets.token_urlsafe(32))'
+      SWITCHBOARD_TOKEN: ${SWITCHBOARD_TOKEN:-}
+      # JSON file of scoped keys for a multi-tenant hub. See config.py.
+      SWITCHBOARD_KEYS_FILE: ${SWITCHBOARD_KEYS_FILE:-}
+      # Multi-tenant without a curated file — clients self-register with
+      # `switchboard register-key`. Set to "1" to enable.
+      SWITCHBOARD_SELF_ISSUED_KEYS: ${SWITCHBOARD_SELF_ISSUED_KEYS:-}
       SWITCHBOARD_DB: /data/switchboard.db
     volumes:
       - switchboard-data:/data

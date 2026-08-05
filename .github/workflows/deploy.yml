@@ -1,0 +1,49 @@
+name: Deploy hub (self-hosted)
+
+# Deploys this repo's main branch to wherever the self-hosted runner below is
+# registered — for gald33/switchboard that's lucille-vm, alongside (but not
+# wired into) the Lucille deploy. See docs/deployment.md and scripts/deploy.sh.
+#
+# Registering the runner is a one-time manual step, done from the target
+# host:
+#   1. GitHub repo -> Settings -> Actions -> Runners -> New self-hosted runner
+#   2. Follow the ./config.sh steps it gives you, using label `switchboard`
+#      in addition to the defaults, and a distinct install directory from
+#      any other runner already on that host (e.g. /opt/switchboard-runner).
+#   3. Install it as a service (`./svc.sh install && ./svc.sh start`) so it
+#      survives reboots, same as any other self-hosted runner.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+      - Dockerfile
+      - docker-compose.yml
+      - pyproject.toml
+      - scripts/deploy.sh
+      - .github/workflows/deploy.yml
+
+concurrency:
+  group: hub-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, switchboard]
+    timeout-minutes: 20
+    steps:
+      - name: Run deploy script against the working copy the runner already has
+        run: |
+          repo_dir="${SWITCHBOARD_DEPLOY_DIR:-$HOME/switchboard}"
+          if [ ! -d "$repo_dir/.git" ]; then
+            echo "ERROR: $repo_dir is not a git checkout. Set SWITCHBOARD_DEPLOY_DIR" >&2
+            echo "in the runner's environment, or clone the repo there first." >&2
+            exit 1
+          fi
+          cd "$repo_dir"
+          bash scripts/deploy.sh
