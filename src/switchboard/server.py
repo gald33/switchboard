@@ -29,7 +29,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from .auth import Principal, PrincipalResolver, SharedTokenResolver
+from .auth import (
+    Principal,
+    PrincipalResolver,
+    SelfIssuedKeyResolver,
+    SharedTokenResolver,
+    hash_token,
+)
 from .config import (
     DEFAULT_AGENT_TTL,
     DEFAULT_BOARD_TTL,
@@ -122,6 +128,10 @@ class BoardIn(BaseModel):
     agent_id: str
     ttl: float | None = Field(default=None, gt=0)
     if_revision: int | None = None
+
+
+class KeyRegisterIn(BaseModel):
+    workspace: str
 
 
 # --- serialization ----------------------------------------------------------
@@ -307,11 +317,41 @@ def create_app(
     async def _store_error(_, exc: StoreError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": "conflict", "detail": str(exc)})
 
+    # --- self-issued keys ---------------------------------------------------
+
+    # Only mounted when the hub actually runs this resolver — a hub using
+    # SharedTokenResolver or StaticKeyResolver has no concept of a client
+    # registering its own key, and the route should not exist there, not
+    # just reject calls to it. See auth.SelfIssuedKeyResolver.
+    if isinstance(resolver, SelfIssuedKeyResolver):
+
+        @app.post("/keys/register")
+        def register_key(
+            payload: KeyRegisterIn, authorization: str | None = Header(default=None)
+        ) -> dict[str, Any]:
+            if not authorization or not authorization.startswith("Bearer "):
+                raise HTTPException(status_code=401, detail="missing bearer token")
+            token = authorization[len("Bearer "):]
+            if len(token) < 16:
+                raise HTTPException(
+                    status_code=400,
+                    detail="token too short — generate one with "
+                           "python -c 'import secrets;print(secrets.token_urlsafe(32))'",
+                )
+            workspace = store.bind_key(token_hash=hash_token(token), workspace=payload.workspace)
+            return {"workspace": workspace}
+
     # --- meta --------------------------------------------------------------
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "version": API_VERSION, "auth": bool(config.token)}
+        # Whether a caller needs to authenticate at all — true unless the
+        # resolver is explicitly open (SharedTokenResolver with no token).
+        # `bool(config.token)` alone was wrong for every other resolver: a
+        # StaticKeyResolver or SelfIssuedKeyResolver hub always requires
+        # auth, but neither one sets config.token, so it reported False.
+        auth_required = not getattr(resolver, "open", False)
+        return {"ok": True, "version": API_VERSION, "auth": auth_required}
 
     @app.get("/stats", dependencies=guard)
     def stats(workspace: str | None = None) -> dict[str, Any]:

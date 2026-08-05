@@ -21,7 +21,7 @@ It is written as a design, not a description. **Stage 1 below is built. Stages
 | | What it is | Status |
 |---|---|---|
 | **1. Multi-tenancy** | Workspaces become a security boundary, not just a namespace | **built** |
-| **2. Managed hub** | A hub anyone can connect to, with issued keys | designed, not built |
+| **2. Managed hub** | A hub anyone can connect to, with issued keys | partially built — self-issued keys ship; quotas, billing, operational visibility do not |
 | **3. Priority under congestion** | Keys carry a tier; contention is resolved by tier, and the revenue pays for the capacity | designed, not built |
 
 The ordering is not arbitrary. Stage 1 was worth doing immediately and alone,
@@ -145,6 +145,10 @@ the thing holding this back.
 Beyond the resolver seam that already exists:
 
 1. **A key store and an issuance path.** Signup, key generation, revocation.
+   The self-service slice of this — a client generates its own key and the
+   hub binds it to a workspace on first use — is built; see below. What's
+   still missing is anything an *operator* needs: revocation, an audit trail,
+   a way to see who holds what.
 2. **Per-key quotas.** Concurrent connections, agents, workspaces, storage.
    Needed before congestion pricing, because a quota is what makes "capacity"
    a number rather than a feeling.
@@ -154,6 +158,61 @@ Beyond the resolver seam that already exists:
 
 None of this belongs in the open-source hub except (3) and (4), which are
 genuinely useful self-hosted too.
+
+### Self-issued keys — built
+
+The obvious-looking shortcut to stage 1's "no issuance path defined" gap: let
+each user generate their own key locally (the same way `switchboard keygen`
+already does for the encryption key) and have the hub register it the first
+time it's used against a workspace — no operator, no signup form, no key
+store to build. Worth being precise about when this actually helps, because
+the naive version of it doesn't — and the precise version is what's shipped.
+
+**A workspace name is an address, not a lock.** It is plaintext by
+construction — the hub has to route by it — and [encryption.md](encryption.md)
+already makes it opaque. But opacity only matters to a caller who *isn't*
+already unrestricted. A caller holding `SharedTokenResolver`'s one token *is*
+unrestricted (`workspaces=None`), by definition, regardless of whether
+workspace names are guessable. So the shared token protects against people
+who never had it — the general internet — and does nothing between two people
+who *do* have it: either can list every active workspace on `GET /stats` and
+write into any of them, because nothing about the token scopes them apart.
+Encryption stops the second person *reading* the first's messages, but per
+["What end-to-end encryption changes about all of this"](#what-end-to-end-encryption-changes-about-all-of-this)
+below, it was never claimed to stop writing, spamming a channel, or squatting
+a lease.
+
+Given that, a self-issued key is worthless *unless binding it also scopes
+it* — `Principal(workspaces={that one})`, exactly what `StaticKeyResolver`
+already enforces for an operator-issued key. A self-issued key that stays
+unrestricted after registration is just a second string that means "you know
+this," which an opaque workspace name already provides for free. The value
+was never "another secret"; it was always the restriction.
+
+That reframes what stage 2 minimally needs, if built self-service rather than
+via an operator: not just "accept and remember a token," but "first token to
+claim a workspace name owns it, and every claim narrows `Principal.workspaces`
+to exactly that name" — plus a policy for the case that makes this a real
+feature rather than a CLI trick: two different tokens racing to claim the
+same workspace name (first wins; the loser needs a different name, the same
+way a squatted username would).
+
+That is exactly what `SelfIssuedKeyResolver` (`auth.py`) does. A hub run
+with `--self-issued-keys` (or `SWITCHBOARD_SELF_ISSUED_KEYS=1`) has no
+config file of keys at all; instead, `key_bindings` in the store — token
+hash to workspace, never expiring, unlike everything else in this schema —
+is the entire key store. A client runs `switchboard register-key
+--workspace <name>`, which generates a token locally and calls
+`POST /keys/register` to bind it; the hub hashes the token, and the pair is
+claimed under the same `BEGIN IMMEDIATE` transaction pattern the store
+already uses for lease acquisition, so two tokens racing for the same
+workspace resolve the same way two agents racing for the same lease do — one
+wins, one gets a 409. Re-registering the *same* token against the *same*
+workspace is a no-op rather than a conflict, so a retried request or a
+teammate re-running the command doesn't fail. What is still missing is
+everything an operator needs on top of that: revocation, quotas, and an
+audit trail — none of which self-service issuance requires, all of which a
+paid managed hub eventually will.
 
 ---
 

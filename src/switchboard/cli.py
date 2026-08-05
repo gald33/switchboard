@@ -142,16 +142,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config.token = args.token
     if args.keys_file:
         config.keys_file = args.keys_file
-    if config.token and config.keys_file:
+    if args.self_issued_keys:
+        config.self_issued_keys = True
+    modes_set = sum([bool(config.token), bool(config.keys_file), config.self_issued_keys])
+    if modes_set > 1:
         print(
-            "error: --token/SWITCHBOARD_TOKEN and --keys-file/SWITCHBOARD_KEYS_FILE "
-            "are mutually exclusive — a hub is either single-token or multi-tenant, "
-            "not both.",
+            "error: --token/SWITCHBOARD_TOKEN, --keys-file/SWITCHBOARD_KEYS_FILE and "
+            "--self-issued-keys/SWITCHBOARD_SELF_ISSUED_KEYS are mutually exclusive — "
+            "a hub runs in exactly one auth mode.",
             file=sys.stderr,
         )
         return EXIT_ERROR
 
     resolver = None
+    store = None
     if config.keys_file:
         from .auth import load_static_keys
 
@@ -161,6 +165,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_ERROR
         print(f"loaded {len(resolver)} scoped key(s) from {config.keys_file}", file=sys.stderr)
+    elif config.self_issued_keys:
+        from .auth import SelfIssuedKeyResolver
+        from .store import Store
+
+        # Built here rather than left to create_app's own default so the same
+        # instance backs both the resolver's lookups and the app's routes —
+        # two Store objects would still agree (same file, WAL-mode SQLite),
+        # but there is no reason to open the database twice.
+        store = Store(config.db_path)
+        resolver = SelfIssuedKeyResolver(store)
+        print(
+            "self-issued keys enabled — clients register via "
+            "`switchboard register-key --workspace <name>`",
+            file=sys.stderr,
+        )
     elif not config.token:
         print(
             "warning: no token set — this hub accepts any caller. "
@@ -169,7 +188,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
     print(f"switchboard {__version__} → http://{args.host}:{args.port}  db={config.db_path}")
     uvicorn.run(
-        create_app(config, resolver=resolver), host=args.host, port=args.port,
+        create_app(config, store=store, resolver=resolver), host=args.host, port=args.port,
         log_level=args.log_level,
     )
     return EXIT_OK
@@ -201,6 +220,61 @@ def cmd_keygen(args: argparse.Namespace) -> int:
             "Use an opaque one and it stops being the most descriptive thing\n"
             "the hub holds. Keep the readable name in your own notes:\n"
             f"  export SWITCHBOARD_WORKSPACE={workspace}",
+            file=sys.stderr,
+        )
+    return EXIT_OK
+
+
+def cmd_register_key(args: argparse.Namespace) -> int:
+    """Generate an auth key locally and bind it to a workspace on a hub.
+
+    Only meaningful against a hub running ``--self-issued-keys``; every other
+    hub already knows what its tokens are and has nothing to register. First
+    key to claim a workspace name owns it — a teammate re-running this with
+    the *same* key against the *same* workspace is a harmless no-op, but a
+    different key claiming a name already taken is rejected, the same way a
+    squatted username would be.
+    """
+    import httpx
+
+    url = (args.url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
+    workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
+        Path(".").resolve()
+    )
+    token = secrets.token_urlsafe(32)
+    try:
+        response = httpx.post(
+            f"{url}/keys/register",
+            json={"workspace": workspace},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        print(f"error: could not reach {url}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        print(f"error: {detail}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.json:
+        _print_json({"token": token, "workspace": workspace, "url": url})
+        return EXIT_OK
+    print(token)
+    if sys.stdout.isatty():
+        print(
+            f"\nBound to workspace {workspace!r} on {url}.\n"
+            "Share this with the agents in the workspace and nobody else:\n"
+            f"  export SWITCHBOARD_TOKEN={token}\n"
+            f"  export SWITCHBOARD_URL={url}\n"
+            f"  export SWITCHBOARD_WORKSPACE={workspace}\n"
+            "\nThe hub stores only a hash of this, never the key itself. If it's\n"
+            "lost, there is no recovery — generate a new one against a new\n"
+            "workspace name, the same as `switchboard keygen` for encryption.",
             file=sys.stderr,
         )
     return EXIT_OK
@@ -792,6 +866,14 @@ def build_parser() -> argparse.ArgumentParser:
              "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
              "docstring for the file format.",
     )
+    p.add_argument(
+        "--self-issued-keys",
+        action="store_true",
+        help="multi-tenant without a curated file (env: SWITCHBOARD_SELF_ISSUED_KEYS=1) — "
+             "clients register their own key with `switchboard register-key`, scoped to "
+             "one workspace on a first-claim-wins basis. Mutually exclusive with --token "
+             "and --keys-file.",
+    )
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser(
@@ -818,6 +900,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "keygen", help="generate a workspace key for end-to-end encryption")
     p.set_defaults(func=cmd_keygen)
+
+    p = sub.add_parser(
+        "register-key",
+        help="generate an auth key and bind it to a workspace (hubs running "
+             "--self-issued-keys only)",
+    )
+    p.set_defaults(func=cmd_register_key)
 
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)

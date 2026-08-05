@@ -23,7 +23,7 @@ needs to know about a caller.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 #: Tier of an anonymous/self-hosted caller. Tiers exist so that a hub under
 #: contention can order work by them; nothing in the open-source hub treats
@@ -106,6 +106,55 @@ class StaticKeyResolver:
             if _constant_time_eq(token, candidate):
                 return principal
         return None
+
+
+class SelfIssuedKeyResolver:
+    """Tokens a client generates itself, bound to a workspace on first use.
+
+    There is no issuance path here — a client picks its own random token
+    (the same way ``switchboard keygen`` already does for the encryption key)
+    and registers it via ``POST /keys/register``, not through :meth:`resolve`.
+    By the time ``resolve`` runs the request's workspace is not yet known
+    (see ``server.require_principal``'s ordering), so binding has to happen
+    as its own explicit step; this class only ever looks an existing binding
+    up, it never creates one.
+
+    First-claim-wins, in both directions, enforced by :meth:`Store.bind_key`:
+    a token binds to exactly one workspace, and a workspace accepts exactly
+    one token. A key that stays unrestricted after registration would be
+    worthless — redundant with an opaque workspace name, since the caller
+    would already be unrestricted either way — so this is the one resolver
+    that *cannot* return a `Principal` with ``workspaces=None``.
+    """
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def resolve(self, token: str | None) -> Principal | None:
+        if token is None:
+            return None
+        workspace = self._store.lookup_key_binding(hash_token(token))
+        if workspace is None:
+            return None
+        return Principal(key_id=hash_token(token)[:12], workspaces=frozenset({workspace}))
+
+
+def hash_token(token: str) -> str:
+    """One-way digest of a bearer token, for tokens that get persisted.
+
+    `StaticKeyResolver` and `SharedTokenResolver` compare tokens in memory,
+    against values that only ever lived in a config file or an env var, so
+    they never store the raw token anywhere new. `SelfIssuedKeyResolver` is
+    different: its bindings live in the hub's own database, so the token
+    itself must not — a leaked database file must not hand out working
+    credentials. A plain SHA-256 is enough (not a slow password KDF): the
+    input is a high-entropy random token, not a memorable secret, so there is
+    nothing for a slow hash to protect against that a fast one does not
+    already make infeasible.
+    """
+    import hashlib
+
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _constant_time_eq(a: str, b: str) -> bool:
