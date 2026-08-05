@@ -78,12 +78,12 @@ end to release:
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "switchboard register --quiet -c build || true"
+command = "switchboard -q register -c build || true"
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "switchboard claims --holder \"$(switchboard whoami --json | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" --json | python3 -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"release\",l[\"resource\"],\"--quiet\"]) for l in json.load(sys.stdin)]' || true"
+command = "switchboard --json claims --holder \"$(switchboard --json whoami | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python3 -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
 ```
 
 The `|| true` matters here for the same reason it does in Claude Code: a hub
