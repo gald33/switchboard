@@ -63,8 +63,11 @@ and one will be generated. Returns `{"agent": {...}}`.
  "renew_leases": true}
 ```
 Refreshes presence and, unless `renew_leases` is false, extends every lease the
-agent holds — each keeping its own original duration. Returns the agent and its
-leases. `404` if the agent is unknown or expired, which means "register again".
+agent holds — each keeping its own original duration. Returns the agent, its
+leases, and `unread_dms` — a non-destructive count of pending messages on the
+agent's own `@<id>` channel (the cursor is never touched, so this doesn't
+affect what `GET /inbox` later returns). `404` if the agent is unknown or
+expired, which means "register again".
 
 ### `GET /agents?workspace=`
 Live agents. Each carries `stale: true` if it has not been seen in 60s.

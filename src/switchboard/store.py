@@ -731,6 +731,35 @@ class Store:
         out.sort(key=lambda m: m.seq)
         return out
 
+    def count_unread(self, *, workspace: str, channel: str, agent_id: str,
+                      now: float | None = None) -> int:
+        """How many unread messages sit in one channel for one agent.
+
+        A cheap, non-destructive signal meant to ride along on operations
+        that are not themselves reading the inbox: one cursor lookup plus one
+        indexed count, no message rows fetched or decrypted, and the cursor
+        is never touched — calling this any number of times changes nothing
+        about what a later `read()` returns.
+
+        Must treat an expired cursor exactly as `read()` does (as if absent,
+        i.e. `start=0`) — otherwise a stale cursor row past its own
+        `cursor_ttl` would undercount here relative to what `read()` would
+        actually return for the same agent.
+        """
+        now = time.time() if now is None else now
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT last_seq FROM cursors WHERE workspace=? AND agent_id=? "
+                "AND channel=? AND expires_at > ?",
+                (workspace, agent_id, channel, now),
+            ).fetchone()
+            start = row["last_seq"] if row else 0
+            return conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE workspace=? AND channel=? "
+                "AND seq > ? AND expires_at > ? AND sender != ?",
+                (workspace, channel, start, now, agent_id),
+            ).fetchone()["n"]
+
     def peek(self, *, workspace: str, channel: str, limit: int = 50,
              now: float | None = None) -> list[Message]:
         """Most recent messages on a channel, oldest-first, cursor untouched."""

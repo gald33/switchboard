@@ -291,21 +291,48 @@ class Bridge:
         )
         self._registered = True
 
+    def _touch(self) -> int:
+        """Bump presence and report unread DMs — called on every tool, not
+        just checkin, so a ping gets noticed as soon as the agent does
+        anything at all rather than only when it remembers to check in.
+
+        Deliberately narrow: one presence update, one indexed count. It does
+        NOT renew leases (an unrelated op renewing every held lease as a side
+        effect would be a real behavior change — an agent could no longer let
+        one claim lapse while staying active elsewhere) and does NOT drain
+        the inbox (that risks marking a message read before the agent ever
+        saw it). Both stay behind the explicit `checkin`/`inbox` calls.
+        """
+        self._ensure_registered()
+        try:
+            result = self.client.heartbeat(renew_leases=False)
+        except SwitchboardError as exc:
+            if exc.status == 404:
+                # Presence expired between calls; re-register and retry once,
+                # same recovery checkin already relies on.
+                self._registered = False
+                self._ensure_registered()
+                result = self.client.heartbeat(renew_leases=False)
+            else:
+                raise
+        return result.get("unread_dms", 0)
+
     # --- individual tools ---
 
     def whoami(self) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         return {
             "agent_id": self.identity.agent_id,
             "name": self.identity.name,
             "kind": self.identity.kind,
             "branch": self.identity.branch,
+            "unread_dms": unread_dms,
             "workspace": self.config.workspace,
             "hub": self.config.url,
         }
 
     def roster(self) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         agents = self.client.agents()
         leases = self.client.leases()
         mismatched = self.client.key_mismatches(agents)
@@ -314,6 +341,7 @@ class Bridge:
             by_holder.setdefault(lease["holder"], []).append(lease["resource"])
         return {
             "you": self.identity.agent_id,
+            "unread_dms": unread_dms,
             "agents": [
                 {
                     "agent_id": a["agent_id"],
@@ -366,7 +394,7 @@ class Bridge:
     def claim(self, resource: str, note: str | None = None,
               ttl: float | None = None,
               custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         try:
             lease = self.client.acquire(resource, note=note, ttl=ttl, custom_scope=custom_scope)
         except LeaseHeld as exc:
@@ -379,22 +407,24 @@ class Bridge:
                     f"{exc.holder} is working on this. Pick different work rather than "
                     f"waiting; use dm to coordinate if you must have it."
                 ),
+                "unread_dms": unread_dms,
             }
         return {
             "acquired": True,
             "resource": lease["resource"],
             "expires_in": lease["expires_in"],
             "note": "Renewed automatically by checkin. Call release when you finish.",
+            "unread_dms": unread_dms,
         }
 
     def release(self, resource: str,
                 custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         released = self.client.release(resource, custom_scope=custom_scope)
-        return {"released": released, "resource": resource}
+        return {"released": released, "resource": resource, "unread_dms": unread_dms}
 
     def claims(self, mine: bool = False) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         holder = self.identity.agent_id if mine else None
         leases = self.client.leases(holder=holder)
         return {
@@ -409,31 +439,38 @@ class Bridge:
                 for le in leases
             ],
             "count": len(leases),
+            "unread_dms": unread_dms,
         }
 
     def say(self, channel: str, message: str, type: str = "note",
             ttl: float | None = None,
             custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         msg = self.client.post(channel, message, type=type, ttl=ttl, custom_scope=custom_scope)
-        return {"posted": True, "channel": msg["channel"], "seq": msg["seq"]}
+        return {
+            "posted": True, "channel": msg["channel"], "seq": msg["seq"],
+            "unread_dms": unread_dms,
+        }
 
     def dm(self, to: str, message: str, type: str = "note",
            ttl: float | None = None,
            custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         msg = self.client.send(to, message, type=type, ttl=ttl, custom_scope=custom_scope)
-        return {"sent": True, "to": to, "seq": msg["seq"]}
+        return {"sent": True, "to": to, "seq": msg["seq"], "unread_dms": unread_dms}
 
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
               peek: bool = False,
               custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         messages = self.client.inbox(
             channels=channels, wait=min(max(wait, 0.0), 25.0), peek=peek,
             custom_scope=custom_scope,
         )
-        return {"messages": [self._msg(m) for m in messages], "count": len(messages)}
+        return {
+            "messages": [self._msg(m) for m in messages], "count": len(messages),
+            "unread_dms": unread_dms,
+        }
 
     def keygen(self) -> dict[str, Any]:
         """Mint a fresh (key, workspace) pair for a private side-conversation.
@@ -445,29 +482,32 @@ class Bridge:
         return {"key": key, "workspace": workspace}
 
     def history(self, channel: str, limit: float = 30) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         messages = self.client.history(channel, limit=int(limit))
-        return {"channel": channel, "messages": [self._msg(m) for m in messages]}
+        return {
+            "channel": channel, "messages": [self._msg(m) for m in messages],
+            "unread_dms": unread_dms,
+        }
 
     def board_set(self, key: str, value: Any, ttl: float | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         entry = self.client.board_set(key, value, ttl=ttl)
         return {"key": entry["key"], "revision": entry["revision"],
-                "expires_in": entry["expires_in"]}
+                "expires_in": entry["expires_in"], "unread_dms": unread_dms}
 
     def board_get(self, key: str) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         entry = self.client.board_entry(key)
         if entry is None:
-            return {"key": key, "found": False, "value": None}
+            return {"key": key, "found": False, "value": None, "unread_dms": unread_dms}
         return {
             "key": key, "found": True, "value": entry["value"],
             "revision": entry["revision"], "updated_by": entry["updated_by"],
-            "updated_at": entry["updated_at"],
+            "updated_at": entry["updated_at"], "unread_dms": unread_dms,
         }
 
     def board_list(self, prefix: str | None = None) -> dict[str, Any]:
-        self._ensure_registered()
+        unread_dms = self._touch()
         entries = self.client.board_list(prefix=prefix)
         return {
             "entries": [
@@ -476,6 +516,7 @@ class Bridge:
                 for e in entries
             ],
             "count": len(entries),
+            "unread_dms": unread_dms,
         }
 
     @staticmethod
@@ -531,7 +572,11 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
                 "Switchboard coordinates you with other AI agents working this same "
                 "codebase. Call roster before starting work to see who else is active, "
                 "claim before editing a resource others might touch, checkin periodically "
-                "so your claims stay alive, and release when you are done."
+                "so your claims stay alive, and release when you are done. Every tool "
+                "result also carries 'unread_dms' — how many direct messages are waiting, "
+                "kept current on every call so a ping is noticed as soon as you do "
+                "anything, not just when you next checkin. Treat a nonzero value as a cue "
+                "to call inbox or checkin soon rather than waiting."
             ),
         })
 

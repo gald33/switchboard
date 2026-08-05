@@ -402,9 +402,17 @@ def create_app(
                 status_code=404,
                 detail="unknown or expired agent; call /agents/register again",
             )
+        # An agent's own DM channel is always `@<its id>`, unblinded even when
+        # encrypted — see WorkspaceCipher.blind_channel — so this needs no
+        # help from the client to compute correctly either way.
+        unread_dms = store.count_unread(
+            workspace=payload.workspace, channel=f"@{payload.agent_id}",
+            agent_id=payload.agent_id, now=now,
+        )
         return {
             "agent": dump_agent(agent, now),
             "leases": [dump_lease(le, now) for le in leases],
+            "unread_dms": unread_dms,
         }
 
     @app.get("/agents", dependencies=guard)
