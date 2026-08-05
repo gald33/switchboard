@@ -51,9 +51,12 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   directory, a subsystem). If `claim` reports someone else holds it, pick
   different work rather than waiting.
 - **While working**, call `checkin` every few minutes. It keeps your claims
-  alive and hands you anything other agents have said. If you stop calling it,
-  your claims expire and free themselves — which is correct if you have
-  crashed and wrong if you are still working.
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
 - **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
   live count of direct messages waiting for you, kept current on every call
   so a ping is noticed as soon as you do anything at all. A nonzero value
