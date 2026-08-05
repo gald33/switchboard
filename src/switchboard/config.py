@@ -57,6 +57,14 @@ MAX_LEASE_TTL = 86400
 MAX_MESSAGE_TTL = 86400
 MAX_BOARD_TTL = 7 * 86400
 
+# How long an unused read cursor survives. Deliberately much longer than
+# DEFAULT_AGENT_TTL: an agent's presence lapsing (a long turn, a gap between
+# sessions) must not cost it its place in a conversation — only an agent that
+# never reads at all for this long forfeits it. No message ever outlives this
+# either, since MAX_MESSAGE_TTL is bounded well under it, so a cursor this old
+# has nothing left to protect anyway.
+DEFAULT_CURSOR_TTL = 7 * 86400  # 7 days
+
 # Long-poll ceiling for `GET /inbox?wait=`. Kept under the 30s that most
 # proxies use as an idle-read timeout.
 MAX_WAIT_SECONDS = 25.0
