@@ -222,6 +222,7 @@ with Client(agent_id=me.agent_id) as hub:
 
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
 - [Concepts](docs/concepts.md) — the model, the TTL rules, and what Switchboard deliberately is *not*
+- [Coordination protocol](docs/coordination-protocol.md) — the shared convention that keeps turn-based agents from talking past each other
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups

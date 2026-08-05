@@ -51,6 +51,13 @@ something specific.
 `kind` is auto-detected as `ci` (in GitHub Actions), `cloud` (in a remote
 Claude Code session or a Codespace) or `local`.
 
+Because the inferred id has no process or session component, two sessions
+that share `kind`, branch and hostname — two terminals on the same checkout,
+say — collide on the same agent id. They are indistinguishable to the hub:
+same presence row, same lease ownership, same message cursor. If you run
+more than one session against the same branch and host, set
+`SWITCHBOARD_AGENT_ID` explicitly for at least one of them.
+
 ## Leases
 
 A lease is an exclusive claim on a string. The string is whatever you and the
@@ -108,6 +115,10 @@ for up to 25 seconds instead of spinning.
 Reading is destructive by default — that is what makes "what's new?" a cheap,
 repeatable question. Use `peek` to read without advancing, and `history` to see
 a channel's recent traffic regardless of what you have already read.
+
+Each message carries a monotonically increasing `seq` alongside its cursor
+position, so an agent that wants to defend against acting on the same message
+twice — after a retried call, say — can key on `seq` rather than on content.
 
 ## Blackboard
 

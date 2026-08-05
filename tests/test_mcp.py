@@ -202,6 +202,22 @@ def test_say_and_inbox(hub):
     assert payload["messages"][0]["from"] == "a2"
 
 
+def test_inbox_messages_expose_seq_for_client_side_dedup(hub):
+    """#24: agents need a stable identifier to defend against acting on the
+    same message twice, independent of body content."""
+    a1 = make_bridge(hub, "a1")
+    a2 = make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    call(a2, "say", channel="build", message="first")
+    call(a2, "say", channel="build", message="second")
+    payload, _ = call(a1, "inbox")
+    seqs = [m["seq"] for m in payload["messages"]]
+    assert len(seqs) == 2
+    assert len(set(seqs)) == 2
+    assert seqs == sorted(seqs)
+
+
 def test_dm_reaches_only_the_addressee(hub):
     a1, a2, a3 = (make_bridge(hub, n) for n in ("a1", "a2", "a3"))
     for b in (a1, a2, a3):

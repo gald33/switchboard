@@ -522,6 +522,7 @@ class Bridge:
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
         out = {
+            "seq": m["seq"],
             "from": m["from"],
             "channel": m["channel"],
             "body": m["body"],

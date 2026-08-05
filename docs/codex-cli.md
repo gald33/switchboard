@@ -82,6 +82,12 @@ Switchboard is ephemeral by design. Anything that should outlive the work still
 belongs in a commit message, a PR body, or a doc — not in a channel.
 ```
 
+That covers the primitives. For the convention that keeps independently
+triggered sessions from splitting a handoff between messages and the
+blackboard — well-known blackboard key shapes, when a live wait is worth it,
+and what to do when a session ends mid-wait — see
+[Coordination protocol](coordination-protocol.md).
+
 ## 5. Optional: automate the lifecycle with hooks
 
 Codex hooks live in `config.toml` too, under a `[[hooks.<Event>]]` /

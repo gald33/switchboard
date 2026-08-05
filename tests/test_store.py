@@ -203,6 +203,42 @@ def test_cursor_delivers_each_message_once(store):
     assert [m.body for m in store.read(workspace=WS, channels=["c"], agent_id="a1")] == ["three"]
 
 
+def test_concurrent_reads_deliver_each_message_exactly_once(store):
+    """Issue #24: investigated whether concurrent readers sharing one agent
+    id (e.g. two sessions on the same branch and host — see docs/concepts.md
+    on how the id is derived) could ever both receive the same message.
+
+    They can't: BEGIN IMMEDIATE serializes the read-then-advance-cursor
+    sequence the same way it does for lease acquisition. What actually
+    happens under this race is the opposite of a duplicate — the messages
+    get unpredictably split between the concurrent readers, one each — which
+    is a real, distinct hazard of two sessions sharing an id, just not the
+    one reported.
+    """
+    for i in range(50):
+        store.post(workspace=WS, channel="c", sender="sender", body=i, ttl=60)
+
+    results: list[int] = []
+    results_lock = threading.Lock()
+    barrier = threading.Barrier(10)
+
+    def reader() -> None:
+        barrier.wait()
+        for _ in range(20):
+            msgs = store.read(workspace=WS, channels=["c"], agent_id="shared-id")
+            if msgs:
+                with results_lock:
+                    results.extend(m.body for m in msgs)
+
+    threads = [threading.Thread(target=reader) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(results) == list(range(50))
+
+
 def test_peek_does_not_advance_the_cursor(store):
     store.post(workspace=WS, channel="c", sender="a2", body="x", ttl=60)
     store.read(workspace=WS, channels=["c"], agent_id="a1", commit_cursor=False)
