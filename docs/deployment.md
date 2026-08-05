@@ -317,3 +317,23 @@ Run **one** worker. The sweeper runs in-process, and multiple workers would
 each run their own — harmless but pointless. SQLite's write lock, not the
 worker count, is the concurrency limit, and it is nowhere near being the
 bottleneck at this scale.
+
+## Continuous deployment
+
+`scripts/deploy.sh` automates an update-in-place: pre-flight check for local
+drift, fast-forward to `origin/main`, rebuild tagged by commit (so a rollback
+has an actual image to go back to, not just source), a standalone sanity
+check on the new image before it touches the running container, cutover, and
+a `/health` verification. Run it by hand, or wire it to
+`.github/workflows/deploy.yml`, which fires it on every push to `main` from a
+self-hosted runner — see that file's header comment for the one-time runner
+registration step. Nothing about the workflow is switchboard-specific: it
+just needs a runner with Docker and a checkout of this repo somewhere
+(`SWITCHBOARD_DEPLOY_DIR`, default `~/switchboard`).
+
+Auth mode (`SWITCHBOARD_TOKEN` / `SWITCHBOARD_KEYS_FILE` /
+`SWITCHBOARD_SELF_ISSUED_KEYS`) lives entirely in `.env`, which is gitignored
+and untouched by `git fetch`/`checkout`. Don't hand-edit the mode into
+`docker-compose.yml` itself — that file is meant to stay identical to
+`origin/main` so an automated pull never has local changes to stomp on or
+conflict with.
