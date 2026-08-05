@@ -509,15 +509,17 @@ def cmd_board(args: argparse.Namespace) -> int:
             value: Any = args.value
             if args.json_body:
                 value = json.loads(args.value)
-            entry = hub.board_set(args.key, value, ttl=args.ttl, if_revision=args.if_revision)
+            entry = hub.board_set(
+                args.board_key, value, ttl=args.ttl, if_revision=args.if_revision
+            )
             if args.json:
                 _print_json(entry)
             elif not args.quiet:
                 print(f"{entry['key']} = rev {entry['revision']}")
         elif args.board_action == "get":
-            entry = hub.board_entry(args.key)
+            entry = hub.board_entry(args.board_key)
             if entry is None:
-                print(f"no entry at {args.key}", file=sys.stderr)
+                print(f"no entry at {args.board_key}", file=sys.stderr)
                 return EXIT_ERROR
             if args.json:
                 _print_json(entry)
@@ -534,7 +536,7 @@ def cmd_board(args: argparse.Namespace) -> int:
                         f"{e['updated_by'][:24]:<26} {_dur(e['expires_in'])}"
                     )
         elif args.board_action == "delete":
-            deleted = hub.board_delete(args.key)
+            deleted = hub.board_delete(args.board_key)
             if not args.quiet:
                 print("deleted" if deleted else "not found")
     return EXIT_OK
@@ -1003,18 +1005,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("board", help="shared key/value scratch space")
     bsub = p.add_subparsers(dest="board_action", required=True)
+    # Named "board_key" (displayed as "key" via metavar): the implicit dest
+    # from a positional literally named "key" would collide with the global
+    # --key (workspace encryption key) on the same Namespace, letting a board
+    # entry name silently overwrite/be mistaken for the encryption key — see
+    # issue #16. argparse has no dest= override for positionals, so the
+    # argument itself has to be renamed.
     b = bsub.add_parser("set")
-    b.add_argument("key")
+    b.add_argument("board_key", metavar="key")
     b.add_argument("value")
     b.add_argument("--ttl", type=float)
     b.add_argument("--if-revision", type=int, help="optimistic concurrency; 0 means 'if absent'")
     b.add_argument("--json-body", action="store_true")
     b = bsub.add_parser("get")
-    b.add_argument("key")
+    b.add_argument("board_key", metavar="key")
     b = bsub.add_parser("list")
     b.add_argument("--prefix")
     b = bsub.add_parser("delete")
-    b.add_argument("key")
+    b.add_argument("board_key", metavar="key")
     p.set_defaults(func=cmd_board)
 
     return parser
