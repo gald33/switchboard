@@ -290,6 +290,44 @@ def test_long_poll_returns_promptly_when_a_message_arrives(client):
     assert elapsed < 5, "long poll should wake on arrival, not run to the deadline"
 
 
+def test_overlapping_long_polls_on_one_agent_id_never_both_get_the_message(client):
+    """Issue #24: two sessions sharing an agent id (a real risk — see
+    docs/concepts.md on how the id is derived from branch + host) each
+    holding an open long-poll at once. Whichever wins the race gets it;
+    the other must keep waiting and time out empty — not receive it too.
+    """
+    import queue
+    import threading
+    import time
+
+    _register(client, "shared-id")
+
+    results: queue.Queue = queue.Queue()
+
+    def poll() -> None:
+        body = client.get(
+            "/inbox", params={"workspace": WS, "agent_id": "shared-id", "wait": 3}
+        ).json()
+        results.put([m["body"] for m in body["messages"]])
+
+    t1 = threading.Thread(target=poll)
+    t2 = threading.Thread(target=poll)
+    t1.start()
+    time.sleep(0.1)
+    t2.start()
+    time.sleep(0.3)  # let both register as long-poll waiters
+
+    client.post("/messages", json={
+        "workspace": WS, "channel": "@shared-id", "agent_id": "sender", "body": "once",
+    })
+
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    got = results.get() + results.get()
+    assert got.count("once") == 1
+
+
 # --- blackboard -------------------------------------------------------------
 
 
