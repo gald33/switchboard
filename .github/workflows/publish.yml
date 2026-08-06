@@ -7,11 +7,23 @@ name: Publish to PyPI
 # side: https://pypi.org/manage/account/publishing/
 #
 # To cut a release: bump `version` in pyproject.toml, merge, then
-# `gh release create vX.Y.Z --generate-notes` (tag must match the version).
+# `gh release create vX.Y.Z --generate-notes`. The tag must match the version
+# in pyproject.toml — the build job checks, and fails loudly if it doesn't.
+#
+# If a run fails for reasons unrelated to the code (Actions outage, a hosted
+# runner that never gets assigned), re-run it from the Actions tab, or
+# `gh workflow run publish.yml --ref vX.Y.Z` once the tag carries this file.
 
 on:
   release:
     types: [published]
+  # Manual retry path. `release: published` fires exactly once, so a run that
+  # dies for reasons that have nothing to do with the code — a GitHub Actions
+  # outage, a hosted runner that never gets assigned — leaves that tag
+  # unpublishable short of deleting and recreating the release. Re-dispatch
+  # against the tag instead:
+  #   gh workflow run publish.yml --ref vX.Y.Z
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,6 +36,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # A dispatch can name any ref, including a branch. Publishing an
+      # in-progress `main` as if it were a release would be silent and
+      # unfixable — PyPI never lets a version be reused — so require a tag,
+      # and require it to agree with the version actually being built.
+      # (After setup-python: `tomllib` is 3.11+, and bare `python` is only on
+      # PATH once setup-python has put it there.)
+      - name: Refuse to publish anything but a matching version tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::refusing to publish from $GITHUB_REF_TYPE '$GITHUB_REF_NAME' — dispatch against a version tag"
+            exit 1
+          fi
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag '$GITHUB_REF_NAME' does not match pyproject version 'v$version'"
+            exit 1
+          fi
+          echo "publishing v$version from tag $GITHUB_REF_NAME"
       - run: python -m pip install --upgrade build
       - run: python -m build
       - run: python -m pip install --upgrade twine && python -m twine check dist/*
