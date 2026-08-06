@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -613,15 +614,36 @@ _LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
 #: with `switchboard init --local` (or any other `--url`).
 MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
 
-_SESSION_START_CMD = "switchboard -q register -c build || true"
-_STOP_CMD = (
-    'switchboard --json claims --holder "$(switchboard --json whoami | '
-    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
-    "python -c 'import sys,json,subprocess;"
-    "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
-    "for l in json.load(sys.stdin)]' "
-    "|| true"
-)
+def _hook_env_prefix(url: str, workspace: str) -> str:
+    """`SessionStart`/`Stop` hooks run as plain shell commands, not inside the
+    `switchboard-mcp` subprocess — `.mcp.json`'s `env` block never reaches
+    them, so `SWITCHBOARD_URL`/`SWITCHBOARD_WORKSPACE` may not be ambient
+    there even when a token is (see #32). Neither is secret, and both are
+    already known at `init` time, so export them explicitly rather than
+    relying on an environment the hook doesn't actually share. `export`
+    rather than a simple-command prefix so it also reaches the commands on
+    the far side of `|` and the `subprocess.run` calls made by the nested
+    `python -c` below — a plain `VAR=val cmd` prefix would not."""
+    return (
+        f"export SWITCHBOARD_URL={shlex.quote(url)}; "
+        f"export SWITCHBOARD_WORKSPACE={shlex.quote(workspace)}; "
+    )
+
+
+def _session_start_cmd(url: str, workspace: str) -> str:
+    return f"{_hook_env_prefix(url, workspace)}switchboard -q register -c build || true"
+
+
+def _stop_cmd(url: str, workspace: str) -> str:
+    return (
+        f"{_hook_env_prefix(url, workspace)}"
+        'switchboard --json claims --holder "$(switchboard --json whoami | '
+        "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
+        "python -c 'import sys,json,subprocess;"
+        "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
+        "for l in json.load(sys.stdin)]' "
+        "|| true"
+    )
 
 _CLAUDE_MD_MARKER = "## Coordinating with other agents"
 _CLAUDE_MD_SECTION = f"""{_CLAUDE_MD_MARKER}
@@ -737,7 +759,7 @@ def _add_hook(data: dict[str, Any], event: str, command: str) -> bool:
     return True
 
 
-def _init_claude_settings(directory: Path) -> str:
+def _init_claude_settings(directory: Path, url: str, workspace: str) -> str:
     path = directory / ".claude" / "settings.json"
     if path.exists():
         try:
@@ -746,8 +768,8 @@ def _init_claude_settings(directory: Path) -> str:
             return f"left .claude/settings.json alone: existing file is not valid JSON ({exc})"
     else:
         data = {}
-    added_start = _add_hook(data, "SessionStart", _SESSION_START_CMD)
-    added_stop = _add_hook(data, "Stop", _STOP_CMD)
+    added_start = _add_hook(data, "SessionStart", _session_start_cmd(url, workspace))
+    added_stop = _add_hook(data, "Stop", _stop_cmd(url, workspace))
     if not added_start and not added_stop:
         return "left .claude/settings.json alone: switchboard hooks are already there"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -817,7 +839,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not args.skip_mcp:
         steps.append(_init_mcp_json(directory, url, workspace))
     if not args.skip_hooks:
-        steps.append(_init_claude_settings(directory))
+        steps.append(_init_claude_settings(directory, url, workspace))
     if not args.skip_claude_md:
         steps.append(_init_claude_md(directory))
     if not args.skip_skill:

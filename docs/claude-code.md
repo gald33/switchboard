@@ -167,7 +167,7 @@ In `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "switchboard -q register -c build || true"
+            "command": "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard -q register -c build || true"
           }
         ]
       }
@@ -177,7 +177,7 @@ In `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "switchboard --json claims --holder \"$(switchboard --json whoami | python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
+            "command": "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard --json claims --holder \"$(switchboard --json whoami | python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
           }
         ]
       }
@@ -185,6 +185,12 @@ In `.claude/settings.json`:
   }
 }
 ```
+
+`switchboard init` fills in your actual URL and workspace here — `switchboard`
+runs as a plain shell command in a hook, not inside the `switchboard-mcp`
+subprocess `.mcp.json`'s `env` block reaches, so it can't assume those two are
+ambient the way `SWITCHBOARD_TOKEN` usually is. Neither is secret, so they get
+exported explicitly instead.
 
 The `|| true` matters: a hub being down should never block a session. Every
 Switchboard CLI command exits non-zero on failure and prints to stderr, so a

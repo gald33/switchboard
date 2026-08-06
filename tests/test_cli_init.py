@@ -8,13 +8,21 @@ and be safe to run twice, so that is most of what these tests check.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from switchboard.cli import _CLAUDE_MD_SECTION, MANAGED_HUB_URL, _skill_source, main
+from switchboard.cli import (
+    _CLAUDE_MD_SECTION,
+    MANAGED_HUB_URL,
+    _session_start_cmd,
+    _skill_source,
+    _stop_cmd,
+    main,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -109,6 +117,110 @@ def test_merges_into_existing_claude_settings(monkeypatch, capsys, tmp_path):
     assert any(c == "echo hi" for c in commands)
     assert any("switchboard" in c for c in commands)
     assert "Stop" in settings["hooks"]
+
+
+# --- #32: hooks must not depend on ambient SWITCHBOARD_URL/WORKSPACE -------
+#
+# SessionStart/Stop hooks run as plain shell commands, not inside the
+# switchboard-mcp subprocess `.mcp.json`'s `env` block reaches — a cloud
+# session can have SWITCHBOARD_TOKEN ambient with no URL or workspace at
+# all, and the hook would silently register against 127.0.0.1:8787/default
+# instead, guarded by `|| true` into total silence. `init` knows both
+# values at generation time and neither is secret, so they get baked in.
+
+
+def test_hook_commands_embed_the_resolved_url_and_workspace():
+    start = _session_start_cmd("https://hub.example.com", "acme/widgets")
+    stop = _stop_cmd("https://hub.example.com", "acme/widgets")
+    for cmd in (start, stop):
+        assert cmd.startswith(
+            "export SWITCHBOARD_URL=https://hub.example.com; "
+            "export SWITCHBOARD_WORKSPACE=acme/widgets; "
+        )
+
+
+def test_hook_commands_shell_quote_a_workspace_with_special_characters():
+    # A workspace name is usually `org/repo`, but nothing stops it from
+    # containing something shell-unsafe if a user overrides it by hand.
+    start = _session_start_cmd("https://hub.example.com", "it's a workspace")
+    assert "export SWITCHBOARD_WORKSPACE='it'\"'\"'s a workspace'; " in start
+
+
+def test_init_bakes_the_resolved_hub_into_the_written_hooks(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    code = main(["-w", "acme/widgets", "--url", "https://hub.example.com", "init"])
+    capsys.readouterr()
+    assert code == 0
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    start_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "SWITCHBOARD_URL=https://hub.example.com" in start_cmd
+    assert "SWITCHBOARD_WORKSPACE=acme/widgets" in stop_cmd
+
+
+def test_session_start_hook_resolves_the_hub_with_only_the_token_ambient(tmp_path):
+    """The actual reproduction from #32, via a fake `switchboard` on PATH
+    instead of a live hub: run the generated hook through a real shell with
+    an environment that has SWITCHBOARD_TOKEN and nothing else, and confirm
+    the process it invokes actually saw the right URL and workspace."""
+    record = tmp_path / "seen.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "switchboard"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "url=$SWITCHBOARD_URL workspace=$SWITCHBOARD_WORKSPACE '
+        f'token=$SWITCHBOARD_TOKEN" >> {record}\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+
+    cmd = _session_start_cmd("http://hub.internal", "acme/widgets")
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert record.read_text() == "url=http://hub.internal workspace=acme/widgets token=shh\n"
+
+
+def test_stop_hook_resolves_the_hub_for_every_nested_invocation(tmp_path):
+    """The Stop hook chains three separate `switchboard` invocations — one
+    of them launched by a nested `python -c ... subprocess.run(...)`, not
+    directly by the shell. All three need to see the exported env, not just
+    the first one the shell pipe touches directly."""
+    record = tmp_path / "seen.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "switchboard"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "args=$* url=$SWITCHBOARD_URL workspace=$SWITCHBOARD_WORKSPACE" >> {record}\n'
+        'if [[ "$*" == *whoami* ]]; then\n'
+        '  echo \'{"agent_id": "me"}\'\n'
+        'elif [[ "$*" == *claims* ]]; then\n'
+        '  echo \'[{"resource": "scratch"}]\'\n'
+        "fi\n"
+    )
+    stub.chmod(0o755)
+
+    cmd = _stop_cmd("http://hub.internal", "acme/widgets")
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = record.read_text().splitlines()
+    assert len(lines) == 3, lines  # whoami, claims, and the nested release
+    assert all("url=http://hub.internal workspace=acme/widgets" in ln for ln in lines)
+    assert any("release" in ln and "scratch" in ln for ln in lines)
 
 
 def test_appends_to_existing_claude_md(monkeypatch, capsys, tmp_path):
