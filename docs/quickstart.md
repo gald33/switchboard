@@ -19,7 +19,7 @@ switchboard serve --port 8787
 You should see:
 
 ```
-switchboard 0.1.0 → http://127.0.0.1:8787  db=switchboard.db
+switchboard 0.2.0 → http://127.0.0.1:8787  db=switchboard.db
 ```
 
 Leave it running.
@@ -47,7 +47,7 @@ export SWITCHBOARD_AGENT_ID=beta
 
 ```bash
 $ switchboard health
-{ "ok": true, "version": "0.1.0", "auth": true }
+{ "ok": true, "version": "0.2.0", "auth": true }
 
 $ switchboard register -c build
 registered local-main-yourhost (local) in demo

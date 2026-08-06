@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from . import __version__
 from .auth import (
     Principal,
     PrincipalResolver,
@@ -62,7 +63,11 @@ from .store import (
     StoreError,
 )
 
-API_VERSION = "0.1.0"
+#: Reported in `GET /health` and the OpenAPI schema. Reuses the package's own
+#: __version__ rather than a second hardcoded copy — this project has hit that
+#: exact class of drift bug (two independently-maintained copies of one value)
+#: more than once already.
+API_VERSION = __version__
 
 
 def iso(ts: float | None) -> str | None:
