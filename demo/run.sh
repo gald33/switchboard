@@ -9,7 +9,8 @@
 #   which would be long gone by then) and makes a decision that's
 #   compatible with what alice already claimed.
 #
-# This dramatizes the worked example in docs/coordination-protocol.md.
+# This dramatizes the worked example in the switchboard-coordinate skill
+# (src/switchboard/skill/switchboard-coordinate/SKILL.md).
 # It is fully reproducible: it boots its own throwaway hub on a random
 # port with a throwaway SQLite file, runs the two sessions against it,
 # and tears the hub down on exit. Nothing you already have running is

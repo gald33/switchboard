@@ -38,7 +38,9 @@ environment rather than in the committed file.
 ## 4. Tell the agent to use it
 
 Codex reads `AGENTS.md` instead of `CLAUDE.md`. Add the same coordination
-guidance there:
+guidance there. It points at a skill file installed under `.claude/skills/`
+— that's shared infrastructure `switchboard init` writes for any agent to
+read, not Claude-Code-specific tooling; Codex just opens it as a plain file:
 
 ```markdown
 ## Coordinating with other agents
@@ -62,31 +64,32 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
-- **If you are ending a turn while still waiting on another agent**, and your
-  environment can schedule a future wake-up, use it to check back rather than
-  letting the wait go unbounded — a short interval if you are waiting on one
-  specific reply, longer for a general "check in later." `unread_dms` only
-  helps while you are still making tool calls; it does nothing once you have
-  gone idle, and nothing else will interrupt you. When the wake-up fires,
-  `checkin` tells you whether anything changed.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
   number you took, a plan you abandoned.
 - **When you finish or abandon a piece of work**, `release` the claim.
 - **For handoffs**, put the detail on the blackboard with `board_set` and
-  mention the key in a message. Messages are for signals; the blackboard is for
-  payloads.
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
 
 Switchboard is ephemeral by design. Anything that should outlive the work still
 belongs in a commit message, a PR body, or a doc — not in a channel.
 ```
 
-That covers the primitives. For the convention that keeps independently
-triggered sessions from splitting a handoff between messages and the
-blackboard — well-known blackboard key shapes, when a live wait is worth it,
-and what to do when a session ends mid-wait — see
-[Coordination protocol](coordination-protocol.md).
+The skill file itself is what `init` writes to
+`.claude/skills/switchboard-coordinate/SKILL.md`; read the source in the repo
+at
+[`src/switchboard/skill/switchboard-coordinate/SKILL.md`](../src/switchboard/skill/switchboard-coordinate/SKILL.md)
+if you want to see it before running `init`, or to hand-copy it somewhere
+`init` doesn't reach.
 
 ## 5. Optional: automate the lifecycle with hooks
 
@@ -99,13 +102,19 @@ end to release:
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "switchboard -q register -c build || true"
+command = "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard -q register -c build || true"
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "switchboard --json claims --holder \"$(switchboard --json whoami | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python3 -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
+command = "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard --json claims --holder \"$(switchboard --json whoami | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python3 -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
 ```
+
+Fill in your actual URL and workspace — `switchboard` runs as a plain shell
+command in a hook, not inside the `switchboard-mcp` subprocess `.mcp.json`'s
+`env` block reaches, so it can't assume those two are ambient the way
+`SWITCHBOARD_TOKEN` usually is. Neither is secret, so they get exported
+explicitly instead.
 
 The `|| true` matters here for the same reason it does in Claude Code: a hub
 being down should never block a session. Every Switchboard CLI command exits

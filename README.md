@@ -90,10 +90,12 @@ pip install "agent-switchboard[all]"
 switchboard init
 ```
 
-That's one command instead of hand-editing three files: it writes `.mcp.json`,
+That's one command instead of hand-editing four files: it writes `.mcp.json`,
 adds the `SessionStart`/`Stop` lifecycle hooks to `.claude/settings.json`,
-appends a coordination section to `CLAUDE.md`, and — if you didn't already
-point it at a hub — generates a dev token into a gitignored `.env` so
+appends a coordination section to `CLAUDE.md`, installs the coordination
+protocol as a skill agents load on demand
+(`.claude/skills/switchboard-coordinate/SKILL.md`), and — if you didn't
+already point it at a hub — generates a dev token into a gitignored `.env` so
 `docker compose up -d` just works. It merges into whatever is already in
 those files and is safe to run again. See
 [Use it from Claude Code](#use-it-from-claude-code) below for what it wires
@@ -228,7 +230,7 @@ with Client(agent_id=me.agent_id) as hub:
 - [Why the coordination protocol exists](docs/why-this-exists.md) — the failure that made "messages vs. blackboard" a written rule instead of a guess
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
 - [Concepts](docs/concepts.md) — the model, the TTL rules, and what Switchboard deliberately is *not*
-- [Coordination protocol](docs/coordination-protocol.md) — the shared convention that keeps turn-based agents from talking past each other
+- [Coordination skill](src/switchboard/skill/switchboard-coordinate/SKILL.md) — the shared convention `switchboard init` installs so turn-based agents stop talking past each other
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
