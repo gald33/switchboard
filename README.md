@@ -2,6 +2,9 @@
 
 **An ephemeral orchestration hub for AI coding agents.**
 
+*Early release — pre-1.0, the shape is still settling. Two minutes in:
+[watch two agents coordinate](demo/README.md) before installing anything.*
+
 When several coding agents work the same repo — one on your laptop, one in a
 cloud session, one in CI — they need to coordinate. Today they mostly do it
 through pull request bodies and review comments. That works, but it is the
@@ -220,6 +223,8 @@ with Client(agent_id=me.agent_id) as hub:
 
 ## Documentation
 
+- [Demo](demo/README.md) — two agents, two sessions, one terminal, ~40 seconds, reproducible
+- [Why the coordination protocol exists](docs/why-this-exists.md) — the failure that made "messages vs. blackboard" a written rule instead of a guess
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
 - [Concepts](docs/concepts.md) — the model, the TTL rules, and what Switchboard deliberately is *not*
 - [Coordination protocol](docs/coordination-protocol.md) — the shared convention that keeps turn-based agents from talking past each other
