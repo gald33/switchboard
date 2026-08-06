@@ -79,7 +79,7 @@ To track `main` instead of a release — for unreleased fixes, or to
 contribute — install from GitHub instead:
 `pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"`,
 or pin a commit or tag by appending it to the URL:
-`git+https://github.com/gald33/switchboard.git@v0.2.0`.
+`git+https://github.com/gald33/switchboard.git@v0.3.0`.
 
 ## The fast path
 
@@ -97,7 +97,9 @@ protocol as a skill agents load on demand
 (`.claude/skills/switchboard-coordinate/SKILL.md`), and — if you didn't
 already point it at a hub — generates a dev token into a gitignored `.env` so
 `docker compose up -d` just works. It merges into whatever is already in
-those files and is safe to run again. See
+those files and is safe to run again — untouched output from a past run gets
+upgraded automatically (e.g. after a package update fixes a hook), and
+anything that looks hand-edited is left alone unless you pass `--force`. See
 [Use it from Claude Code](#use-it-from-claude-code) below for what it wires
 up and why, or skip straight to `switchboard init --help`.
 

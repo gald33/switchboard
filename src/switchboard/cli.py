@@ -20,7 +20,7 @@ import sys
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from . import __version__
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
@@ -645,6 +645,51 @@ def _stop_cmd(url: str, workspace: str) -> str:
         "|| true"
     )
 
+
+#: Every hook command `init` has ever generated, oldest first, excluding the
+#: current one — extracted verbatim from git history, not retyped, so a repo
+#: whose hooks are untouched output from a past `init` run (rather than
+#: hand-edited) gets recognized and safely upgraded on the next run instead
+#: of being left on a stale — possibly buggy, see #32 — revision forever.
+_SESSION_START_CMD_HISTORY: list[Callable[[str, str], str]] = [
+    lambda url, workspace: "switchboard register --quiet -c build || true",
+    lambda url, workspace: "switchboard -q register -c build || true",
+]
+_STOP_CMD_HISTORY: list[Callable[[str, str], str]] = [
+    lambda url, workspace: (
+        'switchboard claims --holder "$(switchboard whoami --json | '
+        "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" --json | "
+        "python -c 'import sys,json,subprocess;"
+        "[subprocess.run([\"switchboard\",\"release\",l[\"resource\"],\"--quiet\"]) "
+        "for l in json.load(sys.stdin)]' "
+        "|| true"
+    ),
+    lambda url, workspace: (
+        'switchboard --json claims --holder "$(switchboard --json whoami | '
+        "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
+        "python -c 'import sys,json,subprocess;"
+        "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
+        "for l in json.load(sys.stdin)]' "
+        "|| true"
+    ),
+]
+
+
+def _revision_status(existing: str, current: str, history: Sequence[str]) -> str:
+    """Classify existing generated content against the current canonical
+    version and every past revision it might be untouched output from.
+
+    "current" — nothing to do. "stale" — matches a past revision exactly, so
+    it's machine output we can safely replace. "unrecognized" — matches
+    nothing we ever generated, so it's probably hand-edited; leave it alone
+    unless told to --force."""
+    if existing == current:
+        return "current"
+    if existing in history:
+        return "stale"
+    return "unrecognized"
+
+
 _CLAUDE_MD_MARKER = "## Coordinating with other agents"
 _CLAUDE_MD_SECTION = f"""{_CLAUDE_MD_MARKER}
 
@@ -686,6 +731,108 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
 Switchboard is ephemeral by design. Anything that should outlive the work still
 belongs in a commit message, a PR body, or a doc — not in a channel.
 """
+
+
+#: Every _CLAUDE_MD_SECTION `init` has ever generated, oldest first,
+#: excluding the current one — extracted verbatim from git history, not
+#: retyped, for the same reason as the hook-command history above: a repo
+#: whose CLAUDE.md section is untouched output from a past `init` run
+#: gets recognized and upgraded automatically instead of stuck forever.
+_CLAUDE_MD_SECTION_HISTORY: list[str] = [
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive and hands you anything other agents have said. If you stop calling it,
+  your claims expire and free themselves — which is correct if you have
+  crashed and wrong if you are still working.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message. Messages are for signals; the blackboard is
+  for payloads.
+
+Switchboard is ephemeral by design. Anything that should outlive the work
+still belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message. Messages are for signals; the blackboard is
+  for payloads.
+
+Switchboard is ephemeral by design. Anything that should outlive the work
+still belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+- **If you are ending a turn while still waiting on another agent**, and your
+  environment can schedule a future wake-up, use it to check back rather than
+  letting the wait go unbounded — a short interval if you are waiting on one
+  specific reply, longer for a general "check in later." `unread_dms` only
+  helps while you are still making tool calls; it does nothing once you have
+  gone idle, and nothing else will interrupt you. When the wake-up fires,
+  `checkin` tells you whether anything changed.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message. Messages are for signals; the blackboard is for
+  payloads.
+
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+]
 
 
 def _git_remote_workspace(directory: Path) -> str | None:
@@ -749,35 +896,73 @@ def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
     return "wrote .mcp.json"
 
 
-def _add_hook(data: dict[str, Any], event: str, command: str) -> bool:
+def _sync_hook(
+    data: dict[str, Any],
+    event: str,
+    current_cmd: str,
+    history: Sequence[Callable[[str, str], str]],
+    url: str,
+    workspace: str,
+    force: bool,
+) -> str:
+    """Add, update, or leave alone the switchboard command for one hook
+    event. An existing command gets replaced only if it's untouched output
+    from a past `init` run (matches `current_cmd` or a rendering of a past
+    revision from `history`) or `--force` was passed — anything else is
+    presumed hand-edited and left alone."""
     entries = data.setdefault("hooks", {}).setdefault(event, [])
     for group in entries:
         for h in group.get("hooks", []):
-            if "switchboard" in h.get("command", ""):
-                return False
-    entries.append({"hooks": [{"type": "command", "command": command}]})
-    return True
+            cmd = h.get("command", "")
+            if "switchboard" not in cmd:
+                continue
+            if cmd == current_cmd:
+                return f"left the {event} hook alone: already up to date"
+            historical = {template(url, workspace) for template in history}
+            if force or cmd in historical:
+                h["command"] = current_cmd
+                return f"updated the {event} hook to the latest revision"
+            return (
+                f"left the {event} hook alone: it doesn't match a known "
+                "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
+            )
+    entries.append({"hooks": [{"type": "command", "command": current_cmd}]})
+    return f"added the {event} hook"
 
 
-def _init_claude_settings(directory: Path, url: str, workspace: str) -> str:
+def _init_claude_settings(
+    directory: Path, url: str, workspace: str, *, force: bool = False
+) -> list[str]:
     path = directory / ".claude" / "settings.json"
     if path.exists():
         try:
             data = json.loads(path.read_text())
         except ValueError as exc:
-            return f"left .claude/settings.json alone: existing file is not valid JSON ({exc})"
+            return [f"left .claude/settings.json alone: existing file is not valid JSON ({exc})"]
     else:
         data = {}
-    added_start = _add_hook(data, "SessionStart", _session_start_cmd(url, workspace))
-    added_stop = _add_hook(data, "Stop", _stop_cmd(url, workspace))
-    if not added_start and not added_stop:
-        return "left .claude/settings.json alone: switchboard hooks are already there"
+    steps = [
+        _sync_hook(
+            data, "SessionStart", _session_start_cmd(url, workspace),
+            _SESSION_START_CMD_HISTORY, url, workspace, force,
+        ),
+        _sync_hook(
+            data, "Stop", _stop_cmd(url, workspace),
+            _STOP_CMD_HISTORY, url, workspace, force,
+        ),
+    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
-    return "wrote .claude/settings.json (SessionStart + Stop hooks)"
+    return steps
 
 
 _SKILL_NAME = "switchboard-coordinate"
+
+#: Every SKILL.md `init` has ever installed, oldest first, excluding the
+#: current one. Empty today — the skill was only just introduced — but this
+#: is where a future content revision gets recorded, the same as the two
+#: history lists above.
+_SKILL_HISTORY: list[str] = []
 
 
 def _skill_source() -> str:
@@ -791,26 +976,48 @@ def _skill_source() -> str:
     )
 
 
-def _init_skill(directory: Path) -> str:
+def _init_skill(directory: Path, *, force: bool = False) -> str:
     path = directory / ".claude" / "skills" / _SKILL_NAME / "SKILL.md"
-    if path.exists():
-        return f"left {path.relative_to(directory)} alone: already installed"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_skill_source())
-    return f"installed the {_SKILL_NAME} skill"
+    current = _skill_source()
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(current)
+        return f"installed the {_SKILL_NAME} skill"
+    label = path.relative_to(directory)
+    status = _revision_status(path.read_text(), current, _SKILL_HISTORY)
+    if status == "current":
+        return f"left {label} alone: already up to date"
+    if status == "stale" or force:
+        path.write_text(current)
+        return f"updated the {_SKILL_NAME} skill to the latest revision"
+    return (
+        f"left {label} alone: it doesn't match a known switchboard revision "
+        "(looks hand-edited) — pass --force to overwrite anyway"
+    )
 
 
-def _init_claude_md(directory: Path) -> str:
+def _init_claude_md(directory: Path, *, force: bool = False) -> str:
     path = directory / "CLAUDE.md"
-    if path.exists():
-        text = path.read_text()
-        if _CLAUDE_MD_MARKER in text:
-            return "left CLAUDE.md alone: coordination section is already there"
+    if not path.exists():
+        path.write_text("# CLAUDE.md\n\n" + _CLAUDE_MD_SECTION)
+        return "wrote CLAUDE.md"
+    text = path.read_text()
+    marker_at = text.find(_CLAUDE_MD_MARKER)
+    if marker_at == -1:
         sep = "\n" if text.endswith("\n\n") else ("\n\n" if text.endswith("\n") else "\n\n\n")
         path.write_text(text + sep + _CLAUDE_MD_SECTION)
         return "appended a coordination section to CLAUDE.md"
-    path.write_text("# CLAUDE.md\n\n" + _CLAUDE_MD_SECTION)
-    return "wrote CLAUDE.md"
+    existing = text[marker_at:]
+    status = _revision_status(existing, _CLAUDE_MD_SECTION, _CLAUDE_MD_SECTION_HISTORY)
+    if status == "current":
+        return "left CLAUDE.md alone: coordination section is already up to date"
+    if status == "stale" or force:
+        path.write_text(text[:marker_at] + _CLAUDE_MD_SECTION)
+        return "updated CLAUDE.md's coordination section to the latest revision"
+    return (
+        "left CLAUDE.md alone: its coordination section doesn't match a known "
+        "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -839,11 +1046,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not args.skip_mcp:
         steps.append(_init_mcp_json(directory, url, workspace))
     if not args.skip_hooks:
-        steps.append(_init_claude_settings(directory, url, workspace))
+        steps.extend(_init_claude_settings(directory, url, workspace, force=args.force))
     if not args.skip_claude_md:
-        steps.append(_init_claude_md(directory))
+        steps.append(_init_claude_md(directory, force=args.force))
     if not args.skip_skill:
-        steps.append(_init_skill(directory))
+        steps.append(_init_skill(directory, force=args.force))
 
     local_hub_note = (
         "this hub is only reachable from this machine — a cloud session or CI runner "
@@ -963,6 +1170,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--skip-skill", action="store_true",
         help="do not install the switchboard-coordinate skill",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="overwrite CLAUDE.md's coordination section, the skill file, and the "
+             "SessionStart/Stop hooks even if they don't match a known switchboard "
+             "revision. Without this, anything that looks hand-edited — not just "
+             "untouched output from a past `init` run — is left alone.",
     )
     p.set_defaults(func=cmd_init)
 

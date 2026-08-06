@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 
 from switchboard.cli import (
+    _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
+    _CLAUDE_MD_SECTION_HISTORY,
+    _SESSION_START_CMD_HISTORY,
+    _STOP_CMD_HISTORY,
     MANAGED_HUB_URL,
     _session_start_cmd,
     _skill_source,
@@ -223,6 +227,128 @@ def test_stop_hook_resolves_the_hub_for_every_nested_invocation(tmp_path):
     assert any("release" in ln and "scratch" in ln for ln in lines)
 
 
+# --- revision tracking: auto-upgrade untouched output, leave hand-edits ----
+#
+# `init` used to leave a hook or CLAUDE.md section alone the instant it saw
+# *anything* already there, so a repo that ran `init` before #32 was fixed
+# stayed on the buggy hooks forever, even after upgrading the package and
+# rerunning `init`. Now existing content that matches the current revision
+# or any past one we ever generated (tracked in *_HISTORY, extracted from
+# git history rather than retyped) is recognized as untouched machine output
+# and upgraded automatically. Anything else is presumed hand-edited and left
+# alone unless --force is passed.
+
+
+def test_hooks_auto_upgrade_from_a_known_past_revision(monkeypatch, capsys, tmp_path):
+    url, workspace = "https://hub.example.com", "acme/widgets"
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    old_start = _SESSION_START_CMD_HISTORY[-1](url, workspace)
+    old_stop = _STOP_CMD_HISTORY[-1](url, workspace)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": old_start}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": old_stop}]}],
+        }
+    }))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    code = main(["-w", workspace, "--url", url, "init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "updated the SessionStart hook" in out
+    assert "updated the Stop hook" in out
+
+    settings = json.loads(settings_path.read_text())
+    assert settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] == _session_start_cmd(
+        url, workspace
+    )
+    assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == _stop_cmd(url, workspace)
+
+
+def test_hooks_left_alone_if_hand_edited(monkeypatch, capsys, tmp_path):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "switchboard register # custom"}]}
+            ],
+        }
+    }))
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "doesn't match a known switchboard revision" in out
+    settings = json.loads(settings_path.read_text())
+    assert (
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        == "switchboard register # custom"
+    )
+
+
+def test_hooks_overwritten_with_force(monkeypatch, capsys, tmp_path):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "switchboard register # custom"}]}
+            ],
+        }
+    }))
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--force")
+    assert code == 0
+    assert "updated the SessionStart hook" in out
+    settings = json.loads(settings_path.read_text())
+    new_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert new_cmd != "switchboard register # custom"
+
+
+def test_claude_md_section_auto_upgrades_from_a_known_past_revision(monkeypatch, capsys, tmp_path):
+    (tmp_path / "CLAUDE.md").write_text(
+        "# My project\n\nSome existing notes.\n\n" + _CLAUDE_MD_SECTION_HISTORY[0]
+    )
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "updated CLAUDE.md's coordination section" in out
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert text == "# My project\n\nSome existing notes.\n\n" + _CLAUDE_MD_SECTION
+    assert "Some existing notes." in text
+
+
+def test_claude_md_section_left_alone_if_hand_edited(monkeypatch, capsys, tmp_path):
+    (tmp_path / "CLAUDE.md").write_text(
+        f"# My project\n\n{_CLAUDE_MD_MARKER}\n\nWe do it our own way here.\n"
+    )
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "doesn't match a known switchboard revision" in out
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert "We do it our own way here." in text
+
+
+def test_claude_md_section_overwritten_with_force(monkeypatch, capsys, tmp_path):
+    (tmp_path / "CLAUDE.md").write_text(
+        f"# My project\n\n{_CLAUDE_MD_MARKER}\n\nWe do it our own way here.\n"
+    )
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--force")
+    assert code == 0
+    assert "updated CLAUDE.md's coordination section" in out
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert "We do it our own way here." not in text
+    assert text == "# My project\n\n" + _CLAUDE_MD_SECTION
+
+
+def test_claude_md_section_already_up_to_date_is_left_alone(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "left CLAUDE.md alone: coordination section is already up to date" in out
+
+
 def test_appends_to_existing_claude_md(monkeypatch, capsys, tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# My project\n\nSome existing notes.\n")
     run_init(monkeypatch, capsys, tmp_path)
@@ -251,14 +377,34 @@ def test_skip_flags(monkeypatch, capsys, tmp_path):
     assert (tmp_path / ".env").exists()
 
 
-def test_skill_file_left_alone_if_already_present(monkeypatch, capsys, tmp_path):
+def test_skill_file_left_alone_if_hand_edited(monkeypatch, capsys, tmp_path):
     skill_path = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# hand-customized\n")
     code, out = run_init(monkeypatch, capsys, tmp_path)
     assert code == 0
     assert skill_path.read_text() == "# hand-customized\n"
-    assert "already installed" in out
+    assert "doesn't match a known switchboard revision" in out
+    assert "--force" in out
+
+
+def test_skill_file_overwritten_with_force(monkeypatch, capsys, tmp_path):
+    skill_path = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# hand-customized\n")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--force")
+    assert code == 0
+    assert skill_path.read_text() == _skill_source()
+    assert "updated the switchboard-coordinate skill" in out
+
+
+def test_skill_file_already_up_to_date_is_left_alone_without_force(
+    monkeypatch, capsys, tmp_path
+):
+    run_init(monkeypatch, capsys, tmp_path)
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert "left" in out and "already up to date" in out
 
 
 def test_workspace_inferred_from_git_remote(monkeypatch, capsys, tmp_path):
