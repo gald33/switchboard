@@ -17,6 +17,7 @@ import secrets
 import subprocess
 import sys
 import time
+from importlib import resources
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -644,21 +645,21 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
-- **If you are ending a turn while still waiting on another agent**, and your
-  environment can schedule a future wake-up, use it to check back rather than
-  letting the wait go unbounded — a short interval if you are waiting on one
-  specific reply, longer for a general "check in later." `unread_dms` only
-  helps while you are still making tool calls; it does nothing once you have
-  gone idle, and nothing else will interrupt you. When the wake-up fires,
-  `checkin` tells you whether anything changed.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
   number you took, a plan you abandoned.
 - **When you finish or abandon a piece of work**, `release` the claim.
 - **For handoffs**, put the detail on the blackboard with `board_set` and
-  mention the key in a message. Messages are for signals; the blackboard is for
-  payloads.
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
 
 Switchboard is ephemeral by design. Anything that should outlive the work still
 belongs in a commit message, a PR body, or a doc — not in a channel.
@@ -754,6 +755,29 @@ def _init_claude_settings(directory: Path) -> str:
     return "wrote .claude/settings.json (SessionStart + Stop hooks)"
 
 
+_SKILL_NAME = "switchboard-coordinate"
+
+
+def _skill_source() -> str:
+    """The packaged skill content — the single source `init` installs from
+    and `docs/claude-code.md`/`docs/codex-cli.md` link to, so there is only
+    ever one copy of this protocol to drift out of sync."""
+    return (
+        resources.files("switchboard")
+        .joinpath("skill", _SKILL_NAME, "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _init_skill(directory: Path) -> str:
+    path = directory / ".claude" / "skills" / _SKILL_NAME / "SKILL.md"
+    if path.exists():
+        return f"left {path.relative_to(directory)} alone: already installed"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_skill_source())
+    return f"installed the {_SKILL_NAME} skill"
+
+
 def _init_claude_md(directory: Path) -> str:
     path = directory / "CLAUDE.md"
     if path.exists():
@@ -768,7 +792,8 @@ def _init_claude_md(directory: Path) -> str:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """Wire up a repo end to end: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token."""
+    """Wire up a repo end to end: .mcp.json, lifecycle hooks, CLAUDE.md, the
+    coordination skill, a dev token."""
     if args.local and args.url:
         print("error: --local and --url are mutually exclusive — pick one.", file=sys.stderr)
         return EXIT_ERROR
@@ -795,6 +820,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         steps.append(_init_claude_settings(directory))
     if not args.skip_claude_md:
         steps.append(_init_claude_md(directory))
+    if not args.skip_skill:
+        steps.append(_init_skill(directory))
 
     local_hub_note = (
         "this hub is only reachable from this machine — a cloud session or CI runner "
@@ -894,7 +921,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser(
-        "init", help="wire up this repo: .mcp.json, lifecycle hooks, CLAUDE.md, a dev token"
+        "init",
+        help="wire up this repo: .mcp.json, lifecycle hooks, CLAUDE.md, "
+             "the coordination skill, a dev token",
     )
     p.add_argument("--dir", help="target repo directory (default: current directory)")
     p.add_argument(
@@ -909,6 +938,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-hooks", action="store_true", help="do not write .claude/settings.json hooks"
     )
     p.add_argument("--skip-claude-md", action="store_true", help="do not touch CLAUDE.md")
+    p.add_argument(
+        "--skip-skill", action="store_true",
+        help="do not install the switchboard-coordinate skill",
+    )
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")

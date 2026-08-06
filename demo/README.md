@@ -1,6 +1,7 @@
 # The coordination demos
 
-Two terminals, two different halves of [`docs/coordination-protocol.md`](../docs/coordination-protocol.md)
+Two terminals, two different halves of the
+[coordination skill](../src/switchboard/skill/switchboard-coordinate/SKILL.md)
 played out for real against a live (throwaway) hub instead of described in prose.
 
 ## Async handoff — `run.sh`

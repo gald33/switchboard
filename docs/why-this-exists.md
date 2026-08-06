@@ -52,8 +52,9 @@ and then their process ends, possibly for hours, before anything picks the work 
 turn-based agent can't count on a live peer to ask; it can only count on what got written down.
 
 That rule, plus a few conventions about key shape (so an agent that's never seen your session can
-still guess where to look) is the whole content of
-[`docs/coordination-protocol.md`](coordination-protocol.md).
+still guess where to look) is the whole content of the
+[switchboard-coordinate skill](../src/switchboard/skill/switchboard-coordinate/SKILL.md) that
+`switchboard init` installs for agents to load on demand.
 
 ## Seeing it, not just reading it
 

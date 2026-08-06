@@ -12,13 +12,15 @@ switchboard init
 
 This does steps 1–5 below in one shot: it writes `.mcp.json`, installs the
 `SessionStart`/`Stop` hooks into `.claude/settings.json`, appends the
-"Coordinating with other agents" section to `CLAUDE.md`, and — if you have
-not already pointed it at a hub — generates a dev token into a gitignored
-`.env`. It merges into whatever is already in those files, so it is safe to
-run again (e.g. after a teammate adds their own MCP server to `.mcp.json`).
-Pass `--url`/`--token`/`--workspace` to point it at an existing hub instead
-of the local default, or `--skip-mcp`/`--skip-hooks`/`--skip-claude-md` to
-opt out of a step. Run `switchboard init --help` for the full list.
+"Coordinating with other agents" section to `CLAUDE.md`, installs the
+coordination skill to `.claude/skills/switchboard-coordinate/SKILL.md`, and —
+if you have not already pointed it at a hub — generates a dev token into a
+gitignored `.env`. It merges into whatever is already in those files, so it
+is safe to run again (e.g. after a teammate adds their own MCP server to
+`.mcp.json`). Pass `--url`/`--token`/`--workspace` to point it at an existing
+hub instead of the local default, or
+`--skip-mcp`/`--skip-hooks`/`--skip-claude-md`/`--skip-skill` to opt out of a
+step. Run `switchboard init --help` for the full list.
 
 The rest of this page is what `init` does for you, spelled out — read it if
 you want to understand or hand-customize any of the pieces.
@@ -89,8 +91,17 @@ with 14 tools.
 
 ## 4. Tell the agent to use it
 
-Tools alone are not enough; the agent needs to know *when*. Add this to your
-`CLAUDE.md`:
+Tools alone are not enough; the agent needs to know *when*. `init` handles
+this in two parts: a short pointer appended to `CLAUDE.md`, and the actual
+protocol installed as a skill at
+`.claude/skills/switchboard-coordinate/SKILL.md` — loaded on demand rather
+than kept in context on every turn. They point at each other: the bullets
+below tell the agent *that* the skill exists and when to reach for it; the
+skill has the detail — which scheduling tool to use when ending a turn
+mid-wait, and the shared blackboard key convention that keeps independently
+triggered sessions from talking past each other.
+
+Add this to your `CLAUDE.md`:
 
 ```markdown
 ## Coordinating with other agents
@@ -114,31 +125,32 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
-- **If you are ending a turn while still waiting on another agent**, and your
-  environment can schedule a future wake-up, use it to check back rather than
-  letting the wait go unbounded — a short interval if you are waiting on one
-  specific reply, longer for a general "check in later." `unread_dms` only
-  helps while you are still making tool calls; it does nothing once you have
-  gone idle, and nothing else will interrupt you. When the wake-up fires,
-  `checkin` tells you whether anything changed.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
   number you took, a plan you abandoned.
 - **When you finish or abandon a piece of work**, `release` the claim.
 - **For handoffs**, put the detail on the blackboard with `board_set` and
-  mention the key in a message. Messages are for signals; the blackboard is for
-  payloads.
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
 
 Switchboard is ephemeral by design. Anything that should outlive the work still
 belongs in a commit message, a PR body, or a doc — not in a channel.
 ```
 
-That covers the primitives. For the convention that keeps independently
-triggered sessions from splitting a handoff between messages and the
-blackboard — well-known blackboard key shapes, when a live wait is worth it,
-and what to do when a session ends mid-wait — see
-[Coordination protocol](coordination-protocol.md).
+The skill file itself is what `init` writes to
+`.claude/skills/switchboard-coordinate/SKILL.md`; read the source in the repo
+at
+[`src/switchboard/skill/switchboard-coordinate/SKILL.md`](../src/switchboard/skill/switchboard-coordinate/SKILL.md)
+if you want to see it before running `init`, or to hand-copy it somewhere
+`init` doesn't reach.
 
 ## 5. Optional: automate the lifecycle with hooks
 

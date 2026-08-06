@@ -1,8 +1,8 @@
 """Tests for `switchboard init` — the one-shot repo setup command.
 
 Every writer it drives (`.mcp.json`, `.claude/settings.json`, `CLAUDE.md`,
-`.env`) has to merge into whatever is already there and be safe to run twice,
-so that is most of what these tests check.
+the coordination skill, `.env`) has to merge into whatever is already there
+and be safe to run twice, so that is most of what these tests check.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from switchboard.cli import _CLAUDE_MD_SECTION, MANAGED_HUB_URL, main
+from switchboard.cli import _CLAUDE_MD_SECTION, MANAGED_HUB_URL, _skill_source, main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,6 +50,9 @@ def test_fresh_repo_writes_everything(monkeypatch, capsys, tmp_path):
     claude_md = (tmp_path / "CLAUDE.md").read_text()
     assert "## Coordinating with other agents" in claude_md
 
+    skill = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
+    assert skill.read_text() == _skill_source()
+
     env = (tmp_path / ".env").read_text()
     assert "SWITCHBOARD_TOKEN=" in env
     token_line = [ln for ln in env.splitlines() if ln.startswith("SWITCHBOARD_TOKEN=")][0]
@@ -75,6 +78,9 @@ def test_idempotent(monkeypatch, capsys, tmp_path):
 
     claude_md = (tmp_path / "CLAUDE.md").read_text()
     assert claude_md.count("## Coordinating with other agents") == 1
+
+    skill_path = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
+    assert skill_path.read_text() == _skill_source()
 
     assert "already" in out
 
@@ -124,12 +130,23 @@ def test_malformed_mcp_json_is_left_alone(monkeypatch, capsys, tmp_path):
 def test_skip_flags(monkeypatch, capsys, tmp_path):
     run_init(
         monkeypatch, capsys, tmp_path,
-        "--local", "--skip-mcp", "--skip-hooks", "--skip-claude-md",
+        "--local", "--skip-mcp", "--skip-hooks", "--skip-claude-md", "--skip-skill",
     )
     assert not (tmp_path / ".mcp.json").exists()
     assert not (tmp_path / ".claude" / "settings.json").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
+    assert not (tmp_path / ".claude" / "skills").exists()
     assert (tmp_path / ".env").exists()
+
+
+def test_skill_file_left_alone_if_already_present(monkeypatch, capsys, tmp_path):
+    skill_path = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# hand-customized\n")
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert skill_path.read_text() == "# hand-customized\n"
+    assert "already installed" in out
 
 
 def test_workspace_inferred_from_git_remote(monkeypatch, capsys, tmp_path):
@@ -298,3 +315,25 @@ def test_claude_and_codex_coordination_snippets_stay_in_sync():
     claude_doc = _markdown_fence(REPO_ROOT / "docs" / "claude-code.md")
     codex_doc = _markdown_fence(REPO_ROOT / "docs" / "codex-cli.md")
     assert _body_after_intro(claude_doc) == _body_after_intro(codex_doc)
+
+
+# --- the coordination skill: one packaged file, several places link to it ---
+#
+# README.md, demo/README.md, docs/why-this-exists.md and both integration
+# docs all link straight at the file in the repo instead of a doc page that
+# paraphrases it — the same single-source-of-truth fix as the CLAUDE.md/Codex
+# sync above, applied one level further so there is only ever one copy of
+# this protocol to drift.
+
+
+def test_skill_file_exists_at_the_path_docs_link_to():
+    assert (
+        REPO_ROOT / "src" / "switchboard" / "skill" / "switchboard-coordinate" / "SKILL.md"
+    ).is_file()
+
+
+def test_skill_source_reads_the_packaged_file():
+    on_disk = (
+        REPO_ROOT / "src" / "switchboard" / "skill" / "switchboard-coordinate" / "SKILL.md"
+    ).read_text()
+    assert _skill_source() == on_disk
