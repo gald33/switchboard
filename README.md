@@ -54,38 +54,39 @@ human notices.
 
 A Switchboard lease is acquired explicitly and released **by running out**.
 Agents renew what they hold as a side effect of their heartbeat, so a live
-agent keeps its claims and a dead one gives them up within a minute or two,
-with nobody having to remember anything.
+agent keeps its claims and a dead one gives them up within the TTL of its last
+heartbeat — 15 minutes by default — with nobody having to remember anything.
 
 ---
 
 ## Install
 
-Not yet on PyPI — install straight from GitHub for now:
-
 ```bash
 # Agent side: client + CLI only (one dependency, httpx)
-pip install "agent-switchboard @ git+https://github.com/gald33/switchboard.git"
+pip install agent-switchboard
 
 # Hub side: also the server
-pip install "agent-switchboard[server] @ git+https://github.com/gald33/switchboard.git"
+pip install "agent-switchboard[server]"
 
 # With end-to-end encryption
-pip install "agent-switchboard[crypto] @ git+https://github.com/gald33/switchboard.git"
+pip install "agent-switchboard[crypto]"
 
 # With the MCP bridge for Claude Code / any MCP client
-pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"
+pip install "agent-switchboard[all]"
 ```
 
-Pin a commit or tag instead of tracking `main` once you depend on this for
-real — append it to the URL: `git+https://github.com/gald33/switchboard.git@v0.1.0`.
+To track `main` instead of a release — for unreleased fixes, or to
+contribute — install from GitHub instead:
+`pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"`,
+or pin a commit or tag by appending it to the URL:
+`git+https://github.com/gald33/switchboard.git@v0.1.0`.
 
 ## The fast path
 
 From the root of a repo:
 
 ```bash
-pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"
+pip install "agent-switchboard[all]"
 switchboard init
 ```
 
