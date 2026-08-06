@@ -17,7 +17,10 @@ coordination skill to `.claude/skills/switchboard-coordinate/SKILL.md`, and —
 if you have not already pointed it at a hub — generates a dev token into a
 gitignored `.env`. It merges into whatever is already in those files, so it
 is safe to run again (e.g. after a teammate adds their own MCP server to
-`.mcp.json`). Pass `--url`/`--token`/`--workspace` to point it at an existing
+`.mcp.json`, or after upgrading the package to pick up a fix to a hook or the
+skill — untouched output from a past `init` run is recognized and upgraded
+automatically; anything that looks hand-edited is left alone unless you pass
+`--force`). Pass `--url`/`--token`/`--workspace` to point it at an existing
 hub instead of the local default, or
 `--skip-mcp`/`--skip-hooks`/`--skip-claude-md`/`--skip-skill` to opt out of a
 step. Run `switchboard init --help` for the full list.
