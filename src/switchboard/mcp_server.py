@@ -20,12 +20,14 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
 from .crypto import generate_key
+from .timing import EFFORT_LEVELS, Forecast, TimingModel
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
 # for something else we answer with our newest and let it decide.
@@ -40,6 +42,14 @@ JSONRPC_INTERNAL_ERROR = -32603
 
 def log(message: str) -> None:
     print(f"[switchboard-mcp] {message}", file=sys.stderr, flush=True)
+
+
+def _now_iso() -> str:
+    """Anchor for interpreting any absolute timestamp in a tool response —
+    a timing_forecast checkpoint, a message's 'at' — without the model
+    needing its own notion of wall-clock time.
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 
 # --- tool schemas -----------------------------------------------------------
@@ -84,6 +94,32 @@ _CUSTOM_SCOPE = {
     "additionalProperties": False,
 }
 
+#: Optional semantic timing hints. This is the entire burden a model takes
+#: on for adaptive timing forecasts — everything past this (consulting
+#: local history, estimating percentiles, attaching a forecast) happens
+#: automatically. Neither field is required; omit both for no forecast.
+#: Both fields describe the stretch of work you are about to disappear
+#: into, because that is what determines how long until you next look up.
+_TIMING_CLASS = {
+    **_STR,
+    "description": (
+        "OPTIONAL. A short free-form label for the work you are about to do before you "
+        "next check your messages, e.g. 'coding' or 'research'. Used only to look up "
+        "your own local timing history and estimate when you will next come looking — "
+        "it is never sent as-is. Any label is accepted; the ones listed below are just "
+        "the ones you have been using lately."
+    ),
+}
+_TIMING_EFFORT = {
+    **_STR,
+    "enum": list(EFFORT_LEVELS),
+    "description": (
+        "OPTIONAL. Your rough relative size estimate for that stretch of work — 'low', "
+        "'medium', or 'high'. Not a time estimate; your local timing history converts "
+        "it into one. Omit if you don't want a forecast."
+    ),
+}
+
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -117,6 +153,8 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _schema({
             "task": {**_STR, "description": "what you are working on right now"},
             "wait": {**_NUM, "description": "seconds to long-poll for messages (0-25)"},
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }),
     },
     {
@@ -162,7 +200,9 @@ TOOLS: list[dict[str, Any]] = [
             "things that are true for a while but should not outlive the work: what you "
             "are about to change, an interface you just altered, a warning that a test is "
             "flaky. Messages expire after an hour by default — anything that should be "
-            "permanent belongs in a commit message or a PR instead."
+            "permanent belongs in a commit message or a PR instead. Optionally pass "
+            "execution_class/effort to attach a check-in forecast for collaborators — "
+            "advisory only, based on your own local history."
         ),
         "inputSchema": _schema({
             "channel": {**_STR, "description": "channel name, e.g. 'build' or 'backend'"},
@@ -170,6 +210,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": {**_STR, "description": "optional tag, e.g. 'warning', 'handoff'"},
             "ttl": {**_NUM, "description": "seconds to keep it (default 3600)"},
             "custom_scope": _CUSTOM_SCOPE,
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }, ["channel", "message"]),
     },
     {
@@ -177,7 +219,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Send a message to one specific agent, by the agent id shown in roster. Use "
             "this to hand off context, answer another agent's question, or warn one agent "
-            "specifically that you are about to change something it depends on."
+            "specifically that you are about to change something it depends on. Optionally "
+            "pass execution_class/effort to attach a check-in forecast — advisory only, "
+            "based on your own local history."
         ),
         "inputSchema": _schema({
             "to": {**_STR, "description": "recipient agent id (see roster)"},
@@ -185,6 +229,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": _STR,
             "ttl": _NUM,
             "custom_scope": _CUSTOM_SCOPE,
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }, ["to", "message"]),
     },
     {
@@ -202,6 +248,8 @@ TOOLS: list[dict[str, Any]] = [
             "wait": {**_NUM, "description": "seconds to long-poll (0-25)"},
             "peek": {**_BOOL, "description": "read without advancing your position"},
             "custom_scope": _CUSTOM_SCOPE,
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }),
     },
     {
@@ -269,10 +317,47 @@ class Bridge:
         self.config = ClientConfig.from_env()
         self.identity: Identity = detect_identity()
         self.client = Client(self.config, agent_id=self.identity.agent_id)
+        self.timing = TimingModel(self.config.timing_db)
         self._registered = False
 
     def close(self) -> None:
         self.client.close()
+        self.timing.close()
+
+    def tools(self) -> list[dict[str, Any]]:
+        """The tool list, with the execution-class shortlist filled in from
+        this agent's own recent usage.
+
+        The offer is advisory: `execution_class` stays an open string, so a
+        model can always coin a new label, and a new label that catches on
+        rises into the shortlist on its own. Purely local — no hub call —
+        and it falls back to the static list if the timing store is
+        unreadable, since tools/list must never fail over a nicety.
+        """
+        try:
+            classes = self.timing.top_classes(self.identity.agent_id, self.config.workspace)
+        except Exception:
+            return TOOLS
+        if not classes:
+            return TOOLS
+        hint = f" Ones you use most: {', '.join(classes)} — or any other label that fits."
+
+        patched = []
+        for tool in TOOLS:
+            properties = tool["inputSchema"]["properties"]
+            if "execution_class" not in properties:
+                patched.append(tool)
+                continue
+            prop = {**properties["execution_class"]}
+            prop["description"] = prop["description"] + hint
+            patched.append({
+                **tool,
+                "inputSchema": {
+                    **tool["inputSchema"],
+                    "properties": {**properties, "execution_class": prop},
+                },
+            })
+        return patched
 
     def _ensure_registered(self) -> None:
         """Register lazily and idempotently.
@@ -369,7 +454,9 @@ class Bridge:
             } if mismatched else {}),
         }
 
-    def checkin(self, task: str | None = None, wait: float = 0.0) -> dict[str, Any]:
+    def checkin(self, task: str | None = None, wait: float = 0.0,
+                execution_class: str | None = None,
+                effort: str | None = None) -> dict[str, Any]:
         self._ensure_registered()
         try:
             result = self.client.heartbeat(task=task)
@@ -382,6 +469,11 @@ class Bridge:
             else:
                 raise
         messages = self.client.inbox(wait=min(max(wait, 0.0), 25.0))
+        # This call read the inbox — that is the event every forecast
+        # predicts, so it closes any window this agent had open. Only then
+        # does a fresh declaration open the next one.
+        self._note_look()
+        forecast = self._declare(execution_class, effort)
         return {
             "holding": [
                 {"resource": le["resource"], "expires_in": le["expires_in"]}
@@ -389,6 +481,8 @@ class Bridge:
             ],
             "messages": [self._msg(m) for m in messages],
             "new_messages": len(messages),
+            "now": _now_iso(),
+            **({"timing_forecast": self._sender_forecast(forecast)} if forecast else {}),
         }
 
     def claim(self, resource: str, note: str | None = None,
@@ -442,35 +536,107 @@ class Bridge:
             "unread_dms": unread_dms,
         }
 
+    def _body_with_forecast(self, message: str, execution_class: str | None,
+                             effort: str | None) -> tuple[Any, Forecast | None]:
+        """Classify this send locally and fold any resulting forecast into
+        the outgoing body. Purely advisory — see timing.py; never raises on
+        a bad/missing local timing store, since a forecast is a nice-to-have,
+        not something correctness can depend on.
+        """
+        forecast = self._declare(execution_class, effort)
+        if forecast is None:
+            return message, None
+        return {"text": message, "timing_forecast": forecast.as_message_meta()}, forecast
+
+    def _declare(self, execution_class: str | None,
+                 effort: str | None) -> Forecast | None:
+        """Open a forecast window. Never raises: the whole feature is
+        advisory, so a broken local timing store costs a hint, not a call.
+        """
+        try:
+            return self.timing.declare(
+                self.identity.agent_id, self.config.workspace, execution_class, effort,
+            )
+        except Exception:
+            return None
+
+    def _note_look(self) -> None:
+        """Tell the timing model the agent just read its inbox — the event
+        every forecast is a prediction of. Never raises, same reasoning.
+        """
+        try:
+            self.timing.note_look(self.identity.agent_id, self.config.workspace)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
+        """The richer view the *sender* gets back on its own tool call.
+
+        Includes everything shared over the wire (absolute p50/p95, so it
+        matches what a receiver sees) plus relative seconds, since the
+        sender already knows "now" is this exact moment and a countdown is
+        more directly useful than re-deriving one from two timestamps.
+        """
+        return {
+            **forecast.as_message_meta(),
+            "p50_in_seconds": round(forecast.p50_seconds),
+            "p95_in_seconds": round(forecast.p95_seconds),
+        }
+
     def say(self, channel: str, message: str, type: str = "note",
             ttl: float | None = None,
-            custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+            custom_scope: dict[str, str] | None = None,
+            execution_class: str | None = None,
+            effort: str | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
-        msg = self.client.post(channel, message, type=type, ttl=ttl, custom_scope=custom_scope)
-        return {
+        body, forecast = self._body_with_forecast(message, execution_class, effort)
+        msg = self.client.post(channel, body, type=type, ttl=ttl, custom_scope=custom_scope)
+        out = {
             "posted": True, "channel": msg["channel"], "seq": msg["seq"],
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
+        if forecast:
+            out["timing_forecast"] = self._sender_forecast(forecast)
+        return out
 
     def dm(self, to: str, message: str, type: str = "note",
            ttl: float | None = None,
-           custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+           custom_scope: dict[str, str] | None = None,
+           execution_class: str | None = None,
+           effort: str | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
-        msg = self.client.send(to, message, type=type, ttl=ttl, custom_scope=custom_scope)
-        return {"sent": True, "to": to, "seq": msg["seq"], "unread_dms": unread_dms}
+        body, forecast = self._body_with_forecast(message, execution_class, effort)
+        msg = self.client.send(to, body, type=type, ttl=ttl, custom_scope=custom_scope)
+        out = {
+            "sent": True, "to": to, "seq": msg["seq"],
+            "unread_dms": unread_dms, "now": _now_iso(),
+        }
+        if forecast:
+            out["timing_forecast"] = self._sender_forecast(forecast)
+        return out
 
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
               peek: bool = False,
-              custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+              custom_scope: dict[str, str] | None = None,
+              execution_class: str | None = None,
+              effort: str | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
         messages = self.client.inbox(
             channels=channels, wait=min(max(wait, 0.0), 25.0), peek=peek,
             custom_scope=custom_scope,
         )
-        return {
+        # Reading is the predicted event, whether or not the cursor moved —
+        # a peek still means the agent looked.
+        self._note_look()
+        forecast = self._declare(execution_class, effort)
+        out = {
             "messages": [self._msg(m) for m in messages], "count": len(messages),
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
+        if forecast:
+            out["timing_forecast"] = self._sender_forecast(forecast)
+        return out
 
     def keygen(self) -> dict[str, Any]:
         """Mint a fresh (key, workspace) pair for a private side-conversation.
@@ -486,7 +652,7 @@ class Bridge:
         messages = self.client.history(channel, limit=int(limit))
         return {
             "channel": channel, "messages": [self._msg(m) for m in messages],
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
 
     def board_set(self, key: str, value: Any, ttl: float | None = None) -> dict[str, Any]:
@@ -521,13 +687,21 @@ class Bridge:
 
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
+        body = m["body"]
+        timing_forecast = None
+        if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
+                and "timing_forecast" in body):
+            timing_forecast = body.get("timing_forecast")
+            body = body.get("text")
         out = {
             "seq": m["seq"],
             "from": m["from"],
             "channel": m["channel"],
-            "body": m["body"],
+            "body": body,
             "at": m["created_at"],
         }
+        if timing_forecast:
+            out["timing_forecast"] = timing_forecast
         if m.get("type") and m["type"] != "note":
             out["type"] = m["type"]
         return out
@@ -588,7 +762,7 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         return _response(request_id, {})
 
     if method == "tools/list":
-        return _response(request_id, {"tools": TOOLS})
+        return _response(request_id, {"tools": bridge.tools()})
 
     if method == "tools/call":
         name = params.get("name", "")
