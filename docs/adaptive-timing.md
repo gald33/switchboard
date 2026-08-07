@@ -5,6 +5,19 @@ check-in forecast to a message it is already sending — so collaborators can
 decide for themselves whether to poll soon, wait, or ignore timing
 entirely, without spending tokens negotiating it.
 
+## What is being predicted
+
+**When this agent will next come and look for messages.** Not when its
+task will finish, and not when it will next post. The question a
+collaborator actually has is *"if I leave this here, when will they see
+it?"*, and that is answered by the agent's next read of its inbox.
+
+This distinction drives the whole observation model below: an agent can
+talk endlessly without ever looking, so posting is not evidence about when
+it will notice anything. The semantic classification describes the work
+ahead only insofar as that work determines how long the agent stays
+heads-down before looking up.
+
 ## Design principle
 
 Standardize the known coordination arithmetic; leave judgment to the model.
@@ -14,9 +27,10 @@ is never a commitment, and no agent is required to obey another's forecast.
 
 ## Two layers
 
-1. **Model judgment (per send or check-in, optional).** The model supplies
-   `execution_class` (a short free-form label, e.g. `"coding"`) and
-   `effort` (`low` / `medium` / `high`). It never estimates seconds.
+1. **Model judgment (optional, on any of say/dm/checkin/inbox).** The model
+   supplies `execution_class` (a short free-form label, e.g. `"coding"`)
+   and `effort` (`low` / `medium` / `high`) for the stretch of work ahead.
+   It never estimates seconds.
 2. **Local learned timing model (automatic).** `timing.TimingModel`
    converts that pair into a forecast using this agent's own history —
    raw history and model parameters never leave the process.
@@ -28,11 +42,11 @@ is never a commitment, and no agent is required to obey another's forecast.
   to override). Sibling in scope to `notify.py`, but purely client-side —
   there is no server/hub involvement at all.
 - `mcp_server.Bridge` owns a `TimingModel` instance alongside its `Client`.
-  The `say`/`dm` tools gained two optional parameters, `execution_class`
-  and `effort`; everything past that (recording the observation, looking up
-  history, computing percentiles, attaching the result) is automatic —
-  matching the existing shape of `Bridge.say`/`Bridge.dm` as the one place
-  every outgoing message already passes through.
+  `say`, `dm`, `checkin` and `inbox` gained two optional parameters,
+  `execution_class` and `effort`; everything past that (closing the
+  previous window, looking up history, computing percentiles, attaching the
+  result) is automatic. `Bridge._declare` and `Bridge._note_look` are the
+  only two call sites, and both swallow errors — see degradation below.
 - The forecast rides inside the message `body` (`{"text": ...,
   "timing_forecast": {...}}`) rather than as a new column/field on the wire
   message model — `type`/`thread` are the only structured message metadata
@@ -43,20 +57,34 @@ is never a commitment, and no agent is required to obey another's forecast.
 
 ## Observation model
 
-An observation is the elapsed time from declaring a classification to the
-next time the agent **surfaces** — a `say`, a `dm`, or a `checkin`. Those
-three are what a collaborator would recognise as a check-in, and all three
-both close the open window and may declare a new one. An `inbox` poll
-deliberately does *not* close the window: the agent looking is not the
-agent reporting, and letting a poll consume the window would bias the
-distribution short.
+An observation is the elapsed time from **declaring** to **looking**:
 
-`checkin` closing the window is what keeps the forecast honest about its
-own claim. An agent that heartbeats through a long task produces several
-short observations rather than one giant message-to-message gap, so the
-learned curve tracks how often it actually surfaces — and it can re-declare
-`(execution_class, effort)` at each check-in as its sense of the work
-changes, getting a fresh forecast back each time.
+- **Declare** (`TimingModel.declare`) opens a window — "here is the work
+  I'm about to do, so here is when I expect to next check messages."
+  Available on `say`, `dm`, `checkin`, and `inbox`.
+- **Look** (`TimingModel.note_look`) closes it, scoring that declaration.
+  Only the tools that actually *read the inbox* count: `checkin` (which
+  long-polls it) and `inbox` (including `peek=true` — the agent saw the
+  messages either way).
+
+`say`/`dm` deliberately never close a window. `_touch()`, which they call,
+explicitly does not drain the inbox — it only returns an unread count — so
+posting is not a look, and treating it as one would train the model on the
+wrong event entirely.
+
+Two consequences worth stating:
+
+- An agent that posts three updates without reading records **no**
+  observations, and its outstanding forecast stays open. That is correct:
+  it still hasn't looked.
+- Re-declaring replaces the open window **without** recording an
+  observation. The agent revised its estimate before the look happened, so
+  the superseded prediction was never tested and must not count against
+  calibration.
+
+`checkin` and `inbox` both accept the optional pair so an agent looping on
+either can re-declare as its sense of the work changes, getting a fresh
+forecast back each time.
 
 `TimingModel` tracks the open window in its own `pending` table. Deltas
 above `MAX_OBSERVATION_SECONDS` (6h) are dropped as restarts/overnight
@@ -148,9 +176,12 @@ the message body other agents read.
   exactly as before (this is the default/existing path, untouched).
 - No history yet → bootstrap prior, still produces a usable forecast.
 - `TimingModel` I/O failure (permissions, disk issue, corrupt file) is
-  caught at every call site — `Bridge._body_with_forecast`, `checkin`, and
+  caught at every call site — `Bridge._declare`, `Bridge._note_look` and
   `Bridge.tools()` — and treated as "no forecast" / "static tool list". It
-  can never block a send or fail `tools/list`.
+  can never block a send, a read, or `tools/list`.
+- A window left open by an agent that never looks again simply never
+  becomes an observation, and the 6h outlier ceiling stops a stale one
+  polluting the distribution if that agent does eventually return.
 - A missed, stale, or wrong forecast has no protocol consequence; nothing
   reads it back to enforce anything.
 - An older timing database is migrated additively (nullable columns only),
@@ -167,9 +198,10 @@ the message body other agents read.
 - `tests/test_mcp.py` — end to end through the bridge: no hint → no
   forecast; hint → bootstrap forecast attached and correctly unwrapped on
   the receiving side; enough local history → the specific bucket is used;
-  `checkin` closes the window with and without a new declaration;
-  `tools/list` offers the agent's own top classes without becoming an
-  enum; and a deliberately broken timing store still sends the message.
+  reading the inbox is what closes a window; posting repeatedly without
+  reading records nothing; `checkin` closes and re-declares; `inbox` can
+  declare too; `tools/list` offers the agent's own top classes without
+  becoming an enum; and a deliberately broken timing store still sends.
 
 ## Out of scope (by design)
 

@@ -1,9 +1,15 @@
 """Adaptive timing forecasts — local, per-agent, learned check-in timing.
 
 This is infrastructure, not a scheduler. It never decides when an agent is
-allowed to act and a forecast is never a commitment: it is one agent's own
-estimate of when *it* is likely to check in again, offered to collaborators
-as a hint.
+allowed to act and a forecast is never a commitment.
+
+What is being predicted, precisely: **when this agent will next come and
+look for messages.** It is not an estimate of when a task will finish, nor
+of when the agent will next post. The question a collaborator actually has
+is "if I leave this here, when will they see it?", and that is answered by
+the agent's next *read* of its inbox. So the semantic classification
+describes the work about to be done only insofar as that work determines
+how long the agent will be heads-down before looking up again.
 
 Design boundary (see docs/adaptive-timing.md for the full writeup):
 
@@ -197,6 +203,13 @@ class TimingModel:
             (agent_id, workspace),
         ).fetchone()
 
+    def _clear_pending(self, agent_id: str, workspace: str) -> None:
+        conn = self._connection()
+        conn.execute(
+            "DELETE FROM pending WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+        )
+        conn.commit()
+
     def _set_pending(self, agent_id: str, workspace: str, execution_class: str | None,
                       effort: str | None, now: float, forecast: Forecast | None) -> None:
         conn = self._connection()
@@ -214,35 +227,48 @@ class TimingModel:
             )
         conn.commit()
 
-    def observe_and_classify(
+    def note_look(self, agent_id: str, workspace: str,
+                  now: float | None = None) -> None:
+        """Record that the agent just checked for messages.
+
+        This is the event the whole feature predicts. A collaborator asking
+        "when will they see what I sent?" is asking when this agent next
+        *reads its inbox* — not when it next posts. So the only things that
+        close an open window are the tools that actually read: ``inbox``
+        and ``checkin``. Posting a message (``say``/``dm``) does not,
+        because an agent can talk without ever looking.
+
+        Closes the open window, recording how long the agent's last
+        declaration actually took to be followed by a look. A no-op when no
+        declaration is outstanding — an unforecast look is not an
+        observation of anything.
+        """
+        now = _now() if now is None else now
+        prior = self._pending(agent_id, workspace)
+        if prior is None:
+            return
+        self._record(agent_id, workspace, prior[0], prior[1], now - prior[2], now,
+                      (prior[3], prior[4], prior[5]))
+        self._clear_pending(agent_id, workspace)
+
+    def declare(
         self, agent_id: str, workspace: str,
         execution_class: str | None, effort: str | None,
         now: float | None = None,
     ) -> Forecast | None:
-        """Close the open observation window, then open a new one if this
-        activity declares a classification — returning its forecast.
+        """Open a forecast window: "here is the work I am about to do, so
+        here is when I expect to next come looking for messages."
 
-        An observation is "time from declaring a classification to the next
-        time this agent surfaces" — a say, a dm, or a checkin. Those are
-        the events a collaborator would recognise as a check-in; an inbox
-        poll deliberately does not close the window, since the agent
-        looking is not the agent reporting.
-
-        Because ``checkin`` both closes a window and can declare a new one,
-        an agent that heartbeats through a long task produces several short
-        observations rather than one long one, and the learned distribution
-        tracks how often it actually surfaces.
+        Returns None when nothing was declared. A new declaration replaces
+        any outstanding one without recording an observation — the agent
+        revised its estimate before the look happened, so the superseded
+        prediction was never actually tested and must not count against
+        calibration.
         """
+        if not (execution_class or effort):
+            return None
         now = _now() if now is None else now
-        prior = self._pending(agent_id, workspace)
-        if prior is not None:
-            prior_class, prior_effort, since = prior[0], prior[1], prior[2]
-            self._record(agent_id, workspace, prior_class, prior_effort, now - since, now,
-                          (prior[3], prior[4], prior[5]))
-
-        forecast = None
-        if execution_class or effort:
-            forecast = self.forecast(agent_id, workspace, execution_class, effort, now=now)
+        forecast = self.forecast(agent_id, workspace, execution_class, effort, now=now)
         self._set_pending(agent_id, workspace, execution_class, effort, now, forecast)
         return forecast
 

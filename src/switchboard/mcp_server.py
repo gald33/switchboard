@@ -98,22 +98,25 @@ _CUSTOM_SCOPE = {
 #: on for adaptive timing forecasts — everything past this (consulting
 #: local history, estimating percentiles, attaching a forecast) happens
 #: automatically. Neither field is required; omit both for no forecast.
+#: Both fields describe the stretch of work you are about to disappear
+#: into, because that is what determines how long until you next look up.
 _TIMING_CLASS = {
     **_STR,
     "description": (
-        "OPTIONAL. A short free-form label for what you are about to do before your "
-        "next check-in. Used only to look up your own local timing history so a rough "
-        "check-in forecast can be produced — it is never sent as-is. Any label is "
-        "accepted; the ones listed below are just the ones you have been using lately."
+        "OPTIONAL. A short free-form label for the work you are about to do before you "
+        "next check your messages, e.g. 'coding' or 'research'. Used only to look up "
+        "your own local timing history and estimate when you will next come looking — "
+        "it is never sent as-is. Any label is accepted; the ones listed below are just "
+        "the ones you have been using lately."
     ),
 }
 _TIMING_EFFORT = {
     **_STR,
     "enum": list(EFFORT_LEVELS),
     "description": (
-        "OPTIONAL. Your rough relative size estimate for the work ahead — 'low', "
+        "OPTIONAL. Your rough relative size estimate for that stretch of work — 'low', "
         "'medium', or 'high'. Not a time estimate; your local timing history converts "
-        "it into one. Omit if you don't want a forecast attached."
+        "it into one. Omit if you don't want a forecast."
     ),
 }
 
@@ -245,6 +248,8 @@ TOOLS: list[dict[str, Any]] = [
             "wait": {**_NUM, "description": "seconds to long-poll (0-25)"},
             "peek": {**_BOOL, "description": "read without advancing your position"},
             "custom_scope": _CUSTOM_SCOPE,
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }),
     },
     {
@@ -453,16 +458,6 @@ class Bridge:
                 execution_class: str | None = None,
                 effort: str | None = None) -> dict[str, Any]:
         self._ensure_registered()
-        # A checkin is a check-in: it closes the open timing window and may
-        # declare a fresh classification for the stretch about to start.
-        # Heartbeating through a long task therefore teaches the model how
-        # often this agent actually surfaces, instead of one giant gap.
-        try:
-            forecast = self.timing.observe_and_classify(
-                self.identity.agent_id, self.config.workspace, execution_class, effort,
-            )
-        except Exception:
-            forecast = None
         try:
             result = self.client.heartbeat(task=task)
         except SwitchboardError as exc:
@@ -474,6 +469,11 @@ class Bridge:
             else:
                 raise
         messages = self.client.inbox(wait=min(max(wait, 0.0), 25.0))
+        # This call read the inbox — that is the event every forecast
+        # predicts, so it closes any window this agent had open. Only then
+        # does a fresh declaration open the next one.
+        self._note_look()
+        forecast = self._declare(execution_class, effort)
         return {
             "holding": [
                 {"resource": le["resource"], "expires_in": le["expires_in"]}
@@ -543,15 +543,31 @@ class Bridge:
         a bad/missing local timing store, since a forecast is a nice-to-have,
         not something correctness can depend on.
         """
-        try:
-            forecast = self.timing.observe_and_classify(
-                self.identity.agent_id, self.config.workspace, execution_class, effort,
-            )
-        except Exception:
-            forecast = None
+        forecast = self._declare(execution_class, effort)
         if forecast is None:
             return message, None
         return {"text": message, "timing_forecast": forecast.as_message_meta()}, forecast
+
+    def _declare(self, execution_class: str | None,
+                 effort: str | None) -> Forecast | None:
+        """Open a forecast window. Never raises: the whole feature is
+        advisory, so a broken local timing store costs a hint, not a call.
+        """
+        try:
+            return self.timing.declare(
+                self.identity.agent_id, self.config.workspace, execution_class, effort,
+            )
+        except Exception:
+            return None
+
+    def _note_look(self) -> None:
+        """Tell the timing model the agent just read its inbox — the event
+        every forecast is a prediction of. Never raises, same reasoning.
+        """
+        try:
+            self.timing.note_look(self.identity.agent_id, self.config.workspace)
+        except Exception:
+            pass
 
     @staticmethod
     def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
@@ -602,16 +618,25 @@ class Bridge:
 
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
               peek: bool = False,
-              custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
+              custom_scope: dict[str, str] | None = None,
+              execution_class: str | None = None,
+              effort: str | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
         messages = self.client.inbox(
             channels=channels, wait=min(max(wait, 0.0), 25.0), peek=peek,
             custom_scope=custom_scope,
         )
-        return {
+        # Reading is the predicted event, whether or not the cursor moved —
+        # a peek still means the agent looked.
+        self._note_look()
+        forecast = self._declare(execution_class, effort)
+        out = {
             "messages": [self._msg(m) for m in messages], "count": len(messages),
             "unread_dms": unread_dms, "now": _now_iso(),
         }
+        if forecast:
+            out["timing_forecast"] = self._sender_forecast(forecast)
+        return out
 
     def keygen(self) -> dict[str, Any]:
         """Mint a fresh (key, workspace) pair for a private side-conversation.

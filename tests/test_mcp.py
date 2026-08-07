@@ -285,9 +285,10 @@ def test_dm_forecast_learns_from_local_history(hub):
     # Seed enough local history for a2's own (coding, low) bucket that the
     # forecast should no longer be the wide bootstrap prior.
     t = 1_000_000.0
-    for delta in range(1, MIN_SAMPLES + 2):
-        a2.timing.observe_and_classify("a2", a2.config.workspace, "coding", "low", now=t)
-        t += delta
+    for delta in range(1, MIN_SAMPLES + 1):
+        a2.timing.declare("a2", a2.config.workspace, "coding", "low", now=t)
+        a2.timing.note_look("a2", a2.config.workspace, now=t + delta)
+        t += delta + 1
 
     payload, _ = call(
         a2, "dm", to="a1", message="quick fix incoming",
@@ -299,39 +300,72 @@ def test_dm_forecast_learns_from_local_history(hub):
     assert "timing_forecast" in payload
 
 
-def test_checkin_closes_the_window_and_can_declare_a_new_forecast(hub):
-    """Gap 1: a checkin is a check-in. Heartbeating through a long task
-    produces several short observations, not one giant gap, so the learned
-    curve adapts to how often the agent actually surfaces."""
+def test_reading_the_inbox_is_what_closes_the_window(hub):
+    """The forecast predicts when the agent next comes *looking*, so an
+    inbox read is the event that scores it."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="heads down", execution_class="coding",
+         effort="medium")
+    assert a1.timing._pending("a1", ws) is not None
+    call(a1, "inbox")
+    assert a1.timing._pending("a1", ws) is None
+    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 1
+
+
+def test_posting_repeatedly_without_looking_records_nothing(hub):
+    """An agent can talk without ever reading; none of that is evidence
+    about when it next looks."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    for _ in range(3):
+        call(a1, "say", channel="build", message="still going",
+             execution_class="coding", effort="medium")
+    assert a1.timing._samples("a1", ws, "coding", "medium") == []
+    assert a1.timing._pending("a1", ws) is not None
+
+
+def test_checkin_closes_the_window_and_can_declare_a_new_one(hub):
+    """checkin long-polls the inbox, so it both scores the open forecast
+    and can declare the next stretch."""
     a1 = make_bridge(hub, "a1")
     ws = a1.config.workspace
     call(a1, "say", channel="build", message="starting", execution_class="coding",
          effort="medium")
-    # Each checkin closes the window the previous declaration opened, so two
-    # checkins through one task yield two observations rather than none.
     for _ in range(2):
         payload, _ = call(a1, "checkin", execution_class="coding", effort="medium")
         assert "timing_forecast" in payload
     assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 2
 
 
-def test_checkin_without_timing_hints_still_closes_the_window(hub):
+def test_a_look_without_hints_closes_without_reopening(hub):
     a1 = make_bridge(hub, "a1")
     ws = a1.config.workspace
     call(a1, "say", channel="build", message="starting", execution_class="coding",
          effort="low")
-    assert a1.timing._pending("a1", ws) is not None
     payload, _ = call(a1, "checkin")
     assert "timing_forecast" not in payload
     assert a1.timing._pending("a1", ws) is None
     assert len(a1.timing._samples("a1", ws, "coding", "low")) == 1
 
 
+def test_inbox_can_declare_the_next_stretch(hub):
+    """An agent looping on inbox rather than checkin must still be able to
+    forecast."""
+    a1 = make_bridge(hub, "a1")
+    payload, _ = call(a1, "inbox", execution_class="research", effort="high")
+    assert set(payload["timing_forecast"]) == {
+        "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+    }
+    assert a1.timing._pending("a1", a1.config.workspace) is not None
+
+
 def test_tools_list_offers_this_agents_own_top_classes(hub):
     a1 = make_bridge(hub, "a1")
     ws = a1.config.workspace
     for i in range(3):
-        a1.timing.observe_and_classify("a1", ws, "yak-shaving", "low", now=_t(i * 10))
+        a1.timing.declare("a1", ws, "yak-shaving", "low", now=_t(i * 10))
+        a1.timing.note_look("a1", ws, now=_t(i * 10 + 5))
     tools = {t["name"]: t for t in a1.tools()}
     description = tools["say"]["inputSchema"]["properties"]["execution_class"]["description"]
     assert "yak-shaving" in description
@@ -346,7 +380,7 @@ def test_a_broken_timing_store_never_blocks_a_send(hub):
     a1.client.register(name="a1", channels=["build"])
 
     class _Broken:
-        def observe_and_classify(self, *a, **k):
+        def declare(self, *a, **k):
             raise RuntimeError("disk gone")
 
         def top_classes(self, *a, **k):
