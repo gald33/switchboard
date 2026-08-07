@@ -248,13 +248,24 @@ def test_say_with_timing_hints_attaches_bootstrap_forecast(hub):
         a2, "say", channel="build", message="digging into the parser bug",
         execution_class="coding", effort="medium",
     )
-    assert set(payload["timing_forecast"].keys()) == {"p50", "p95"}
+    # The sender gets both the shared checkpoints and a local convenience
+    # countdown — the countdown never crosses the wire.
+    assert set(payload["timing_forecast"].keys()) == {
+        "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+    }
+    assert "now" in payload
 
     inbox, _ = call(a1, "inbox")
     msg = inbox["messages"][0]
-    # The message body seen by the receiver is unwrapped back to plain text.
+    # The message body seen by the receiver is unwrapped back to plain text,
+    # and its forecast is the sparse wire form only.
     assert msg["body"] == "digging into the parser bug"
-    assert msg["timing_forecast"] == payload["timing_forecast"]
+    assert set(msg["timing_forecast"].keys()) == {"p50", "p95"}
+    assert msg["timing_forecast"] == {
+        "p50": payload["timing_forecast"]["p50"],
+        "p95": payload["timing_forecast"]["p95"],
+    }
+    assert "now" in inbox
 
 
 def test_dm_forecast_learns_from_local_history(hub):

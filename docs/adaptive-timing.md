@@ -82,6 +82,26 @@ counts, execution class, or effort are exposed — those stay local
 (`Forecast` keeps them for local diagnostics; `as_message_meta()` is the
 only thing that crosses the process boundary).
 
+### The "now" anchor
+
+An absolute timestamp is only useful if the reader also has a trustworthy
+"now" to compare it against — a model cannot be assumed to know its own
+wall-clock time. Neither the sender nor the receiver gets one for free, so
+every tool response that carries a forecast or a message also carries a
+top-level `now` (current UTC time, `mcp_server._now_iso()`): `say`, `dm`,
+`inbox`, `history`, `checkin`. This makes both sides of the exchange able
+to interpret `timing_forecast` without guessing at the clock — the
+receiver diffs `now` against the message's forecast, and the sender diffs
+`now` against its own.
+
+The sender also gets a same-call convenience the wire format deliberately
+omits: alongside the two absolute checkpoints, its own tool response
+includes `p50_in_seconds`/`p95_in_seconds` — a ready-to-use countdown, since
+it already knows "now" was the instant it sent the message and would
+otherwise just re-derive this by subtracting `now` from `p50`/`p95`
+itself. This stays local to the response; only `{p50, p95}` ever rides in
+the message body other agents read.
+
 ## Graceful degradation
 
 - No classification on a send → no forecast attached, message behaves

@@ -20,13 +20,14 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
 from .crypto import generate_key
-from .timing import EFFORT_LEVELS, TimingModel
+from .timing import EFFORT_LEVELS, Forecast, TimingModel
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
 # for something else we answer with our newest and let it decide.
@@ -41,6 +42,14 @@ JSONRPC_INTERNAL_ERROR = -32603
 
 def log(message: str) -> None:
     print(f"[switchboard-mcp] {message}", file=sys.stderr, flush=True)
+
+
+def _now_iso() -> str:
+    """Anchor for interpreting any absolute timestamp in a tool response —
+    a timing_forecast checkpoint, a message's 'at' — without the model
+    needing its own notion of wall-clock time.
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 
 # --- tool schemas -----------------------------------------------------------
@@ -424,6 +433,7 @@ class Bridge:
             ],
             "messages": [self._msg(m) for m in messages],
             "new_messages": len(messages),
+            "now": _now_iso(),
         }
 
     def claim(self, resource: str, note: str | None = None,
@@ -478,7 +488,7 @@ class Bridge:
         }
 
     def _body_with_forecast(self, message: str, execution_class: str | None,
-                             effort: str | None) -> tuple[Any, dict[str, str] | None]:
+                             effort: str | None) -> tuple[Any, Forecast | None]:
         """Classify this send locally and fold any resulting forecast into
         the outgoing body. Purely advisory — see timing.py; never raises on
         a bad/missing local timing store, since a forecast is a nice-to-have,
@@ -492,8 +502,22 @@ class Bridge:
             forecast = None
         if forecast is None:
             return message, None
-        meta = forecast.as_message_meta()
-        return {"text": message, "timing_forecast": meta}, meta
+        return {"text": message, "timing_forecast": forecast.as_message_meta()}, forecast
+
+    @staticmethod
+    def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
+        """The richer view the *sender* gets back on its own tool call.
+
+        Includes everything shared over the wire (absolute p50/p95, so it
+        matches what a receiver sees) plus relative seconds, since the
+        sender already knows "now" is this exact moment and a countdown is
+        more directly useful than re-deriving one from two timestamps.
+        """
+        return {
+            **forecast.as_message_meta(),
+            "p50_in_seconds": round(forecast.p50_seconds),
+            "p95_in_seconds": round(forecast.p95_seconds),
+        }
 
     def say(self, channel: str, message: str, type: str = "note",
             ttl: float | None = None,
@@ -505,10 +529,10 @@ class Bridge:
         msg = self.client.post(channel, body, type=type, ttl=ttl, custom_scope=custom_scope)
         out = {
             "posted": True, "channel": msg["channel"], "seq": msg["seq"],
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
         if forecast:
-            out["timing_forecast"] = forecast
+            out["timing_forecast"] = self._sender_forecast(forecast)
         return out
 
     def dm(self, to: str, message: str, type: str = "note",
@@ -519,9 +543,12 @@ class Bridge:
         unread_dms = self._touch()
         body, forecast = self._body_with_forecast(message, execution_class, effort)
         msg = self.client.send(to, body, type=type, ttl=ttl, custom_scope=custom_scope)
-        out = {"sent": True, "to": to, "seq": msg["seq"], "unread_dms": unread_dms}
+        out = {
+            "sent": True, "to": to, "seq": msg["seq"],
+            "unread_dms": unread_dms, "now": _now_iso(),
+        }
         if forecast:
-            out["timing_forecast"] = forecast
+            out["timing_forecast"] = self._sender_forecast(forecast)
         return out
 
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
@@ -534,7 +561,7 @@ class Bridge:
         )
         return {
             "messages": [self._msg(m) for m in messages], "count": len(messages),
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
 
     def keygen(self) -> dict[str, Any]:
@@ -551,7 +578,7 @@ class Bridge:
         messages = self.client.history(channel, limit=int(limit))
         return {
             "channel": channel, "messages": [self._msg(m) for m in messages],
-            "unread_dms": unread_dms,
+            "unread_dms": unread_dms, "now": _now_iso(),
         }
 
     def board_set(self, key: str, value: Any, ttl: float | None = None) -> dict[str, Any]:
