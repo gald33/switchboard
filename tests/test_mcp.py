@@ -19,6 +19,7 @@ from switchboard.config import ClientConfig, ServerConfig
 from switchboard.mcp_server import TOOLS, Bridge, handle_request, serve_stdio
 from switchboard.server import create_app
 from switchboard.store import Store
+from switchboard.timing import TimingModel
 
 WS = "mcp-ws"
 
@@ -50,6 +51,7 @@ def make_bridge(hub: TestClient, agent_id: str = "mcp-agent") -> Bridge:
         agent_id=agent_id, name="mcp agent", kind="local", branch="feat/x", meta={}
     )
     bridge.client = _BoundClient(hub, agent_id)
+    bridge.timing = TimingModel(":memory:")
     bridge._registered = False
     return bridge
 
@@ -225,6 +227,58 @@ def test_dm_reaches_only_the_addressee(hub):
     call(a2, "dm", to="a1", message="just you")
     assert call(a1, "inbox")[0]["count"] == 1
     assert call(a3, "inbox")[0]["count"] == 0
+
+
+def test_say_without_timing_hints_has_no_forecast(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    payload, _ = call(a2, "say", channel="build", message="rebasing now")
+    assert "timing_forecast" not in payload
+    inbox, _ = call(a1, "inbox")
+    assert inbox["messages"][0]["body"] == "rebasing now"
+    assert "timing_forecast" not in inbox["messages"][0]
+
+
+def test_say_with_timing_hints_attaches_bootstrap_forecast(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    payload, _ = call(
+        a2, "say", channel="build", message="digging into the parser bug",
+        execution_class="coding", effort="medium",
+    )
+    assert set(payload["timing_forecast"].keys()) == {"p50", "p95"}
+
+    inbox, _ = call(a1, "inbox")
+    msg = inbox["messages"][0]
+    # The message body seen by the receiver is unwrapped back to plain text.
+    assert msg["body"] == "digging into the parser bug"
+    assert msg["timing_forecast"] == payload["timing_forecast"]
+
+
+def test_dm_forecast_learns_from_local_history(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    call(a2, "whoami")
+
+    from switchboard.timing import MIN_SAMPLES
+
+    # Seed enough local history for a2's own (coding, low) bucket that the
+    # forecast should no longer be the wide bootstrap prior.
+    t = 1_000_000.0
+    for delta in range(1, MIN_SAMPLES + 2):
+        a2.timing.observe_and_classify("a2", a2.config.workspace, "coding", "low", now=t)
+        t += delta
+
+    payload, _ = call(
+        a2, "dm", to="a1", message="quick fix incoming",
+        execution_class="coding", effort="low",
+    )
+    f = a2.timing.forecast("a2", a2.config.workspace, "coding", "low", now=t)
+    assert f.source == "class+effort"
+    assert f.samples >= MIN_SAMPLES
+    assert "timing_forecast" in payload
 
 
 def test_checkin_renews_leases_and_returns_messages(hub):

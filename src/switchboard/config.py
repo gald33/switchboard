@@ -133,6 +133,9 @@ class ClientConfig:
     #: and identifiers blinded before anything leaves this process. It is never
     #: transmitted; the hub cannot read the workspace with or without it.
     key: str | None = None
+    #: Path to this agent's local timing-observations database (see timing.py).
+    #: Purely local — never sent to the hub, never shared with other agents.
+    timing_db: str = "~/.switchboard/timing.db"
 
     @classmethod
     def from_env(cls) -> ClientConfig:
@@ -142,6 +145,7 @@ class ClientConfig:
             workspace=os.environ.get("SWITCHBOARD_WORKSPACE", "default"),
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
             key=os.environ.get("SWITCHBOARD_KEY") or None,
+            timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
         )
 
 
