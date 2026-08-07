@@ -29,6 +29,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 #: The only ordinal scale a model needs to reason about. Kept small and
 #: closed because "how big is this, roughly" is a judgment agents are
@@ -53,6 +54,20 @@ MAX_OBSERVATION_SECONDS = 6 * 3600.0
 #: Below this many samples, a bucket is considered too sparse to trust and
 #: the estimator falls back to a coarser one.
 MIN_SAMPLES = 5
+
+#: Seed execution classes offered before an agent has used enough of its
+#: own. Deliberately tiny — the real taxonomy is meant to emerge from use,
+#: and anything an agent actually uses displaces these in the offer set.
+DEFAULT_CLASSES = ("coding", "research", "review", "waiting")
+
+#: How many execution classes to offer the model at a time. The offer is a
+#: convenience, never a constraint: a custom label is always accepted.
+TOP_K_CLASSES = 6
+
+#: Recency half-life for ranking execution classes. A class the agent has
+#: stopped using fades out of the offer set rather than lingering forever,
+#: so the suggestions track what this agent is doing *now*.
+CLASS_HALF_LIFE_SECONDS = 14 * 86400.0
 
 
 def _now() -> float:
@@ -107,7 +122,14 @@ class TimingModel:
                     execution_class TEXT NOT NULL,
                     effort          TEXT NOT NULL,
                     delta_seconds   REAL NOT NULL,
-                    observed_at     REAL NOT NULL
+                    observed_at     REAL NOT NULL,
+                    -- What we predicted at the time this window opened, kept
+                    -- so calibration ("did 95% of events land under p95?")
+                    -- stays answerable after the fact. Null only for rows
+                    -- written before these columns existed.
+                    predicted_p50   REAL,
+                    predicted_p95   REAL,
+                    predicted_from  TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_observations_lookup
                     ON observations(agent_id, workspace, execution_class, effort);
@@ -118,13 +140,33 @@ class TimingModel:
                     execution_class TEXT NOT NULL,
                     effort          TEXT NOT NULL,
                     since           REAL NOT NULL,
+                    predicted_p50   REAL,
+                    predicted_p95   REAL,
+                    predicted_from  TEXT,
                     PRIMARY KEY (agent_id, workspace)
                 );
                 """
             )
+            self._add_missing_columns(conn)
             conn.commit()
             self._conn = conn
         return self._conn
+
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        """Additively migrate a database created by an earlier version.
+
+        Only ever adds nullable columns, so an old file keeps working and
+        old rows simply have no calibration data attached.
+        """
+        for table in ("observations", "pending"):
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, decl in (
+                ("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
+                ("predicted_from", "TEXT"),
+            ):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         if self._conn is not None:
@@ -134,37 +176,41 @@ class TimingModel:
     # --- observation -----------------------------------------------------
 
     def _record(self, agent_id: str, workspace: str, execution_class: str,
-                effort: str, delta_seconds: float, now: float) -> None:
+                effort: str, delta_seconds: float, now: float,
+                predicted: tuple[float | None, float | None, str | None]) -> None:
         if not (0 < delta_seconds <= MAX_OBSERVATION_SECONDS):
             return
         conn = self._connection()
         conn.execute(
             "INSERT INTO observations "
-            "(agent_id, workspace, execution_class, effort, delta_seconds, observed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (agent_id, workspace, execution_class, effort, delta_seconds, now),
+            "(agent_id, workspace, execution_class, effort, delta_seconds, observed_at, "
+            " predicted_p50, predicted_p95, predicted_from) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, workspace, execution_class, effort, delta_seconds, now, *predicted),
         )
         conn.commit()
 
-    def _pending(self, agent_id: str, workspace: str) -> tuple[str, str, float] | None:
-        row = self._connection().execute(
-            "SELECT execution_class, effort, since FROM pending "
-            "WHERE agent_id = ? AND workspace = ?",
+    def _pending(self, agent_id: str, workspace: str) -> tuple | None:
+        return self._connection().execute(
+            "SELECT execution_class, effort, since, predicted_p50, predicted_p95, "
+            "predicted_from FROM pending WHERE agent_id = ? AND workspace = ?",
             (agent_id, workspace),
         ).fetchone()
-        return (row[0], row[1], row[2]) if row else None
 
     def _set_pending(self, agent_id: str, workspace: str, execution_class: str | None,
-                      effort: str | None, now: float) -> None:
+                      effort: str | None, now: float, forecast: Forecast | None) -> None:
         conn = self._connection()
         conn.execute(
             "DELETE FROM pending WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
         )
         if execution_class or effort:
             conn.execute(
-                "INSERT INTO pending (agent_id, workspace, execution_class, effort, since) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (agent_id, workspace, execution_class or "unspecified", effort or "medium", now),
+                "INSERT INTO pending (agent_id, workspace, execution_class, effort, since, "
+                "predicted_p50, predicted_p95, predicted_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (agent_id, workspace, execution_class or "unspecified", effort or "medium", now,
+                 forecast.p50_seconds if forecast else None,
+                 forecast.p95_seconds if forecast else None,
+                 forecast.source if forecast else None),
             )
         conn.commit()
 
@@ -173,26 +219,32 @@ class TimingModel:
         execution_class: str | None, effort: str | None,
         now: float | None = None,
     ) -> Forecast | None:
-        """Record the gap since the agent's last classified activity, then —
-        if this activity is itself classified — return a fresh forecast for
-        it. This is the one entry point the send path needs to call.
+        """Close the open observation window, then open a new one if this
+        activity declares a classification — returning its forecast.
 
-        An observation is "time from one classified check-in to the next
-        agent activity of any kind" (see docs/adaptive-timing.md for why
-        raw wall-clock deltas alone are not always trustworthy, and how
-        that can be refined later without changing this interface).
+        An observation is "time from declaring a classification to the next
+        time this agent surfaces" — a say, a dm, or a checkin. Those are
+        the events a collaborator would recognise as a check-in; an inbox
+        poll deliberately does not close the window, since the agent
+        looking is not the agent reporting.
+
+        Because ``checkin`` both closes a window and can declare a new one,
+        an agent that heartbeats through a long task produces several short
+        observations rather than one long one, and the learned distribution
+        tracks how often it actually surfaces.
         """
         now = _now() if now is None else now
         prior = self._pending(agent_id, workspace)
         if prior is not None:
-            prior_class, prior_effort, since = prior
-            self._record(agent_id, workspace, prior_class, prior_effort, now - since, now)
+            prior_class, prior_effort, since = prior[0], prior[1], prior[2]
+            self._record(agent_id, workspace, prior_class, prior_effort, now - since, now,
+                          (prior[3], prior[4], prior[5]))
 
-        self._set_pending(agent_id, workspace, execution_class, effort, now)
-
-        if not execution_class and not effort:
-            return None
-        return self.forecast(agent_id, workspace, execution_class, effort, now=now)
+        forecast = None
+        if execution_class or effort:
+            forecast = self.forecast(agent_id, workspace, execution_class, effort, now=now)
+        self._set_pending(agent_id, workspace, execution_class, effort, now, forecast)
+        return forecast
 
     # --- estimation --------------------------------------------------------
 
@@ -261,15 +313,60 @@ class TimingModel:
         p50, p95 = _BOOTSTRAP_SECONDS.get(effort or "", _DEFAULT_BOOTSTRAP)
         return Forecast(p50_seconds=p50, p95_seconds=p95, now=now, source="bootstrap", samples=0)
 
+    # --- taxonomy ----------------------------------------------------------
 
-_default_model: TimingModel | None = None
+    def top_classes(self, agent_id: str, workspace: str, k: int = TOP_K_CLASSES,
+                    now: float | None = None) -> list[str]:
+        """This agent's most-used execution classes, recency-weighted.
 
+        Used only to *offer* the model a shortlist — a custom label is
+        always accepted, so this never constrains the taxonomy, it just
+        saves the model from reinventing a label it already uses. Each
+        observation contributes ``0.5 ** (age / CLASS_HALF_LIFE_SECONDS)``,
+        so classes the agent has moved on from decay out of the offer set
+        instead of accumulating forever.
 
-def default_model(db_path: str = "~/.switchboard/timing.db") -> TimingModel:
-    """Process-wide singleton so repeated calls share one open connection."""
-    global _default_model
-    if _default_model is None or _default_model.db_path != os.path.expanduser(db_path):
-        if _default_model is not None:
-            _default_model.close()
-        _default_model = TimingModel(db_path)
-    return _default_model
+        Padded with DEFAULT_CLASSES so there is always something to offer,
+        including on a completely cold start.
+        """
+        now = _now() if now is None else now
+        weights: dict[str, float] = {}
+        for cls, observed_at in self._connection().execute(
+            "SELECT execution_class, observed_at FROM observations "
+            "WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+        ):
+            if cls == "unspecified":
+                continue
+            age = max(0.0, now - observed_at)
+            weights[cls] = weights.get(cls, 0.0) + 0.5 ** (age / CLASS_HALF_LIFE_SECONDS)
+
+        ranked = sorted(weights, key=lambda c: (-weights[c], c))[:k]
+        for fallback in DEFAULT_CLASSES:
+            if len(ranked) >= k:
+                break
+            if fallback not in ranked:
+                ranked.append(fallback)
+        return ranked
+
+    # --- calibration -------------------------------------------------------
+
+    def calibration(self, agent_id: str, workspace: str) -> dict[str, Any]:
+        """How well this agent's past forecasts matched what actually
+        happened. Local diagnostics only — never shared.
+
+        A well-calibrated model puts roughly 50% of outcomes under its p50
+        and roughly 95% under its p95. This reads the predictions stored
+        with each observation, so it stays answerable retroactively.
+        """
+        rows = self._connection().execute(
+            "SELECT delta_seconds, predicted_p50, predicted_p95 FROM observations "
+            "WHERE agent_id = ? AND workspace = ? AND predicted_p50 IS NOT NULL",
+            (agent_id, workspace),
+        ).fetchall()
+        if not rows:
+            return {"samples": 0, "p50_hit_rate": None, "p95_hit_rate": None}
+        return {
+            "samples": len(rows),
+            "p50_hit_rate": sum(d <= p50 for d, p50, _ in rows) / len(rows),
+            "p95_hit_rate": sum(d <= p95 for d, _, p95 in rows) / len(rows),
+        }

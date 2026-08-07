@@ -14,10 +14,9 @@ is never a commitment, and no agent is required to obey another's forecast.
 
 ## Two layers
 
-1. **Model judgment (per send, optional).** The model supplies
-   `execution_class` (a short free-form label, e.g. `"coding"` —
-   deliberately no fixed taxonomy, it emerges from use) and `effort`
-   (`low` / `medium` / `high`). It never estimates seconds.
+1. **Model judgment (per send or check-in, optional).** The model supplies
+   `execution_class` (a short free-form label, e.g. `"coding"`) and
+   `effort` (`low` / `medium` / `high`). It never estimates seconds.
 2. **Local learned timing model (automatic).** `timing.TimingModel`
    converts that pair into a forecast using this agent's own history —
    raw history and model parameters never leave the process.
@@ -44,18 +43,59 @@ is never a commitment, and no agent is required to obey another's forecast.
 
 ## Observation model
 
-An observation is the elapsed time between one *classified* send (a
-`say`/`dm` call that included `execution_class`/`effort`) and this agent's
-*next* activity of any kind (classified or not) in the same
-`(agent_id, workspace)`. `TimingModel` tracks the open "pending" window in
-its own `pending` table and closes it — recording a `delta_seconds` row
-against the *prior* classification — on the next send. Deltas above
-`MAX_OBSERVATION_SECONDS` (6h) are dropped as restarts/overnight gaps
-rather than genuine work time; this is the one outlier heuristic v1 needs,
-and the schema (one row per observation, with class/effort/timestamp) is
-intentionally raw enough to layer richer detection (active vs. waiting vs.
-external-call time, interruption tagging, calibration audits) on top later
-without a migration.
+An observation is the elapsed time from declaring a classification to the
+next time the agent **surfaces** — a `say`, a `dm`, or a `checkin`. Those
+three are what a collaborator would recognise as a check-in, and all three
+both close the open window and may declare a new one. An `inbox` poll
+deliberately does *not* close the window: the agent looking is not the
+agent reporting, and letting a poll consume the window would bias the
+distribution short.
+
+`checkin` closing the window is what keeps the forecast honest about its
+own claim. An agent that heartbeats through a long task produces several
+short observations rather than one giant message-to-message gap, so the
+learned curve tracks how often it actually surfaces — and it can re-declare
+`(execution_class, effort)` at each check-in as its sense of the work
+changes, getting a fresh forecast back each time.
+
+`TimingModel` tracks the open window in its own `pending` table. Deltas
+above `MAX_OBSERVATION_SECONDS` (6h) are dropped as restarts/overnight
+gaps rather than genuine work time; this is the one outlier heuristic v1
+needs, and the schema is intentionally raw enough to layer richer
+detection (active vs. waiting vs. external-call time, interruption
+tagging) on top later.
+
+### Calibration data
+
+Each observation also stores the forecast that was issued when its window
+opened — `predicted_p50`, `predicted_p95`, `predicted_from` (which
+fallback tier produced it). Without that, "did ~95% of outcomes land under
+p95?" is unanswerable after the fact, since the prediction is gone by the
+time the outcome arrives. `TimingModel.calibration()` reads it back as hit
+rates; the same rows support breakdowns by class, effort, tier, and drift
+over time later. Rows written before these columns existed are simply
+excluded from calibration rather than migrated.
+
+## Execution-class taxonomy
+
+The taxonomy is never fixed and never centrally curated. `execution_class`
+is an open string — any label is accepted, always — so a model can coin
+one that fits work nobody anticipated.
+
+What the runtime does supply is a *shortlist*, so the model isn't
+reinventing a label it already uses. `tools/list` fills the
+`execution_class` description with this agent's top `TOP_K_CLASSES` (6)
+labels, ranked by recency-weighted use: each past observation contributes
+`0.5 ** (age / CLASS_HALF_LIFE_SECONDS)`, a 14-day half-life. So classes
+the agent has moved on from decay out of the offer rather than
+accumulating forever, and a new label that catches on climbs in on its
+own. A cold start pads with `DEFAULT_CLASSES` — four seeds, deliberately
+too few to be a taxonomy, just enough that the first offer isn't empty.
+
+Two properties this preserves on purpose: the field never becomes an
+`enum` (that would make the shortlist a constraint rather than a
+convenience), and the ranking is computed from the agent's *own* local
+observations, so no agent's vocabulary is imposed on another.
 
 ## Fallback hierarchy
 
@@ -108,20 +148,28 @@ the message body other agents read.
   exactly as before (this is the default/existing path, untouched).
 - No history yet → bootstrap prior, still produces a usable forecast.
 - `TimingModel` I/O failure (permissions, disk issue, corrupt file) is
-  caught around the one call site in `Bridge._body_with_forecast` and
-  treated as "no forecast" — it can never block a send.
+  caught at every call site — `Bridge._body_with_forecast`, `checkin`, and
+  `Bridge.tools()` — and treated as "no forecast" / "static tool list". It
+  can never block a send or fail `tools/list`.
 - A missed, stale, or wrong forecast has no protocol consequence; nothing
   reads it back to enforce anything.
+- An older timing database is migrated additively (nullable columns only),
+  so an existing file keeps working and its rows are simply excluded from
+  calibration.
 
 ## Tests
 
 - `tests/test_timing.py` — the estimator in isolation: bootstrap values,
   effort ordering, observation recording/closing, fallback tiers, outlier
-  dropping, per-(agent, workspace) isolation, sparse wire format.
-- `tests/test_mcp.py` — `say`/`dm` end to end through the bridge: no hint →
-  no forecast; hint → bootstrap forecast attached and correctly unwrapped
-  on the receiving side; enough local history → the specific bucket is
-  used instead of the bootstrap prior.
+  dropping, per-(agent, workspace) isolation, sparse wire format,
+  prediction storage, calibration hit rates, and class ranking/decay/cold
+  start/custom labels.
+- `tests/test_mcp.py` — end to end through the bridge: no hint → no
+  forecast; hint → bootstrap forecast attached and correctly unwrapped on
+  the receiving side; enough local history → the specific bucket is used;
+  `checkin` closes the window with and without a new declaration;
+  `tools/list` offers the agent's own top classes without becoming an
+  enum; and a deliberately broken timing store still sends the message.
 
 ## Out of scope (by design)
 

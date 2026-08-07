@@ -24,6 +24,11 @@ from switchboard.timing import TimingModel
 WS = "mcp-ws"
 
 
+def _t(offset: float = 0.0) -> float:
+    """A fixed epoch base, so timing tests never depend on the wall clock."""
+    return 1_000_000.0 + offset
+
+
 @pytest.fixture
 def hub(tmp_path):
     """A real server, reached through TestClient's transport."""
@@ -109,7 +114,9 @@ def test_tools_list_shape_is_valid(hub):
     tools = handle_request(
         bridge, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     )["result"]["tools"]
-    assert tools == TOOLS
+    # Same tools in the same order; only the execution_class hint text is
+    # personalised per agent, so identity with TOOLS is not asserted.
+    assert [t["name"] for t in tools] == [t["name"] for t in TOOLS]
     for tool in tools:
         assert tool["name"] and tool["description"]
         schema = tool["inputSchema"]
@@ -290,6 +297,75 @@ def test_dm_forecast_learns_from_local_history(hub):
     assert f.source == "class+effort"
     assert f.samples >= MIN_SAMPLES
     assert "timing_forecast" in payload
+
+
+def test_checkin_closes_the_window_and_can_declare_a_new_forecast(hub):
+    """Gap 1: a checkin is a check-in. Heartbeating through a long task
+    produces several short observations, not one giant gap, so the learned
+    curve adapts to how often the agent actually surfaces."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="starting", execution_class="coding",
+         effort="medium")
+    # Each checkin closes the window the previous declaration opened, so two
+    # checkins through one task yield two observations rather than none.
+    for _ in range(2):
+        payload, _ = call(a1, "checkin", execution_class="coding", effort="medium")
+        assert "timing_forecast" in payload
+    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 2
+
+
+def test_checkin_without_timing_hints_still_closes_the_window(hub):
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="starting", execution_class="coding",
+         effort="low")
+    assert a1.timing._pending("a1", ws) is not None
+    payload, _ = call(a1, "checkin")
+    assert "timing_forecast" not in payload
+    assert a1.timing._pending("a1", ws) is None
+    assert len(a1.timing._samples("a1", ws, "coding", "low")) == 1
+
+
+def test_tools_list_offers_this_agents_own_top_classes(hub):
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    for i in range(3):
+        a1.timing.observe_and_classify("a1", ws, "yak-shaving", "low", now=_t(i * 10))
+    tools = {t["name"]: t for t in a1.tools()}
+    description = tools["say"]["inputSchema"]["properties"]["execution_class"]["description"]
+    assert "yak-shaving" in description
+    # Still an open string — the shortlist must never become an enum.
+    assert "enum" not in tools["say"]["inputSchema"]["properties"]["execution_class"]
+
+
+def test_a_broken_timing_store_never_blocks_a_send(hub):
+    """The whole feature is advisory; it must fail open."""
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+
+    class _Broken:
+        def observe_and_classify(self, *a, **k):
+            raise RuntimeError("disk gone")
+
+        def top_classes(self, *a, **k):
+            raise RuntimeError("disk gone")
+
+        def close(self):
+            pass
+
+    a2.timing = _Broken()
+    payload, is_error = call(
+        a2, "say", channel="build", message="still gets through",
+        execution_class="coding", effort="medium",
+    )
+    assert not is_error
+    assert payload["posted"] is True
+    assert "timing_forecast" not in payload
+    assert call(a1, "inbox")[0]["messages"][0]["body"] == "still gets through"
+    # tools/list degrades to the static list rather than raising.
+    assert [t["name"] for t in a2.tools()] == [t["name"] for t in TOOLS]
 
 
 def test_checkin_renews_leases_and_returns_messages(hub):

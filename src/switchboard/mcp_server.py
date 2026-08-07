@@ -102,10 +102,9 @@ _TIMING_CLASS = {
     **_STR,
     "description": (
         "OPTIONAL. A short free-form label for what you are about to do before your "
-        "next check-in, e.g. 'coding', 'research', 'waiting'. Used only to look up your "
-        "own local timing history so a rough check-in forecast can be attached to this "
-        "message for collaborators — it is never sent as-is, and there is no fixed list. "
-        "Omit if you don't want a forecast attached."
+        "next check-in. Used only to look up your own local timing history so a rough "
+        "check-in forecast can be produced — it is never sent as-is. Any label is "
+        "accepted; the ones listed below are just the ones you have been using lately."
     ),
 }
 _TIMING_EFFORT = {
@@ -151,6 +150,8 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _schema({
             "task": {**_STR, "description": "what you are working on right now"},
             "wait": {**_NUM, "description": "seconds to long-poll for messages (0-25)"},
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
         }),
     },
     {
@@ -318,6 +319,41 @@ class Bridge:
         self.client.close()
         self.timing.close()
 
+    def tools(self) -> list[dict[str, Any]]:
+        """The tool list, with the execution-class shortlist filled in from
+        this agent's own recent usage.
+
+        The offer is advisory: `execution_class` stays an open string, so a
+        model can always coin a new label, and a new label that catches on
+        rises into the shortlist on its own. Purely local — no hub call —
+        and it falls back to the static list if the timing store is
+        unreadable, since tools/list must never fail over a nicety.
+        """
+        try:
+            classes = self.timing.top_classes(self.identity.agent_id, self.config.workspace)
+        except Exception:
+            return TOOLS
+        if not classes:
+            return TOOLS
+        hint = f" Ones you use most: {', '.join(classes)} — or any other label that fits."
+
+        patched = []
+        for tool in TOOLS:
+            properties = tool["inputSchema"]["properties"]
+            if "execution_class" not in properties:
+                patched.append(tool)
+                continue
+            prop = {**properties["execution_class"]}
+            prop["description"] = prop["description"] + hint
+            patched.append({
+                **tool,
+                "inputSchema": {
+                    **tool["inputSchema"],
+                    "properties": {**properties, "execution_class": prop},
+                },
+            })
+        return patched
+
     def _ensure_registered(self) -> None:
         """Register lazily and idempotently.
 
@@ -413,8 +449,20 @@ class Bridge:
             } if mismatched else {}),
         }
 
-    def checkin(self, task: str | None = None, wait: float = 0.0) -> dict[str, Any]:
+    def checkin(self, task: str | None = None, wait: float = 0.0,
+                execution_class: str | None = None,
+                effort: str | None = None) -> dict[str, Any]:
         self._ensure_registered()
+        # A checkin is a check-in: it closes the open timing window and may
+        # declare a fresh classification for the stretch about to start.
+        # Heartbeating through a long task therefore teaches the model how
+        # often this agent actually surfaces, instead of one giant gap.
+        try:
+            forecast = self.timing.observe_and_classify(
+                self.identity.agent_id, self.config.workspace, execution_class, effort,
+            )
+        except Exception:
+            forecast = None
         try:
             result = self.client.heartbeat(task=task)
         except SwitchboardError as exc:
@@ -434,6 +482,7 @@ class Bridge:
             "messages": [self._msg(m) for m in messages],
             "new_messages": len(messages),
             "now": _now_iso(),
+            **({"timing_forecast": self._sender_forecast(forecast)} if forecast else {}),
         }
 
     def claim(self, resource: str, note: str | None = None,
@@ -688,7 +737,7 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         return _response(request_id, {})
 
     if method == "tools/list":
-        return _response(request_id, {"tools": TOOLS})
+        return _response(request_id, {"tools": bridge.tools()})
 
     if method == "tools/call":
         name = params.get("name", "")
