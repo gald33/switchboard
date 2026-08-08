@@ -310,7 +310,7 @@ def test_reading_the_inbox_is_what_closes_the_window(hub):
     assert a1.timing._pending("a1", ws) is not None
     call(a1, "inbox")
     assert a1.timing._pending("a1", ws) is None
-    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 1
+    assert len(a1.timing._deltas("a1", ws, "coding", "medium")) == 1
 
 
 def test_posting_repeatedly_without_looking_records_nothing(hub):
@@ -321,7 +321,7 @@ def test_posting_repeatedly_without_looking_records_nothing(hub):
     for _ in range(3):
         call(a1, "say", channel="build", message="still going",
              execution_class="coding", effort="medium")
-    assert a1.timing._samples("a1", ws, "coding", "medium") == []
+    assert a1.timing._deltas("a1", ws, "coding", "medium") == []
     assert a1.timing._pending("a1", ws) is not None
 
 
@@ -335,7 +335,7 @@ def test_checkin_closes_the_window_and_can_declare_a_new_one(hub):
     for _ in range(2):
         payload, _ = call(a1, "checkin", execution_class="coding", effort="medium")
         assert "timing_forecast" in payload
-    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 2
+    assert len(a1.timing._deltas("a1", ws, "coding", "medium")) == 2
 
 
 def test_a_look_without_hints_closes_without_reopening(hub):
@@ -346,7 +346,7 @@ def test_a_look_without_hints_closes_without_reopening(hub):
     payload, _ = call(a1, "checkin")
     assert "timing_forecast" not in payload
     assert a1.timing._pending("a1", ws) is None
-    assert len(a1.timing._samples("a1", ws, "coding", "low")) == 1
+    assert len(a1.timing._deltas("a1", ws, "coding", "low")) == 1
 
 
 def test_inbox_can_declare_the_next_stretch(hub):
