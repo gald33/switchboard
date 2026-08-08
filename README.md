@@ -127,6 +127,31 @@ To get local + cloud + CI coordinating with each other:
    committed file, so this one step doesn't get automated away — it's the
    one thing each environment has to be told on its own.
 
+## Upgrading
+
+Three different things live at three different scopes, which is easy to get
+wrong:
+
+| What | Scope | When |
+|---|---|---|
+| `pip install -U agent-switchboard` | the Python environment — per venv, or once per machine if global | on every machine running an agent |
+| `switchboard init --force` | **one repo** (`--dir`, default cwd) | once per repo you want coordinating |
+| restart Claude Code / the MCP server | one session | after upgrading, per project you have open |
+
+The restart is not optional and not cosmetic: the MCP tool schema is read
+once when the `switchboard-mcp` subprocess starts, so a session that was
+already running will not see tools or parameters added by the upgrade no
+matter what you tell the agent.
+
+`init` is safe to re-run. Untouched output from a past run is recognized and
+upgraded in place; anything that looks hand-edited is left alone unless you
+pass `--force`.
+
+Learned timing history is the exception to all of the above — see
+[docs/adaptive-timing.md](docs/adaptive-timing.md). It lives in your home
+directory rather than the repo, so there is nothing to install or upgrade,
+and nothing to commit.
+
 ## Run a hub
 
 ```bash
