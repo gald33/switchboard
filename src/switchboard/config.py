@@ -41,11 +41,13 @@ has to scope down to be worth anything at all.
 
 from __future__ import annotations
 
+import functools
 import getpass
 import hashlib
 import os
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # --- TTL defaults (seconds) -------------------------------------------------
 # Every record in Switchboard expires. These are the defaults applied when a
@@ -161,8 +163,47 @@ def machine_suffix(extra: str = "") -> str:
     return hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:8]
 
 
+@functools.lru_cache(maxsize=128)
+def _checkout_root(cwd: str) -> str:
+    """The checkout containing `cwd`, or `cwd` itself when there is none.
+
+    The project root rather than the working directory, so two terminals in
+    different subdirectories of one project still agree — meeting with no
+    configuration is the whole point of having a default at all.
+
+    Found by walking up for a `.git` entry rather than by running
+    `git rev-parse`. This is on the path of every client construction,
+    including the lifecycle hooks that run at session start and stop, and
+    spawning a process there costs more than the answer is worth. A `.git`
+    that is a file rather than a directory — a worktree or submodule — counts
+    as a root too, which is what we want: a worktree is a separate checkout
+    and deserves its own room.
+    """
+    path = Path(cwd)
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return cwd
+
+
 def default_workspace() -> str:
-    return f"default-{machine_suffix()}"
+    """The workspace a client uses when nobody named one.
+
+    Deliberately opaque, and deliberately *not* the `org/repo` that `init`
+    derives from a git remote. `init` writing a readable name is a considered
+    act: you see it, it is printed, and it goes into a committed file so every
+    clone agrees. A fallback is none of those things, and on a shared hub a
+    guessable room that nobody chose is one an unconfigured agent can be
+    joined in by a stranger. Hashing keeps the name unguessable while still
+    being stable for the same project on the same machine.
+
+    The checkout path is mixed into the tag so that two unrelated directories
+    both called `api` — or simply two different projects on one laptop — do
+    not land in the same room. Two agents on *different* machines still do not
+    match, on purpose: anything coordinating across a network should be naming
+    its workspace, and `init` is how you do that.
+    """
+    return f"default-{machine_suffix(_checkout_root(os.getcwd()))}"
 
 
 @dataclass

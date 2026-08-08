@@ -79,10 +79,12 @@ git remote; that is what keeps them separate rooms under a single key. Running
 `--new-key` again in the second repo is the mistake to avoid — it mints a
 second key that cannot coexist with the first in one environment.
 
-`init` will print a note about the workspace defaulting, phrased for the case
-where you are adopting a *teammate's* key and need to match their workspace
-too. When you are adding another of your own repos, a different workspace is
-the point, and the note does not apply.
+`init` confirms which of those two you got: it names the workspace it paired
+the key with, and says whether that name is one other clones will derive too.
+A repo with a git remote gets a name every clone agrees on, which is what you
+want here. A repo without one gets a name derived from this machine that
+nothing else will arrive at on its own — fine for a single agent, but anything
+that should join it needs `-w` with that exact name.
 
 The limit is real, not a preference: if two repos need genuinely different
 audiences — different teams, different blast radius — they need different
@@ -97,11 +99,11 @@ platform's own configuration, with the command `switchboard-mcp`, and supply
 all four values as environment variables rather than two.
 
 **Set `SWITCHBOARD_WORKSPACE` explicitly.** This is the one people skip. With
-no repo there is no git remote to derive a name from, so the client falls back
-to `default-<tag>`, where the tag is derived from the machine. That keeps you
-from landing in one shared room with every other unconfigured user on the hub,
-but it is a name you did not choose and it will not match your other agents.
-Two agents that should coordinate must be given the same workspace name on
+nothing set the client falls back to `default-<tag>` — as it does everywhere,
+repo or not, since the fallback never reads a git remote. That keeps you from
+landing in one shared room with every other unconfigured user on the hub, but
+it is a name you did not choose and it will not match your other agents. Two
+agents that should coordinate must be given the same workspace name on
 purpose.
 
 There is also no `.claude/settings.json`, so the `SessionStart` and `Stop`
@@ -112,29 +114,41 @@ normally makes automatic becomes something the model has to remember, via
 
 ## What the default workspace name means
 
-When nobody names a workspace, the client picks one:
+Two different questions live here, and conflating them is easy. `init` picks a
+name to *write down*. The client picks one when it finds nothing written.
+
+**What `init` writes into `.mcp.json`:**
 
 | Situation | Name |
 |---|---|
 | repo with a git remote | `org/repo`, derived from the remote |
 | repo with no remote | `<directory>-<tag>` |
-| no repo | `default-<tag>` |
+| `--new-key` | `w_<opaque>`, replacing whichever of the above applied |
 
 The remote case is the good one, and the reason a laptop, a cloud session and
 a CI runner agree for free: every clone derives the same name from the same
-remote.
+remote. A readable name is fine here because you chose it — you saw it printed,
+and it goes into a committed file that every clone reads.
 
-The `<tag>` is eight hex characters, hashed from the machine — plus the
-checkout path where there is one, so two unrelated directories both called
-`api` do not collide. It is a hash rather than a hostname on purpose: the
-workspace is the one value the hub always sees in the clear, so a readable
-machine name would make it the most identifying string you hand over.
+**What the client falls back to when nothing is set** — no `.mcp.json`, no
+`SWITCHBOARD_WORKSPACE`, `init` never run — is always `default-<tag>`, and
+never the git remote. A name nobody chose has to be unguessable: on a shared
+hub, `acme/payments` is a room a stranger can walk into just by knowing where
+you work. `init` is how you opt into a readable name deliberately.
 
-Two agents on the same machine still get the same tag and still find each
-other with no configuration. Two agents on *different* machines deliberately
-do not — anything coordinating across a network should be naming its workspace
-on purpose, and a name nobody chose silently matching is not a property worth
-relying on.
+The `<tag>` is eight hex characters, hashed from the machine plus the checkout
+root — so two unrelated directories both called `api`, or simply two different
+projects on one laptop, do not land on each other. It is a hash rather than a
+hostname on purpose: the workspace is the one value the hub always sees in the
+clear, so a readable machine name would make it the most identifying string you
+hand over.
+
+The root is the enclosing checkout, not the working directory, so two terminals
+in different subdirectories of one project still meet with no configuration.
+A git worktree counts as its own checkout and gets its own room. Two agents on
+*different* machines deliberately do not match — anything coordinating across a
+network should be naming its workspace on purpose, and a name nobody chose
+silently matching is not a property worth relying on.
 
 To hide the name from the hub entirely rather than merely disambiguate it, use
 `switchboard init --new-key`, which replaces it with an opaque one. See
