@@ -258,6 +258,29 @@ the message body other agents read.
   declare too; `tools/list` offers the agent's own top classes without
   becoming an enum; and a deliberately broken timing store still sends.
 
+## Closing the loop for the sender
+
+Two things the runtime computes so the model does not have to.
+
+**Expired forecasts are flagged.** When a message is read and its `p95` has
+already passed, the forecast is annotated `expired: true`. Comparing two
+timestamps is exactly the arithmetic this feature exists to keep out of
+model reasoning, and the answer changes what the forecast is worth: past
+p95 the predicted event has almost certainly happened, so the checkpoints
+carry no remaining information and must not be used to defer a check. The
+fields are annotated rather than stripped, since a reader may still want
+to see what was predicted.
+
+**An agent can see its own calibration.** `whoami` reports
+`forecast_calibration` — sample count, p50/p95 hit rates, and a plain
+warning when they are badly off — once there is enough history to mean
+anything. Until this, the data was dark: an agent could publish
+misleading forecasts indefinitely with no way to discover it, and
+collaborators have no channel to tell it. The report also surfaces
+`ignored_as_too_long`, because censored observations mean p95 is
+optimistic by an unknown margin and the hit rate beside it flatters
+itself. All local; none of it is shared.
+
 ## Advising the receiver
 
 The protocol does not prescribe what a receiving agent does with a
@@ -272,6 +295,16 @@ where messages actually arrive: what the fields mean, that they are
 predictions rather than promises, that a cadence beats two point-polls, and
 that a forecast whose p95 has passed carries no information. It is a hint,
 not a rule — an agent remains free to ignore it.
+
+Tier 2 then tested that with real models, and it turned out to be
+load-bearing rather than decorative. Forecast-plus-advisory beat no
+forecast for every model tested, strictly on both axes. But the *raw*
+forecast alone did not reliably help: of three models, one improved, one
+got worse on lateness, and one spent 55% more checks. Handing a model
+p50/p95 with no guidance is not dependably an improvement — which is the
+whole reason the sentence stays. See
+`tests/experiments/tier2_pilot/RESULTS.md`, including what that pilot is
+too small to establish.
 
 ## Out of scope (by design)
 
