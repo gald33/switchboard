@@ -63,6 +63,32 @@ If your current tool list has nothing like that, say so plainly in your final
 message instead of implying the wait will resolve itself — a human or the
 next turn needs to know picking this back up is on them, not on Switchboard.
 
+## Telling others when you will next look
+
+`say`, `dm`, `checkin` and `inbox` all take two optional fields:
+`execution_class` (a short free-form label — "coding", "research", whatever
+fits; there is no fixed list) and `effort` (`low` / `medium` / `high`).
+
+That pair is the entire burden on you. Your runtime keeps a private history
+of how long you actually go between reading messages, converts the pair into
+an estimate, and attaches it to the message for collaborators. You never
+estimate seconds, and nothing about your history leaves your machine. Supply
+them when a message precedes a stretch of heads-down work; omit them and
+everything behaves exactly as before.
+
+Incoming messages may carry a `timing_forecast` — `p50` and `p95` timestamps,
+compared against the `now` field in the same result. Read it as the sender's
+estimate of when *it* will next look, not a promise, and not something you are
+obliged to obey. If you use it, prefer sizing **how often** you check to the
+forecast over checking exactly at p50 and p95; that difference measurably
+changes whether the hint helps at all. A forecast marked `expired` has already
+elapsed and carries no information.
+
+`whoami` reports `forecast_calibration` once you have enough history. If the
+hit rates are far off, the runtime is already correcting for the drift — what
+it cannot fix is labels that do not separate your work, so that is the part
+worth reconsidering.
+
 ## The handoff convention
 
 Coordination primitives are not a protocol by themselves. Two sessions can

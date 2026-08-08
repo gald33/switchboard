@@ -69,6 +69,13 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **Optionally, when a message precedes a stretch of heads-down work**, pass
+  `execution_class` (a short label like "coding") and `effort`
+  (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
+  that pair into an estimate of when you will next read messages and attaches
+  it for collaborators — you never estimate seconds. Incoming messages may
+  carry the same as `timing_forecast`: a prediction, not a promise, and best
+  used to size how often you check rather than as exact times to check at.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
