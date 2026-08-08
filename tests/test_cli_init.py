@@ -36,6 +36,7 @@ def run_init(monkeypatch, capsys, tmp_path, *extra_args):
     monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
     monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
     code = main(["init", *extra_args])
     out = capsys.readouterr().out
     return code, out
@@ -595,3 +596,192 @@ def test_skill_source_reads_the_packaged_file():
         REPO_ROOT / "src" / "switchboard" / "skill" / "switchboard-coordinate" / "SKILL.md"
     ).read_text()
     assert _skill_source() == on_disk
+
+
+# --- workspace keys ---------------------------------------------------------
+#
+# The key is the one secret `init` handles, and the file it lands in is *not*
+# the one that gets committed — that asymmetry is what these tests pin down.
+
+
+def _local_settings(tmp_path):
+    return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+
+
+def test_new_key_writes_key_and_opaque_workspace(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    key = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert key
+    # printed once so it can be shared; nothing reads it back out later
+    assert key in out
+    mcp = json.loads((tmp_path / ".mcp.json").read_text())
+    workspace = mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_WORKSPACE"]
+    assert workspace.startswith("w_")
+    # the workspace is the one thing the hub sees in the clear, so a fresh key
+    # comes with a name that says nothing about the repo
+    assert tmp_path.name not in workspace
+
+
+def test_key_never_reaches_the_committed_files(monkeypatch, capsys, tmp_path):
+    code, _ = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
+    assert code == 0
+    assert "TEAMKEY" not in (tmp_path / ".mcp.json").read_text()
+    assert "TEAMKEY" not in (tmp_path / ".claude" / "settings.json").read_text()
+    assert "TEAMKEY" not in (tmp_path / "CLAUDE.md").read_text()
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == "TEAMKEY"
+
+
+def test_key_file_is_gitignored(monkeypatch, capsys, tmp_path):
+    # Claude Code only auto-ignores this file when it writes it itself, so
+    # `init` has to place the entry or we hand the user a secret to commit.
+    code, _ = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert code == 0
+    assert "**/.claude/settings.local.json" in (tmp_path / ".gitignore").read_text()
+
+
+@pytest.mark.parametrize("existing", ["**/.claude/settings.local.json", ".claude/"])
+def test_gitignore_not_duplicated_when_already_covered(
+    monkeypatch, capsys, tmp_path, existing
+):
+    (tmp_path / ".gitignore").write_text(f"{existing}\n")
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert (tmp_path / ".gitignore").read_text() == f"{existing}\n"
+
+
+def test_gitignore_append_keeps_existing_entries(monkeypatch, capsys, tmp_path):
+    (tmp_path / ".gitignore").write_text("*.pyc")  # no trailing newline
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    lines = (tmp_path / ".gitignore").read_text().splitlines()
+    assert lines == ["*.pyc", "**/.claude/settings.local.json"]
+
+
+def test_same_key_again_is_a_noop(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert code == 0
+    assert "already set" in out
+
+
+def test_a_different_key_is_refused_without_force(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "OTHERKEY")
+    # Silently swapping would seal this agent away from everyone still on the
+    # old key, with nothing anywhere reporting a problem.
+    assert code == 1
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == "TEAMKEY"
+    assert "--force" in out
+
+
+def test_force_replaces_an_existing_key(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    code, _ = run_init(monkeypatch, capsys, tmp_path, "--key", "OTHERKEY", "--force")
+    assert code == 0
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == "OTHERKEY"
+
+
+def test_key_preserves_unrelated_local_settings(monkeypatch, capsys, tmp_path):
+    path = tmp_path / ".claude" / "settings.local.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"env": {"OTHER": "1"}, "permissions": {"allow": ["Bash"]}}))
+    run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    data = _local_settings(tmp_path)
+    assert data["env"] == {"OTHER": "1", "SWITCHBOARD_KEY": "TEAMKEY"}
+    assert data["permissions"] == {"allow": ["Bash"]}
+
+
+def test_malformed_local_settings_left_alone(monkeypatch, capsys, tmp_path):
+    path = tmp_path / ".claude" / "settings.local.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert code == 1
+    assert path.read_text() == "{not json"
+    assert "not valid JSON" in out
+
+
+def test_new_key_and_key_are_mutually_exclusive(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    code = main(["init", "--key", "K", "--new-key"])
+    assert code == 1
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_key_from_the_environment_is_adopted(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.setenv("SWITCHBOARD_KEY", "FROMENV")
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == "FROMENV"
+
+
+def test_adopting_a_key_warns_when_the_workspace_was_only_inferred(
+    monkeypatch, capsys, tmp_path
+):
+    # Right key, wrong room is the quiet failure: sealing succeeds, routing
+    # doesn't, and neither agent sees an error — only silence.
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert code == 0
+    assert "workspace defaulted to" in out
+
+
+def test_no_warning_when_the_workspace_is_explicit(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
+    assert code == 0
+    assert "workspace defaulted to" not in out
+
+
+def test_managed_hub_note_reflects_that_a_key_makes_it_private(
+    monkeypatch, capsys, tmp_path
+):
+    _, public = run_init(monkeypatch, capsys, tmp_path)
+    assert "every other" in public and "can read and post" in public
+    _, sealed = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
+    assert "sealed with a key" in sealed
+    assert "can read and post" not in sealed
+    # a key hides content, never metadata — saying otherwise would be the
+    # kind of overclaim that gets someone to put real secrets on a public hub
+    assert "metadata" in sealed or "timing, volume" in sealed
+
+
+def test_json_output_includes_a_minted_key(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    code = main(["init", "--new-key", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["key"] == _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+
+
+def test_no_key_means_no_local_settings_file(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+    assert not (tmp_path / ".gitignore").exists()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["init", "-w", "w_shared", "--json"],          # after the subcommand
+        ["-w", "w_shared", "--json", "init"],          # before it
+        ["-w", "w_shared", "init", "--json"],          # split across both
+    ],
+)
+def test_connection_flags_accepted_on_either_side_of_the_subcommand(
+    monkeypatch, capsys, tmp_path, argv
+):
+    # init's own output tells you to run `switchboard init --key K -w ws`, so
+    # the trailing form has to work rather than erroring on unrecognized args.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    code = main(argv)
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["workspace"] == "w_shared"
