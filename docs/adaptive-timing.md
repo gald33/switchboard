@@ -41,6 +41,17 @@ is never a commitment, and no agent is required to obey another's forecast.
   `~/.switchboard/timing.db`, `SWITCHBOARD_TIMING_DB`/`ClientConfig.timing_db`
   to override). Sibling in scope to `notify.py`, but purely client-side —
   there is no server/hub involvement at all.
+
+  Worth being precise about where this sits, because it matches none of the
+  other scopes. It is **one file in your home directory**, not in the repo:
+  nothing to install, nothing to commit, nothing that syncs between
+  machines. It is shared by every repo on that machine, but every read and
+  write is keyed by `(agent_id, workspace)` — and `workspace` defaults to
+  the git remote's org/repo — so history never bleeds from one repo into
+  another's forecasts. `agent_id` derives from kind/branch/hostname, so the
+  same person on two laptops builds two independent histories that converge
+  separately. All of that is deliberate: the premise is that timing is
+  local and personal, and a shared or committed history would be neither.
 - `mcp_server.Bridge` owns a `TimingModel` instance alongside its `Client`.
   `say`, `dm`, `checkin` and `inbox` gained two optional parameters,
   `execution_class` and `effort`; everything past that (closing the
@@ -126,10 +137,11 @@ Each `(class, effort)` bucket keeps its most recent
 `MAX_OBSERVATIONS_PER_BUCKET` (500) observations. Timing history is a
 moving window, not an archive: an agent that got faster should not be held
 back by samples from when it was slow, and the table should not grow
-without bound. The execution-class shortlist already decays for the same
-reason — this is the timing distribution's version, kept as a simple
-window because a weighted-quantile estimator is straightforward to swap in
-later.
+without bound.
+
+The window and the recency weighting above do different jobs and both are
+needed: the window is what bounds the table, and the weighting is what
+makes ageing gradual rather than a cliff at row 500.
 
 ### Calibration data
 

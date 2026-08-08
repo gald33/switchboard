@@ -1108,11 +1108,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     )
     managed_hub_note = (
         f"{MANAGED_HUB_URL} is a shared public hub with one token everyone uses — "
-        "that's what makes it zero-setup, and it means every other user of the "
-        "default hub can see and post to your workspace too. Fine for trying "
-        "things out or low-stakes coordination; not a private space. For "
-        "privacy, self-host instead: `switchboard init --local` (or `--url` to "
-        "point at a hub you already deployed)."
+        "that's what makes it zero-setup, and as set up here it means every other "
+        "user of the default hub can read and post to your workspace. Fine for "
+        "trying things out; not yet a private space.\n"
+        "  To make it private without leaving the hub, give your team a key: "
+        "`switchboard keygen` prints a key and an opaque workspace name to pair "
+        "with it. Set both on every agent (SWITCHBOARD_KEY, SWITCHBOARD_WORKSPACE). "
+        "Bodies, board values, lease notes and branch names are then sealed before "
+        "they leave your machine and the key never reaches the hub, so nobody else "
+        "on it can read your workspace or guess its name.\n"
+        "  What a key does not hide is metadata — the hub still sees message "
+        "timing, volume, and how many agents you run. If that matters, self-host: "
+        "`switchboard init --local` (or `--url` to point at a hub you already "
+        "deployed)."
     )
 
     if args.json:
