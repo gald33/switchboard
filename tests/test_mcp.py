@@ -19,8 +19,14 @@ from switchboard.config import ClientConfig, ServerConfig
 from switchboard.mcp_server import TOOLS, Bridge, handle_request, serve_stdio
 from switchboard.server import create_app
 from switchboard.store import Store
+from switchboard.timing import TimingModel
 
 WS = "mcp-ws"
+
+
+def _t(offset: float = 0.0) -> float:
+    """A fixed epoch base, so timing tests never depend on the wall clock."""
+    return 1_000_000.0 + offset
 
 
 @pytest.fixture
@@ -50,6 +56,7 @@ def make_bridge(hub: TestClient, agent_id: str = "mcp-agent") -> Bridge:
         agent_id=agent_id, name="mcp agent", kind="local", branch="feat/x", meta={}
     )
     bridge.client = _BoundClient(hub, agent_id)
+    bridge.timing = TimingModel(":memory:")
     bridge._registered = False
     return bridge
 
@@ -107,7 +114,9 @@ def test_tools_list_shape_is_valid(hub):
     tools = handle_request(
         bridge, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     )["result"]["tools"]
-    assert tools == TOOLS
+    # Same tools in the same order; only the execution_class hint text is
+    # personalised per agent, so identity with TOOLS is not asserted.
+    assert [t["name"] for t in tools] == [t["name"] for t in TOOLS]
     for tool in tools:
         assert tool["name"] and tool["description"]
         schema = tool["inputSchema"]
@@ -225,6 +234,172 @@ def test_dm_reaches_only_the_addressee(hub):
     call(a2, "dm", to="a1", message="just you")
     assert call(a1, "inbox")[0]["count"] == 1
     assert call(a3, "inbox")[0]["count"] == 0
+
+
+def test_say_without_timing_hints_has_no_forecast(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    payload, _ = call(a2, "say", channel="build", message="rebasing now")
+    assert "timing_forecast" not in payload
+    inbox, _ = call(a1, "inbox")
+    assert inbox["messages"][0]["body"] == "rebasing now"
+    assert "timing_forecast" not in inbox["messages"][0]
+
+
+def test_say_with_timing_hints_attaches_bootstrap_forecast(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    payload, _ = call(
+        a2, "say", channel="build", message="digging into the parser bug",
+        execution_class="coding", effort="medium",
+    )
+    # The sender gets both the shared checkpoints and a local convenience
+    # countdown — the countdown never crosses the wire.
+    assert set(payload["timing_forecast"].keys()) == {
+        "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+    }
+    assert "now" in payload
+
+    inbox, _ = call(a1, "inbox")
+    msg = inbox["messages"][0]
+    # The message body seen by the receiver is unwrapped back to plain text,
+    # and its forecast is the sparse wire form only.
+    assert msg["body"] == "digging into the parser bug"
+    assert set(msg["timing_forecast"].keys()) == {"p50", "p95"}
+    assert msg["timing_forecast"] == {
+        "p50": payload["timing_forecast"]["p50"],
+        "p95": payload["timing_forecast"]["p95"],
+    }
+    assert "now" in inbox
+
+
+def test_dm_forecast_learns_from_local_history(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    call(a2, "whoami")
+
+    from switchboard.timing import MIN_SAMPLES
+
+    # Seed enough local history for a2's own (coding, low) bucket that the
+    # forecast should no longer be the wide bootstrap prior.
+    t = 1_000_000.0
+    for delta in range(1, MIN_SAMPLES + 1):
+        a2.timing.declare("a2", a2.config.workspace, "coding", "low", now=t)
+        a2.timing.note_look("a2", a2.config.workspace, now=t + delta)
+        t += delta + 1
+
+    payload, _ = call(
+        a2, "dm", to="a1", message="quick fix incoming",
+        execution_class="coding", effort="low",
+    )
+    f = a2.timing.forecast("a2", a2.config.workspace, "coding", "low", now=t)
+    assert f.source == "class+effort"
+    assert f.samples >= MIN_SAMPLES
+    assert "timing_forecast" in payload
+
+
+def test_reading_the_inbox_is_what_closes_the_window(hub):
+    """The forecast predicts when the agent next comes *looking*, so an
+    inbox read is the event that scores it."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="heads down", execution_class="coding",
+         effort="medium")
+    assert a1.timing._pending("a1", ws) is not None
+    call(a1, "inbox")
+    assert a1.timing._pending("a1", ws) is None
+    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 1
+
+
+def test_posting_repeatedly_without_looking_records_nothing(hub):
+    """An agent can talk without ever reading; none of that is evidence
+    about when it next looks."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    for _ in range(3):
+        call(a1, "say", channel="build", message="still going",
+             execution_class="coding", effort="medium")
+    assert a1.timing._samples("a1", ws, "coding", "medium") == []
+    assert a1.timing._pending("a1", ws) is not None
+
+
+def test_checkin_closes_the_window_and_can_declare_a_new_one(hub):
+    """checkin long-polls the inbox, so it both scores the open forecast
+    and can declare the next stretch."""
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="starting", execution_class="coding",
+         effort="medium")
+    for _ in range(2):
+        payload, _ = call(a1, "checkin", execution_class="coding", effort="medium")
+        assert "timing_forecast" in payload
+    assert len(a1.timing._samples("a1", ws, "coding", "medium")) == 2
+
+
+def test_a_look_without_hints_closes_without_reopening(hub):
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    call(a1, "say", channel="build", message="starting", execution_class="coding",
+         effort="low")
+    payload, _ = call(a1, "checkin")
+    assert "timing_forecast" not in payload
+    assert a1.timing._pending("a1", ws) is None
+    assert len(a1.timing._samples("a1", ws, "coding", "low")) == 1
+
+
+def test_inbox_can_declare_the_next_stretch(hub):
+    """An agent looping on inbox rather than checkin must still be able to
+    forecast."""
+    a1 = make_bridge(hub, "a1")
+    payload, _ = call(a1, "inbox", execution_class="research", effort="high")
+    assert set(payload["timing_forecast"]) == {
+        "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+    }
+    assert a1.timing._pending("a1", a1.config.workspace) is not None
+
+
+def test_tools_list_offers_this_agents_own_top_classes(hub):
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    for i in range(3):
+        a1.timing.declare("a1", ws, "yak-shaving", "low", now=_t(i * 10))
+        a1.timing.note_look("a1", ws, now=_t(i * 10 + 5))
+    tools = {t["name"]: t for t in a1.tools()}
+    description = tools["say"]["inputSchema"]["properties"]["execution_class"]["description"]
+    assert "yak-shaving" in description
+    # Still an open string — the shortlist must never become an enum.
+    assert "enum" not in tools["say"]["inputSchema"]["properties"]["execution_class"]
+
+
+def test_a_broken_timing_store_never_blocks_a_send(hub):
+    """The whole feature is advisory; it must fail open."""
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+
+    class _Broken:
+        def declare(self, *a, **k):
+            raise RuntimeError("disk gone")
+
+        def top_classes(self, *a, **k):
+            raise RuntimeError("disk gone")
+
+        def close(self):
+            pass
+
+    a2.timing = _Broken()
+    payload, is_error = call(
+        a2, "say", channel="build", message="still gets through",
+        execution_class="coding", effort="medium",
+    )
+    assert not is_error
+    assert payload["posted"] is True
+    assert "timing_forecast" not in payload
+    assert call(a1, "inbox")[0]["messages"][0]["body"] == "still gets through"
+    # tools/list degrades to the static list rather than raising.
+    assert [t["name"] for t in a2.tools()] == [t["name"] for t in TOOLS]
 
 
 def test_checkin_renews_leases_and_returns_messages(hub):
