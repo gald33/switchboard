@@ -27,7 +27,7 @@ Interactive docs are served at `/docs` on any running hub.
 ## Meta
 
 ### `GET /health`
-No auth. `{"ok": true, "version": "0.4.0", "auth": true}` — `auth` reports
+No auth. `{"ok": true, "version": "0.4.1", "auth": true}` — `auth` reports
 whether a token is required, which is how you check you didn't deploy an open
 hub by accident.
 
