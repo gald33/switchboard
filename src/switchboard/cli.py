@@ -1543,9 +1543,21 @@ def cmd_init(args: argparse.Namespace) -> int:
     # The file is what actually routes, so it wins unless someone says
     # otherwise.
     repoint_mcp = False
-    registered = None if args.skip_mcp else _mcp_workspace(directory)
+    # Read .mcp.json even under --skip-mcp. That flag says do not *write* the
+    # file; it is still what routes this repo, and pairing a key against a
+    # workspace the file contradicts is precisely the silent failure this
+    # block exists to prevent. What --skip-mcp does remove is the option to
+    # repoint — we cannot change where the repo routes without writing it —
+    # so there the file simply wins.
+    registered = _mcp_workspace(directory)
     if key and registered and registered != workspace:
-        if interactive:
+        if args.skip_mcp:
+            workspace = registered
+            steps.append(
+                f"paired the key with workspace {registered!r} from .mcp.json — "
+                "--skip-mcp means the file was read but not changed"
+            )
+        elif interactive:
             choice = _ask_choice(
                 f"\n.mcp.json already routes this repo to workspace {registered!r}, "
                 f"but the key is being paired with {workspace!r}. They have to match.",
@@ -1655,12 +1667,31 @@ def cmd_init(args: argparse.Namespace) -> int:
         managed_hub_note = sealed_note
     # A key without a matching workspace name is the quiet failure: sealing
     # works, routing does not, and the two agents just never meet.
+    #
+    # But adopting a key without -w is two different acts, and only one of
+    # them is a mistake. Joining a teammate means you must also match the
+    # workspace they use. Adding another of your own repos under one key —
+    # the only shape that works when a cloud environment holds a single
+    # SWITCHBOARD_KEY, see docs/environments.md — means a *different*
+    # workspace per repo is the whole point. `init` cannot read intent, but
+    # it can tell whether the name it derived is one other clones will derive
+    # too, which is what separates "this is fine" from "nobody else will ever
+    # land here".
     if key and not minted and not explicit_workspace and not registered:
-        steps.append(
-            f"note: workspace defaulted to {workspace!r}. A key only puts you in "
-            "the same room as whoever gave it to you if the workspace name "
-            "matches theirs too — pass -w if it does not"
-        )
+        if _git_remote_workspace(directory):
+            steps.append(
+                f"note: this repo's workspace is {workspace!r}, from its git remote, and "
+                "the key is now paired with it. That is what you want when you are adding "
+                "another of your own repos under one key. If the key came from someone "
+                "else, you need their workspace name too — pass -w"
+            )
+        else:
+            steps.append(
+                f"note: no git remote here, so the workspace defaulted to {workspace!r} — "
+                "a name derived from this machine that no other agent will arrive at on "
+                "its own. Anything that should see this repo's agents needs -w with that "
+                "exact name"
+            )
 
     if as_json:
         payload: dict[str, Any] = {"workspace": workspace, "url": url, "steps": steps}
