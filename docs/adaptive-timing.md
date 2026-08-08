@@ -326,15 +326,27 @@ predictions rather than promises, that a cadence beats two point-polls, and
 that a forecast whose p95 has passed carries no information. It is a hint,
 not a rule — an agent remains free to ignore it.
 
-Tier 2 then tested that with real models, and it turned out to be
-load-bearing rather than decorative. Forecast-plus-advisory beat no
-forecast for every model tested, strictly on both axes. But the *raw*
-forecast alone did not reliably help: of three models, one improved, one
-got worse on lateness, and one spent 55% more checks. Handing a model
-p50/p95 with no guidance is not dependably an improvement — which is the
-whole reason the sentence stays. See
-`tests/experiments/tier2_pilot/RESULTS.md`, including what that pilot is
-too small to establish.
+Tier 2 tested that with real models, across three models and three
+seeds. What replicates:
+
+* **Forecasts reduce checking, consistently** — every model checks less
+  with a forecast than without, in every seed. The most robust effect in
+  the data.
+* **The raw forecast alone does not reliably help on latency.** Only one
+  of three models improved consistently; for the other two the effect
+  flipped sign between seeds. Handing a model p50/p95 with no guidance is
+  not dependably an improvement, which is why the sentence stays.
+* **The advisory shifts the operating point rather than dominating.** It
+  reliably buys fewer checks and reliably pays in latency. Calling that
+  "better" needs a stance on how a check trades against latency, which
+  this design deliberately does not fix.
+
+A first single-seed run reported that forecast-plus-advisory beat no
+forecast *strictly on both axes for every model*. Replication did not
+support it — that was a draw, not an effect. Per-seed variance is large
+enough (one cell's lateness spans 6x across seeds) that single-seed
+numbers from this harness are close to meaningless. See
+`tests/experiments/tier2_pilot/RESULTS.md`.
 
 ## Out of scope (by design)
 

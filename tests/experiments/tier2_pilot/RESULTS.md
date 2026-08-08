@@ -1,75 +1,83 @@
-# Tier 2 pilot results
+# Tier 2 results
 
-`world=idiosyncratic, episodes=30, seed=4242`, three models × three arms,
-scored with `tier2_run.py score`. Raw prompts and model responses are
-committed alongside this file so the run is reproducible.
+`world=idiosyncratic`, 30 episodes × 3 seeds (4242, 7777, 31337) = **90
+episodes per cell**, three models × three arms. Prompts and raw model
+responses are committed so the run is reproducible.
+
+Arms: **A** no forecast · **B** forecast only · **C** forecast + advisory.
 
 | arm | checks | late(×) | missed |
 |---|---|---|---|
-| *scripted cadence* | 6.30 | 0.18 | 0 |
-| *scripted fixed 300s* | 5.17 | 0.33 | 1 |
-| *scripted fixed 900s* | 2.47 | 0.84 | 0 |
-| opus A | 3.37 | 0.58 | 0 |
-| opus B | 2.93 | 0.48 | 0 |
-| opus C | **2.33** | **0.47** | 0 |
-| sonnet A | 2.80 | 0.63 | 0 |
-| sonnet B | 2.53 | 0.72 | 0 |
-| sonnet C | **2.43** | **0.56** | 0 |
-| haiku A | 3.10 | 0.66 | 0 |
-| haiku B | 4.80 | 0.29 | 0 |
-| haiku C | **2.93** | **0.43** | 0 |
+| *scripted cadence* | 5.32 | 0.21 | 1 |
+| *scripted fixed 300s* | 4.54 | 0.33 | 1 |
+| opus A / B / C | 3.14 / 2.68 / 2.28 | 0.63 / 0.38 / 0.47 | 0 |
+| sonnet A / B / C | 3.09 / 2.64 / 2.18 | 0.45 / 0.40 / 0.58 | 0 |
+| haiku A / B / C | 3.99 / 3.01 / 2.04 | 0.74 / 0.55 / 0.83 | 0 |
 
-Both columns must be read together. Fewer checks is trivially achievable
-by checking less and lower lateness by checking constantly, so an arm only
-wins by improving one without giving back the other.
+## This replication corrects the earlier single-seed pilot
 
-## 1. Forecast + advisory (C) beats no forecast (A) for every model
+The first run (seed 4242 only) reported that forecast-plus-advisory beat
+no forecast **strictly on both axes for every model**. With three seeds
+that does not hold:
 
-Strictly — fewer checks *and* lower lateness, all three models. This is
-the first evidence for the coordination hypothesis that involves actual
-models rather than scripted policies.
+| C vs A | checks | lateness |
+|---|---|---|
+| opus | better | better |
+| sonnet | better | **worse** (0.45 → 0.58) |
+| haiku | better | **worse** (0.74 → 0.83) |
 
-## 2. The raw forecast alone (B) is not reliably an improvement
+The strict-dominance claim was a single-seed artifact. It should not have
+been stated as confidently as it was, even hedged — one seed cannot
+distinguish an effect from a draw, which is precisely why this
+replication was run.
 
-This is the finding that matters most, because it is the one that was
-assumed rather than measured:
+## What does hold
 
-- **opus** improved on both axes.
-- **sonnet** got *worse* on lateness (0.63 → 0.72) while saving a little
-  checking.
-- **haiku** spent 55% more checks (3.10 → 4.80) to buy latency — not a
-  win, just a different point on the trade-off.
+**Forecasts reduce checking, consistently.** Every model checks less in
+both B and C than in A, in every seed. This is the most robust effect in
+the data.
 
-So handing a model p50/p95 with no guidance does not dependably help, and
-for two of three models it made something worse. Tier 1 predicted this
-shape from simulation (the naive two-checkpoint reading scored −6%); it
-now reproduces with real models.
+**The raw forecast alone remains unreliable on latency.** Per-seed, B vs A
+on lateness is mixed for sonnet (+0.09, −0.25, +0.01) and haiku (−0.37,
+−1.04, +1.24). Only opus improves consistently. That was the pilot's
+second finding and it survives replication — handing a model p50/p95 with
+no guidance does not dependably help.
 
-## 3. The advisory earns its context
+**The advisory shifts the operating point rather than dominating.** C
+reliably checks less than B, and just as reliably pays for it in latency
+(opus 0.38 → 0.47, sonnet 0.40 → 0.58, haiku 0.55 → 0.83). So the
+advisory does change behaviour in a consistent direction — toward fewer,
+later checks — but calling it "better" requires a stance on how a check
+trades against latency, which this harness deliberately does not fix.
 
-C ≥ B for every model, and strictly better on both axes for opus and
-sonnet. For haiku it cut checking by 40% (4.80 → 2.93) while giving back
-some latency.
+## Variance is large, and that is itself the finding
 
-That is the direct answer to the question left open in #38, where the
-advisory shipped on simulation evidence alone: it is load-bearing, not
-decorative.
+Per-seed ranges, pooled cells:
 
-## What this pilot does not establish
+```
+model    arm            checks            late(x)
+opus     A    3.14 [2.50-3.57]   0.65 [0.48-0.90]
+opus     C    2.28 [1.87-2.63]   0.52 [0.41-0.67]
+sonnet   A    3.09 [2.53-3.93]   0.52 [0.30-0.64]
+sonnet   C    2.18 [1.87-2.43]   0.59 [0.56-0.64]
+haiku    A    3.99 [2.50-6.37]   0.82 [0.39-1.41]
+haiku    C    2.04 [1.57-2.93]   1.55 [0.43-2.69]
+```
 
-- **Not powered.** 30 episodes, one world, one seed, one sample per cell.
-  These are directional, not conclusive, and no significance testing is
-  claimed.
-- **Batching favours B.** Each model saw all 30 scenarios at once and
-  could calibrate across them — an advantage a real agent does not have,
-  and one that helps arm B most, since it substitutes for the guidance C
-  is given. C winning anyway survives that bias; it would not survive it
-  in reverse.
-- **Stated plans, not adaptation.** Models committed to a schedule up
-  front. Real re-planning after a surprise is untested.
-- **The scripted rows are not a leaderboard.** Every model chose a
-  lower-check, higher-lateness operating point than the scripted cadence
-  policy. That is a different point on the frontier, not a loss — the
-  comparison would need matched latency to mean anything, which is
-  exactly the frontier method Tier 1 used and this pilot is too small to
-  reconstruct.
+haiku's arm C lateness spans 0.43 to 2.69 across seeds — a 6× range on
+the headline metric. Any single-seed number from that cell is close to
+meaningless, and the pilot reported exactly such a number.
+
+## What this still does not establish
+
+- **Three seeds is replication, not power.** No significance testing is
+  claimed and none would survive this variance.
+- **Batching favours arm B.** Each model sees 30 scenarios at once and can
+  calibrate across them — an advantage a real agent lacks, and one that
+  substitutes for the guidance C is given.
+- **Stated plans, not adaptation.** Models commit to a schedule up front;
+  re-planning after a surprise is untested.
+- **The scripted rows are not a leaderboard.** Every model picked a
+  lower-check, higher-lateness point than the scripted cadence policy. A
+  fair comparison needs matched latency — the frontier method Tier 1 used
+  and this design does not reconstruct.

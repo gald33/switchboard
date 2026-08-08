@@ -1,0 +1,136 @@
+You are coordinating with another agent asynchronously. You delegated work
+to it and it has acknowledged. You now need to notice its reply reasonably
+promptly WITHOUT wasting calls: every time you check for messages costs
+you a tool call and tokens, but noticing late costs the collaboration
+latency.
+
+For each scenario below, decide when you will check for messages. Express
+your decision as a list of offsets in SECONDS from now, in increasing
+order. You may list as many or as few checks as you judge right. You stop
+checking once you find the reply.
+
+Decide each scenario on its own merits.
+
+Return ONLY a JSON object mapping scenario id to a list of numbers, e.g.
+{"0": [30, 90, 300], "1": [600, 1800]}
+No prose, no code fences.
+
+--- scenario 0 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 1 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 2 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 3 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 4 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 5 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 6 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 7 ---
+worker: "Taking this on — coding work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 8 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 9 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 10 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 11 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 12 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 13 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 14 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 15 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 16 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 17 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 18 ---
+worker: "Taking this on — coding work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 19 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 20 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 21 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 22 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 23 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 24 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 25 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 26 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 27 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 28 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+
+--- scenario 29 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
