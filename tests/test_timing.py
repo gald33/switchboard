@@ -202,3 +202,60 @@ def test_forecast_as_message_meta_is_sparse():
     meta = f.as_message_meta()
     assert set(meta.keys()) == {"p50", "p95"}
     assert meta["p50"] < meta["p95"]
+
+
+# --- small-sample calibration ------------------------------------------------
+
+
+def test_p95_is_not_just_the_sample_maximum():
+    """With the old i/(n-1) plotting position, q=0.95 landed exactly on the
+    largest of five draws — which sits near the true p83, making the
+    conservative checkpoint optimistic precisely where it is leaned on."""
+    model = TimingModel(":memory:")
+    values = [1.0, 2.0, 3.0, 4.0, 100.0]
+    assert model._quantile(values, 0.95) > values[-2]
+    # p50 of five sorted values is still the middle one.
+    assert model._quantile(values, 0.50) == 3.0
+
+
+def test_sparse_buckets_are_pulled_toward_the_wide_prior():
+    """A handful of fast samples must not immediately produce a confident,
+    narrow p95 — the tail you have not sampled always reads as too short."""
+    model = TimingModel(":memory:")
+    t = 0.0
+    for _ in range(MIN_SAMPLES):
+        cycle(model, "coding", "high", at=t, look_at=t + 1.0)
+        t += 10
+    sparse = model.forecast("a", "ws", "coding", "high", now=t)
+    prior_p95 = 3600.0  # bootstrap 'high'
+    assert 1.0 < sparse.p95_seconds < prior_p95, "should sit between sample and prior"
+
+    # With plenty of consistent evidence it converges on the observations.
+    for _ in range(300):
+        cycle(model, "coding", "high", at=t, look_at=t + 1.0)
+        t += 10
+    dense = model.forecast("a", "ws", "coding", "high", now=t)
+    assert dense.p95_seconds < sparse.p95_seconds
+
+
+# --- restart safety ----------------------------------------------------------
+
+
+def test_a_declaration_from_a_previous_run_is_discarded_not_scored():
+    """Declare, die, restart, look: the elapsed time measures downtime, not
+    behaviour, and a quick restart looks plausible enough to slip past the
+    outlier ceiling."""
+    import switchboard.timing as timing_module
+
+    model = TimingModel(":memory:")
+    model.declare("a", "ws", "coding", "medium", now=0.0)
+
+    original = timing_module._RUNTIME_ID
+    try:
+        timing_module._RUNTIME_ID = "a-different-process"
+        model.note_look("a", "ws", now=600.0)
+    finally:
+        timing_module._RUNTIME_ID = original
+
+    assert model._samples("a", "ws", "coding", "medium") == []
+    assert model._pending("a", "ws") is None

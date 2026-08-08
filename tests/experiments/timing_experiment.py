@@ -317,13 +317,29 @@ def run_world(world_name: str, world: dict, seed: int) -> dict[str, float | None
     gaps = [gap for _, gap in static_eps]
 
     # --- gate: are the learned forecasts even calibrated? -------------------
+    # Bucketed by how much history existed at prediction time. A single
+    # whole-run average is dominated by the well-sampled regime and will
+    # happily report ~0.95 while the early regime — the one a real new
+    # agent actually lives in — is materially optimistic. Reporting only
+    # the average launders exactly the failure this gate exists to catch.
+    rows = learned.model._connection().execute(
+        "SELECT delta_seconds, predicted_p50, predicted_p95 FROM observations "
+        "WHERE predicted_p50 IS NOT NULL ORDER BY id"
+    ).fetchall()
+    print("\n  calibration gate (learned arm), by history depth")
+    print(f"    {'regime':<14} {'p50':>7} {'p95':>7} {'n':>7}   targets 0.50 / 0.95")
+    regimes = [("first 100", rows[:100]), ("first 300", rows[:300]),
+               ("300-1000", rows[300:1000]), ("steady state", rows[1000:])]
+    for label, subset in regimes:
+        if not subset:
+            continue
+        p50 = sum(d <= a for d, a, _ in subset) / len(subset)
+        p95 = sum(d <= b for d, _, b in subset) / len(subset)
+        flag = "" if (0.35 <= p50 <= 0.65 and p95 >= 0.85) else "   <-- off"
+        print(f"    {label:<14} {p50:>7.3f} {p95:>7.3f} {len(subset):>7}{flag}")
     report = learned.model.calibration(learned.agent, learned.workspace)
-    print("\n  calibration gate (learned arm)")
-    print(f"    samples      {report['samples']}")
-    print(f"    p50 hit rate {report['p50_hit_rate']:.3f}   (target ~0.50)")
-    print(f"    p95 hit rate {report['p95_hit_rate']:.3f}   (target ~0.95)")
     if not 0.35 <= report["p50_hit_rate"] <= 0.65 or report["p95_hit_rate"] < 0.85:
-        print("    WARNING: badly calibrated — numbers below are not "
+        print("    WARNING: badly calibrated overall — numbers below are not "
               "interpretable.")
 
     control = frontier_fixed(gaps, INTERVALS)

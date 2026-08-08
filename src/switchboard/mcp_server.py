@@ -94,6 +94,21 @@ _CUSTOM_SCOPE = {
     "additionalProperties": False,
 }
 
+#: Advice for *reading* a forecast, appended where messages arrive.
+#: Worth the tokens because how the signal is used swings its value more
+#: than the signal's own accuracy does: in simulation, treating p50/p95 as
+#: two individual poll times was worse than a plain fixed interval, while
+#: using them to size a checking cadence was substantially better. The
+#: protocol does not prescribe either — this is a hint, not a rule.
+_FORECAST_ADVICE = (
+    " A message may carry 'timing_forecast' — the sender's own estimate of when it will "
+    "next check its messages ('p50' ~50% likely by then, 'p95' ~95%), compared against "
+    "the 'now' field in this result. Predictions, not promises, and you are free to "
+    "ignore them. If you do use one, prefer sizing how often you check to the forecast "
+    "rather than checking exactly at p50 and p95; a stale forecast whose p95 has already "
+    "passed carries no information."
+)
+
 #: Optional semantic timing hints. This is the entire burden a model takes
 #: on for adaptive timing forecasts — everything past this (consulting
 #: local history, estimating percentiles, attaching a forecast) happens
@@ -148,7 +163,7 @@ TOOLS: list[dict[str, Any]] = [
             "every lease you hold, and returns any messages other agents sent you since "
             "your last check-in. Call this periodically during long tasks — if you stop "
             "calling it, your claims expire and free themselves for other agents. Set "
-            "'wait' to block for up to 25s waiting for a message."
+            "'wait' to block for up to 25s waiting for a message." + _FORECAST_ADVICE
         ),
         "inputSchema": _schema({
             "task": {**_STR, "description": "what you are working on right now"},
@@ -238,7 +253,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Read messages addressed to you or posted to channels you subscribe to. Each "
             "message is returned once — the read position advances automatically. Set "
-            "'wait' to block until something arrives."
+            "'wait' to block until something arrives." + _FORECAST_ADVICE
         ),
         "inputSchema": _schema({
             "channels": {

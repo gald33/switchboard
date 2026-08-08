@@ -136,6 +136,30 @@ first tier with enough data wins. Bootstrap priors are three fixed
 `(p50, p95)` pairs keyed by effort (`low`/`medium`/`high`), wide on purpose
 so an honest-but-vague first forecast beats a falsely precise one.
 
+### Small samples and the upper tail
+
+Two corrections keep p95 honest when a bucket has barely any history.
+
+Quantiles use the `(i - 0.5)/n` plotting position with interpolation. The
+obvious `i/(n-1)` form pins `q=0.95` to the sample *maximum* for any small
+n — at `MIN_SAMPLES` the "95th percentile" was literally the largest of
+five draws, which sits nearer the true 83rd. Measured on the Tier 1
+harness, that made the early-history p95 hit rate 0.86 against a 0.95
+target.
+
+On top of that, p95 is shrunk toward the bootstrap prior with weight
+`n / (n + PRIOR_STRENGTH)`. A tail you have not sampled yet always reads
+as shorter than it is, and the two error directions cost differently: an
+optimistic p95 misleads a collaborator, a conservative one wastes a little
+patience.
+
+The median is deliberately left alone. Its small-sample error is
+symmetric, so shrinking it would not remove bias — it would just drag p50
+toward whatever the generic prior says, which for an agent much faster
+than the default is simply wrong. An earlier version blended both and the
+regime-bucketed gate immediately caught it as an over-conservative p50
+(0.78 against a 0.50 target) in the cold regime.
+
 ## Wire format
 
 Deliberately sparse — two ISO-8601 timestamps, nothing else:
@@ -182,6 +206,11 @@ the message body other agents read.
 - A window left open by an agent that never looks again simply never
   becomes an observation, and the 6h outlier ceiling stops a stale one
   polluting the distribution if that agent does eventually return.
+- A declaration is only ever scored by a look from the *same process*
+  (`_RUNTIME_ID`). If an agent dies mid-task and restarts, the elapsed
+  wall-clock measures downtime rather than behaviour — and a restart soon
+  after a declaration produces a plausible-looking number that the outlier
+  ceiling has no way to catch, so it is dropped instead of learned from.
 - A missed, stale, or wrong forecast has no protocol consequence; nothing
   reads it back to enforce anything.
 - An older timing database is migrated additively (nullable columns only),
@@ -202,6 +231,21 @@ the message body other agents read.
   reading records nothing; `checkin` closes and re-declares; `inbox` can
   declare too; `tools/list` offers the agent's own top classes without
   becoming an enum; and a deliberately broken timing store still sends.
+
+## Advising the receiver
+
+The protocol does not prescribe what a receiving agent does with a
+forecast, and it should not — that is model judgment. But Tier 1 measured
+that *how* it is used swings the value far more than the forecast's own
+accuracy does: reading p50/p95 as two individual poll times was worse than
+a plain fixed interval (−6%), while using them to size a checking cadence
+was substantially better (+85%) in the same world.
+
+So `inbox` and `checkin` carry one sentence of advice (`_FORECAST_ADVICE`)
+where messages actually arrive: what the fields mean, that they are
+predictions rather than promises, that a cadence beats two point-polls, and
+that a forecast whose p95 has passed carries no information. It is a hint,
+not a rule — an agent remains free to ignore it.
 
 ## Out of scope (by design)
 
