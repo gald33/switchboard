@@ -95,6 +95,12 @@ MIN_RECALIBRATION_SAMPLES = 25
 #: quietly applying that would turn a small fault into a useless forecast.
 RECALIBRATION_BOUNDS = (0.25, 4.0)
 
+#: Recency half-life for the timing estimator itself. The retention
+#: window bounds growth with a hard cliff at 500; this weights within it,
+#: so an agent that changed speed converges smoothly instead of waiting
+#: for old samples to fall off the end.
+TIMING_HALF_LIFE_SECONDS = 7 * 86400.0
+
 #: Seed execution classes offered before an agent has used enough of its
 #: own. Deliberately tiny — the real taxonomy is meant to emerge from use,
 #: and anything an agent actually uses displaces these in the offer set.
@@ -394,10 +400,59 @@ class TimingModel:
             clauses.append("effort = ?")
             params.append(effort)
         rows = self._connection().execute(
-            f"SELECT delta_seconds FROM observations WHERE {' AND '.join(clauses)}",
+            f"SELECT delta_seconds, observed_at FROM observations "
+            f"WHERE {' AND '.join(clauses)}",
             params,
         ).fetchall()
-        return [r[0] for r in rows]
+        return [(r[0], r[1]) for r in rows]
+
+    def _deltas(self, agent_id: str, workspace: str,
+                execution_class: str | None, effort: str | None) -> list[float]:
+        """Just the durations, without their timestamps."""
+        return [v for v, _ in self._samples(
+            agent_id, workspace, execution_class, effort)]
+
+    @staticmethod
+    def _weighted_quantile(pairs: list[tuple[float, float]], q: float,
+                            now: float) -> float:
+        """Recency-weighted quantile over (value, observed_at) pairs.
+
+        Each observation carries weight ``0.5 ** (age / half-life)``, and
+        the plotting position is the midpoint of its weight span — which
+        reduces exactly to the unweighted ``(i - 0.5)/n`` when every weight
+        is equal, so the small-sample correction from earlier still holds.
+
+        The retention window already drops anything past 500 observations
+        per bucket. That is a cliff: a sample matters fully until it
+        vanishes. This makes the transition smooth, so an agent that got
+        faster converges as its new behaviour accumulates rather than
+        waiting for the old rows to fall off the end.
+        """
+        if not pairs:
+            raise ValueError("empty sample")
+        items = sorted(pairs)
+        weights = [0.5 ** (max(0.0, now - at) / TIMING_HALF_LIFE_SECONDS)
+                   for _, at in items]
+        total = sum(weights)
+        if total <= 0:
+            return items[len(items) // 2][0]
+
+        # Midpoint plotting positions, normalised.
+        positions, running = [], 0.0
+        for w in weights:
+            positions.append((running + w / 2) / total)
+            running += w
+
+        if q <= positions[0]:
+            return items[0][0]
+        if q >= positions[-1]:
+            return items[-1][0]
+        for i in range(len(positions) - 1):
+            lo, hi = positions[i], positions[i + 1]
+            if lo <= q <= hi:
+                span = 0.0 if hi == lo else (q - lo) / (hi - lo)
+                return items[i][0] + span * (items[i + 1][0] - items[i][0])
+        return items[-1][0]
 
     @staticmethod
     def _quantile(sorted_values: list[float], q: float) -> float:
@@ -424,15 +479,14 @@ class TimingModel:
 
     def _estimate(self, agent_id: str, workspace: str,
                    execution_class: str | None, effort: str | None,
-                   source: str, effort_for_prior: str | None
+                   source: str, effort_for_prior: str | None, now: float
                    ) -> tuple[float, float, str, int] | None:
         values = self._samples(agent_id, workspace, execution_class, effort)
         if len(values) < MIN_SAMPLES:
             return None
-        values.sort()
         n = len(values)
-        p50 = self._quantile(values, 0.50)
-        p95 = self._quantile(values, 0.95)
+        p50 = self._weighted_quantile(values, 0.50, now)
+        p95 = self._weighted_quantile(values, 0.95, now)
 
         # Shrink only the upper quantile toward the (deliberately wide)
         # bootstrap prior, with a weight that decays as evidence
@@ -476,7 +530,7 @@ class TimingModel:
         candidates.append((None, None, "agent-wide"))
 
         for cls, eff, source in candidates:
-            result = self._estimate(agent_id, workspace, cls, eff, source, effort)
+            result = self._estimate(agent_id, workspace, cls, eff, source, effort, now)
             if result is not None:
                 p50, p95, source, n = result
                 return self._corrected(agent_id, workspace, p50, p95, now, source, n)
@@ -605,4 +659,39 @@ class TimingModel:
             "p50_hit_rate": sum(d <= p50 for d, p50, _ in rows) / len(rows),
             "p95_hit_rate": sum(d <= p95 for d, _, p95 in rows) / len(rows),
             "dropped_as_outliers": dropped,
+        }
+
+    def calibration_by(self, agent_id: str, workspace: str,
+                        dimension: str) -> dict[str, dict[str, Any]]:
+        """Calibration split along one dimension.
+
+        An aggregate rate says *that* an agent is miscalibrated; it never
+        says *where*. Those are different repairs: a single bad execution
+        class is the model's to fix by labelling differently, while error
+        spread evenly across every bucket is the estimator's problem. The
+        rows to answer this have been stored since forecasts and outcomes
+        were first recorded together — this only reads them back.
+
+        `dimension` is 'execution_class', 'effort', or 'predicted_from'
+        (which fallback tier produced the forecast).
+        """
+        if dimension not in {"execution_class", "effort", "predicted_from"}:
+            raise ValueError(f"cannot break calibration down by {dimension!r}")
+        rows = self._connection().execute(
+            f"SELECT {dimension}, delta_seconds, predicted_p50, predicted_p95 "
+            "FROM observations WHERE agent_id = ? AND workspace = ? "
+            "AND predicted_p50 IS NOT NULL",
+            (agent_id, workspace),
+        ).fetchall()
+
+        grouped: dict[str, list[tuple[float, float, float]]] = {}
+        for key, delta, p50, p95 in rows:
+            grouped.setdefault(key or "unspecified", []).append((delta, p50, p95))
+        return {
+            key: {
+                "samples": len(group),
+                "p50_hit_rate": sum(d <= a for d, a, _ in group) / len(group),
+                "p95_hit_rate": sum(d <= b for d, _, b in group) / len(group),
+            }
+            for key, group in sorted(grouped.items())
         }

@@ -47,7 +47,7 @@ def test_bootstrap_scales_with_effort():
 def test_a_look_after_a_declaration_records_the_gap():
     model = TimingModel(":memory:")
     cycle(model, "coding", "medium", at=1_000_000.0, look_at=1_000_020.0)
-    assert model._samples("a", "ws", "coding", "medium") == [20.0]
+    assert model._deltas("a", "ws", "coding", "medium") == [20.0]
 
 
 def test_posting_alone_never_records_an_observation():
@@ -57,16 +57,16 @@ def test_posting_alone_never_records_an_observation():
     model.declare("a", "ws", "coding", "medium", now=0.0)
     model.declare("a", "ws", "coding", "medium", now=10.0)
     model.declare("a", "ws", "coding", "medium", now=20.0)
-    assert model._samples("a", "ws", "coding", "medium") == []
+    assert model._deltas("a", "ws", "coding", "medium") == []
     # Only the look closes it, and it measures from the latest declaration.
     model.note_look("a", "ws", now=25.0)
-    assert model._samples("a", "ws", "coding", "medium") == [5.0]
+    assert model._deltas("a", "ws", "coding", "medium") == [5.0]
 
 
 def test_a_look_with_no_outstanding_declaration_is_not_an_observation():
     model = TimingModel(":memory:")
     model.note_look("a", "ws", now=100.0)
-    assert model._samples("a", "ws", None, None) == []
+    assert model._deltas("a", "ws", None, None) == []
 
 
 def test_redeclaring_supersedes_rather_than_scoring_the_old_forecast():
@@ -76,8 +76,8 @@ def test_redeclaring_supersedes_rather_than_scoring_the_old_forecast():
     model.declare("a", "ws", "coding", "high", now=0.0)
     model.declare("a", "ws", "research", "low", now=5.0)
     model.note_look("a", "ws", now=9.0)
-    assert model._samples("a", "ws", "coding", "high") == []
-    assert model._samples("a", "ws", "research", "low") == [4.0]
+    assert model._deltas("a", "ws", "coding", "high") == []
+    assert model._deltas("a", "ws", "research", "low") == [4.0]
 
 
 def test_declare_returns_nothing_without_a_classification():
@@ -112,14 +112,14 @@ def test_falls_back_to_coarser_bucket_when_sparse():
 def test_outlier_deltas_are_dropped():
     model = TimingModel(":memory:")
     cycle(model, "coding", "medium", at=0.0, look_at=MAX_OBSERVATION_SECONDS * 10)
-    assert model._samples("a", "ws", "coding", "medium") == []
+    assert model._deltas("a", "ws", "coding", "medium") == []
 
 
 def test_agents_and_workspaces_are_isolated():
     model = TimingModel(":memory:")
     cycle(model, "coding", "medium", at=0.0, look_at=10.0, agent="a", workspace="ws1")
-    assert model._samples("b", "ws1", "coding", "medium") == []
-    assert model._samples("a", "ws2", "coding", "medium") == []
+    assert model._deltas("b", "ws1", "coding", "medium") == []
+    assert model._deltas("a", "ws2", "coding", "medium") == []
 
 
 def test_observation_records_what_was_predicted_for_it():
@@ -263,7 +263,7 @@ def test_a_declaration_from_a_previous_run_is_discarded_not_scored():
     finally:
         timing_module._RUNTIME_ID = original
 
-    assert model._samples("a", "ws", "coding", "medium") == []
+    assert model._deltas("a", "ws", "coding", "medium") == []
     assert model._pending("a", "ws") is None
 
 
@@ -276,7 +276,7 @@ def test_dropped_outliers_are_counted_not_silently_discarded():
     that; a counted one lets you notice p95 is not trustworthy here."""
     model = TimingModel(":memory:")
     cycle(model, "waiting", "high", at=0.0, look_at=MAX_OBSERVATION_SECONDS * 3)
-    assert model._samples("a", "ws", "waiting", "high") == []
+    assert model._deltas("a", "ws", "waiting", "high") == []
     report = model.calibration("a", "ws")
     assert report["dropped_as_outliers"] == 1
 
@@ -288,7 +288,7 @@ def test_the_ceiling_no_longer_truncates_ordinary_slow_work():
     eight_hours = 8 * 3600.0
     assert eight_hours <= MAX_OBSERVATION_SECONDS
     cycle(model, "waiting", "high", at=0.0, look_at=eight_hours)
-    assert model._samples("a", "ws", "waiting", "high") == [eight_hours]
+    assert model._deltas("a", "ws", "waiting", "high") == [eight_hours]
 
 
 def test_buckets_are_a_moving_window_not_an_archive():
@@ -297,7 +297,7 @@ def test_buckets_are_a_moving_window_not_an_archive():
     for _ in range(MAX_OBSERVATIONS_PER_BUCKET + 40):
         cycle(model, "coding", "low", at=t, look_at=t + 3.0)
         t += 10
-    assert len(model._samples("a", "ws", "coding", "low")) == MAX_OBSERVATIONS_PER_BUCKET
+    assert len(model._deltas("a", "ws", "coding", "low")) == MAX_OBSERVATIONS_PER_BUCKET
 
 
 def test_old_samples_age_out_so_a_faster_agent_is_tracked():
@@ -316,7 +316,7 @@ def test_old_samples_age_out_so_a_faster_agent_is_tracked():
     fast = model.forecast("a", "ws", "coding", "low", now=t)
 
     assert fast.p50_seconds < slow.p50_seconds / 10
-    assert model._samples("a", "ws", "coding", "low") == [2.0] * MAX_OBSERVATIONS_PER_BUCKET
+    assert model._deltas("a", "ws", "coding", "low") == [2.0] * MAX_OBSERVATIONS_PER_BUCKET
 
 
 def test_retention_is_per_bucket_not_global():
@@ -326,7 +326,7 @@ def test_retention_is_per_bucket_not_global():
         cycle(model, "coding", "low", at=t, look_at=t + 3.0)
         t += 10
     cycle(model, "research", "high", at=t, look_at=t + 50.0)
-    assert model._samples("a", "ws", "research", "high") == [50.0]
+    assert model._deltas("a", "ws", "research", "high") == [50.0]
 
 
 # --- self-correction ---------------------------------------------------------
@@ -427,3 +427,65 @@ def test_raw_and_issued_are_both_recorded():
     assert row[0] == pytest.approx(forecast.p95_seconds)
     assert row[1] == pytest.approx(forecast.raw_p95_seconds)
     assert row[0] != row[1], "correction was applied, so they must differ"
+
+
+# --- recency weighting and calibration breakdowns ----------------------------
+
+
+def test_recent_observations_outweigh_old_ones():
+    """The retention window is a cliff — a sample counts fully until it
+    vanishes. Weighting makes an agent that changed speed converge as new
+    behaviour accumulates, rather than waiting for old rows to fall off."""
+    model = TimingModel(":memory:")
+    now = 100 * 86400.0
+    old = [(600.0, now - 60 * 86400.0)] * 40   # slow, two months ago
+    new = [(10.0, now - 3600.0)] * 40          # fast, an hour ago
+    weighted = model._weighted_quantile(old + new, 0.50, now)
+    assert weighted < 100.0, "recent fast samples should dominate"
+
+    # With everything equally recent, the median sits between the two modes.
+    same_age = [(v, now) for v, _ in old + new]
+    assert 10.0 < model._weighted_quantile(same_age, 0.50, now) < 600.0
+
+
+def test_weighted_quantile_reduces_to_the_unweighted_one():
+    """Equal weights must reproduce the (i-0.5)/n plotting position, so the
+    small-sample correction is not quietly lost."""
+    model = TimingModel(":memory:")
+    values = [1.0, 2.0, 3.0, 4.0, 100.0]
+    now = 0.0
+    for q in (0.1, 0.5, 0.95):
+        assert model._weighted_quantile([(v, now) for v in values], q, now) == \
+            pytest.approx(model._quantile(values, q))
+
+
+def test_weighted_quantile_handles_a_single_sample():
+    model = TimingModel(":memory:")
+    assert model._weighted_quantile([(42.0, 0.0)], 0.95, 0.0) == 42.0
+
+
+def test_calibration_can_be_broken_down_by_dimension():
+    """An aggregate rate says that an agent is miscalibrated, never where."""
+    model = TimingModel(":memory:")
+    t = 0.0
+    # 'quick' work always resolves well inside the forecast; 'slow' never does.
+    for _ in range(12):
+        cycle(model, "quick", "low", at=t, look_at=t + 1.0)
+        t += 100
+    for _ in range(12):
+        cycle(model, "slow", "low", at=t, look_at=t + 10_000.0)
+        t += 20_000
+
+    by_class = model.calibration_by("a", "ws", "execution_class")
+    assert by_class["quick"]["p95_hit_rate"] > by_class["slow"]["p95_hit_rate"]
+    assert by_class["quick"]["samples"] == 12
+
+    # Same data, split by a different dimension, still totals the same.
+    by_effort = model.calibration_by("a", "ws", "effort")
+    assert by_effort["low"]["samples"] == 24
+
+
+def test_calibration_breakdown_rejects_an_unknown_dimension():
+    model = TimingModel(":memory:")
+    with pytest.raises(ValueError):
+        model.calibration_by("a", "ws", "hostname")

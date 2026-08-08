@@ -108,6 +108,18 @@ estimator was allowed to see. A high count means p95 is optimistic and the
 reported hit rate overstates how calibrated that agent really is — a bias
 worth being able to see rather than one silently absorbed.
 
+### Recency weighting
+
+Quantiles are weighted by `0.5 ** (age / TIMING_HALF_LIFE_SECONDS)` (7-day
+half-life), using a midpoint plotting position that reduces exactly to the
+unweighted `(i - 0.5)/n` when all weights are equal — so the small-sample
+correction above is preserved, not quietly replaced.
+
+This exists because the retention window below is a *cliff*: a sample
+counts at full strength until it drops off the end. Weighting makes an
+agent that changed speed converge as its new behaviour accumulates,
+instead of waiting for 500 old rows to age out.
+
 ### Retention
 
 Each `(class, effort)` bucket keeps its most recent
@@ -129,6 +141,19 @@ time the outcome arrives. `TimingModel.calibration()` reads it back as hit
 rates; the same rows support breakdowns by class, effort, tier, and drift
 over time later. Rows written before these columns existed are simply
 excluded from calibration rather than migrated.
+
+### Calibration breakdowns
+
+`calibration()` gives an aggregate; `calibration_by()` splits it along
+`execution_class`, `effort`, or `predicted_from` (the fallback tier).
+
+The distinction matters because the two cases need different repairs. One
+badly calibrated execution class is the *model's* to fix by labelling
+differently — which is exactly what `whoami`'s note now points at. Error
+spread evenly across every bucket is the *estimator's* problem and no
+relabelling will help. An aggregate rate cannot tell those apart. The rows
+needed to answer it have been stored since forecasts and outcomes were
+first recorded together; this only reads them back.
 
 ## Execution-class taxonomy
 
