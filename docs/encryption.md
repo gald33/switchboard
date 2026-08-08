@@ -24,9 +24,19 @@ because that is the one your agents actually route to. On a terminal it asks
 which you meant; pass `--force` to repoint the file at a fresh opaque name, or
 `--no-input` to take the default without being asked.
 
+Because it is written to a file rather than only printed, the key is not lost
+if you close the terminal — `switchboard whoami --show-key` reads it back and
+prints the command that hands it to a teammate. What *is* unrecoverable is
+losing the file itself: a fresh clone or a wiped machine has nothing to read,
+and the hub cannot help, because it never had the key. Back it up the way you
+would any other shared secret. The flip side of it being on disk in the clear
+is that anything else on your machine can read it too; `init` keeps the path
+out of git on every run, but that is the only boundary it provides.
+
 If you would rather handle it yourself, `switchboard keygen` prints a key and
 a workspace name and you set `SWITCHBOARD_KEY` and `SWITCHBOARD_WORKSPACE` on
-every agent by hand. Either way the key never reaches the hub.
+every agent by hand — that key is saved nowhere, so copy it when it appears.
+Either way the key never reaches the hub.
 
 That is the whole setup. Everything else — `claim`, `say`, `inbox`, `checkin`,
 the MCP tools — behaves exactly as before.

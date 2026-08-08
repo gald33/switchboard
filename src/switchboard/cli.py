@@ -102,15 +102,6 @@ def _ask_choice(question: str, options: Sequence[tuple[str, str]], *, default: i
         print(f"  answer with a number from 1 to {len(options)}.", file=sys.stderr)
 
 
-def _pause(message: str) -> None:
-    """Hold until the operator acknowledges — for the one thing they cannot get back."""
-    print(message, end="", file=sys.stderr, flush=True)
-    try:
-        input()
-    except EOFError:
-        print(file=sys.stderr)
-
-
 class Fmt:
     def __init__(self, color: bool) -> None:
         self.color = color
@@ -354,10 +345,70 @@ def cmd_register_key(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _saved_key(directory: Path) -> str | None:
+    """The workspace key `init` wrote for this repo, if it is still there.
+
+    Read straight off disk rather than from the environment: Claude Code
+    injects this file's `env` into the agents it spawns, but a plain shell has
+    nothing exported, and the shell is exactly where someone stands when they
+    need to hand the key to a teammate.
+    """
+    path = directory / _LOCAL_SETTINGS_REL
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    env = data.get("env")
+    key = env.get("SWITCHBOARD_KEY") if isinstance(env, dict) else None
+    return key if isinstance(key, str) else None
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
+    directory = Path(".").resolve()
+    # `encrypted` describes what *this* invocation will do, so it deliberately
+    # ignores the key sitting in the repo: Claude Code injects that file's env
+    # into the agents it spawns, but a plain shell has nothing exported and
+    # will send in the clear. Claiming otherwise is the overclaim that gets
+    # someone to trust a channel that isn't sealed.
     encrypted = bool(args.key or config.key)
+    key = args.key or config.key or _saved_key(directory)
+    # `config.workspace` falls back to the literal "default", so it can never
+    # be None and would mask the repo's real workspace. Read the environment
+    # directly to tell "explicitly set" from "defaulted", and prefer what
+    # .mcp.json routes to over a placeholder — handing a teammate `-w default`
+    # is the same silent misroute this file works to prevent.
+    workspace = (
+        args.workspace
+        or os.environ.get("SWITCHBOARD_WORKSPACE")
+        or _mcp_workspace(directory)
+        or config.workspace
+    )
+    if args.show_key:
+        # Only ever on request. Printing a key into scrollback, CI logs or a
+        # screen share is the kind of thing that should take a deliberate flag.
+        if not key:
+            print(
+                "error: no workspace key here — none set in the environment and "
+                f"no {_LOCAL_SETTINGS_REL} in this directory. `switchboard init "
+                "--new-key` mints one.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        if args.json:
+            _print_json({"key": key, "workspace": workspace})
+            return EXIT_OK
+        print(key)
+        if sys.stdout.isatty():
+            print(
+                "\nGive teammates:\n"
+                f"  switchboard init --key {key} -w {workspace}",
+                file=sys.stderr,
+            )
+        return EXIT_OK
     payload = {
         "agent_id": identity.agent_id,
         "name": identity.name,
@@ -372,8 +423,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         _print_json(payload)
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
-    for key in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
-        print(f"{fmt.dim(key.rjust(10))}  {payload[key]}")
+    for field in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
+        print(f"{fmt.dim(field.rjust(10))}  {payload[field]}")
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
@@ -1469,16 +1520,25 @@ def cmd_init(args: argparse.Namespace) -> int:
             # Printed once, and never again: it is on disk but `init` will not
             # read it back out to show you, and the hub cannot recover it.
             print()
-            print(fmt.bold("Your new workspace key — copy it now, it is not shown again:"))
+            # Deliberately not "copy it now, it is not shown again": the key is
+            # sitting in _LOCAL_SETTINGS_REL in the clear, so that would be
+            # false, and the way it goes wrong is expensive. Someone who
+            # scrolls past believes the key is gone, re-runs --new-key, and
+            # silently cuts themselves off from every teammate still holding
+            # the old one — the exact divergence `_init_key` refuses to cause
+            # on its own. Say where it lives instead. The real risk is losing
+            # the *file*, which is a back-it-up problem, not a memorize-it one.
+            print(fmt.bold("Your new workspace key:"))
             print(f"  {minted}")
             print(
                 f"  Give teammates: switchboard init --key {minted} -w {workspace}"
             )
-            if interactive:
-                # The only genuinely unrecoverable moment `init` has: the key
-                # is on disk but never printed again, and the hub cannot help.
-                # Cheap to hold here; expensive to have scrolled past.
-                _pause("\npress enter once you have saved it ")
+            print(
+                f"  Saved to {_LOCAL_SETTINGS_REL} (gitignored) — `switchboard "
+                "whoami --show-key` prints it again. The hub never receives it, so "
+                "nobody there can read this workspace, and nobody there can recover "
+                "the key if you lose that file."
+            )
     return EXIT_OK if key_ok else EXIT_ERROR
 
 
@@ -1597,6 +1657,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
+    p.add_argument(
+        "--show-key", action="store_true",
+        help="print this repo's workspace key, and the command that hands it to a "
+             "teammate. Reads .claude/settings.local.json, so it works from a plain "
+             "shell where nothing is exported. Prints a secret — it goes to stdout "
+             "on purpose so it can be piped, but mind your scrollback.",
+    )
     p.set_defaults(func=cmd_whoami)
 
     p = sub.add_parser(

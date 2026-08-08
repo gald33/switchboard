@@ -21,6 +21,7 @@ from switchboard.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
     _CLAUDE_MD_SECTION_HISTORY,
+    _LOCAL_SETTINGS_REL,
     _SESSION_START_CMD_HISTORY,
     _STOP_CMD_HISTORY,
     MANAGED_HUB_URL,
@@ -917,7 +918,7 @@ def test_ci_env_suppresses_prompts(monkeypatch, capsys, tmp_path):
 def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_mcp(tmp_path, "acme/billing")
-    err = make_interactive(monkeypatch, ["2", ""])  # switch workspace, then ack the key
+    err = make_interactive(monkeypatch, ["2"])  # switch to the freshly minted workspace
     code = main(["init", "--new-key"])
     assert code == 0
     assert "acme/billing" in err.getvalue()
@@ -927,7 +928,7 @@ def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
 def test_interactive_defaults_to_keeping_the_registered_workspace(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_mcp(tmp_path, "acme/billing")
-    make_interactive(monkeypatch, ["", ""])  # bare enter takes the default
+    make_interactive(monkeypatch, [""])  # bare enter takes the default
     code = main(["init", "--new-key"])
     assert code == 0
     assert _mcp_ws(tmp_path) == "acme/billing"
@@ -977,12 +978,18 @@ def test_declining_is_the_default_answer(monkeypatch, capsys, tmp_path):
     assert "switchboard mine --x" in settings_path.read_text()
 
 
-def test_interactive_pauses_after_printing_a_minted_key(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    err = make_interactive(monkeypatch, [""])
-    code = main(["init", "--new-key"])
+def test_minted_key_is_reported_as_saved_not_as_lost(monkeypatch, capsys, tmp_path):
+    # The key is sitting in settings.local.json in the clear, so "copy it now,
+    # it is not shown again" would be false — and the way it goes wrong is
+    # expensive: someone believes it is gone, re-mints, and silently cuts
+    # themselves off from everyone holding the old key.
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     assert code == 0
-    assert "saved it" in err.getvalue()
+    assert "not shown again" not in out
+    assert _LOCAL_SETTINGS_REL in out
+    assert "whoami --show-key" in out
+    # the claim that survives is the one about the hub, which is true
+    assert "hub never receives it" in out
 
 
 def test_prompt_survives_a_closed_stdin(monkeypatch, capsys, tmp_path):
@@ -998,3 +1005,59 @@ def test_prompt_survives_a_closed_stdin(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("builtins.input", eof)
     assert main(["init"]) == 0
     assert "switchboard mine --x" in settings_path.read_text()
+
+
+# --- getting the key back ----------------------------------------------------
+#
+# The key lives in settings.local.json in the clear, so it was never actually
+# unrecoverable — only unprinted. Making that explicit removes the incentive
+# to re-mint, which is the one move that silently strands your teammates.
+
+
+def test_show_key_reads_it_back_from_the_repo(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert main(["whoami", "--show-key"]) == 0
+    assert capsys.readouterr().out.strip() == saved
+
+
+def test_show_key_works_with_nothing_exported(monkeypatch, capsys, tmp_path):
+    # The whole point: a plain shell has no SWITCHBOARD_KEY, and a plain shell
+    # is where you stand when a teammate asks you for it.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    assert main(["--json", "whoami", "--show-key"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["key"] == saved
+    assert payload["workspace"] == _mcp_ws(tmp_path)
+
+
+def test_show_key_without_a_key_is_a_clean_error(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = main(["whoami", "--show-key"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "no workspace key here" in captured.err
+
+
+def test_whoami_does_not_claim_encryption_it_will_not_perform(monkeypatch, capsys, tmp_path):
+    # A key on disk is not a key in this shell's environment. Claude Code
+    # injects it for the agents it spawns; a bare `switchboard say` here would
+    # send in the clear, and whoami must not say otherwise.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    assert main(["--json", "whoami"]) == 0
+    assert json.loads(capsys.readouterr().out)["encrypted"] is False
+
+    monkeypatch.setenv("SWITCHBOARD_KEY", _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"])
+    assert main(["--json", "whoami"]) == 0
+    assert json.loads(capsys.readouterr().out)["encrypted"] is True
+
+
+def test_show_key_does_not_leak_into_plain_whoami(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert main(["whoami"]) == 0
+    assert saved not in capsys.readouterr().out
