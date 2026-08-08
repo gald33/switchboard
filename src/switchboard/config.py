@@ -10,7 +10,9 @@ Everything is environment-driven so a hub can be stood up with no config file:
                              keys instead of an operator-curated file (server)
                              — mutually exclusive with the two above
     SWITCHBOARD_URL          hub base URL (client)
-    SWITCHBOARD_WORKSPACE    default workspace (client)
+    SWITCHBOARD_WORKSPACE    workspace to join (client). Unset, the client
+                             derives one — see ``default_workspace`` and
+                             docs/environments.md
     SWITCHBOARD_AGENT_ID     stable identity for this agent (client)
     SWITCHBOARD_KEY          workspace key for end-to-end encryption (client only —
                              a hub must never be given one, and has no use for it)
@@ -39,8 +41,11 @@ has to scope down to be worth anything at all.
 
 from __future__ import annotations
 
+import getpass
+import hashlib
 import os
-from dataclasses import dataclass
+import socket
+from dataclasses import dataclass, field
 
 # --- TTL defaults (seconds) -------------------------------------------------
 # Every record in Switchboard expires. These are the defaults applied when a
@@ -121,13 +126,52 @@ class ServerConfig:
         )
 
 
+def machine_suffix(extra: str = "") -> str:
+    """A short, stable, opaque tag for this machine, for disambiguating a
+    workspace name nobody chose.
+
+    `extra` mixes in anything else that should make the tag differ — a
+    checkout path, when there is one — so two unrelated directories both
+    called `api` do not land on each other.
+
+    An unconfigured client used to land in the workspace literally named
+    ``default``. On a private hub that is harmless and even useful — two
+    terminals on one laptop meet with no setup. On a shared hub it means every
+    unconfigured user in the world is in one room, colliding over lease names
+    and wondering who the strangers are. A key seals what they say, so this was
+    never a disclosure, but it is a bad default.
+
+    Hashing means the tag is unique without being *descriptive*: the workspace
+    is the one thing the hub always sees in the clear, so a hostname would make
+    it the most identifying string we hand over. Same inputs on the same
+    machine give the same tag, so same-machine agents still find each other
+    with no configuration — which is the property that made ``default`` useful
+    in the first place.
+
+    It is deliberately *not* stable across machines: agents that must
+    coordinate across a network are exactly the ones that should be naming
+    their workspace on purpose, and a name they never chose silently matching
+    is not a property worth engineering for.
+    """
+    try:
+        user = getpass.getuser()
+    except Exception:  # pragma: no cover - no passwd entry, no USER, no LOGNAME
+        user = ""
+    seed = f"{socket.gethostname()}\0{user}\0{extra}"
+    return hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def default_workspace() -> str:
+    return f"default-{machine_suffix()}"
+
+
 @dataclass
 class ClientConfig:
     """Client-side settings, read from the environment."""
 
     url: str = "http://127.0.0.1:8787"
     token: str | None = None
-    workspace: str = "default"
+    workspace: str = field(default_factory=default_workspace)
     agent_id: str | None = None
     #: Workspace key for end-to-end encryption. When set, payloads are sealed
     #: and identifiers blinded before anything leaves this process. It is never
@@ -142,7 +186,7 @@ class ClientConfig:
         return cls(
             url=os.environ.get("SWITCHBOARD_URL", "http://127.0.0.1:8787").rstrip("/"),
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
-            workspace=os.environ.get("SWITCHBOARD_WORKSPACE", "default"),
+            workspace=os.environ.get("SWITCHBOARD_WORKSPACE") or default_workspace(),
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
             key=os.environ.get("SWITCHBOARD_KEY") or None,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),

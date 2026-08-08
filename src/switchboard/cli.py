@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 
 from . import __version__
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
-from .config import ClientConfig
+from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
 
 EXIT_OK = 0
@@ -1024,7 +1024,23 @@ def _git_remote_workspace(directory: Path) -> str | None:
 
 
 def _default_workspace(directory: Path) -> str:
-    return _git_remote_workspace(directory) or directory.resolve().name
+    """The workspace to use when nobody named one.
+
+    A git remote is the good case: every clone derives the same name, which is
+    what gets a laptop, a cloud session and a CI runner into the same room for
+    free.
+
+    Without one there is nothing shared to derive from, and the bare directory
+    name is a poor substitute — `api` or `backend` collides with everyone else
+    who has a directory called that, and on a shared hub they land on top of
+    each other. A machine tag keeps it unique. It stays readable here on
+    purpose: the user chose this directory name, and `--new-key` replaces the
+    whole thing with an opaque one anyway when hiding it from the hub is the
+    point.
+    """
+    resolved = directory.resolve()
+    remote = _git_remote_workspace(directory)
+    return remote or f"{resolved.name}-{machine_suffix(str(resolved))}"
 
 
 def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
