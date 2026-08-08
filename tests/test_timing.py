@@ -7,12 +7,16 @@ what it is about to do, and later reads its inbox.
 
 from __future__ import annotations
 
+import pytest
+
 from switchboard.timing import (
     CLASS_HALF_LIFE_SECONDS,
     DEFAULT_CLASSES,
     MAX_OBSERVATION_SECONDS,
     MAX_OBSERVATIONS_PER_BUCKET,
+    MIN_RECALIBRATION_SAMPLES,
     MIN_SAMPLES,
+    RECALIBRATION_BOUNDS,
     TimingModel,
 )
 
@@ -323,3 +327,103 @@ def test_retention_is_per_bucket_not_global():
         t += 10
     cycle(model, "research", "high", at=t, look_at=t + 50.0)
     assert model._samples("a", "ws", "research", "high") == [50.0]
+
+
+# --- self-correction ---------------------------------------------------------
+
+
+def seed_ratios(model, n, delta, raw_p50, raw_p95, agent="a", workspace="ws"):
+    """Insert observations whose outcomes stand in a known relation to the
+    raw estimate that produced them."""
+    conn = model._connection()
+    for i in range(n):
+        conn.execute(
+            "INSERT INTO observations (agent_id, workspace, execution_class, effort,"
+            " delta_seconds, observed_at, predicted_p50, predicted_p95, predicted_from,"
+            " raw_p50, raw_p95) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (agent, workspace, "coding", "medium", delta, float(i),
+             raw_p50, raw_p95, "class+effort", raw_p50, raw_p95),
+        )
+    conn.commit()
+
+
+def test_no_correction_until_there_is_enough_evidence():
+    """Below the threshold the measured error is mostly noise, and
+    'correcting' for it would add more error than it removes."""
+    model = TimingModel(":memory:")
+    seed_ratios(model, MIN_RECALIBRATION_SAMPLES - 1, delta=200.0,
+                raw_p50=100.0, raw_p95=100.0)
+    assert model._correction("a", "ws") == (1.0, 1.0)
+
+
+def test_a_systematically_short_estimator_is_scaled_up():
+    model = TimingModel(":memory:")
+    # Every outcome came in at twice the predicted p50 and p95.
+    seed_ratios(model, MIN_RECALIBRATION_SAMPLES + 20, delta=200.0,
+                raw_p50=100.0, raw_p95=100.0)
+    m50, m95 = model._correction("a", "ws")
+    assert m50 == pytest.approx(2.0, rel=0.05)
+    assert m95 == pytest.approx(2.0, rel=0.05)
+
+    forecast = model.forecast("a", "ws", "coding", "medium", now=0.0)
+    assert forecast.p95_seconds == pytest.approx(
+        forecast.raw_p95_seconds * m95, rel=1e-6)
+
+
+def test_a_well_calibrated_estimator_is_left_alone():
+    model = TimingModel(":memory:")
+    seed_ratios(model, 200, delta=100.0, raw_p50=100.0, raw_p95=100.0)
+    m50, m95 = model._correction("a", "ws")
+    assert m50 == pytest.approx(1.0, rel=0.05)
+    assert m95 == pytest.approx(1.0, rel=0.05)
+
+
+def test_the_correction_is_bounded():
+    """An apparent 100x error is far likelier to be a bug or a regime
+    change than a calibration problem, and silently applying it would turn
+    a small fault into a useless forecast."""
+    model = TimingModel(":memory:")
+    seed_ratios(model, 60, delta=100_000.0, raw_p50=1.0, raw_p95=1.0)
+    low, high = RECALIBRATION_BOUNDS
+    m50, m95 = model._correction("a", "ws")
+    assert m50 == high and m95 == high
+
+    other = TimingModel(":memory:")
+    seed_ratios(other, 60, delta=0.001, raw_p50=1000.0, raw_p95=1000.0)
+    assert other._correction("a", "ws") == (low, low)
+
+
+def test_the_correction_does_not_compound_on_itself():
+    """The failure this guards: measuring error against an
+    already-corrected number and then correcting again multiplies every
+    cycle. Ratios are taken against the raw estimate, so each pass is a
+    fresh calculation with no memory to run away."""
+    model = TimingModel(":memory:")
+    t = 0.0
+    for _ in range(400):
+        model.declare("a", "ws", "coding", "medium", now=t)
+        model.note_look("a", "ws", now=t + 60.0)
+        t += 120.0
+    first = model._correction("a", "ws")
+    for _ in range(400):
+        model.declare("a", "ws", "coding", "medium", now=t)
+        model.note_look("a", "ws", now=t + 60.0)
+        t += 120.0
+    second = model._correction("a", "ws")
+    # Stable, not drifting further from 1.0 with every cycle.
+    assert abs(second[1] - first[1]) < 0.5
+    assert 0.5 < second[1] < 2.0
+
+
+def test_raw_and_issued_are_both_recorded():
+    model = TimingModel(":memory:")
+    seed_ratios(model, MIN_RECALIBRATION_SAMPLES + 5, delta=200.0,
+                raw_p50=100.0, raw_p95=100.0)
+    forecast = model.declare("a", "ws", "coding", "medium", now=10_000.0)
+    model.note_look("a", "ws", now=10_050.0)
+    row = model._connection().execute(
+        "SELECT predicted_p95, raw_p95 FROM observations ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row[0] == pytest.approx(forecast.p95_seconds)
+    assert row[1] == pytest.approx(forecast.raw_p95_seconds)
+    assert row[0] != row[1], "correction was applied, so they must differ"

@@ -271,6 +271,36 @@ carry no remaining information and must not be used to defer a check. The
 fields are annotated rather than stripped, since a reader may still want
 to see what was predicted.
 
+**The runtime corrects its own drift.** Every forecast is scaled by
+multipliers derived from this agent's own history: for each past
+observation, the ratio of what happened to what was predicted, read at
+the quantile being targeted. If p95 needed to be 1.4x larger to cover 95%
+of outcomes, that is the multiplier. Conformal in shape, and it is the
+runtime's job rather than the model's — telling a model "your forecasts
+run short, compensate" hands back exactly the arithmetic this feature
+exists to absorb, and no collaborator has a channel to tell it either.
+
+Two properties this needs and has:
+
+* **It cannot compound.** Ratios are taken against the stored *raw*
+  estimate, never the issued one. Measuring error against an
+  already-corrected number and correcting again multiplies every cycle;
+  measuring against raw makes each pass a fresh calculation with no memory
+  to run away. This is why `observations` stores both.
+* **It is bounded and slow to start.** Nothing is applied below
+  `MIN_RECALIBRATION_SAMPLES` (25), where the measured error is mostly
+  noise, and the multiplier is clamped to `RECALIBRATION_BOUNDS`. An
+  apparent 100x error is far likelier to be a bug or a regime change than
+  a calibration problem, and applying it silently would turn a small fault
+  into a useless forecast.
+
+On an already-calibrated agent the multipliers sit at ~1.0 and the whole
+mechanism is a no-op, which is the correct behaviour. Where it earns its
+keep is systematic bias the estimator cannot see itself — a censored tail,
+for instance: in simulation, an agent whose gaps often exceeded the
+outlier ceiling had its p95 hit rate pulled from 0.936 back to 0.944 with
+a 1.07x multiplier.
+
 **An agent can see its own calibration.** `whoami` reports
 `forecast_calibration` — sample count, p50/p95 hit rates, and a plain
 warning when they are badly off — once there is enough history to mean

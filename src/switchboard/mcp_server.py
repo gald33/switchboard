@@ -483,11 +483,18 @@ class Bridge:
             # margin and the hit rate above flatters itself.
             summary["ignored_as_too_long"] = report["dropped_as_outliers"]
         if not 0.3 <= report["p50_hit_rate"] <= 0.7 or report["p95_hit_rate"] < 0.8:
+            # Deliberately not "compensate for this yourself". The runtime
+            # already corrects measured miscalibration (timing.
+            # _correction), so asking the model to adjust on top would both
+            # double-count and hand back the arithmetic this feature exists
+            # to absorb. This says only what the model alone can act on:
+            # the labels it is choosing may not be separating the work.
             summary["note"] = (
-                "Your check-in forecasts are not matching reality "
-                "(p50 should land near 0.5, p95 near 0.95). Collaborators "
-                "reading them will be misled; weigh your own timing "
-                "classifications accordingly."
+                "These are historical rates; the runtime already corrects "
+                "for measured drift. Rates this far off usually mean the "
+                "execution_class/effort labels are not separating your work "
+                "well — different labels may predict better than the ones "
+                "you have been using."
             )
         return summary
 
