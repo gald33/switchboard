@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -61,6 +62,13 @@ MAX_OBSERVATION_SECONDS = 6 * 3600.0
 #: the estimator falls back to a coarser one.
 MIN_SAMPLES = 5
 
+#: Weight of the bootstrap prior, in units of "equivalent observations".
+#: An estimate from n samples is blended with the prior at n / (n + this),
+#: so a bucket needs real evidence before it fully overrides the wide
+#: default. Guards the upper quantile, whose small-sample error is
+#: one-sided: an unsampled tail always reads as shorter than it is.
+PRIOR_STRENGTH = 8.0
+
 #: Seed execution classes offered before an agent has used enough of its
 #: own. Deliberately tiny — the real taxonomy is meant to emerge from use,
 #: and anything an agent actually uses displaces these in the offer set.
@@ -74,6 +82,14 @@ TOP_K_CLASSES = 6
 #: stopped using fades out of the offer set rather than lingering forever,
 #: so the suggestions track what this agent is doing *now*.
 CLASS_HALF_LIFE_SECONDS = 14 * 86400.0
+
+
+#: Identifies this process. A declaration is only scored by a look from
+#: the same run: if the agent died mid-task and came back, the elapsed
+#: wall-clock time measures the outage, not the agent's behaviour, and a
+#: restart soon after a declaration produces a plausible-looking number
+#: that the outlier ceiling has no way to catch.
+_RUNTIME_ID = uuid.uuid4().hex
 
 
 def _now() -> float:
@@ -149,6 +165,7 @@ class TimingModel:
                     predicted_p50   REAL,
                     predicted_p95   REAL,
                     predicted_from  TEXT,
+                    runtime         TEXT,
                     PRIMARY KEY (agent_id, workspace)
                 );
                 """
@@ -165,12 +182,15 @@ class TimingModel:
         Only ever adds nullable columns, so an old file keeps working and
         old rows simply have no calibration data attached.
         """
-        for table in ("observations", "pending"):
+        wanted = {
+            "observations": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
+                              ("predicted_from", "TEXT")),
+            "pending": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
+                         ("predicted_from", "TEXT"), ("runtime", "TEXT")),
+        }
+        for table, columns in wanted.items():
             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-            for column, decl in (
-                ("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
-                ("predicted_from", "TEXT"),
-            ):
+            for column, decl in columns:
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
@@ -199,7 +219,7 @@ class TimingModel:
     def _pending(self, agent_id: str, workspace: str) -> tuple | None:
         return self._connection().execute(
             "SELECT execution_class, effort, since, predicted_p50, predicted_p95, "
-            "predicted_from FROM pending WHERE agent_id = ? AND workspace = ?",
+            "predicted_from, runtime FROM pending WHERE agent_id = ? AND workspace = ?",
             (agent_id, workspace),
         ).fetchone()
 
@@ -219,11 +239,13 @@ class TimingModel:
         if execution_class or effort:
             conn.execute(
                 "INSERT INTO pending (agent_id, workspace, execution_class, effort, since, "
-                "predicted_p50, predicted_p95, predicted_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "predicted_p50, predicted_p95, predicted_from, runtime) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (agent_id, workspace, execution_class or "unspecified", effort or "medium", now,
                  forecast.p50_seconds if forecast else None,
                  forecast.p95_seconds if forecast else None,
-                 forecast.source if forecast else None),
+                 forecast.source if forecast else None,
+                 _RUNTIME_ID),
             )
         conn.commit()
 
@@ -246,6 +268,14 @@ class TimingModel:
         now = _now() if now is None else now
         prior = self._pending(agent_id, workspace)
         if prior is None:
+            return
+        if prior[6] != _RUNTIME_ID:
+            # Left behind by a previous run: the agent crashed or the
+            # session ended between declaring and looking. The gap measures
+            # downtime, not behaviour, and a restart shortly after a
+            # declaration yields a plausible-looking value the outlier
+            # ceiling cannot catch. Drop it rather than learn from it.
+            self._clear_pending(agent_id, workspace)
             return
         self._record(agent_id, workspace, prior[0], prior[1], now - prior[2], now,
                       (prior[3], prior[4], prior[5]))
@@ -292,19 +322,56 @@ class TimingModel:
 
     @staticmethod
     def _quantile(sorted_values: list[float], q: float) -> float:
+        """Empirical quantile, interpolated between order statistics.
+
+        Uses the (i - 0.5)/n plotting position rather than i/(n-1). The
+        latter forces q=0.95 onto the sample *maximum* for any small n —
+        with n=5 the "95th percentile" was literally the largest of five
+        draws, which sits near the 83rd percentile of the true
+        distribution. That made p95 optimistic exactly where a
+        collaborator leans on it hardest.
+        """
         if not sorted_values:
             raise ValueError("empty sample")
-        idx = min(len(sorted_values) - 1, max(0, round(q * (len(sorted_values) - 1))))
-        return sorted_values[idx]
+        n = len(sorted_values)
+        position = q * n - 0.5
+        if position <= 0:
+            return sorted_values[0]
+        if position >= n - 1:
+            return sorted_values[-1]
+        low = int(position)
+        frac = position - low
+        return sorted_values[low] + frac * (sorted_values[low + 1] - sorted_values[low])
 
     def _estimate(self, agent_id: str, workspace: str,
                    execution_class: str | None, effort: str | None,
-                   source: str) -> tuple[float, float, str, int] | None:
+                   source: str, effort_for_prior: str | None
+                   ) -> tuple[float, float, str, int] | None:
         values = self._samples(agent_id, workspace, execution_class, effort)
         if len(values) < MIN_SAMPLES:
             return None
         values.sort()
-        return self._quantile(values, 0.50), self._quantile(values, 0.95), source, len(values)
+        n = len(values)
+        p50 = self._quantile(values, 0.50)
+        p95 = self._quantile(values, 0.95)
+
+        # Shrink only the upper quantile toward the (deliberately wide)
+        # bootstrap prior, with a weight that decays as evidence
+        # accumulates. The small-sample error there is one-sided — you
+        # cannot observe a tail you have not sampled yet, so the estimate
+        # runs short — and the cost of the two directions is asymmetric:
+        # an optimistic p95 misleads, a conservative one merely wastes a
+        # little patience.
+        #
+        # The median gets no such treatment. Its small-sample error is
+        # symmetric, so blending would not reduce bias, it would only drag
+        # p50 toward whatever the generic prior happens to say — which for
+        # an agent much faster than the default is simply wrong, and shows
+        # up immediately as an over-conservative p50 in the cold regime.
+        _, prior_p95 = _BOOTSTRAP_SECONDS.get(effort_for_prior or "", _DEFAULT_BOOTSTRAP)
+        weight = n / (n + PRIOR_STRENGTH)
+        p95 = weight * p95 + (1 - weight) * prior_p95
+        return p50, max(p95, p50), source, n
 
     def forecast(
         self, agent_id: str, workspace: str,
@@ -330,7 +397,7 @@ class TimingModel:
         candidates.append((None, None, "agent-wide"))
 
         for cls, eff, source in candidates:
-            result = self._estimate(agent_id, workspace, cls, eff, source)
+            result = self._estimate(agent_id, workspace, cls, eff, source, effort)
             if result is not None:
                 p50, p95, source, n = result
                 return Forecast(p50_seconds=p50, p95_seconds=p95, now=now,
