@@ -602,3 +602,75 @@ def test_custom_scope_tool_schemas_are_all_optional(hub):
             props = tool["inputSchema"]["properties"]
             assert "custom_scope" in props, tool["name"]
             assert "custom_scope" not in tool["inputSchema"]["required"], tool["name"]
+
+
+# --- expired forecasts and self-calibration ----------------------------------
+
+
+def test_a_forecast_whose_p95_has_passed_is_flagged_expired(hub):
+    """Comparing two timestamps is arithmetic the model should not have to
+    do, and the answer changes what the forecast is worth."""
+    from datetime import datetime, timedelta, timezone
+
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    stale = datetime.now(timezone.utc) - timedelta(hours=2)
+    a2.client.post("build", {
+        "text": "long gone",
+        "timing_forecast": {
+            "p50": (stale - timedelta(minutes=5)).isoformat(),
+            "p95": stale.isoformat(),
+        },
+    })
+    msg = call(a1, "inbox")[0]["messages"][0]
+    assert msg["body"] == "long gone"
+    assert msg["timing_forecast"]["expired"] is True
+    # The prediction itself is still visible; only annotated.
+    assert "p50" in msg["timing_forecast"] and "p95" in msg["timing_forecast"]
+
+
+def test_a_live_forecast_is_not_flagged(hub):
+    a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
+    call(a1, "whoami")
+    a1.client.register(name="a1", channels=["build"])
+    call(a2, "say", channel="build", message="working",
+         execution_class="research", effort="high")
+    msg = call(a1, "inbox")[0]["messages"][0]
+    assert "expired" not in msg["timing_forecast"]
+
+
+def test_whoami_stays_quiet_until_there_is_enough_history(hub):
+    a1 = make_bridge(hub, "a1")
+    assert "forecast_calibration" not in call(a1, "whoami")[0]
+
+
+def test_whoami_surfaces_calibration_once_it_means_something(hub):
+    """The data was otherwise dark: an agent could publish badly
+    calibrated forecasts forever with no way to find out."""
+    from switchboard.timing import MIN_SAMPLES
+
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    t = 1_000_000.0
+    for _ in range(MIN_SAMPLES + 2):
+        a1.timing.declare("a1", ws, "coding", "medium", now=t)
+        a1.timing.note_look("a1", ws, now=t + 30.0)
+        t += 60
+    report = call(a1, "whoami")[0]["forecast_calibration"]
+    assert report["samples"] >= MIN_SAMPLES
+    assert 0.0 <= report["p50_hit_rate"] <= 1.0
+
+
+def test_badly_calibrated_forecasts_come_with_a_warning(hub):
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    # Always look far later than any forecast predicts, so both hit rates
+    # collapse and the agent is told its forecasts mislead.
+    t = 1_000_000.0
+    for _ in range(20):
+        a1.timing.declare("a1", ws, "coding", "low", now=t)
+        a1.timing.note_look("a1", ws, now=t + 3000.0)
+        t += 4000
+    report = call(a1, "whoami")[0]["forecast_calibration"]
+    assert "note" in report

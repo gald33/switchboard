@@ -27,7 +27,7 @@ from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
 from .crypto import generate_key
-from .timing import EFFORT_LEVELS, Forecast, TimingModel
+from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
 # for something else we answer with our newest and let it decide.
@@ -42,6 +42,27 @@ JSONRPC_INTERNAL_ERROR = -32603
 
 def log(message: str) -> None:
     print(f"[switchboard-mcp] {message}", file=sys.stderr, flush=True)
+
+
+def _mark_if_expired(forecast: dict[str, Any]) -> dict[str, Any]:
+    """Flag a forecast whose p95 has already passed.
+
+    Comparing two timestamps is exactly the kind of arithmetic this
+    feature exists to keep out of model reasoning, and the answer changes
+    what the forecast is worth: past p95 the event it predicted has almost
+    certainly already happened, so the checkpoints carry no remaining
+    information and should not be used to defer a check. Left as a flag
+    rather than stripping the fields, since a reader may still want to see
+    what was predicted.
+    """
+    p95 = forecast.get("p95")
+    if not isinstance(p95, str):
+        return forecast
+    try:
+        expired = datetime.fromisoformat(p95) < datetime.now(timezone.utc)
+    except ValueError:
+        return forecast
+    return {**forecast, "expired": True} if expired else forecast
 
 
 def _now_iso() -> str:
@@ -421,7 +442,7 @@ class Bridge:
 
     def whoami(self) -> dict[str, Any]:
         unread_dms = self._touch()
-        return {
+        out = {
             "agent_id": self.identity.agent_id,
             "name": self.identity.name,
             "kind": self.identity.kind,
@@ -430,6 +451,45 @@ class Bridge:
             "workspace": self.config.workspace,
             "hub": self.config.url,
         }
+        calibration = self._calibration()
+        if calibration:
+            out["forecast_calibration"] = calibration
+        return out
+
+    def _calibration(self) -> dict[str, Any] | None:
+        """How well this agent's own past forecasts have held up.
+
+        Surfaced because the data was otherwise dark: an agent could
+        publish badly calibrated forecasts indefinitely with no way to
+        discover it, and collaborators have no channel to tell it. Local
+        only — nothing here is shared, and it stays out of the response
+        entirely until there is enough history to mean anything.
+        """
+        try:
+            report = self.timing.calibration(
+                self.identity.agent_id, self.config.workspace)
+        except Exception:
+            return None
+        if report["samples"] < MIN_SAMPLES:
+            return None
+        summary = {
+            "samples": report["samples"],
+            "p50_hit_rate": round(report["p50_hit_rate"], 2),
+            "p95_hit_rate": round(report["p95_hit_rate"], 2),
+        }
+        if report["dropped_as_outliers"]:
+            # Every dropped observation was longer than anything the
+            # estimator could see, so p95 is optimistic by an unknown
+            # margin and the hit rate above flatters itself.
+            summary["ignored_as_too_long"] = report["dropped_as_outliers"]
+        if not 0.3 <= report["p50_hit_rate"] <= 0.7 or report["p95_hit_rate"] < 0.8:
+            summary["note"] = (
+                "Your check-in forecasts are not matching reality "
+                "(p50 should land near 0.5, p95 near 0.95). Collaborators "
+                "reading them will be misled; weigh your own timing "
+                "classifications accordingly."
+            )
+        return summary
 
     def roster(self) -> dict[str, Any]:
         unread_dms = self._touch()
@@ -716,7 +776,7 @@ class Bridge:
             "at": m["created_at"],
         }
         if timing_forecast:
-            out["timing_forecast"] = timing_forecast
+            out["timing_forecast"] = _mark_if_expired(timing_forecast)
         if m.get("type") and m["type"] != "note":
             out["type"] = m["type"]
         return out
