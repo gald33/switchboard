@@ -20,13 +20,16 @@ conclude:
   checking schedule up front. That is the shape of a real asynchronous
   handoff, and it is the decision under test, but it does not measure
   re-planning after a surprise.
-* **Pilot scale.** 30 episodes, one world, three models, three arms. Sized
-  to reveal whether any separation exists, not to power a conclusion.
+* **Replicated across seeds.** Three independent 30-episode sets per
+  (model, arm). One seed cannot distinguish a real effect from a lucky
+  draw, so the spread across seeds is reported next to the mean and is
+  the honest measure of how much any single number is worth.
 """
 
 from __future__ import annotations
 
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -49,7 +52,7 @@ from switchboard.mcp_server import _FORECAST_ADVICE  # noqa: E402
 OUT = Path(__file__).resolve().parent / "tier2_pilot"
 WORLD = "idiosyncratic"  # the world the feature exists for
 EPISODES = 30
-SEED = 4242
+SEEDS = (4242, 7777, 31337)
 ARMS = ("A", "B", "C")
 MODELS = ("opus", "sonnet", "haiku")
 
@@ -76,8 +79,9 @@ No prose, no code fences.
 def emit() -> None:
     OUT.mkdir(exist_ok=True)
     start = 1_700_000_000.0
-    for arm in ARMS:
-        episodes = build_episodes(WORLD, EPISODES, seed=SEED, arm=arm)
+    for seed in SEEDS:
+      for arm in ARMS:
+        episodes = build_episodes(WORLD, EPISODES, seed=seed, arm=arm)
         # Render scenarios without the advisory and attach it once up
         # front. In the product it lives in a tool description the model
         # reads once, not stapled to every message; repeating it 30 times
@@ -90,63 +94,82 @@ def emit() -> None:
         header = INSTRUCTIONS
         if arm == "C":
             header += "\nGuidance on reading 'timing_forecast':" + _FORECAST_ADVICE + "\n"
-        (OUT / f"prompt_{arm}.txt").write_text(
+        (OUT / f"prompt_{arm}_s{seed}.txt").write_text(
             header + "\n" + "\n\n".join(blocks) + "\n"
         )
-    print(f"wrote prompts for arms {ARMS} to {OUT}", file=sys.stderr)
+    print(f"wrote prompts for {len(SEEDS)} seeds x {ARMS} to {OUT}", file=sys.stderr)
+
+
+def _cell(model: str, arm: str, seed: int):
+    path = OUT / f"response_{model}_{arm}_s{seed}.json"
+    if not path.exists():
+        return None
+    schedules = json.loads(path.read_text())
+    episodes = build_episodes(WORLD, EPISODES, seed=seed, arm=arm)
+    return [
+        run_episode(e, arm, schedule_coordinator(
+            schedules.get(str(i)) or schedules.get(i) or []))
+        for i, e in enumerate(episodes)
+    ]
 
 
 def score() -> None:
-    print(f"Tier 2 pilot — world={WORLD} episodes={EPISODES} seed={SEED}")
-    print("Batched per (model, arm); see module docstring for what that costs.\n")
+    print(f"Tier 2 — world={WORLD} episodes={EPISODES} seeds={SEEDS}")
+    print("Batched per (model, arm, seed); see module docstring for what that costs.\n")
 
     by_arm: dict[str, list] = {}
-    # Scripted floor first, so the model rows have something to be read against.
-    ref = build_episodes(WORLD, EPISODES, seed=SEED, arm="B")
-    by_arm["-- scripted cadence"] = [
-        run_episode(e, "B", cadence_coordinator()) for e in ref
-    ]
-    for interval in (300.0, 900.0):
-        control = build_episodes(WORLD, EPISODES, seed=SEED, arm="A")
-        by_arm[f"-- scripted fixed {interval:.0f}s"] = [
-            run_episode(e, "A", fixed_coordinator(interval)) for e in control
-        ]
+    for seed in SEEDS:
+        ref = build_episodes(WORLD, EPISODES, seed=seed, arm="B")
+        by_arm.setdefault("-- scripted cadence", []).extend(
+            run_episode(e, "B", cadence_coordinator()) for e in ref)
+        control = build_episodes(WORLD, EPISODES, seed=seed, arm="A")
+        by_arm.setdefault("-- scripted fixed 300s", []).extend(
+            run_episode(e, "A", fixed_coordinator(300.0)) for e in control)
 
+    per_seed: dict[tuple[str, str], list[dict]] = {}
     for model in MODELS:
         for arm in ARMS:
-            path = OUT / f"response_{model}_{arm}.json"
-            if not path.exists():
-                continue
-            schedules = json.loads(path.read_text())
-            episodes = build_episodes(WORLD, EPISODES, seed=SEED, arm=arm)
-            results = []
-            for i, episode in enumerate(episodes):
-                offsets = schedules.get(str(i)) or schedules.get(i) or []
-                results.append(
-                    run_episode(episode, arm, schedule_coordinator(offsets))
-                )
-            by_arm[f"{model} arm {arm}"] = results
+            pooled = []
+            for seed in SEEDS:
+                results = _cell(model, arm, seed)
+                if results is None:
+                    continue
+                pooled.extend(results)
+                per_seed.setdefault((model, arm), []).append(summarise(results))
+            if pooled:
+                by_arm[f"{model} arm {arm}"] = pooled
 
     print(compare_arms(by_arm))
 
-    print("\n  Per-model read (A -> B -> C):")
+    # The point of replicating across seeds: a single number is worth
+    # little without knowing how much it moves when only the draw changes.
+    print("\n  Per-model, pooled across seeds, with per-seed range:")
+    print(f"    {'model':<8} {'arm':<4} {'checks':>16} {'late(x)':>18}")
     for model in MODELS:
-        cells = {a: by_arm.get(f"{model} arm {a}") for a in ARMS}
-        if not any(cells.values()):
-            continue
-        parts = []
         for arm in ARMS:
-            results = cells[arm]
-            if not results:
-                parts.append(f"{arm}: —")
+            seeds = per_seed.get((model, arm))
+            if not seeds:
                 continue
-            s = summarise(results)
-            late = s["median_relative_latency"]
-            parts.append(
-                f"{arm}: {s['mean_checks']:.1f} checks / "
-                f"{'—' if late is None else f'{late:.2f}'} late"
-            )
-        print(f"    {model:<8} " + "   ".join(parts))
+            checks = [s["mean_checks"] for s in seeds]
+            lates = [s["median_relative_latency"] for s in seeds
+                     if s["median_relative_latency"] is not None]
+            c = f"{statistics.mean(checks):.2f} [{min(checks):.2f}-{max(checks):.2f}]"
+            le = (f"{statistics.mean(lates):.2f} [{min(lates):.2f}-{max(lates):.2f}]"
+                  if lates else "—")
+            print(f"    {model:<8} {arm:<4} {c:>16} {le:>18}")
+
+    print("\n  Arm deltas per seed (negative = better than arm A):")
+    for model in MODELS:
+        for arm in ("B", "C"):
+            base, other = per_seed.get((model, "A")), per_seed.get((model, arm))
+            if not base or not other:
+                continue
+            dc = [o["mean_checks"] - b["mean_checks"] for b, o in zip(base, other, strict=True)]
+            dl = [o["median_relative_latency"] - b["median_relative_latency"]
+                  for b, o in zip(base, other, strict=True)]
+            sign = "consistent" if all(x < 0 for x in dc) or all(x > 0 for x in dc) else "MIXED"
+            print(f"    {model:<8} {arm} vs A  checks "
+                  f"{[round(x, 2) for x in dc]}  late {[round(x, 2) for x in dl]}  ({sign})")
 
 
 if __name__ == "__main__":

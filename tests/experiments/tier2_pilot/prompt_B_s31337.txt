@@ -1,0 +1,166 @@
+You are coordinating with another agent asynchronously. You delegated work
+to it and it has acknowledged. You now need to notice its reply reasonably
+promptly WITHOUT wasting calls: every time you check for messages costs
+you a tool call and tokens, but noticing late costs the collaboration
+latency.
+
+For each scenario below, decide when you will check for messages. Express
+your decision as a list of offsets in SECONDS from now, in increasing
+order. You may list as many or as few checks as you judge right. You stop
+checking once you find the reply.
+
+Decide each scenario on its own merits.
+
+Return ONLY a JSON object mapping scenario id to a list of numbers, e.g.
+{"0": [30, 90, 300], "1": [600, 1800]}
+No prose, no code fences.
+
+--- scenario 0 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:21:43.121657+00:00 p95=2023-11-14T23:12:55.917746+00:00
+
+--- scenario 1 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:21:47.863516+00:00 p95=2023-11-14T23:14:11.115612+00:00
+
+--- scenario 2 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:28.672539+00:00 p95=2023-11-14T23:05:13.961343+00:00
+
+--- scenario 3 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:27.035243+00:00 p95=2023-11-14T23:04:33.523132+00:00
+
+--- scenario 4 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:30.675052+00:00 p95=2023-11-15T01:08:49.695637+00:00
+
+--- scenario 5 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:29.172570+00:00 p95=2023-11-14T23:03:52.785028+00:00
+
+--- scenario 6 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:57.634782+00:00 p95=2023-11-15T01:07:32.274839+00:00
+
+--- scenario 7 ---
+worker: "Taking this on — coding work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:13:49.117816+00:00 p95=2023-11-14T22:21:39.108783+00:00
+
+--- scenario 8 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:21:53.228310+00:00 p95=2023-11-14T23:15:33.281770+00:00
+
+--- scenario 9 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:21:47.863516+00:00 p95=2023-11-14T23:15:34.231997+00:00
+
+--- scenario 10 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:21:53.228310+00:00 p95=2023-11-14T23:15:54.746211+00:00
+
+--- scenario 11 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:37.063976+00:00 p95=2023-11-15T01:06:29.582246+00:00
+
+--- scenario 12 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:04.822480+00:00 p95=2023-11-14T23:15:55.747092+00:00
+
+--- scenario 13 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:20.428257+00:00 p95=2023-11-15T01:05:11.749070+00:00
+
+--- scenario 14 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:18.707935+00:00 p95=2023-11-14T23:15:56.708188+00:00
+
+--- scenario 15 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:35.353725+00:00 p95=2023-11-14T23:03:15.040457+00:00
+
+--- scenario 16 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:20.673980+00:00 p95=2023-11-14T23:15:57.630585+00:00
+
+--- scenario 17 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:29.172570+00:00 p95=2023-11-14T23:02:34.191262+00:00
+
+--- scenario 18 ---
+worker: "Taking this on — coding work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:13:48.981379+00:00 p95=2023-11-14T22:21:36.926482+00:00
+
+--- scenario 19 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:27.035243+00:00 p95=2023-11-14T23:01:53.308906+00:00
+
+--- scenario 20 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:25.625969+00:00 p95=2023-11-14T23:01:12.636910+00:00
+
+--- scenario 21 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:14.995005+00:00 p95=2023-11-14T23:15:57.564699+00:00
+
+--- scenario 22 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:18.374332+00:00 p95=2023-11-14T23:15:58.729445+00:00
+
+--- scenario 23 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:27.035243+00:00 p95=2023-11-14T23:00:31.449819+00:00
+
+--- scenario 24 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:30.675052+00:00 p95=2023-11-15T01:03:46.007551+00:00
+
+--- scenario 25 ---
+worker: "Taking this on — waiting work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:53:53.699694+00:00 p95=2023-11-15T01:02:48.578837+00:00
+
+--- scenario 26 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:29.478447+00:00 p95=2023-11-14T22:59:50.240124+00:00
+
+--- scenario 27 ---
+worker: "Taking this on — research work (high effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:16:35.353725+00:00 p95=2023-11-14T22:59:09.472956+00:00
+
+--- scenario 28 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:21.311819+00:00 p95=2023-11-14T23:15:58.273157+00:00
+
+--- scenario 29 ---
+worker: "Taking this on — review work (medium effort). I'll report back."
+now: 2023-11-14T22:13:20+00:00
+timing_forecast: p50=2023-11-14T22:22:25.027939+00:00 p95=2023-11-14T23:15:59.367435+00:00
