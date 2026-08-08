@@ -11,6 +11,7 @@ from switchboard.timing import (
     CLASS_HALF_LIFE_SECONDS,
     DEFAULT_CLASSES,
     MAX_OBSERVATION_SECONDS,
+    MAX_OBSERVATIONS_PER_BUCKET,
     MIN_SAMPLES,
     TimingModel,
 )
@@ -148,6 +149,7 @@ def test_calibration_is_empty_without_history():
     model = TimingModel(":memory:")
     assert model.calibration("a", "ws") == {
         "samples": 0, "p50_hit_rate": None, "p95_hit_rate": None,
+        "dropped_as_outliers": 0,
     }
 
 
@@ -259,3 +261,65 @@ def test_a_declaration_from_a_previous_run_is_discarded_not_scored():
 
     assert model._samples("a", "ws", "coding", "medium") == []
     assert model._pending("a", "ws") is None
+
+
+# --- truncation and retention ------------------------------------------------
+
+
+def test_dropped_outliers_are_counted_not_silently_discarded():
+    """Every censored observation is a gap longer than anything the
+    estimator was allowed to see, so it biases p95 low. A silent drop hides
+    that; a counted one lets you notice p95 is not trustworthy here."""
+    model = TimingModel(":memory:")
+    cycle(model, "waiting", "high", at=0.0, look_at=MAX_OBSERVATION_SECONDS * 3)
+    assert model._samples("a", "ws", "waiting", "high") == []
+    report = model.calibration("a", "ws")
+    assert report["dropped_as_outliers"] == 1
+
+
+def test_the_ceiling_no_longer_truncates_ordinary_slow_work():
+    """A multi-hour gap is real behaviour for a slow agent, not a restart —
+    restarts are caught by runtime identity instead."""
+    model = TimingModel(":memory:")
+    eight_hours = 8 * 3600.0
+    assert eight_hours <= MAX_OBSERVATION_SECONDS
+    cycle(model, "waiting", "high", at=0.0, look_at=eight_hours)
+    assert model._samples("a", "ws", "waiting", "high") == [eight_hours]
+
+
+def test_buckets_are_a_moving_window_not_an_archive():
+    model = TimingModel(":memory:")
+    t = 0.0
+    for _ in range(MAX_OBSERVATIONS_PER_BUCKET + 40):
+        cycle(model, "coding", "low", at=t, look_at=t + 3.0)
+        t += 10
+    assert len(model._samples("a", "ws", "coding", "low")) == MAX_OBSERVATIONS_PER_BUCKET
+
+
+def test_old_samples_age_out_so_a_faster_agent_is_tracked():
+    """An agent that got quicker must not be held back by history from
+    when it was slow."""
+    model = TimingModel(":memory:")
+    t = 0.0
+    for _ in range(MAX_OBSERVATIONS_PER_BUCKET):
+        cycle(model, "coding", "low", at=t, look_at=t + 300.0)
+        t += 400
+    slow = model.forecast("a", "ws", "coding", "low", now=t)
+
+    for _ in range(MAX_OBSERVATIONS_PER_BUCKET):
+        cycle(model, "coding", "low", at=t, look_at=t + 2.0)
+        t += 10
+    fast = model.forecast("a", "ws", "coding", "low", now=t)
+
+    assert fast.p50_seconds < slow.p50_seconds / 10
+    assert model._samples("a", "ws", "coding", "low") == [2.0] * MAX_OBSERVATIONS_PER_BUCKET
+
+
+def test_retention_is_per_bucket_not_global():
+    model = TimingModel(":memory:")
+    t = 0.0
+    for _ in range(MAX_OBSERVATIONS_PER_BUCKET + 20):
+        cycle(model, "coding", "low", at=t, look_at=t + 3.0)
+        t += 10
+    cycle(model, "research", "high", at=t, look_at=t + 50.0)
+    assert model._samples("a", "ws", "research", "high") == [50.0]
