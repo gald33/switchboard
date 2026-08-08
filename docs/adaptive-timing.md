@@ -362,9 +362,10 @@ seeds. What replicates:
   flipped sign between seeds. Handing a model p50/p95 with no guidance is
   not dependably an improvement, which is why the sentence stays.
 * **The advisory shifts the operating point rather than dominating.** It
-  reliably buys fewer checks and reliably pays in latency. Calling that
-  "better" needs a stance on how a check trades against latency, which
-  this design deliberately does not fix.
+  reliably buys fewer checks; whether it pays for that in latency is not
+  even consistent across models. Calling it "better" needs a stance on how
+  a check trades against latency, which this design deliberately does not
+  fix.
 
 A first single-seed run reported that forecast-plus-advisory beat no
 forecast *strictly on both axes for every model*. Replication did not
