@@ -323,3 +323,31 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def schedule_coordinator(offsets: list[float]):
+    """Execute a checking schedule the model committed to up front.
+
+    A stated plan ("I'll look back in about X, then Y") is what an agent
+    actually produces when handing off asynchronously, and it is the
+    decision under test. It is not the same as fully adaptive in-situ
+    behaviour — see tier2_run.py for why that trade was made and what it
+    costs in validity.
+    """
+    def run(prompt: str, world: VirtualWorld) -> None:
+        last = 0.0
+        for offset in sorted(float(o) for o in offsets):
+            if world.exhausted():
+                return
+            world.work_for(max(0.0, offset - last))
+            last = offset
+            if world.check_messages():
+                return
+        # Plan exhausted without finding it: fall back to a slow sweep
+        # rather than scoring the model as "never noticed", which would
+        # conflate a short plan with a broken one.
+        while not world.exhausted():
+            world.work_for(max(60.0, last * 0.5))
+            if world.check_messages():
+                return
+    return run
