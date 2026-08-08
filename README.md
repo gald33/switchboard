@@ -79,7 +79,7 @@ To track `main` instead of a release — for unreleased fixes, or to
 contribute — install from GitHub instead:
 `pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"`,
 or pin a commit or tag by appending it to the URL:
-`git+https://github.com/gald33/switchboard.git@v0.4.1`.
+`git+https://github.com/gald33/switchboard.git@v0.4.2`.
 
 ## The fast path
 
