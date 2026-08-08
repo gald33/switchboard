@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 
 from . import __version__
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
-from .config import ClientConfig
+from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
 
 EXIT_OK = 0
@@ -37,6 +37,69 @@ EXIT_CONFLICT = 2
 
 def _use_color(stream: Any) -> bool:
     return stream.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _can_prompt(*, no_input: bool, quiet: bool, as_json: bool) -> bool:
+    """Whether it is safe to stop and ask the operator a question.
+
+    A prompt is only ever an improvement for a human at a keyboard. Every
+    other caller — an agent's shell, CI, `init | tee`, a docs copy-paste —
+    would hang on it, so the default has to be silence and the detection has
+    to be something those callers can't accidentally look like. Both a TTY on
+    stdin (there is someone to answer) and on stderr (they can see the
+    question) are required; `--json` and `-q` opt out by construction, since
+    a caller parsing output is not one that can answer.
+
+    stdout is deliberately *not* checked: `init > log` from a terminal is
+    still a human session, and the prompts go to stderr precisely so that
+    redirect keeps working.
+    """
+    if no_input or quiet or as_json:
+        return False
+    # Some CI runners allocate a pseudo-TTY, which would defeat the check
+    # above and hang the job on a question nobody can answer.
+    if os.environ.get("CI"):
+        return False
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _ask(question: str, *, default: bool) -> bool:
+    """Ask a yes/no question on stderr. EOF or an empty line takes `default`."""
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        print(f"{question} {suffix} ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            print(file=sys.stderr)
+            return default
+        if not answer:
+            return default
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("  answer y or n.", file=sys.stderr)
+
+
+def _ask_choice(question: str, options: Sequence[tuple[str, str]], *, default: int) -> int:
+    """Ask the operator to pick one of `options` (label, detail), returning its index."""
+    print(question, file=sys.stderr)
+    for i, (label, detail) in enumerate(options, start=1):
+        marker = "*" if i - 1 == default else " "
+        print(f"  {marker} {i}) {label} — {detail}", file=sys.stderr)
+    while True:
+        print(f"pick 1-{len(options)} [{default + 1}] ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input().strip()
+        except EOFError:
+            print(file=sys.stderr)
+            return default
+        if not answer:
+            return default
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return int(answer) - 1
+        print(f"  answer with a number from 1 to {len(options)}.", file=sys.stderr)
 
 
 class Fmt:
@@ -282,10 +345,70 @@ def cmd_register_key(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _saved_key(directory: Path) -> str | None:
+    """The workspace key `init` wrote for this repo, if it is still there.
+
+    Read straight off disk rather than from the environment: Claude Code
+    injects this file's `env` into the agents it spawns, but a plain shell has
+    nothing exported, and the shell is exactly where someone stands when they
+    need to hand the key to a teammate.
+    """
+    path = directory / _LOCAL_SETTINGS_REL
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    env = data.get("env")
+    key = env.get("SWITCHBOARD_KEY") if isinstance(env, dict) else None
+    return key if isinstance(key, str) else None
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
+    directory = Path(".").resolve()
+    # `encrypted` describes what *this* invocation will do, so it deliberately
+    # ignores the key sitting in the repo: Claude Code injects that file's env
+    # into the agents it spawns, but a plain shell has nothing exported and
+    # will send in the clear. Claiming otherwise is the overclaim that gets
+    # someone to trust a channel that isn't sealed.
     encrypted = bool(args.key or config.key)
+    key = args.key or config.key or _saved_key(directory)
+    # `config.workspace` falls back to the literal "default", so it can never
+    # be None and would mask the repo's real workspace. Read the environment
+    # directly to tell "explicitly set" from "defaulted", and prefer what
+    # .mcp.json routes to over a placeholder — handing a teammate `-w default`
+    # is the same silent misroute this file works to prevent.
+    workspace = (
+        args.workspace
+        or os.environ.get("SWITCHBOARD_WORKSPACE")
+        or _mcp_workspace(directory)
+        or config.workspace
+    )
+    if args.show_key:
+        # Only ever on request. Printing a key into scrollback, CI logs or a
+        # screen share is the kind of thing that should take a deliberate flag.
+        if not key:
+            print(
+                "error: no workspace key here — none set in the environment and "
+                f"no {_LOCAL_SETTINGS_REL} in this directory. `switchboard init "
+                "--new-key` mints one.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        if args.json:
+            _print_json({"key": key, "workspace": workspace})
+            return EXIT_OK
+        print(key)
+        if sys.stdout.isatty():
+            print(
+                "\nGive teammates:\n"
+                f"  switchboard init --key {key} -w {workspace}",
+                file=sys.stderr,
+            )
+        return EXIT_OK
     payload = {
         "agent_id": identity.agent_id,
         "name": identity.name,
@@ -300,8 +423,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         _print_json(payload)
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
-    for key in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
-        print(f"{fmt.dim(key.rjust(10))}  {payload[key]}")
+    for field in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
+        print(f"{fmt.dim(field.rjust(10))}  {payload[field]}")
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
@@ -630,20 +753,81 @@ def _hook_env_prefix(url: str, workspace: str) -> str:
     )
 
 
+#: Switchboard's own directory in a repo. What goes in here is ours: we wrote
+#: it, we recognize it, and we may replace it. Nothing else in the repo is.
+_HOOKS_DIR = ".switchboard/hooks"
+
+#: The body of each lifecycle hook, as a shell script *we own*.
+#:
+#: These used to be inlined into `.claude/settings.json` as single-line
+#: commands, which made every upgrade a guess about whether the string in
+#: someone else's config file was still ours — hence `_revision_status`, the
+#: history lists, and a confirmation prompt, all of them machinery for
+#: recognizing our own output in a file we do not control. Owning the body
+#: outright removes the guess: this file has one author, and the only thing
+#: left in the agent's config is a shim that never changes.
+#:
+#: It also stops the hooks being Claude-specific. A shell script is something
+#: any runner can invoke — see docs/codex-cli.md — so adding a second agent is
+#: a second registration, not a second implementation.
+_SESSION_START_BODY = "switchboard -q register -c build"
+_STOP_BODY = (
+    'switchboard --json claims --holder "$(switchboard --json whoami | '
+    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
+    "python -c 'import sys,json,subprocess;"
+    "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
+    "for l in json.load(sys.stdin)]'"
+)
+
+
+def _hook_script(body: str, url: str, workspace: str) -> str:
+    """One lifecycle hook, as a standalone script.
+
+    The URL and workspace are still baked in rather than read from the
+    environment, for exactly the reason #32 exists: a hook runs as a plain
+    shell command and does not share `.mcp.json`'s `env`, so a session can
+    have a token ambient and nothing else. Neither value is secret and both
+    are known at `init` time.
+    """
+    return (
+        "#!/bin/sh\n"
+        "# Generated by `switchboard init`. Safe to delete; it will come back\n"
+        "# on the next run. If you edit it, `init` will leave it alone from\n"
+        "# then on and tell you so.\n"
+        # rstrip: the prefix is shaped for inlining ahead of a command on one
+        # line, which leaves a stray separator when it ends a line instead.
+        f"{_hook_env_prefix(url, workspace).rstrip()}\n"
+        f"{body}\n"
+    )
+
+
+def _session_start_script(url: str, workspace: str) -> str:
+    return _hook_script(_SESSION_START_BODY, url, workspace)
+
+
+def _stop_script(url: str, workspace: str) -> str:
+    return _hook_script(_STOP_BODY, url, workspace)
+
+
+def _hook_shim(name: str) -> str:
+    """What goes in the agent's config: one line, identical in every repo and
+    every revision, so recognizing it later is an exact match rather than a
+    heuristic.
+
+    `CLAUDE_PROJECT_DIR` is Claude Code's, and belongs here — this string is
+    what gets written into Claude Code's settings file. The script it calls
+    stays runner-agnostic. Hooks are invoked from the project root, so the
+    fallback covers a runner that sets nothing.
+    """
+    return f'sh "${{CLAUDE_PROJECT_DIR:-.}}/{_HOOKS_DIR}/{name}.sh" || true'
+
+
 def _session_start_cmd(url: str, workspace: str) -> str:
-    return f"{_hook_env_prefix(url, workspace)}switchboard -q register -c build || true"
+    return _hook_shim("session-start")
 
 
 def _stop_cmd(url: str, workspace: str) -> str:
-    return (
-        f"{_hook_env_prefix(url, workspace)}"
-        'switchboard --json claims --holder "$(switchboard --json whoami | '
-        "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
-        "python -c 'import sys,json,subprocess;"
-        "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
-        "for l in json.load(sys.stdin)]' "
-        "|| true"
-    )
+    return _hook_shim("stop")
 
 
 #: Every hook command `init` has ever generated, oldest first, excluding the
@@ -654,6 +838,12 @@ def _stop_cmd(url: str, workspace: str) -> str:
 _SESSION_START_CMD_HISTORY: list[Callable[[str, str], str]] = [
     lambda url, workspace: "switchboard register --quiet -c build || true",
     lambda url, workspace: "switchboard -q register -c build || true",
+    # The last inline revision, before the body moved into a script we own.
+    # Listed here so an already-initialized repo is recognized and migrated to
+    # the shim on the next `init` rather than being read as a hand edit.
+    lambda url, workspace: (
+        f"{_hook_env_prefix(url, workspace)}switchboard -q register -c build || true"
+    ),
 ]
 _STOP_CMD_HISTORY: list[Callable[[str, str], str]] = [
     lambda url, workspace: (
@@ -665,6 +855,16 @@ _STOP_CMD_HISTORY: list[Callable[[str, str], str]] = [
         "|| true"
     ),
     lambda url, workspace: (
+        'switchboard --json claims --holder "$(switchboard --json whoami | '
+        "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
+        "python -c 'import sys,json,subprocess;"
+        "[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) "
+        "for l in json.load(sys.stdin)]' "
+        "|| true"
+    ),
+    # The last inline revision — see the note in _SESSION_START_CMD_HISTORY.
+    lambda url, workspace: (
+        f"{_hook_env_prefix(url, workspace)}"
         'switchboard --json claims --holder "$(switchboard --json whoami | '
         "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
         "python -c 'import sys,json,subprocess;"
@@ -901,7 +1101,23 @@ def _git_remote_workspace(directory: Path) -> str | None:
 
 
 def _default_workspace(directory: Path) -> str:
-    return _git_remote_workspace(directory) or directory.resolve().name
+    """The workspace to use when nobody named one.
+
+    A git remote is the good case: every clone derives the same name, which is
+    what gets a laptop, a cloud session and a CI runner into the same room for
+    free.
+
+    Without one there is nothing shared to derive from, and the bare directory
+    name is a poor substitute — `api` or `backend` collides with everyone else
+    who has a directory called that, and on a shared hub they land on top of
+    each other. A machine tag keeps it unique. It stays readable here on
+    purpose: the user chose this directory name, and `--new-key` replaces the
+    whole thing with an opaque one anyway when hiding it from the hub is the
+    point.
+    """
+    resolved = directory.resolve()
+    remote = _git_remote_workspace(directory)
+    return remote or f"{resolved.name}-{machine_suffix(str(resolved))}"
 
 
 def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
@@ -922,7 +1138,30 @@ def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
     return generated, "generated a dev token, saved to .env (already gitignored)"
 
 
-def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
+def _mcp_workspace(directory: Path) -> str | None:
+    """The workspace an already-registered switchboard MCP server routes to.
+
+    This is what actually decides which room this repo's agents land in, so
+    it is the value a key has to be paired with — not whatever `init` would
+    have picked had the file not been there.
+    """
+    path = directory / ".mcp.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    servers = data.get("mcpServers")
+    entry = servers.get("switchboard") if isinstance(servers, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    env = entry.get("env")
+    workspace = env.get("SWITCHBOARD_WORKSPACE") if isinstance(env, dict) else None
+    return workspace if isinstance(workspace, str) else None
+
+
+def _init_mcp_json(directory: Path, url: str, workspace: str, *, overwrite: bool = False) -> str:
     path = directory / ".mcp.json"
     entry = {
         "command": "switchboard-mcp",
@@ -934,9 +1173,13 @@ def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
         except ValueError as exc:
             return f"left .mcp.json alone: existing file is not valid JSON ({exc})"
         servers = data.setdefault("mcpServers", {})
-        if "switchboard" in servers:
+        if "switchboard" in servers and not overwrite:
             return 'left .mcp.json alone: a "switchboard" server is already registered'
+        repointed = "switchboard" in servers
         servers["switchboard"] = entry
+        if repointed:
+            path.write_text(json.dumps(data, indent=2) + "\n")
+            return f"repointed .mcp.json at workspace {workspace}"
     else:
         data = {"mcpServers": {"switchboard": entry}}
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -951,12 +1194,14 @@ def _sync_hook(
     url: str,
     workspace: str,
     force: bool,
+    confirm: Callable[[str], bool] | None = None,
 ) -> str:
     """Add, update, or leave alone the switchboard command for one hook
     event. An existing command gets replaced only if it's untouched output
     from a past `init` run (matches `current_cmd` or a rendering of a past
-    revision from `history`) or `--force` was passed — anything else is
-    presumed hand-edited and left alone."""
+    revision from `history`), `--force` was passed, or `confirm` says the
+    operator approved it — anything else is presumed hand-edited and left
+    alone."""
     entries = data.setdefault("hooks", {}).setdefault(event, [])
     for group in entries:
         for h in group.get("hooks", []):
@@ -969,6 +1214,9 @@ def _sync_hook(
             if force or cmd in historical:
                 h["command"] = current_cmd
                 return f"updated the {event} hook to the latest revision"
+            if confirm and confirm(f"the {event} hook"):
+                h["command"] = current_cmd
+                return f"overwrote your edited {event} hook, as you confirmed"
             return (
                 f"left the {event} hook alone: it doesn't match a known "
                 "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
@@ -977,8 +1225,58 @@ def _sync_hook(
     return f"added the {event} hook"
 
 
+#: Past revisions of each hook script, for the same reason the command
+#: histories exist. Empty today — the scripts were only just introduced.
+_HOOK_SCRIPT_HISTORY: dict[str, list[Callable[[str, str], str]]] = {
+    "session-start": [],
+    "stop": [],
+}
+
+
+def _init_hook_scripts(
+    directory: Path, url: str, workspace: str, *, force: bool = False,
+    confirm: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Write the hook bodies switchboard owns.
+
+    Unlike the agent config these files have exactly one author, so the only
+    question is whether *this user* edited them — no guessing about which of
+    several tools wrote a shared file.
+    """
+    steps: list[str] = []
+    scripts = {
+        "session-start": _session_start_script(url, workspace),
+        "stop": _stop_script(url, workspace),
+    }
+    for name, current in scripts.items():
+        path = directory / _HOOKS_DIR / f"{name}.sh"
+        label = f"{_HOOKS_DIR}/{name}.sh"
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(current)
+            steps.append(f"wrote {label}")
+            continue
+        history = [t(url, workspace) for t in _HOOK_SCRIPT_HISTORY[name]]
+        status = _revision_status(path.read_text(), current, history)
+        if status == "current":
+            steps.append(f"left {label} alone: already up to date")
+        elif status == "stale" or force:
+            path.write_text(current)
+            steps.append(f"updated {label} to the latest revision")
+        elif confirm and confirm(f"your edited {label}"):
+            path.write_text(current)
+            steps.append(f"overwrote {label}, as you confirmed")
+        else:
+            steps.append(
+                f"left {label} alone: it doesn't match a known switchboard "
+                "revision (looks hand-edited) — pass --force to overwrite anyway"
+            )
+    return steps
+
+
 def _init_claude_settings(
-    directory: Path, url: str, workspace: str, *, force: bool = False
+    directory: Path, url: str, workspace: str, *, force: bool = False,
+    confirm: Callable[[str], bool] | None = None,
 ) -> list[str]:
     path = directory / ".claude" / "settings.json"
     if path.exists():
@@ -991,11 +1289,11 @@ def _init_claude_settings(
     steps = [
         _sync_hook(
             data, "SessionStart", _session_start_cmd(url, workspace),
-            _SESSION_START_CMD_HISTORY, url, workspace, force,
+            _SESSION_START_CMD_HISTORY, url, workspace, force, confirm,
         ),
         _sync_hook(
             data, "Stop", _stop_cmd(url, workspace),
-            _STOP_CMD_HISTORY, url, workspace, force,
+            _STOP_CMD_HISTORY, url, workspace, force, confirm,
         ),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1398,9 @@ def _skill_source() -> str:
     )
 
 
-def _init_skill(directory: Path, *, force: bool = False) -> str:
+def _init_skill(
+    directory: Path, *, force: bool = False, confirm: Callable[[str], bool] | None = None
+) -> str:
     path = directory / ".claude" / "skills" / _SKILL_NAME / "SKILL.md"
     current = _skill_source()
     if not path.exists():
@@ -1114,13 +1414,18 @@ def _init_skill(directory: Path, *, force: bool = False) -> str:
     if status == "stale" or force:
         path.write_text(current)
         return f"updated the {_SKILL_NAME} skill to the latest revision"
+    if confirm and confirm(f"your edited {label}"):
+        path.write_text(current)
+        return f"overwrote {label}, as you confirmed"
     return (
         f"left {label} alone: it doesn't match a known switchboard revision "
         "(looks hand-edited) — pass --force to overwrite anyway"
     )
 
 
-def _init_claude_md(directory: Path, *, force: bool = False) -> str:
+def _init_claude_md(
+    directory: Path, *, force: bool = False, confirm: Callable[[str], bool] | None = None
+) -> str:
     path = directory / "CLAUDE.md"
     if not path.exists():
         path.write_text("# CLAUDE.md\n\n" + _CLAUDE_MD_SECTION)
@@ -1138,6 +1443,9 @@ def _init_claude_md(directory: Path, *, force: bool = False) -> str:
     if status == "stale" or force:
         path.write_text(text[:marker_at] + _CLAUDE_MD_SECTION)
         return "updated CLAUDE.md's coordination section to the latest revision"
+    if confirm and confirm("your edited coordination section in CLAUDE.md"):
+        path.write_text(text[:marker_at] + _CLAUDE_MD_SECTION)
+        return "overwrote CLAUDE.md's coordination section, as you confirmed"
     return (
         "left CLAUDE.md alone: its coordination section doesn't match a known "
         "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
@@ -1185,19 +1493,86 @@ def cmd_init(args: argparse.Namespace) -> int:
     local_hub = url in _LOCAL_HUB_URLS
     managed_hub = url == MANAGED_HUB_URL and not local_hub
 
+    interactive = _can_prompt(
+        no_input=getattr(args, "no_input", False), quiet=quiet, as_json=as_json
+    )
+
     steps: list[str] = []
+    # A key seals messages; the workspace decides who you are sealed *with*.
+    # When .mcp.json already routes somewhere else, the two disagree and the
+    # failure is silent — everything encrypts fine and the agents never meet.
+    # The file is what actually routes, so it wins unless someone says
+    # otherwise.
+    repoint_mcp = False
+    registered = None if args.skip_mcp else _mcp_workspace(directory)
+    if key and registered and registered != workspace:
+        if interactive:
+            choice = _ask_choice(
+                f"\n.mcp.json already routes this repo to workspace {registered!r}, "
+                f"but the key is being paired with {workspace!r}. They have to match.",
+                [
+                    (f"keep {registered}", "leave .mcp.json alone, pair the key with it"),
+                    (f"switch to {workspace}", "repoint .mcp.json at the new workspace"),
+                ],
+                default=0,
+            )
+            if choice == 0:
+                workspace = registered
+            else:
+                repoint_mcp = True
+        elif args.force:
+            repoint_mcp = True
+        elif explicit_workspace:
+            # They named a workspace and the file names another. Guessing
+            # either way silently is how you get two half-configured repos.
+            steps.append(
+                f"note: you asked for workspace {workspace!r} but .mcp.json routes to "
+                f"{registered!r}, so this repo's agents will use {registered!r} and the "
+                "key will not reach the room you meant. Re-run with --force to repoint "
+                "it, or drop -w to adopt the registered one"
+            )
+            workspace = registered
+        else:
+            # Nothing to honour but the file itself — adopt it, and say so,
+            # because it overrides the opaque name --new-key just minted.
+            workspace = registered
+            steps.append(
+                f"paired the key with workspace {registered!r}, already registered in "
+                ".mcp.json (pass --force to repoint it at a fresh opaque name instead)"
+            )
+
+    def confirm_edit(what: str) -> bool:
+        # Default no: the safe answer for someone's own edit is to keep it.
+        return _ask(
+            f"\n{what} doesn't match a known switchboard revision — it looks "
+            "hand-edited.\noverwrite it with the current version?",
+            default=False,
+        )
+
+    confirm = confirm_edit if interactive else None
+
     token: str | None = None
     if local_hub:
         token, msg = _init_token(directory, arg_token)
         steps.append(msg)
     if not args.skip_mcp:
-        steps.append(_init_mcp_json(directory, url, workspace))
+        steps.append(_init_mcp_json(directory, url, workspace, overwrite=repoint_mcp))
     if not args.skip_hooks:
-        steps.extend(_init_claude_settings(directory, url, workspace, force=args.force))
+        # Bodies first, then the registration that points at them — so a
+        # half-finished run never leaves a hook calling a script that is not
+        # there yet.
+        steps.extend(
+            _init_hook_scripts(directory, url, workspace, force=args.force, confirm=confirm)
+        )
+        steps.extend(
+            _init_claude_settings(
+                directory, url, workspace, force=args.force, confirm=confirm
+            )
+        )
     if not args.skip_claude_md:
-        steps.append(_init_claude_md(directory, force=args.force))
+        steps.append(_init_claude_md(directory, force=args.force, confirm=confirm))
     if not args.skip_skill:
-        steps.append(_init_skill(directory, force=args.force))
+        steps.append(_init_skill(directory, force=args.force, confirm=confirm))
     key_ok = True
     if key:
         key_steps, key_ok = _init_key(directory, key, force=args.force)
@@ -1241,7 +1616,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         managed_hub_note = sealed_note
     # A key without a matching workspace name is the quiet failure: sealing
     # works, routing does not, and the two agents just never meet.
-    if key and not minted and not explicit_workspace:
+    if key and not minted and not explicit_workspace and not registered:
         steps.append(
             f"note: workspace defaulted to {workspace!r}. A key only puts you in "
             "the same room as whoever gave it to you if the workspace name "
@@ -1293,10 +1668,24 @@ def cmd_init(args: argparse.Namespace) -> int:
             # Printed once, and never again: it is on disk but `init` will not
             # read it back out to show you, and the hub cannot recover it.
             print()
-            print(fmt.bold("Your new workspace key — copy it now, it is not shown again:"))
+            # Deliberately not "copy it now, it is not shown again": the key is
+            # sitting in _LOCAL_SETTINGS_REL in the clear, so that would be
+            # false, and the way it goes wrong is expensive. Someone who
+            # scrolls past believes the key is gone, re-runs --new-key, and
+            # silently cuts themselves off from every teammate still holding
+            # the old one — the exact divergence `_init_key` refuses to cause
+            # on its own. Say where it lives instead. The real risk is losing
+            # the *file*, which is a back-it-up problem, not a memorize-it one.
+            print(fmt.bold("Your new workspace key:"))
             print(f"  {minted}")
             print(
                 f"  Give teammates: switchboard init --key {minted} -w {workspace}"
+            )
+            print(
+                f"  Saved to {_LOCAL_SETTINGS_REL} (gitignored) — `switchboard "
+                "whoami --show-key` prints it again. The hub never receives it, so "
+                "nobody there can read this workspace, and nobody there can recover "
+                "the key if you lose that file."
             )
     return EXIT_OK if key_ok else EXIT_ERROR
 
@@ -1389,6 +1778,14 @@ def build_parser() -> argparse.ArgumentParser:
              "first machine only; every other machine adopts it with --key. "
              "Mutually exclusive with --key.",
     )
+    p.add_argument(
+        "--no-input", action="store_true",
+        help="never stop to ask. Without it, `init` asks before overwriting a "
+             "hand-edited file or repointing a repo at a different workspace — but "
+             "only when there is a terminal to ask on, so agents, CI and pipelines "
+             "are unaffected either way. Not the same as answering yes: the "
+             "defaults are the cautious answers, and --force is what says yes.",
+    )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(
         "--skip-hooks", action="store_true", help="do not write .claude/settings.json hooks"
@@ -1408,6 +1805,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
+    p.add_argument(
+        "--show-key", action="store_true",
+        help="print this repo's workspace key, and the command that hands it to a "
+             "teammate. Reads .claude/settings.local.json, so it works from a plain "
+             "shell where nothing is exported. Prints a secret — it goes to stdout "
+             "on purpose so it can be piped, but mind your scrollback.",
+    )
     p.set_defaults(func=cmd_whoami)
 
     p = sub.add_parser(

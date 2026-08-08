@@ -127,6 +127,10 @@ To get local + cloud + CI coordinating with each other:
    committed file, so this one step doesn't get automated away — it's the
    one thing each environment has to be told on its own.
 
+For several repos sharing one cloud environment, for setups with no repo at
+all, and for what a workspace defaults to when nobody names one, see
+[Setting up an environment](docs/environments.md).
+
 ## Upgrading
 
 Three different things live at three different scopes, which is easy to get

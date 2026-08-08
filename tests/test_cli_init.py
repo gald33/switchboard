@@ -7,10 +7,12 @@ and be safe to run twice, so that is most of what these tests check.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,12 +21,17 @@ from switchboard.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
     _CLAUDE_MD_SECTION_HISTORY,
+    _HOOKS_DIR,
+    _LOCAL_SETTINGS_REL,
     _SESSION_START_CMD_HISTORY,
     _STOP_CMD_HISTORY,
     MANAGED_HUB_URL,
+    _hook_env_prefix,
     _session_start_cmd,
+    _session_start_script,
     _skill_source,
     _stop_cmd,
+    _stop_script,
     main,
 )
 
@@ -33,10 +40,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def run_init(monkeypatch, capsys, tmp_path, *extra_args):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
     code = main(["init", *extra_args])
     out = capsys.readouterr().out
     return code, out
@@ -124,6 +127,29 @@ def test_merges_into_existing_claude_settings(monkeypatch, capsys, tmp_path):
     assert "Stop" in settings["hooks"]
 
 
+def _project_with_hooks(tmp_path, url, workspace):
+    """A repo with the hook scripts on disk, as `init` would leave it."""
+    proj = tmp_path / "repo"
+    (proj / _HOOKS_DIR).mkdir(parents=True)
+    (proj / _HOOKS_DIR / "session-start.sh").write_text(_session_start_script(url, workspace))
+    (proj / _HOOKS_DIR / "stop.sh").write_text(_stop_script(url, workspace))
+    return proj
+
+
+def _run_hook(command, project, fake_bin):
+    """Run a registered hook command the way an agent runner does: from the
+    project root, with nothing switchboard-related in the environment but a
+    token. CLAUDE_PROJECT_DIR is deliberately absent so the shim's fallback
+    is what gets exercised — that is the path a non-Claude runner takes."""
+    return subprocess.run(
+        ["bash", "-c", command],
+        cwd=project,
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
+        capture_output=True,
+        text=True,
+    )
+
+
 # --- #32: hooks must not depend on ambient SWITCHBOARD_URL/WORKSPACE -------
 #
 # SessionStart/Stop hooks run as plain shell commands, not inside the
@@ -134,36 +160,55 @@ def test_merges_into_existing_claude_settings(monkeypatch, capsys, tmp_path):
 # values at generation time and neither is secret, so they get baked in.
 
 
-def test_hook_commands_embed_the_resolved_url_and_workspace():
-    start = _session_start_cmd("https://hub.example.com", "acme/widgets")
-    stop = _stop_cmd("https://hub.example.com", "acme/widgets")
-    for cmd in (start, stop):
-        assert cmd.startswith(
+def test_hook_scripts_embed_the_resolved_url_and_workspace():
+    # The bodies moved out of the agent's config into scripts switchboard
+    # owns, but #32's guarantee is unchanged: the values are baked in, not
+    # read from an environment the hook does not share.
+    start = _session_start_script("https://hub.example.com", "acme/widgets")
+    stop = _stop_script("https://hub.example.com", "acme/widgets")
+    for script in (start, stop):
+        assert (
             "export SWITCHBOARD_URL=https://hub.example.com; "
-            "export SWITCHBOARD_WORKSPACE=acme/widgets; "
-        )
+            "export SWITCHBOARD_WORKSPACE=acme/widgets;"
+        ) in script
 
 
-def test_hook_commands_shell_quote_a_workspace_with_special_characters():
+def test_hook_scripts_shell_quote_a_workspace_with_special_characters():
     # A workspace name is usually `org/repo`, but nothing stops it from
     # containing something shell-unsafe if a user overrides it by hand.
-    start = _session_start_cmd("https://hub.example.com", "it's a workspace")
-    assert "export SWITCHBOARD_WORKSPACE='it'\"'\"'s a workspace'; " in start
+    start = _session_start_script("https://hub.example.com", "it's a workspace")
+    assert "export SWITCHBOARD_WORKSPACE='it'\"'\"'s a workspace';" in start
+
+
+def test_the_registered_command_is_identical_everywhere():
+    # The whole point of the shim: one constant string, so recognizing our own
+    # output in someone else's config is an exact match, not a heuristic.
+    assert _session_start_cmd("https://a.example", "acme/one") == _session_start_cmd(
+        "http://127.0.0.1:8787", "globex/two"
+    )
+    assert _stop_cmd("https://a.example", "acme/one") == _stop_cmd(
+        "http://127.0.0.1:8787", "globex/two"
+    )
+    # and it carries no hub detail that would need updating later
+    for cmd in (_session_start_cmd("https://a.example", "acme/one"),
+                _stop_cmd("https://a.example", "acme/one")):
+        assert "a.example" not in cmd and "acme/one" not in cmd
 
 
 def test_init_bakes_the_resolved_hub_into_the_written_hooks(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
     code = main(["-w", "acme/widgets", "--url", "https://hub.example.com", "init"])
     capsys.readouterr()
     assert code == 0
+    start = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    stop = (tmp_path / _HOOKS_DIR / "stop.sh").read_text()
+    assert "SWITCHBOARD_URL=https://hub.example.com" in start
+    assert "SWITCHBOARD_WORKSPACE=acme/widgets" in stop
+    # and the agent's config only points at them
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     start_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert "SWITCHBOARD_URL=https://hub.example.com" in start_cmd
-    assert "SWITCHBOARD_WORKSPACE=acme/widgets" in stop_cmd
+    assert "hub.example.com" not in start_cmd
+    assert f"{_HOOKS_DIR}/session-start.sh" in start_cmd
 
 
 def test_session_start_hook_resolves_the_hub_with_only_the_token_ambient(tmp_path):
@@ -183,13 +228,8 @@ def test_session_start_hook_resolves_the_hub_with_only_the_token_ambient(tmp_pat
     )
     stub.chmod(0o755)
 
-    cmd = _session_start_cmd("http://hub.internal", "acme/widgets")
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
-        capture_output=True,
-        text=True,
-    )
+    proj = _project_with_hooks(tmp_path, "http://hub.internal", "acme/widgets")
+    result = _run_hook(_session_start_cmd("", ""), proj, fake_bin)
     assert result.returncode == 0, result.stderr
     assert record.read_text() == "url=http://hub.internal workspace=acme/widgets token=shh\n"
 
@@ -214,13 +254,8 @@ def test_stop_hook_resolves_the_hub_for_every_nested_invocation(tmp_path):
     )
     stub.chmod(0o755)
 
-    cmd = _stop_cmd("http://hub.internal", "acme/widgets")
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
-        capture_output=True,
-        text=True,
-    )
+    proj = _project_with_hooks(tmp_path, "http://hub.internal", "acme/widgets")
+    result = _run_hook(_stop_cmd("", ""), proj, fake_bin)
     assert result.returncode == 0, result.stderr
     lines = record.read_text().splitlines()
     assert len(lines) == 3, lines  # whoami, claims, and the nested release
@@ -785,3 +820,383 @@ def test_connection_flags_accepted_on_either_side_of_the_subcommand(
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["workspace"] == "w_shared"
+
+
+# --- key/workspace agreement and the prompts that guard it -------------------
+#
+# A key seals what leaves the machine; the workspace decides who it is sealed
+# *with*. When those two disagree nothing errors — both sides encrypt happily
+# and simply never see each other. That silence is what these tests are for.
+
+
+def _write_mcp(tmp_path, workspace, url=MANAGED_HUB_URL):
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "switchboard": {
+                "command": "switchboard-mcp",
+                "env": {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace},
+            }
+        }
+    }, indent=2) + "\n")
+
+
+def _mcp_ws(tmp_path):
+    data = json.loads((tmp_path / ".mcp.json").read_text())
+    return data["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_WORKSPACE"]
+
+
+def test_new_key_pairs_with_the_already_registered_workspace(monkeypatch, capsys, tmp_path):
+    # The regression: init used to skip an existing .mcp.json but still mint an
+    # opaque workspace, then print `--key K -w w_new` while the repo itself
+    # kept routing to the old name. The key went one way, the agents another.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "acme/billing" in out
+    # whatever it tells you to hand teammates has to match where the repo routes
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w acme/billing" in out
+    assert not re.search(r"-w w_[A-Za-z0-9_-]{16}", out)
+
+
+def test_force_repoints_mcp_json_at_the_new_workspace(monkeypatch, capsys, tmp_path):
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--force")
+    assert code == 0
+    assert _mcp_ws(tmp_path).startswith("w_")
+    assert "repointed .mcp.json" in out
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w {_mcp_ws(tmp_path)}" in out
+
+
+def test_explicit_workspace_conflicting_with_mcp_json_is_reported(monkeypatch, capsys, tmp_path):
+    # Here there *is* an intent to honour, and it disagrees with the file.
+    # Silently picking either one strands half the setup, so say so instead.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_other")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "note:" in out and "w_other" in out and "--force" in out
+
+
+def test_matching_workspace_is_not_a_conflict(monkeypatch, capsys, tmp_path):
+    _write_mcp(tmp_path, "w_shared")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
+    assert code == 0
+    assert "note:" not in out
+    assert _mcp_ws(tmp_path) == "w_shared"
+
+
+def test_no_key_leaves_a_differing_workspace_alone(monkeypatch, capsys, tmp_path):
+    # Without a key there is nothing to pair, so an already-configured repo is
+    # just an already-configured repo — the old behaviour, unchanged.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "-w", "w_other")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "left .mcp.json alone" in out
+
+
+# --- prompting ---------------------------------------------------------------
+#
+# `init` asks before it does anything it cannot take back, but only when there
+# is a human to answer. Every other caller — an agent's shell, CI, a piped
+# docs command — has to reach the same defaults it always did, silently.
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def make_interactive(monkeypatch, answers):
+    """Pretend a human is at the keyboard, with `answers` queued up."""
+    err = _FakeTTY()
+    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr(sys, "stdin", _FakeTTY())
+    remaining = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda *a: next(remaining))
+    return err
+
+
+def test_no_tty_means_no_prompt(monkeypatch, capsys, tmp_path):
+    # pytest's streams are not TTYs, which is the same shape as an agent's
+    # shell or a pipe. If this ever prompts, it hangs instead of failing.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert "pick 1-" not in out and "overwrite it" not in out
+
+
+@pytest.mark.parametrize("flag", ["--no-input", "-q", "--json"])
+def test_flags_opt_out_of_prompting_even_on_a_tty(monkeypatch, capsys, tmp_path, flag):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, [])  # any prompt would StopIteration
+    code = main(["init", "--new-key", flag])
+    assert code == 0
+    assert err.getvalue() == ""
+    assert _mcp_ws(tmp_path) == "acme/billing"
+
+
+def test_ci_env_suppresses_prompts(monkeypatch, capsys, tmp_path):
+    # Some runners allocate a pseudo-TTY; without this guard the job hangs.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CI", "true")
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, [])
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert err.getvalue() == ""
+
+
+def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, ["2"])  # switch to the freshly minted workspace
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert "acme/billing" in err.getvalue()
+    assert _mcp_ws(tmp_path).startswith("w_")
+
+
+def test_interactive_defaults_to_keeping_the_registered_workspace(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    make_interactive(monkeypatch, [""])  # bare enter takes the default
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+
+
+def _hand_edited_hooks(tmp_path):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "switchboard mine --x"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "switchboard mine --y"}]}],
+        }
+    }))
+    return settings_path
+
+
+def test_interactive_offers_to_overwrite_a_hand_edited_hook(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    err = make_interactive(monkeypatch, ["y", "y", "y", "y"])
+    code = main(["init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "hand-edited" in err.getvalue()
+    assert "as you confirmed" in out
+    assert "switchboard mine" not in settings_path.read_text()
+
+
+def test_interactive_declining_keeps_the_hand_edited_hook(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    make_interactive(monkeypatch, ["n", "n", "n", "n"])
+    code = main(["init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "switchboard mine --x" in settings_path.read_text()
+    assert "left the SessionStart hook alone" in out
+
+
+def test_declining_is_the_default_answer(monkeypatch, capsys, tmp_path):
+    # Someone's own edit is the thing you keep when they just hit enter.
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    make_interactive(monkeypatch, ["", "", "", ""])
+    assert main(["init"]) == 0
+    assert "switchboard mine --x" in settings_path.read_text()
+
+
+def test_minted_key_is_reported_as_saved_not_as_lost(monkeypatch, capsys, tmp_path):
+    # The key is sitting in settings.local.json in the clear, so "copy it now,
+    # it is not shown again" would be false — and the way it goes wrong is
+    # expensive: someone believes it is gone, re-mints, and silently cuts
+    # themselves off from everyone holding the old key.
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert "not shown again" not in out
+    assert _LOCAL_SETTINGS_REL in out
+    assert "whoami --show-key" in out
+    # the claim that survives is the one about the hub, which is true
+    assert "hub never receives it" in out
+
+
+def test_prompt_survives_a_closed_stdin(monkeypatch, capsys, tmp_path):
+    # EOF mid-prompt takes the default rather than crashing the run.
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+
+    def eof(*a):
+        raise EOFError
+
+    monkeypatch.setattr(sys, "stderr", _FakeTTY())
+    monkeypatch.setattr(sys, "stdin", _FakeTTY())
+    monkeypatch.setattr("builtins.input", eof)
+    assert main(["init"]) == 0
+    assert "switchboard mine --x" in settings_path.read_text()
+
+
+# --- getting the key back ----------------------------------------------------
+#
+# The key lives in settings.local.json in the clear, so it was never actually
+# unrecoverable — only unprinted. Making that explicit removes the incentive
+# to re-mint, which is the one move that silently strands your teammates.
+
+
+def test_show_key_reads_it_back_from_the_repo(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert main(["whoami", "--show-key"]) == 0
+    assert capsys.readouterr().out.strip() == saved
+
+
+def test_show_key_works_with_nothing_exported(monkeypatch, capsys, tmp_path):
+    # The whole point: a plain shell has no SWITCHBOARD_KEY, and a plain shell
+    # is where you stand when a teammate asks you for it.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    assert main(["--json", "whoami", "--show-key"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["key"] == saved
+    assert payload["workspace"] == _mcp_ws(tmp_path)
+
+
+def test_show_key_without_a_key_is_a_clean_error(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    code = main(["whoami", "--show-key"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "no workspace key here" in captured.err
+
+
+def test_whoami_does_not_claim_encryption_it_will_not_perform(monkeypatch, capsys, tmp_path):
+    # A key on disk is not a key in this shell's environment. Claude Code
+    # injects it for the agents it spawns; a bare `switchboard say` here would
+    # send in the clear, and whoami must not say otherwise.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
+    assert main(["--json", "whoami"]) == 0
+    assert json.loads(capsys.readouterr().out)["encrypted"] is False
+
+    monkeypatch.setenv("SWITCHBOARD_KEY", _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"])
+    assert main(["--json", "whoami"]) == 0
+    assert json.loads(capsys.readouterr().out)["encrypted"] is True
+
+
+def test_show_key_does_not_leak_into_plain_whoami(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert main(["whoami"]) == 0
+    assert saved not in capsys.readouterr().out
+
+
+# --- switchboard owns the hook bodies; the agent's config only points ------
+#
+# Inlining the bodies into `.claude/settings.json` meant every upgrade was a
+# guess about whether a string in a file with several authors was still ours.
+# The body now lives in a file with exactly one author, and what is left in
+# the agent's config is a constant shim.
+
+
+def test_existing_inline_hooks_migrate_to_the_shim(monkeypatch, capsys, tmp_path):
+    # The upgrade path that matters: a repo initialized before the split must
+    # be recognized as untouched machine output and moved over, not read as a
+    # hand edit and left on a revision that no longer has a script behind it.
+    url, workspace = "https://hub.example.com", "acme/widgets"
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    old_start = f"{_hook_env_prefix(url, workspace)}switchboard -q register -c build || true"
+    settings_path.write_text(json.dumps({
+        "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": old_start}]}]}
+    }))
+
+    monkeypatch.chdir(tmp_path)
+    code = main(["-w", workspace, "--url", url, "init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "updated the SessionStart hook" in out
+
+    settings = json.loads(settings_path.read_text())
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert cmd == _session_start_cmd(url, workspace)
+    # and the script it now points at exists, or the hook is a dead reference
+    assert (tmp_path / _HOOKS_DIR / "session-start.sh").exists()
+
+
+def test_migrated_hooks_still_reach_the_right_hub(monkeypatch, capsys, tmp_path):
+    # End-to-end after migration: the #32 guarantee has to survive the move,
+    # not just the string comparison.
+    url, workspace = "http://hub.internal", "acme/widgets"
+    record = tmp_path / "seen.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "switchboard"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "url=$SWITCHBOARD_URL workspace=$SWITCHBOARD_WORKSPACE" >> {record}\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    assert main(["-w", workspace, "--url", url, "init"]) == 0
+    capsys.readouterr()
+
+    settings = json.loads((proj / ".claude" / "settings.json").read_text())
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert _run_hook(cmd, proj, fake_bin).returncode == 0
+    assert record.read_text() == f"url={url} workspace={workspace}\n"
+
+
+def test_hook_scripts_are_idempotent(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    first = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert (tmp_path / _HOOKS_DIR / "session-start.sh").read_text() == first
+    assert "already up to date" in out
+
+
+def test_a_hand_edited_hook_script_is_left_alone(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    script = tmp_path / _HOOKS_DIR / "session-start.sh"
+    script.write_text(script.read_text() + "\necho mine\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "echo mine" in script.read_text()
+    assert "looks hand-edited" in out
+
+
+def test_force_overwrites_a_hand_edited_hook_script(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    script = tmp_path / _HOOKS_DIR / "session-start.sh"
+    script.write_text("echo mine\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--force")
+    assert "echo mine" not in script.read_text()
+    assert "updated" in out or "overwrote" in out
+
+
+def test_skip_hooks_writes_no_scripts(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--skip-hooks")
+    assert not (tmp_path / ".switchboard").exists()
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_the_scripts_are_not_secret_and_belong_in_git(monkeypatch, capsys, tmp_path):
+    # They carry a URL and a workspace name, both non-secret by design, and a
+    # clone needs them for its hooks to work at all. Nothing may gitignore them.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    ignored = (tmp_path / ".gitignore").read_text()
+    assert ".switchboard" not in ignored
+    script = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    assert "SWITCHBOARD_KEY" not in script
+    assert "SWITCHBOARD_TOKEN" not in script

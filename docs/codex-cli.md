@@ -109,19 +109,29 @@ end to release:
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard -q register -c build || true"
+command = "sh .switchboard/hooks/session-start.sh || true"
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "export SWITCHBOARD_URL=https://hub.example.com; export SWITCHBOARD_WORKSPACE=my-org/my-repo; switchboard --json claims --holder \"$(switchboard --json whoami | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | python3 -c 'import sys,json,subprocess;[subprocess.run([\"switchboard\",\"-q\",\"release\",l[\"resource\"]]) for l in json.load(sys.stdin)]' || true"
+command = "sh .switchboard/hooks/stop.sh || true"
 ```
 
-Fill in your actual URL and workspace — `switchboard` runs as a plain shell
-command in a hook, not inside the `switchboard-mcp` subprocess `.mcp.json`'s
-`env` block reaches, so it can't assume those two are ambient the way
-`SWITCHBOARD_TOKEN` usually is. Neither is secret, so they get exported
-explicitly instead.
+Those two scripts are what `switchboard init` writes, and they are plain
+`/bin/sh` — nothing in them is Claude Code's. If you have run `init` in this
+repo (even from Claude Code), they already exist and the lines above are the
+whole integration. If you have not, run it once — `--skip-claude-md
+--skip-skill` if you only want the scripts.
+
+The scripts export `SWITCHBOARD_URL` and `SWITCHBOARD_WORKSPACE` themselves,
+with the values baked in at `init` time. That is not redundant:
+`switchboard` runs as a plain shell command in a hook, not inside the
+`switchboard-mcp` subprocess that `.mcp.json`'s `env` block reaches, so it
+cannot assume those two are ambient the way `SWITCHBOARD_TOKEN` usually is.
+Neither is secret, so they get exported explicitly. If your hub or workspace
+changes, re-run `init` rather than editing the scripts — it will recognize
+its own output and update them, and leave them alone once you have edited
+them by hand.
 
 The `|| true` matters here for the same reason it does in Claude Code: a hub
 being down should never block a session. Every Switchboard CLI command exits
