@@ -37,10 +37,16 @@ The baseline. On your machine, in the repo:
 switchboard init --new-key
 ```
 
-Commit what it writes — `.mcp.json`, `.claude/settings.json`, the
-`switchboard-coordinate` skill, and the `CLAUDE.md` section. Do **not** commit
-`.claude/settings.local.json`; `init` adds it to `.gitignore` for you and
-checks that on every run.
+Commit what it writes — `.mcp.json`, `.switchboard/hooks/`,
+`.claude/settings.json`, the `switchboard-coordinate` skill, and the
+`CLAUDE.md` section. Do **not** commit `.claude/settings.local.json`; `init`
+adds it to `.gitignore` for you and checks that on every run.
+
+`.switchboard/hooks/` holds the lifecycle hook bodies as plain `/bin/sh`
+scripts. The agent's own config gets only a one-line shim pointing at them, so
+the same scripts serve any runner — see [Codex CLI](codex-cli.md) — and a
+clone that does not commit them ends up with hooks referring to files that are
+not there.
 
 Then set `SWITCHBOARD_TOKEN` and `SWITCHBOARD_KEY` in the cloud environment's
 secret settings, and in your CI provider's secret store if CI agents should

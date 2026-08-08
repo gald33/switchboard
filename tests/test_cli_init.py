@@ -21,13 +21,17 @@ from switchboard.cli import (
     _CLAUDE_MD_MARKER,
     _CLAUDE_MD_SECTION,
     _CLAUDE_MD_SECTION_HISTORY,
+    _HOOKS_DIR,
     _LOCAL_SETTINGS_REL,
     _SESSION_START_CMD_HISTORY,
     _STOP_CMD_HISTORY,
     MANAGED_HUB_URL,
+    _hook_env_prefix,
     _session_start_cmd,
+    _session_start_script,
     _skill_source,
     _stop_cmd,
+    _stop_script,
     main,
 )
 
@@ -123,6 +127,29 @@ def test_merges_into_existing_claude_settings(monkeypatch, capsys, tmp_path):
     assert "Stop" in settings["hooks"]
 
 
+def _project_with_hooks(tmp_path, url, workspace):
+    """A repo with the hook scripts on disk, as `init` would leave it."""
+    proj = tmp_path / "repo"
+    (proj / _HOOKS_DIR).mkdir(parents=True)
+    (proj / _HOOKS_DIR / "session-start.sh").write_text(_session_start_script(url, workspace))
+    (proj / _HOOKS_DIR / "stop.sh").write_text(_stop_script(url, workspace))
+    return proj
+
+
+def _run_hook(command, project, fake_bin):
+    """Run a registered hook command the way an agent runner does: from the
+    project root, with nothing switchboard-related in the environment but a
+    token. CLAUDE_PROJECT_DIR is deliberately absent so the shim's fallback
+    is what gets exercised — that is the path a non-Claude runner takes."""
+    return subprocess.run(
+        ["bash", "-c", command],
+        cwd=project,
+        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
+        capture_output=True,
+        text=True,
+    )
+
+
 # --- #32: hooks must not depend on ambient SWITCHBOARD_URL/WORKSPACE -------
 #
 # SessionStart/Stop hooks run as plain shell commands, not inside the
@@ -133,36 +160,55 @@ def test_merges_into_existing_claude_settings(monkeypatch, capsys, tmp_path):
 # values at generation time and neither is secret, so they get baked in.
 
 
-def test_hook_commands_embed_the_resolved_url_and_workspace():
-    start = _session_start_cmd("https://hub.example.com", "acme/widgets")
-    stop = _stop_cmd("https://hub.example.com", "acme/widgets")
-    for cmd in (start, stop):
-        assert cmd.startswith(
+def test_hook_scripts_embed_the_resolved_url_and_workspace():
+    # The bodies moved out of the agent's config into scripts switchboard
+    # owns, but #32's guarantee is unchanged: the values are baked in, not
+    # read from an environment the hook does not share.
+    start = _session_start_script("https://hub.example.com", "acme/widgets")
+    stop = _stop_script("https://hub.example.com", "acme/widgets")
+    for script in (start, stop):
+        assert (
             "export SWITCHBOARD_URL=https://hub.example.com; "
-            "export SWITCHBOARD_WORKSPACE=acme/widgets; "
-        )
+            "export SWITCHBOARD_WORKSPACE=acme/widgets;"
+        ) in script
 
 
-def test_hook_commands_shell_quote_a_workspace_with_special_characters():
+def test_hook_scripts_shell_quote_a_workspace_with_special_characters():
     # A workspace name is usually `org/repo`, but nothing stops it from
     # containing something shell-unsafe if a user overrides it by hand.
-    start = _session_start_cmd("https://hub.example.com", "it's a workspace")
-    assert "export SWITCHBOARD_WORKSPACE='it'\"'\"'s a workspace'; " in start
+    start = _session_start_script("https://hub.example.com", "it's a workspace")
+    assert "export SWITCHBOARD_WORKSPACE='it'\"'\"'s a workspace';" in start
+
+
+def test_the_registered_command_is_identical_everywhere():
+    # The whole point of the shim: one constant string, so recognizing our own
+    # output in someone else's config is an exact match, not a heuristic.
+    assert _session_start_cmd("https://a.example", "acme/one") == _session_start_cmd(
+        "http://127.0.0.1:8787", "globex/two"
+    )
+    assert _stop_cmd("https://a.example", "acme/one") == _stop_cmd(
+        "http://127.0.0.1:8787", "globex/two"
+    )
+    # and it carries no hub detail that would need updating later
+    for cmd in (_session_start_cmd("https://a.example", "acme/one"),
+                _stop_cmd("https://a.example", "acme/one")):
+        assert "a.example" not in cmd and "acme/one" not in cmd
 
 
 def test_init_bakes_the_resolved_hub_into_the_written_hooks(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
     code = main(["-w", "acme/widgets", "--url", "https://hub.example.com", "init"])
     capsys.readouterr()
     assert code == 0
+    start = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    stop = (tmp_path / _HOOKS_DIR / "stop.sh").read_text()
+    assert "SWITCHBOARD_URL=https://hub.example.com" in start
+    assert "SWITCHBOARD_WORKSPACE=acme/widgets" in stop
+    # and the agent's config only points at them
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     start_cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    stop_cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert "SWITCHBOARD_URL=https://hub.example.com" in start_cmd
-    assert "SWITCHBOARD_WORKSPACE=acme/widgets" in stop_cmd
+    assert "hub.example.com" not in start_cmd
+    assert f"{_HOOKS_DIR}/session-start.sh" in start_cmd
 
 
 def test_session_start_hook_resolves_the_hub_with_only_the_token_ambient(tmp_path):
@@ -182,13 +228,8 @@ def test_session_start_hook_resolves_the_hub_with_only_the_token_ambient(tmp_pat
     )
     stub.chmod(0o755)
 
-    cmd = _session_start_cmd("http://hub.internal", "acme/widgets")
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
-        capture_output=True,
-        text=True,
-    )
+    proj = _project_with_hooks(tmp_path, "http://hub.internal", "acme/widgets")
+    result = _run_hook(_session_start_cmd("", ""), proj, fake_bin)
     assert result.returncode == 0, result.stderr
     assert record.read_text() == "url=http://hub.internal workspace=acme/widgets token=shh\n"
 
@@ -213,13 +254,8 @@ def test_stop_hook_resolves_the_hub_for_every_nested_invocation(tmp_path):
     )
     stub.chmod(0o755)
 
-    cmd = _stop_cmd("http://hub.internal", "acme/widgets")
-    result = subprocess.run(
-        ["bash", "-c", cmd],
-        env={"PATH": f"{fake_bin}:{os.environ['PATH']}", "SWITCHBOARD_TOKEN": "shh"},
-        capture_output=True,
-        text=True,
-    )
+    proj = _project_with_hooks(tmp_path, "http://hub.internal", "acme/widgets")
+    result = _run_hook(_stop_cmd("", ""), proj, fake_bin)
     assert result.returncode == 0, result.stderr
     lines = record.read_text().splitlines()
     assert len(lines) == 3, lines  # whoami, claims, and the nested release
@@ -1061,3 +1097,106 @@ def test_show_key_does_not_leak_into_plain_whoami(monkeypatch, capsys, tmp_path)
     saved = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
     assert main(["whoami"]) == 0
     assert saved not in capsys.readouterr().out
+
+
+# --- switchboard owns the hook bodies; the agent's config only points ------
+#
+# Inlining the bodies into `.claude/settings.json` meant every upgrade was a
+# guess about whether a string in a file with several authors was still ours.
+# The body now lives in a file with exactly one author, and what is left in
+# the agent's config is a constant shim.
+
+
+def test_existing_inline_hooks_migrate_to_the_shim(monkeypatch, capsys, tmp_path):
+    # The upgrade path that matters: a repo initialized before the split must
+    # be recognized as untouched machine output and moved over, not read as a
+    # hand edit and left on a revision that no longer has a script behind it.
+    url, workspace = "https://hub.example.com", "acme/widgets"
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    old_start = f"{_hook_env_prefix(url, workspace)}switchboard -q register -c build || true"
+    settings_path.write_text(json.dumps({
+        "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": old_start}]}]}
+    }))
+
+    monkeypatch.chdir(tmp_path)
+    code = main(["-w", workspace, "--url", url, "init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "updated the SessionStart hook" in out
+
+    settings = json.loads(settings_path.read_text())
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert cmd == _session_start_cmd(url, workspace)
+    # and the script it now points at exists, or the hook is a dead reference
+    assert (tmp_path / _HOOKS_DIR / "session-start.sh").exists()
+
+
+def test_migrated_hooks_still_reach_the_right_hub(monkeypatch, capsys, tmp_path):
+    # End-to-end after migration: the #32 guarantee has to survive the move,
+    # not just the string comparison.
+    url, workspace = "http://hub.internal", "acme/widgets"
+    record = tmp_path / "seen.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    stub = fake_bin / "switchboard"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "url=$SWITCHBOARD_URL workspace=$SWITCHBOARD_WORKSPACE" >> {record}\n'
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    assert main(["-w", workspace, "--url", url, "init"]) == 0
+    capsys.readouterr()
+
+    settings = json.loads((proj / ".claude" / "settings.json").read_text())
+    cmd = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert _run_hook(cmd, proj, fake_bin).returncode == 0
+    assert record.read_text() == f"url={url} workspace={workspace}\n"
+
+
+def test_hook_scripts_are_idempotent(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    first = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert (tmp_path / _HOOKS_DIR / "session-start.sh").read_text() == first
+    assert "already up to date" in out
+
+
+def test_a_hand_edited_hook_script_is_left_alone(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    script = tmp_path / _HOOKS_DIR / "session-start.sh"
+    script.write_text(script.read_text() + "\necho mine\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "echo mine" in script.read_text()
+    assert "looks hand-edited" in out
+
+
+def test_force_overwrites_a_hand_edited_hook_script(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    script = tmp_path / _HOOKS_DIR / "session-start.sh"
+    script.write_text("echo mine\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--force")
+    assert "echo mine" not in script.read_text()
+    assert "updated" in out or "overwrote" in out
+
+
+def test_skip_hooks_writes_no_scripts(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path, "--skip-hooks")
+    assert not (tmp_path / ".switchboard").exists()
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_the_scripts_are_not_secret_and_belong_in_git(monkeypatch, capsys, tmp_path):
+    # They carry a URL and a workspace name, both non-secret by design, and a
+    # clone needs them for its hooks to work at all. Nothing may gitignore them.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    ignored = (tmp_path / ".gitignore").read_text()
+    assert ".switchboard" not in ignored
+    script = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
+    assert "SWITCHBOARD_KEY" not in script
+    assert "SWITCHBOARD_TOKEN" not in script
