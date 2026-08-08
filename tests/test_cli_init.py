@@ -7,10 +7,12 @@ and be safe to run twice, so that is most of what these tests check.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,10 +35,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def run_init(monkeypatch, capsys, tmp_path, *extra_args):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_KEY", raising=False)
     code = main(["init", *extra_args])
     out = capsys.readouterr().out
     return code, out
@@ -785,3 +783,218 @@ def test_connection_flags_accepted_on_either_side_of_the_subcommand(
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["workspace"] == "w_shared"
+
+
+# --- key/workspace agreement and the prompts that guard it -------------------
+#
+# A key seals what leaves the machine; the workspace decides who it is sealed
+# *with*. When those two disagree nothing errors — both sides encrypt happily
+# and simply never see each other. That silence is what these tests are for.
+
+
+def _write_mcp(tmp_path, workspace, url=MANAGED_HUB_URL):
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "switchboard": {
+                "command": "switchboard-mcp",
+                "env": {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace},
+            }
+        }
+    }, indent=2) + "\n")
+
+
+def _mcp_ws(tmp_path):
+    data = json.loads((tmp_path / ".mcp.json").read_text())
+    return data["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_WORKSPACE"]
+
+
+def test_new_key_pairs_with_the_already_registered_workspace(monkeypatch, capsys, tmp_path):
+    # The regression: init used to skip an existing .mcp.json but still mint an
+    # opaque workspace, then print `--key K -w w_new` while the repo itself
+    # kept routing to the old name. The key went one way, the agents another.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "acme/billing" in out
+    # whatever it tells you to hand teammates has to match where the repo routes
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w acme/billing" in out
+    assert not re.search(r"-w w_[A-Za-z0-9_-]{16}", out)
+
+
+def test_force_repoints_mcp_json_at_the_new_workspace(monkeypatch, capsys, tmp_path):
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--force")
+    assert code == 0
+    assert _mcp_ws(tmp_path).startswith("w_")
+    assert "repointed .mcp.json" in out
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w {_mcp_ws(tmp_path)}" in out
+
+
+def test_explicit_workspace_conflicting_with_mcp_json_is_reported(monkeypatch, capsys, tmp_path):
+    # Here there *is* an intent to honour, and it disagrees with the file.
+    # Silently picking either one strands half the setup, so say so instead.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_other")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "note:" in out and "w_other" in out and "--force" in out
+
+
+def test_matching_workspace_is_not_a_conflict(monkeypatch, capsys, tmp_path):
+    _write_mcp(tmp_path, "w_shared")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
+    assert code == 0
+    assert "note:" not in out
+    assert _mcp_ws(tmp_path) == "w_shared"
+
+
+def test_no_key_leaves_a_differing_workspace_alone(monkeypatch, capsys, tmp_path):
+    # Without a key there is nothing to pair, so an already-configured repo is
+    # just an already-configured repo — the old behaviour, unchanged.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "-w", "w_other")
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    assert "left .mcp.json alone" in out
+
+
+# --- prompting ---------------------------------------------------------------
+#
+# `init` asks before it does anything it cannot take back, but only when there
+# is a human to answer. Every other caller — an agent's shell, CI, a piped
+# docs command — has to reach the same defaults it always did, silently.
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def make_interactive(monkeypatch, answers):
+    """Pretend a human is at the keyboard, with `answers` queued up."""
+    err = _FakeTTY()
+    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr(sys, "stdin", _FakeTTY())
+    remaining = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda *a: next(remaining))
+    return err
+
+
+def test_no_tty_means_no_prompt(monkeypatch, capsys, tmp_path):
+    # pytest's streams are not TTYs, which is the same shape as an agent's
+    # shell or a pipe. If this ever prompts, it hangs instead of failing.
+    _write_mcp(tmp_path, "acme/billing")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert "pick 1-" not in out and "overwrite it" not in out
+
+
+@pytest.mark.parametrize("flag", ["--no-input", "-q", "--json"])
+def test_flags_opt_out_of_prompting_even_on_a_tty(monkeypatch, capsys, tmp_path, flag):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, [])  # any prompt would StopIteration
+    code = main(["init", "--new-key", flag])
+    assert code == 0
+    assert err.getvalue() == ""
+    assert _mcp_ws(tmp_path) == "acme/billing"
+
+
+def test_ci_env_suppresses_prompts(monkeypatch, capsys, tmp_path):
+    # Some runners allocate a pseudo-TTY; without this guard the job hangs.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CI", "true")
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, [])
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert err.getvalue() == ""
+
+
+def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    err = make_interactive(monkeypatch, ["2", ""])  # switch workspace, then ack the key
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert "acme/billing" in err.getvalue()
+    assert _mcp_ws(tmp_path).startswith("w_")
+
+
+def test_interactive_defaults_to_keeping_the_registered_workspace(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_mcp(tmp_path, "acme/billing")
+    make_interactive(monkeypatch, ["", ""])  # bare enter takes the default
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert _mcp_ws(tmp_path) == "acme/billing"
+
+
+def _hand_edited_hooks(tmp_path):
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "switchboard mine --x"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "switchboard mine --y"}]}],
+        }
+    }))
+    return settings_path
+
+
+def test_interactive_offers_to_overwrite_a_hand_edited_hook(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    err = make_interactive(monkeypatch, ["y", "y", "y", "y"])
+    code = main(["init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "hand-edited" in err.getvalue()
+    assert "as you confirmed" in out
+    assert "switchboard mine" not in settings_path.read_text()
+
+
+def test_interactive_declining_keeps_the_hand_edited_hook(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    make_interactive(monkeypatch, ["n", "n", "n", "n"])
+    code = main(["init"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "switchboard mine --x" in settings_path.read_text()
+    assert "left the SessionStart hook alone" in out
+
+
+def test_declining_is_the_default_answer(monkeypatch, capsys, tmp_path):
+    # Someone's own edit is the thing you keep when they just hit enter.
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+    make_interactive(monkeypatch, ["", "", "", ""])
+    assert main(["init"]) == 0
+    assert "switchboard mine --x" in settings_path.read_text()
+
+
+def test_interactive_pauses_after_printing_a_minted_key(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    err = make_interactive(monkeypatch, [""])
+    code = main(["init", "--new-key"])
+    assert code == 0
+    assert "saved it" in err.getvalue()
+
+
+def test_prompt_survives_a_closed_stdin(monkeypatch, capsys, tmp_path):
+    # EOF mid-prompt takes the default rather than crashing the run.
+    monkeypatch.chdir(tmp_path)
+    settings_path = _hand_edited_hooks(tmp_path)
+
+    def eof(*a):
+        raise EOFError
+
+    monkeypatch.setattr(sys, "stderr", _FakeTTY())
+    monkeypatch.setattr(sys, "stdin", _FakeTTY())
+    monkeypatch.setattr("builtins.input", eof)
+    assert main(["init"]) == 0
+    assert "switchboard mine --x" in settings_path.read_text()

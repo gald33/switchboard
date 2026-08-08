@@ -39,6 +39,78 @@ def _use_color(stream: Any) -> bool:
     return stream.isatty() and not os.environ.get("NO_COLOR")
 
 
+def _can_prompt(*, no_input: bool, quiet: bool, as_json: bool) -> bool:
+    """Whether it is safe to stop and ask the operator a question.
+
+    A prompt is only ever an improvement for a human at a keyboard. Every
+    other caller — an agent's shell, CI, `init | tee`, a docs copy-paste —
+    would hang on it, so the default has to be silence and the detection has
+    to be something those callers can't accidentally look like. Both a TTY on
+    stdin (there is someone to answer) and on stderr (they can see the
+    question) are required; `--json` and `-q` opt out by construction, since
+    a caller parsing output is not one that can answer.
+
+    stdout is deliberately *not* checked: `init > log` from a terminal is
+    still a human session, and the prompts go to stderr precisely so that
+    redirect keeps working.
+    """
+    if no_input or quiet or as_json:
+        return False
+    # Some CI runners allocate a pseudo-TTY, which would defeat the check
+    # above and hang the job on a question nobody can answer.
+    if os.environ.get("CI"):
+        return False
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _ask(question: str, *, default: bool) -> bool:
+    """Ask a yes/no question on stderr. EOF or an empty line takes `default`."""
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        print(f"{question} {suffix} ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            print(file=sys.stderr)
+            return default
+        if not answer:
+            return default
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("  answer y or n.", file=sys.stderr)
+
+
+def _ask_choice(question: str, options: Sequence[tuple[str, str]], *, default: int) -> int:
+    """Ask the operator to pick one of `options` (label, detail), returning its index."""
+    print(question, file=sys.stderr)
+    for i, (label, detail) in enumerate(options, start=1):
+        marker = "*" if i - 1 == default else " "
+        print(f"  {marker} {i}) {label} — {detail}", file=sys.stderr)
+    while True:
+        print(f"pick 1-{len(options)} [{default + 1}] ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input().strip()
+        except EOFError:
+            print(file=sys.stderr)
+            return default
+        if not answer:
+            return default
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return int(answer) - 1
+        print(f"  answer with a number from 1 to {len(options)}.", file=sys.stderr)
+
+
+def _pause(message: str) -> None:
+    """Hold until the operator acknowledges — for the one thing they cannot get back."""
+    print(message, end="", file=sys.stderr, flush=True)
+    try:
+        input()
+    except EOFError:
+        print(file=sys.stderr)
+
+
 class Fmt:
     def __init__(self, color: bool) -> None:
         self.color = color
@@ -922,7 +994,30 @@ def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
     return generated, "generated a dev token, saved to .env (already gitignored)"
 
 
-def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
+def _mcp_workspace(directory: Path) -> str | None:
+    """The workspace an already-registered switchboard MCP server routes to.
+
+    This is what actually decides which room this repo's agents land in, so
+    it is the value a key has to be paired with — not whatever `init` would
+    have picked had the file not been there.
+    """
+    path = directory / ".mcp.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    servers = data.get("mcpServers")
+    entry = servers.get("switchboard") if isinstance(servers, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    env = entry.get("env")
+    workspace = env.get("SWITCHBOARD_WORKSPACE") if isinstance(env, dict) else None
+    return workspace if isinstance(workspace, str) else None
+
+
+def _init_mcp_json(directory: Path, url: str, workspace: str, *, overwrite: bool = False) -> str:
     path = directory / ".mcp.json"
     entry = {
         "command": "switchboard-mcp",
@@ -934,9 +1029,13 @@ def _init_mcp_json(directory: Path, url: str, workspace: str) -> str:
         except ValueError as exc:
             return f"left .mcp.json alone: existing file is not valid JSON ({exc})"
         servers = data.setdefault("mcpServers", {})
-        if "switchboard" in servers:
+        if "switchboard" in servers and not overwrite:
             return 'left .mcp.json alone: a "switchboard" server is already registered'
+        repointed = "switchboard" in servers
         servers["switchboard"] = entry
+        if repointed:
+            path.write_text(json.dumps(data, indent=2) + "\n")
+            return f"repointed .mcp.json at workspace {workspace}"
     else:
         data = {"mcpServers": {"switchboard": entry}}
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -951,12 +1050,14 @@ def _sync_hook(
     url: str,
     workspace: str,
     force: bool,
+    confirm: Callable[[str], bool] | None = None,
 ) -> str:
     """Add, update, or leave alone the switchboard command for one hook
     event. An existing command gets replaced only if it's untouched output
     from a past `init` run (matches `current_cmd` or a rendering of a past
-    revision from `history`) or `--force` was passed — anything else is
-    presumed hand-edited and left alone."""
+    revision from `history`), `--force` was passed, or `confirm` says the
+    operator approved it — anything else is presumed hand-edited and left
+    alone."""
     entries = data.setdefault("hooks", {}).setdefault(event, [])
     for group in entries:
         for h in group.get("hooks", []):
@@ -969,6 +1070,9 @@ def _sync_hook(
             if force or cmd in historical:
                 h["command"] = current_cmd
                 return f"updated the {event} hook to the latest revision"
+            if confirm and confirm(f"the {event} hook"):
+                h["command"] = current_cmd
+                return f"overwrote your edited {event} hook, as you confirmed"
             return (
                 f"left the {event} hook alone: it doesn't match a known "
                 "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
@@ -978,7 +1082,8 @@ def _sync_hook(
 
 
 def _init_claude_settings(
-    directory: Path, url: str, workspace: str, *, force: bool = False
+    directory: Path, url: str, workspace: str, *, force: bool = False,
+    confirm: Callable[[str], bool] | None = None,
 ) -> list[str]:
     path = directory / ".claude" / "settings.json"
     if path.exists():
@@ -991,11 +1096,11 @@ def _init_claude_settings(
     steps = [
         _sync_hook(
             data, "SessionStart", _session_start_cmd(url, workspace),
-            _SESSION_START_CMD_HISTORY, url, workspace, force,
+            _SESSION_START_CMD_HISTORY, url, workspace, force, confirm,
         ),
         _sync_hook(
             data, "Stop", _stop_cmd(url, workspace),
-            _STOP_CMD_HISTORY, url, workspace, force,
+            _STOP_CMD_HISTORY, url, workspace, force, confirm,
         ),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1205,9 @@ def _skill_source() -> str:
     )
 
 
-def _init_skill(directory: Path, *, force: bool = False) -> str:
+def _init_skill(
+    directory: Path, *, force: bool = False, confirm: Callable[[str], bool] | None = None
+) -> str:
     path = directory / ".claude" / "skills" / _SKILL_NAME / "SKILL.md"
     current = _skill_source()
     if not path.exists():
@@ -1114,13 +1221,18 @@ def _init_skill(directory: Path, *, force: bool = False) -> str:
     if status == "stale" or force:
         path.write_text(current)
         return f"updated the {_SKILL_NAME} skill to the latest revision"
+    if confirm and confirm(f"your edited {label}"):
+        path.write_text(current)
+        return f"overwrote {label}, as you confirmed"
     return (
         f"left {label} alone: it doesn't match a known switchboard revision "
         "(looks hand-edited) — pass --force to overwrite anyway"
     )
 
 
-def _init_claude_md(directory: Path, *, force: bool = False) -> str:
+def _init_claude_md(
+    directory: Path, *, force: bool = False, confirm: Callable[[str], bool] | None = None
+) -> str:
     path = directory / "CLAUDE.md"
     if not path.exists():
         path.write_text("# CLAUDE.md\n\n" + _CLAUDE_MD_SECTION)
@@ -1138,6 +1250,9 @@ def _init_claude_md(directory: Path, *, force: bool = False) -> str:
     if status == "stale" or force:
         path.write_text(text[:marker_at] + _CLAUDE_MD_SECTION)
         return "updated CLAUDE.md's coordination section to the latest revision"
+    if confirm and confirm("your edited coordination section in CLAUDE.md"):
+        path.write_text(text[:marker_at] + _CLAUDE_MD_SECTION)
+        return "overwrote CLAUDE.md's coordination section, as you confirmed"
     return (
         "left CLAUDE.md alone: its coordination section doesn't match a known "
         "switchboard revision (looks hand-edited) — pass --force to overwrite anyway"
@@ -1185,19 +1300,80 @@ def cmd_init(args: argparse.Namespace) -> int:
     local_hub = url in _LOCAL_HUB_URLS
     managed_hub = url == MANAGED_HUB_URL and not local_hub
 
+    interactive = _can_prompt(
+        no_input=getattr(args, "no_input", False), quiet=quiet, as_json=as_json
+    )
+
     steps: list[str] = []
+    # A key seals messages; the workspace decides who you are sealed *with*.
+    # When .mcp.json already routes somewhere else, the two disagree and the
+    # failure is silent — everything encrypts fine and the agents never meet.
+    # The file is what actually routes, so it wins unless someone says
+    # otherwise.
+    repoint_mcp = False
+    registered = None if args.skip_mcp else _mcp_workspace(directory)
+    if key and registered and registered != workspace:
+        if interactive:
+            choice = _ask_choice(
+                f"\n.mcp.json already routes this repo to workspace {registered!r}, "
+                f"but the key is being paired with {workspace!r}. They have to match.",
+                [
+                    (f"keep {registered}", "leave .mcp.json alone, pair the key with it"),
+                    (f"switch to {workspace}", "repoint .mcp.json at the new workspace"),
+                ],
+                default=0,
+            )
+            if choice == 0:
+                workspace = registered
+            else:
+                repoint_mcp = True
+        elif args.force:
+            repoint_mcp = True
+        elif explicit_workspace:
+            # They named a workspace and the file names another. Guessing
+            # either way silently is how you get two half-configured repos.
+            steps.append(
+                f"note: you asked for workspace {workspace!r} but .mcp.json routes to "
+                f"{registered!r}, so this repo's agents will use {registered!r} and the "
+                "key will not reach the room you meant. Re-run with --force to repoint "
+                "it, or drop -w to adopt the registered one"
+            )
+            workspace = registered
+        else:
+            # Nothing to honour but the file itself — adopt it, and say so,
+            # because it overrides the opaque name --new-key just minted.
+            workspace = registered
+            steps.append(
+                f"paired the key with workspace {registered!r}, already registered in "
+                ".mcp.json (pass --force to repoint it at a fresh opaque name instead)"
+            )
+
+    def confirm_edit(what: str) -> bool:
+        # Default no: the safe answer for someone's own edit is to keep it.
+        return _ask(
+            f"\n{what} doesn't match a known switchboard revision — it looks "
+            "hand-edited.\noverwrite it with the current version?",
+            default=False,
+        )
+
+    confirm = confirm_edit if interactive else None
+
     token: str | None = None
     if local_hub:
         token, msg = _init_token(directory, arg_token)
         steps.append(msg)
     if not args.skip_mcp:
-        steps.append(_init_mcp_json(directory, url, workspace))
+        steps.append(_init_mcp_json(directory, url, workspace, overwrite=repoint_mcp))
     if not args.skip_hooks:
-        steps.extend(_init_claude_settings(directory, url, workspace, force=args.force))
+        steps.extend(
+            _init_claude_settings(
+                directory, url, workspace, force=args.force, confirm=confirm
+            )
+        )
     if not args.skip_claude_md:
-        steps.append(_init_claude_md(directory, force=args.force))
+        steps.append(_init_claude_md(directory, force=args.force, confirm=confirm))
     if not args.skip_skill:
-        steps.append(_init_skill(directory, force=args.force))
+        steps.append(_init_skill(directory, force=args.force, confirm=confirm))
     key_ok = True
     if key:
         key_steps, key_ok = _init_key(directory, key, force=args.force)
@@ -1241,7 +1417,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         managed_hub_note = sealed_note
     # A key without a matching workspace name is the quiet failure: sealing
     # works, routing does not, and the two agents just never meet.
-    if key and not minted and not explicit_workspace:
+    if key and not minted and not explicit_workspace and not registered:
         steps.append(
             f"note: workspace defaulted to {workspace!r}. A key only puts you in "
             "the same room as whoever gave it to you if the workspace name "
@@ -1298,6 +1474,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             print(
                 f"  Give teammates: switchboard init --key {minted} -w {workspace}"
             )
+            if interactive:
+                # The only genuinely unrecoverable moment `init` has: the key
+                # is on disk but never printed again, and the hub cannot help.
+                # Cheap to hold here; expensive to have scrolled past.
+                _pause("\npress enter once you have saved it ")
     return EXIT_OK if key_ok else EXIT_ERROR
 
 
@@ -1388,6 +1569,14 @@ def build_parser() -> argparse.ArgumentParser:
              "it, then print the key once so you can share it. Use this on the "
              "first machine only; every other machine adopts it with --key. "
              "Mutually exclusive with --key.",
+    )
+    p.add_argument(
+        "--no-input", action="store_true",
+        help="never stop to ask. Without it, `init` asks before overwriting a "
+             "hand-edited file or repointing a repo at a different workspace — but "
+             "only when there is a terminal to ask on, so agents, CI and pipelines "
+             "are unaffected either way. Not the same as answering yes: the "
+             "defaults are the cautious answers, and --force is what says yes.",
     )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(

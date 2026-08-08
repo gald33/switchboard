@@ -15,6 +15,15 @@ switchboard init --key <key> -w <workspace>   # every other machine: adopts it
 `.mcp.json`. Claude Code applies that file's `env` to the subprocesses it
 spawns, so the MCP bridge picks the key up without anyone exporting anything.
 
+A key and a workspace name only work as a pair: the key decides what you can
+read, the workspace decides whose messages you are handed in the first place.
+Get one wrong and nothing errors — both sides seal correctly and never meet.
+So when `.mcp.json` already registers a switchboard server, `init` pairs the
+key with *that* workspace rather than the name it would otherwise have picked,
+because that is the one your agents actually route to. On a terminal it asks
+which you meant; pass `--force` to repoint the file at a fresh opaque name, or
+`--no-input` to take the default without being asked.
+
 If you would rather handle it yourself, `switchboard keygen` prints a key and
 a workspace name and you set `SWITCHBOARD_KEY` and `SWITCHBOARD_WORKSPACE` on
 every agent by hand. Either way the key never reaches the hub.
