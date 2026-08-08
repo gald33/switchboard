@@ -84,6 +84,17 @@ MIN_SAMPLES = 5
 #: one-sided: an unsampled tail always reads as shorter than it is.
 PRIOR_STRENGTH = 8.0
 
+#: Observations required before the runtime will correct its own
+#: quantiles. Below this the measured error is mostly noise and
+#: "correcting" for it would inject more error than it removes.
+MIN_RECALIBRATION_SAMPLES = 25
+
+#: Bounds on the self-correction multiplier. A learned model that is off
+#: by 4x should be corrected; one that appears off by 100x is far more
+#: likely to be a bug or a regime change than a calibration problem, and
+#: quietly applying that would turn a small fault into a useless forecast.
+RECALIBRATION_BOUNDS = (0.25, 4.0)
+
 #: Seed execution classes offered before an agent has used enough of its
 #: own. Deliberately tiny — the real taxonomy is meant to emerge from use,
 #: and anything an agent actually uses displaces these in the offer set.
@@ -122,6 +133,11 @@ class Forecast:
     now: float
     source: str  # which fallback tier produced it — local diagnostics only
     samples: int
+    #: The estimate before self-correction, and the multipliers applied.
+    #: Local diagnostics; never shared, never part of as_message_meta().
+    raw_p50_seconds: float | None = None
+    raw_p95_seconds: float | None = None
+    correction: tuple[float, float] = (1.0, 1.0)
 
     def as_message_meta(self) -> dict[str, str]:
         """The sparse, shareable summary. No internals leak past this."""
@@ -166,7 +182,14 @@ class TimingModel:
                     -- written before these columns existed.
                     predicted_p50   REAL,
                     predicted_p95   REAL,
-                    predicted_from  TEXT
+                    predicted_from  TEXT,
+                    -- The estimate *before* self-correction. Kept so the
+                    -- correction can be re-derived from scratch each time
+                    -- rather than compounding on top of itself: measuring
+                    -- error against an already-corrected number and then
+                    -- correcting again is a feedback loop.
+                    raw_p50         REAL,
+                    raw_p95         REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_observations_lookup
                     ON observations(agent_id, workspace, execution_class, effort);
@@ -180,6 +203,8 @@ class TimingModel:
                     predicted_p50   REAL,
                     predicted_p95   REAL,
                     predicted_from  TEXT,
+                    raw_p50         REAL,
+                    raw_p95         REAL,
                     runtime         TEXT,
                     PRIMARY KEY (agent_id, workspace)
                 );
@@ -213,9 +238,11 @@ class TimingModel:
         """
         wanted = {
             "observations": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
-                              ("predicted_from", "TEXT")),
+                              ("predicted_from", "TEXT"), ("raw_p50", "REAL"),
+                              ("raw_p95", "REAL")),
             "pending": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
-                         ("predicted_from", "TEXT"), ("runtime", "TEXT")),
+                         ("predicted_from", "TEXT"), ("raw_p50", "REAL"),
+                         ("raw_p95", "REAL"), ("runtime", "TEXT")),
         }
         for table, columns in wanted.items():
             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -232,7 +259,8 @@ class TimingModel:
 
     def _record(self, agent_id: str, workspace: str, execution_class: str,
                 effort: str, delta_seconds: float, now: float,
-                predicted: tuple[float | None, float | None, str | None]) -> None:
+                predicted: tuple[float | None, float | None, str | None],
+                raw: tuple[float | None, float | None] = (None, None)) -> None:
         conn = self._connection()
         if not (0 < delta_seconds <= MAX_OBSERVATION_SECONDS):
             conn.execute(
@@ -247,9 +275,10 @@ class TimingModel:
         conn.execute(
             "INSERT INTO observations "
             "(agent_id, workspace, execution_class, effort, delta_seconds, observed_at, "
-            " predicted_p50, predicted_p95, predicted_from) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (agent_id, workspace, execution_class, effort, delta_seconds, now, *predicted),
+            " predicted_p50, predicted_p95, predicted_from, raw_p50, raw_p95) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, workspace, execution_class, effort, delta_seconds, now,
+             *predicted, *raw),
         )
         # Keep the bucket to a moving window. Deleting by id keeps the most
         # recent rows, so the distribution tracks how this agent behaves now
@@ -266,7 +295,8 @@ class TimingModel:
     def _pending(self, agent_id: str, workspace: str) -> tuple | None:
         return self._connection().execute(
             "SELECT execution_class, effort, since, predicted_p50, predicted_p95, "
-            "predicted_from, runtime FROM pending WHERE agent_id = ? AND workspace = ?",
+            "predicted_from, runtime, raw_p50, raw_p95 FROM pending "
+            "WHERE agent_id = ? AND workspace = ?",
             (agent_id, workspace),
         ).fetchone()
 
@@ -286,13 +316,15 @@ class TimingModel:
         if execution_class or effort:
             conn.execute(
                 "INSERT INTO pending (agent_id, workspace, execution_class, effort, since, "
-                "predicted_p50, predicted_p95, predicted_from, runtime) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "predicted_p50, predicted_p95, predicted_from, runtime, raw_p50, raw_p95) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (agent_id, workspace, execution_class or "unspecified", effort or "medium", now,
                  forecast.p50_seconds if forecast else None,
                  forecast.p95_seconds if forecast else None,
                  forecast.source if forecast else None,
-                 _RUNTIME_ID),
+                 _RUNTIME_ID,
+                 forecast.raw_p50_seconds if forecast else None,
+                 forecast.raw_p95_seconds if forecast else None),
             )
         conn.commit()
 
@@ -325,7 +357,7 @@ class TimingModel:
             self._clear_pending(agent_id, workspace)
             return
         self._record(agent_id, workspace, prior[0], prior[1], now - prior[2], now,
-                      (prior[3], prior[4], prior[5]))
+                      (prior[3], prior[4], prior[5]), (prior[7], prior[8]))
         self._clear_pending(agent_id, workspace)
 
     def declare(
@@ -447,11 +479,63 @@ class TimingModel:
             result = self._estimate(agent_id, workspace, cls, eff, source, effort)
             if result is not None:
                 p50, p95, source, n = result
-                return Forecast(p50_seconds=p50, p95_seconds=p95, now=now,
-                                 source=source, samples=n)
+                return self._corrected(agent_id, workspace, p50, p95, now, source, n)
 
         p50, p95 = _BOOTSTRAP_SECONDS.get(effort or "", _DEFAULT_BOOTSTRAP)
-        return Forecast(p50_seconds=p50, p95_seconds=p95, now=now, source="bootstrap", samples=0)
+        return self._corrected(agent_id, workspace, p50, p95, now, "bootstrap", 0)
+
+    # --- self-correction ---------------------------------------------------
+
+    def _corrected(self, agent_id: str, workspace: str, raw_p50: float,
+                    raw_p95: float, now: float, source: str, n: int) -> Forecast:
+        """Apply the agent's measured miscalibration to a raw estimate.
+
+        Everything needed to know whether p95 really holds 95% of the time
+        has been recorded since the forecast/outcome pair was first stored.
+        Acting on it here rather than reporting it is the point: telling a
+        model "your forecasts run short, compensate" hands back exactly the
+        arithmetic this feature exists to absorb, and no collaborator has a
+        channel to tell it either.
+        """
+        m50, m95 = self._correction(agent_id, workspace)
+        p50, p95 = raw_p50 * m50, raw_p95 * m95
+        return Forecast(
+            p50_seconds=p50, p95_seconds=max(p95, p50), now=now,
+            source=source, samples=n,
+            raw_p50_seconds=raw_p50, raw_p95_seconds=raw_p95,
+            correction=(m50, m95),
+        )
+
+    def _correction(self, agent_id: str, workspace: str) -> tuple[float, float]:
+        """Multipliers that would have made past forecasts land correctly.
+
+        Conformal in shape: for each past observation take the ratio of
+        what happened to what was predicted, and read the quantile of those
+        ratios at the level being targeted. If p95 should have been 1.4x
+        larger to cover 95% of outcomes, that is the multiplier.
+
+        Derived from the *raw* stored estimate, never the issued one. A
+        correction measured against an already-corrected number and then
+        applied again compounds every cycle; measuring against raw makes
+        this a fresh calculation each time, with no memory to run away.
+        """
+        rows = self._connection().execute(
+            "SELECT delta_seconds, raw_p50, raw_p95 FROM observations "
+            "WHERE agent_id = ? AND workspace = ? AND raw_p50 IS NOT NULL "
+            "AND raw_p50 > 0 AND raw_p95 > 0 "
+            "ORDER BY id DESC LIMIT ?",
+            (agent_id, workspace, MAX_OBSERVATIONS_PER_BUCKET),
+        ).fetchall()
+        if len(rows) < MIN_RECALIBRATION_SAMPLES:
+            return 1.0, 1.0
+
+        low, high = RECALIBRATION_BOUNDS
+        ratios_50 = sorted(d / r50 for d, r50, _ in rows)
+        ratios_95 = sorted(d / r95 for d, _, r95 in rows)
+        return (
+            min(high, max(low, self._quantile(ratios_50, 0.50))),
+            min(high, max(low, self._quantile(ratios_95, 0.95))),
+        )
 
     # --- taxonomy ----------------------------------------------------------
 
