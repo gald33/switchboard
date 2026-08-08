@@ -1200,3 +1200,31 @@ def test_the_scripts_are_not_secret_and_belong_in_git(monkeypatch, capsys, tmp_p
     script = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
     assert "SWITCHBOARD_KEY" not in script
     assert "SWITCHBOARD_TOKEN" not in script
+
+
+def test_warns_when_the_hook_scripts_would_not_be_committed(monkeypatch, capsys, tmp_path):
+    # The cost of splitting the bodies out: the shim is committed, so a clone
+    # without the scripts gets hooks pointing at nothing — and `|| true` makes
+    # that quiet. Cheap to check, invisible when wrong, so check every run.
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text(".switchboard/\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "note:" in out
+    assert ".switchboard/hooks/ is gitignored" in out
+
+
+def test_no_warning_when_the_scripts_are_committable(monkeypatch, capsys, tmp_path):
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "is gitignored" not in out
+
+
+def test_no_warning_outside_a_git_repo(monkeypatch, capsys, tmp_path):
+    # `git check-ignore` exits 128 here; that is not a reason to warn.
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "is gitignored" not in out
+
+
+def test_hook_scripts_are_executable(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    assert os.access(tmp_path / _HOOKS_DIR / "session-start.sh", os.X_OK)

@@ -1233,6 +1233,35 @@ _HOOK_SCRIPT_HISTORY: dict[str, list[Callable[[str, str], str]]] = {
 }
 
 
+def _hooks_are_gitignored(directory: Path) -> bool:
+    """Whether git would refuse to commit the hook scripts.
+
+    Splitting the bodies out of the agent's config bought unambiguous
+    ownership at the cost of a second file that now *has* to travel with the
+    repo: the registered shim is committed, so a clone without the scripts
+    gets hooks pointing at nothing. That failure is quiet — the shim ends in
+    `|| true`, so a missing script prints one line to stderr and the session
+    continues as if coordination were working.
+
+    This is `_ensure_gitignored` inverted. That one exists because writing a
+    secret into a committed file is bad; this one because *not* committing
+    these is. Both are cheap to check and invisible when wrong, so both get
+    checked on every run rather than only at creation. `git check-ignore`
+    rather than reading `.gitignore` so a global exclude — the kind Claude
+    Code writes — counts too.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "check-ignore", "-q", f"{_HOOKS_DIR}/session-start.sh"],
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # 0 = ignored, 1 = not ignored, 128 = not a git repo (nothing to warn about)
+    return result.returncode == 0
+
+
 def _init_hook_scripts(
     directory: Path, url: str, workspace: str, *, force: bool = False,
     confirm: Callable[[str], bool] | None = None,
@@ -1254,6 +1283,9 @@ def _init_hook_scripts(
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(current)
+            # It has a shebang, so make it mean something: a runner that
+            # invokes the path directly rather than via `sh` still works.
+            path.chmod(0o755)
             steps.append(f"wrote {label}")
             continue
         history = [t(url, workspace) for t in _HOOK_SCRIPT_HISTORY[name]]
@@ -1271,6 +1303,13 @@ def _init_hook_scripts(
                 f"left {label} alone: it doesn't match a known switchboard "
                 "revision (looks hand-edited) — pass --force to overwrite anyway"
             )
+    if _hooks_are_gitignored(directory):
+        steps.append(
+            f"note: {_HOOKS_DIR}/ is gitignored, but the hooks that call it are "
+            "committed. A clone would get hooks pointing at scripts that are not "
+            "there, and the failure is quiet — nothing here is secret, so let "
+            "these be committed"
+        )
     return steps
 
 
