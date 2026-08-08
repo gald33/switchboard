@@ -1003,6 +1003,83 @@ def _init_claude_settings(
     return steps
 
 
+#: Where `init` puts the workspace key. Deliberately not `.mcp.json`: that
+#: file has to be committed for a cloud session or CI runner to find the MCP
+#: server at all, and a key committed to git is not a key. Claude Code applies
+#: this file's `env` block to the session *and* to the subprocesses it spawns,
+#: which is what gets `SWITCHBOARD_KEY` to `switchboard-mcp` without anyone
+#: having to `export` it by hand. `.env` would stay out of git just as well
+#: but nothing loads it into that subprocess — it works for the local dev
+#: token only because `docker compose` reads `.env` itself.
+_LOCAL_SETTINGS_REL = ".claude/settings.local.json"
+_GITIGNORE_PATTERN = "**/.claude/settings.local.json"
+
+
+def _ensure_gitignored(directory: Path) -> str | None:
+    """Make sure the local settings file is ignored, returning a step to
+    report if we had to change something.
+
+    Claude Code adds this pattern to your *global* git excludes, but only for
+    a file it wrote itself. `init` writes this one by hand, so that safety net
+    does not apply and we have to place the entry ourselves. Getting this
+    wrong means writing a secret into a file the user then commits, so it is
+    checked on every run rather than only at creation.
+    """
+    path = directory / ".gitignore"
+    existing = path.read_text() if path.exists() else ""
+    lines = {line.strip() for line in existing.splitlines()}
+    if lines & {_GITIGNORE_PATTERN, ".claude/settings.local.json", ".claude/"}:
+        return None
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    with path.open("a") as f:
+        f.write(f"{prefix}{_GITIGNORE_PATTERN}\n")
+    return f"added {_GITIGNORE_PATTERN} to .gitignore"
+
+
+def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], bool]:
+    """Record the workspace key so agents in this repo pick it up.
+
+    Refuses to replace a *different* key already on disk without --force.
+    Silently swapping one is the worst available failure: nothing errors, but
+    this agent and the ones still holding the old key seal to different keys
+    and simply never see each other's messages again.
+    """
+    steps: list[str] = []
+    ignored = _ensure_gitignored(directory)
+    if ignored:
+        steps.append(ignored)
+
+    path = directory / _LOCAL_SETTINGS_REL
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except ValueError as exc:
+            steps.append(f"left {_LOCAL_SETTINGS_REL} alone: not valid JSON ({exc})")
+            return steps, False
+    else:
+        data = {}
+    env = data.setdefault("env", {})
+    existing = env.get("SWITCHBOARD_KEY")
+    if existing == key:
+        steps.append(f"left {_LOCAL_SETTINGS_REL} alone: this key is already set")
+        return steps, True
+    if existing and not force:
+        steps.append(
+            f"left {_LOCAL_SETTINGS_REL} alone: a different SWITCHBOARD_KEY is "
+            "already set. Replacing it silently would cut this agent off from "
+            "everyone still using the old one — pass --force if that is what you want"
+        )
+        return steps, False
+    env["SWITCHBOARD_KEY"] = key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    steps.append(
+        f"{'replaced the key in' if existing else 'wrote the workspace key to'} "
+        f"{_LOCAL_SETTINGS_REL}"
+    )
+    return steps, True
+
+
 _SKILL_NAME = "switchboard-coordinate"
 
 #: Every SKILL.md `init` has ever installed, oldest first, excluding the
@@ -1070,25 +1147,48 @@ def _init_claude_md(directory: Path, *, force: bool = False) -> str:
 def cmd_init(args: argparse.Namespace) -> int:
     """Wire up a repo end to end: .mcp.json, lifecycle hooks, CLAUDE.md, the
     coordination skill, a dev token."""
-    if args.local and args.url:
+    arg_url = getattr(args, "init_url", None) or args.url
+    quiet = getattr(args, "init_quiet", False) or args.quiet
+    as_json = getattr(args, "init_json", False) or args.json
+    arg_token = getattr(args, "init_token", None) or args.token
+    if args.local and arg_url:
         print("error: --local and --url are mutually exclusive — pick one.", file=sys.stderr)
         return EXIT_ERROR
 
+    key = getattr(args, "init_key", None) or args.key or os.environ.get("SWITCHBOARD_KEY")
+    if args.new_key and key:
+        print(
+            "error: --new-key and --key are mutually exclusive — mint a key or adopt "
+            "one, not both.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
     directory = Path(args.dir or ".").resolve()
-    workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
+    arg_workspace = getattr(args, "init_workspace", None) or args.workspace
+    explicit_workspace = bool(arg_workspace or os.environ.get("SWITCHBOARD_WORKSPACE"))
+    workspace = arg_workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
         directory
     )
+    minted: str | None = None
+    if args.new_key:
+        minted = key = generate_key()
+        # Pair it with an opaque name, for the reason `keygen` explains: the
+        # workspace is the one thing the hub always sees in the clear, and a
+        # repo slug tells an operator more than anything else we hand over.
+        if not explicit_workspace:
+            workspace = "w_" + generate_key()[:16]
     if args.local:
         url = "http://127.0.0.1:8787"
     else:
-        url = (args.url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
+        url = (arg_url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
     local_hub = url in _LOCAL_HUB_URLS
     managed_hub = url == MANAGED_HUB_URL and not local_hub
 
     steps: list[str] = []
     token: str | None = None
     if local_hub:
-        token, msg = _init_token(directory, args.token)
+        token, msg = _init_token(directory, arg_token)
         steps.append(msg)
     if not args.skip_mcp:
         steps.append(_init_mcp_json(directory, url, workspace))
@@ -1098,6 +1198,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         steps.append(_init_claude_md(directory, force=args.force))
     if not args.skip_skill:
         steps.append(_init_skill(directory, force=args.force))
+    key_ok = True
+    if key:
+        key_steps, key_ok = _init_key(directory, key, force=args.force)
+        steps.extend(key_steps)
 
     local_hub_note = (
         "this hub is only reachable from this machine — a cloud session or CI runner "
@@ -1112,9 +1216,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         "user of the default hub can read and post to your workspace. Fine for "
         "trying things out; not yet a private space.\n"
         "  To make it private without leaving the hub, give your team a key: "
-        "`switchboard keygen` prints a key and an opaque workspace name to pair "
-        "with it. Set both on every agent (SWITCHBOARD_KEY, SWITCHBOARD_WORKSPACE). "
-        "Bodies, board values, lease notes and branch names are then sealed before "
+        "re-run `switchboard init --new-key`. It mints one, pairs it with an "
+        "opaque workspace name, and prints the command your teammates run to "
+        "adopt it. Bodies, board values, lease notes and branch names are then sealed before "
         "they leave your machine and the key never reaches the hub, so nobody else "
         "on it can read your workspace or guess its name.\n"
         "  What a key does not hide is metadata — the hub still sees message "
@@ -1122,21 +1226,49 @@ def cmd_init(args: argparse.Namespace) -> int:
         "`switchboard init --local` (or `--url` to point at a hub you already "
         "deployed)."
     )
+    sealed_note = (
+        f"this workspace is sealed with a key held only on this machine, so "
+        f"other users of {MANAGED_HUB_URL} cannot read it. The hub still sees "
+        "message timing, volume, and how many agents you run — a key hides "
+        "content, not metadata. Self-host if that matters.\n"
+        f"  Every agent that should see this workspace needs the same key and "
+        f"the same workspace name ({workspace}). They do not have to be on this "
+        "machine — run `switchboard init --key <key> -w " + workspace + "` in "
+        "each place, or set SWITCHBOARD_KEY and SWITCHBOARD_WORKSPACE in a "
+        "cloud environment's config."
+    )
+    if key and key_ok and managed_hub:
+        managed_hub_note = sealed_note
+    # A key without a matching workspace name is the quiet failure: sealing
+    # works, routing does not, and the two agents just never meet.
+    if key and not minted and not explicit_workspace:
+        steps.append(
+            f"note: workspace defaulted to {workspace!r}. A key only puts you in "
+            "the same room as whoever gave it to you if the workspace name "
+            "matches theirs too — pass -w if it does not"
+        )
 
-    if args.json:
+    if as_json:
         payload: dict[str, Any] = {"workspace": workspace, "url": url, "steps": steps}
         if local_hub:
             payload["note"] = local_hub_note
         elif managed_hub:
             payload["note"] = managed_hub_note
+        if minted and key_ok:
+            payload["key"] = minted
         _print_json(payload)
-        return EXIT_OK
+        return EXIT_OK if key_ok else EXIT_ERROR
 
     fmt = Fmt(_use_color(sys.stdout))
-    if not args.quiet:
+    if not quiet:
         print(fmt.bold(f"switchboard init — workspace {fmt.cyan(workspace)}, hub {url}"))
         for step in steps:
-            marker = fmt.dim("·") if step.startswith("left ") else fmt.green("+")
+            if step.startswith("left "):
+                marker = fmt.dim("·")
+            elif step.startswith("note:"):
+                marker = fmt.yellow("!")
+            else:
+                marker = fmt.green("+")
             print(f"  {marker} {step}")
         if local_hub:
             print()
@@ -1157,7 +1289,16 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"  {n}. export SWITCHBOARD_TOKEN={token or '<token>'} in every agent's shell")
         n += 1
         print(f"  {n}. restart Claude Code and check `/mcp` — switchboard should show connected")
-    return EXIT_OK
+        if minted and key_ok:
+            # Printed once, and never again: it is on disk but `init` will not
+            # read it back out to show you, and the hub cannot recover it.
+            print()
+            print(fmt.bold("Your new workspace key — copy it now, it is not shown again:"))
+            print(f"  {minted}")
+            print(
+                f"  Give teammates: switchboard init --key {minted} -w {workspace}"
+            )
+    return EXIT_OK if key_ok else EXIT_ERROR
 
 
 # --- parser -----------------------------------------------------------------
@@ -1216,6 +1357,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="self-host instead of using the managed hub: point .mcp.json at "
              "http://127.0.0.1:8787 and generate a dev token. Shorthand for "
              "--url http://127.0.0.1:8787. Mutually exclusive with --url.",
+    )
+    # `init` accepts the connection options after the subcommand as well as
+    # before it. They are global options, so `switchboard init -w foo` was an
+    # "unrecognized arguments" error — including in the two places init's own
+    # output tells you to type it. Separate dests so that the parent form
+    # (`switchboard -w foo init`) keeps working: a subparser option sharing a
+    # dest overwrites the parent's value with its own default whenever the
+    # flag is not repeated after the subcommand. cmd_init reads both.
+    p.add_argument("-w", "--workspace", dest="init_workspace", help=argparse.SUPPRESS)
+    p.add_argument("--url", dest="init_url", help=argparse.SUPPRESS)
+    p.add_argument("--token", dest="init_token", help=argparse.SUPPRESS)
+    p.add_argument("-q", "--quiet", dest="init_quiet", action="store_true",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--json", dest="init_json", action="store_true", help=argparse.SUPPRESS)
+    # A separate dest from the global --key so that `switchboard --key K init`
+    # keeps working: a subparser option sharing a dest overwrites the parent's
+    # value with its own default when the flag is not repeated after the
+    # subcommand. cmd_init reads both.
+    p.add_argument(
+        "--key", dest="init_key",
+        help="adopt an existing workspace key (env: SWITCHBOARD_KEY) — the one a "
+             "teammate gave you. Written to .claude/settings.local.json, which is "
+             "kept out of git. Pair it with the same -w workspace they use, or you "
+             "will be sealed correctly and routed somewhere else.",
+    )
+    p.add_argument(
+        "--new-key", action="store_true",
+        help="mint a fresh workspace key and an opaque workspace name to go with "
+             "it, then print the key once so you can share it. Use this on the "
+             "first machine only; every other machine adopts it with --key. "
+             "Mutually exclusive with --key.",
     )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(

@@ -271,13 +271,18 @@ A hub only ever needs to *route* and *compare*, never to read. So it doesn't
 have to:
 
 ```bash
-switchboard keygen   # prints a key, plus an opaque workspace name to pair with it
+switchboard init --new-key                    # once, wherever you set it up
+switchboard init --key <key> -w <workspace>   # on every other machine
 ```
 
-Set both on every agent in the workspace. The key never reaches the hub. The
-workspace name *does* — it is the routing key and cannot be encrypted — which
-is why `keygen` hands you an opaque one rather than letting `acme/billing`
-become the most descriptive string the hub holds.
+`init` keeps the key out of git (`.claude/settings.local.json`, gitignored)
+and puts only the workspace name in the committed `.mcp.json`. The key never
+reaches the hub. The workspace name *does* — it is the routing key and cannot
+be encrypted — which is why `--new-key` pairs it with an opaque one rather
+than letting `acme/billing` become the most descriptive string the hub holds.
+
+`switchboard keygen` still prints a bare key and workspace name if you would
+rather distribute `SWITCHBOARD_KEY` through your own secret store.
 
 Message bodies, blackboard values, lease notes, branch names and task
 descriptions are sealed with AES-256-GCM before they leave the agent. Channel

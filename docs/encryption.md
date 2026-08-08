@@ -6,11 +6,18 @@ task descriptions are sealed before they leave the agent; channel names, lease
 resources and agent ids are replaced by opaque tokens.
 
 ```bash
-switchboard keygen   # prints a key, plus an opaque workspace name to pair with it
+switchboard init --new-key   # first machine: mints a key, prints it once
+switchboard init --key <key> -w <workspace>   # every other machine: adopts it
 ```
 
-Set `SWITCHBOARD_KEY` and `SWITCHBOARD_WORKSPACE` on every agent in the
-workspace. The key never reaches the hub.
+`init` writes the key to `.claude/settings.local.json`, adds that path to
+`.gitignore`, and puts only the (opaque) workspace name in the committed
+`.mcp.json`. Claude Code applies that file's `env` to the subprocesses it
+spawns, so the MCP bridge picks the key up without anyone exporting anything.
+
+If you would rather handle it yourself, `switchboard keygen` prints a key and
+a workspace name and you set `SWITCHBOARD_KEY` and `SWITCHBOARD_WORKSPACE` on
+every agent by hand. Either way the key never reaches the hub.
 
 That is the whole setup. Everything else — `claim`, `say`, `inbox`, `checkin`,
 the MCP tools — behaves exactly as before.
@@ -309,7 +316,7 @@ whatever means you already use for secrets:
 
 | Agent runs on | Put it in |
 |---|---|
-| a developer machine | the shell profile, or a `.env` your tooling already loads |
+| a developer machine | `switchboard init --key <key> -w <workspace>`, or the shell profile |
 | CI | the repository's secret store (`SWITCHBOARD_KEY`, `SWITCHBOARD_WORKSPACE`) |
 | a cloud coding session | the session's environment settings |
 | a container | the orchestrator's secret mechanism, not the image |
