@@ -86,12 +86,38 @@ Two consequences worth stating:
 either can re-declare as its sense of the work changes, getting a fresh
 forecast back each time.
 
-`TimingModel` tracks the open window in its own `pending` table. Deltas
-above `MAX_OBSERVATION_SECONDS` (6h) are dropped as restarts/overnight
-gaps rather than genuine work time; this is the one outlier heuristic v1
-needs, and the schema is intentionally raw enough to layer richer
-detection (active vs. waiting vs. external-call time, interruption
-tagging) on top later.
+`TimingModel` tracks the open window in its own `pending` table. The
+schema is intentionally raw enough to layer richer detection (active vs.
+waiting vs. external-call time, interruption tagging) on top later.
+
+### The outlier ceiling, and why it moved
+
+`MAX_OBSERVATION_SECONDS` was originally 6h, chosen as a crude proxy for
+"this gap is really a restart, not behaviour". Runtime identity now
+detects restarts *exactly*, so that job is done properly elsewhere — which
+left the ceiling doing nothing but truncating agents that are genuinely
+slow. Truncation from above biases the upper quantile low, and low is the
+one direction that misleads a collaborator.
+
+It is now 24h: the point past which a forecast is meaningless anyway,
+since the message being coordinated over has already expired
+(`MAX_MESSAGE_TTL`). What it still rejects is *counted* per bucket in the
+`dropped` table and surfaced by `calibration()` as `dropped_as_outliers`,
+because every censored observation is a gap longer than anything the
+estimator was allowed to see. A high count means p95 is optimistic and the
+reported hit rate overstates how calibrated that agent really is — a bias
+worth being able to see rather than one silently absorbed.
+
+### Retention
+
+Each `(class, effort)` bucket keeps its most recent
+`MAX_OBSERVATIONS_PER_BUCKET` (500) observations. Timing history is a
+moving window, not an archive: an agent that got faster should not be held
+back by samples from when it was slow, and the table should not grow
+without bound. The execution-class shortlist already decays for the same
+reason — this is the timing distribution's version, kept as a simple
+window because a weighted-quantile estimator is straightforward to swap in
+later.
 
 ### Calibration data
 

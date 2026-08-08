@@ -53,10 +53,25 @@ _BOOTSTRAP_SECONDS: dict[str, tuple[float, float]] = {
 }
 _DEFAULT_BOOTSTRAP = _BOOTSTRAP_SECONDS["medium"]
 
-#: An observed delta this large is almost certainly a restart, an
-#: overnight gap, or an unrelated event rather than genuine work time, so
-#: it is dropped rather than poisoning the distribution.
-MAX_OBSERVATION_SECONDS = 6 * 3600.0
+#: Sanity ceiling on a single observation. Originally 6h, chosen as a
+#: crude proxy for "this gap is really a restart, not behaviour" — but
+#: restarts are now detected exactly (see _RUNTIME_ID), so that job is
+#: done properly elsewhere and the ceiling's only remaining effect was to
+#: truncate agents that are genuinely slow. Truncating from above biases
+#: the upper quantile low, which is the one direction that misleads, so
+#: the ceiling is now set where a forecast stops meaning anything at all:
+#: past MAX_MESSAGE_TTL the message being coordinated over has expired.
+#: What it does drop is counted (see `dropped` table) rather than
+#: discarded silently, so the remaining bias stays measurable.
+MAX_OBSERVATION_SECONDS = 24 * 3600.0
+
+#: Per-bucket retention. Observations are a moving window rather than a
+#: permanent archive: an agent that got faster should not carry its old
+#: slow samples forever, and the table should not grow without bound. The
+#: execution-class shortlist already decays for the same reason; this is
+#: the timing distribution's version of it, kept as a simple window
+#: because a weighted-quantile estimator is easy to swap in later.
+MAX_OBSERVATIONS_PER_BUCKET = 500
 
 #: Below this many samples, a bucket is considered too sparse to trust and
 #: the estimator falls back to a coarser one.
@@ -168,6 +183,20 @@ class TimingModel:
                     runtime         TEXT,
                     PRIMARY KEY (agent_id, workspace)
                 );
+
+                -- Observations the ceiling rejected. Kept as counts so the
+                -- truncation bias is visible instead of silent: a bucket
+                -- with many drops has an upper quantile you should not
+                -- trust, and that is worth being able to see.
+                CREATE TABLE IF NOT EXISTS dropped (
+                    agent_id        TEXT NOT NULL,
+                    workspace       TEXT NOT NULL,
+                    execution_class TEXT NOT NULL,
+                    effort          TEXT NOT NULL,
+                    count           INTEGER NOT NULL DEFAULT 0,
+                    last_seconds    REAL,
+                    PRIMARY KEY (agent_id, workspace, execution_class, effort)
+                );
                 """
             )
             self._add_missing_columns(conn)
@@ -204,15 +233,33 @@ class TimingModel:
     def _record(self, agent_id: str, workspace: str, execution_class: str,
                 effort: str, delta_seconds: float, now: float,
                 predicted: tuple[float | None, float | None, str | None]) -> None:
-        if not (0 < delta_seconds <= MAX_OBSERVATION_SECONDS):
-            return
         conn = self._connection()
+        if not (0 < delta_seconds <= MAX_OBSERVATION_SECONDS):
+            conn.execute(
+                "INSERT INTO dropped (agent_id, workspace, execution_class, effort, "
+                "count, last_seconds) VALUES (?, ?, ?, ?, 1, ?) "
+                "ON CONFLICT(agent_id, workspace, execution_class, effort) DO UPDATE SET "
+                "count = count + 1, last_seconds = excluded.last_seconds",
+                (agent_id, workspace, execution_class, effort, delta_seconds),
+            )
+            conn.commit()
+            return
         conn.execute(
             "INSERT INTO observations "
             "(agent_id, workspace, execution_class, effort, delta_seconds, observed_at, "
             " predicted_p50, predicted_p95, predicted_from) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (agent_id, workspace, execution_class, effort, delta_seconds, now, *predicted),
+        )
+        # Keep the bucket to a moving window. Deleting by id keeps the most
+        # recent rows, so the distribution tracks how this agent behaves now
+        # rather than averaging over everything it has ever done.
+        conn.execute(
+            "DELETE FROM observations WHERE id IN ("
+            "  SELECT id FROM observations"
+            "  WHERE agent_id = ? AND workspace = ? AND execution_class = ? AND effort = ?"
+            "  ORDER BY id DESC LIMIT -1 OFFSET ?)",
+            (agent_id, workspace, execution_class, effort, MAX_OBSERVATIONS_PER_BUCKET),
         )
         conn.commit()
 
@@ -451,15 +498,27 @@ class TimingModel:
         and roughly 95% under its p95. This reads the predictions stored
         with each observation, so it stays answerable retroactively.
         """
-        rows = self._connection().execute(
+        conn = self._connection()
+        rows = conn.execute(
             "SELECT delta_seconds, predicted_p50, predicted_p95 FROM observations "
             "WHERE agent_id = ? AND workspace = ? AND predicted_p50 IS NOT NULL",
             (agent_id, workspace),
         ).fetchall()
+        # Reported alongside the hit rates rather than buried, because
+        # censored observations bias the upper quantile low: every one is a
+        # gap longer than anything the estimator was allowed to see. A high
+        # count means p95 is optimistic and the hit rate below overstates
+        # how well calibrated this agent really is.
+        dropped = conn.execute(
+            "SELECT COALESCE(SUM(count), 0) FROM dropped "
+            "WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+        ).fetchone()[0]
         if not rows:
-            return {"samples": 0, "p50_hit_rate": None, "p95_hit_rate": None}
+            return {"samples": 0, "p50_hit_rate": None, "p95_hit_rate": None,
+                    "dropped_as_outliers": dropped}
         return {
             "samples": len(rows),
             "p50_hit_rate": sum(d <= p50 for d, p50, _ in rows) / len(rows),
             "p95_hit_rate": sum(d <= p95 for d, _, p95 in rows) / len(rows),
+            "dropped_as_outliers": dropped,
         }
