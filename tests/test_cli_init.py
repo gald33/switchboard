@@ -1200,3 +1200,90 @@ def test_the_scripts_are_not_secret_and_belong_in_git(monkeypatch, capsys, tmp_p
     script = (tmp_path / _HOOKS_DIR / "session-start.sh").read_text()
     assert "SWITCHBOARD_KEY" not in script
     assert "SWITCHBOARD_TOKEN" not in script
+
+
+def test_warns_when_the_hook_scripts_would_not_be_committed(monkeypatch, capsys, tmp_path):
+    # The cost of splitting the bodies out: the shim is committed, so a clone
+    # without the scripts gets hooks pointing at nothing — and `|| true` makes
+    # that quiet. Cheap to check, invisible when wrong, so check every run.
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text(".switchboard/\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "note:" in out
+    assert ".switchboard/hooks/ is gitignored" in out
+
+
+def test_no_warning_when_the_scripts_are_committable(monkeypatch, capsys, tmp_path):
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "is gitignored" not in out
+
+
+def test_no_warning_outside_a_git_repo(monkeypatch, capsys, tmp_path):
+    # `git check-ignore` exits 128 here; that is not a reason to warn.
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "is gitignored" not in out
+
+
+def test_hook_scripts_are_executable(monkeypatch, capsys, tmp_path):
+    run_init(monkeypatch, capsys, tmp_path)
+    assert os.access(tmp_path / _HOOKS_DIR / "session-start.sh", os.X_OK)
+
+
+# --- adopting a key without -w is two different acts ------------------------
+
+
+def test_adopting_a_key_in_a_repo_with_a_remote_reads_as_correct(monkeypatch, capsys, tmp_path):
+    # The multi-repo flow: one key, a different workspace per repo. A note
+    # that reads as a warning here trains people to ignore notes.
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "remote", "add", "origin",
+         "https://github.com/acme/widgets.git"],
+        check=True, capture_output=True,
+    )
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert "'acme/widgets'" in out and "from its git remote" in out
+    assert "adding another of your own repos" in out
+    # the teammate case is still called out, just not as the headline
+    assert "came from someone else" in out
+
+
+def test_adopting_a_key_with_no_remote_warns_harder(monkeypatch, capsys, tmp_path):
+    # Nothing else will ever derive this name, so silence would be wrong.
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY")
+    assert "no git remote" in out
+    assert "no other agent will arrive at on its own" in out
+
+
+def test_an_explicit_workspace_gets_no_note(monkeypatch, capsys, tmp_path):
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "acme/shared")
+    assert "note:" not in out
+
+
+# --- --skip-mcp still reads where the repo routes ---------------------------
+
+
+def test_skip_mcp_still_pairs_the_key_with_the_registered_workspace(
+    monkeypatch, capsys, tmp_path
+):
+    # --skip-mcp means "do not write the file", not "pretend it says nothing".
+    # The key/workspace pairing fails silently, so it has to be checked even
+    # when we are not touching .mcp.json.
+    _write_mcp(tmp_path, "acme/billing")
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-mcp")
+    assert "acme/billing" in out
+    assert _mcp_ws(tmp_path) == "acme/billing"  # untouched, as asked
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w acme/billing" in out
+
+
+def test_skip_mcp_never_repoints_even_with_force(monkeypatch, capsys, tmp_path):
+    # --force must not silently change the workspace we pair against while
+    # leaving the file that actually routes untouched: that is the original
+    # misroute bug wearing a different hat.
+    _write_mcp(tmp_path, "acme/billing")
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-mcp", "--force")
+    assert _mcp_ws(tmp_path) == "acme/billing"
+    minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert f"--key {minted} -w acme/billing" in out
