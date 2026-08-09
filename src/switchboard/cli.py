@@ -1927,16 +1927,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         "`switchboard init --local` (or `--url` to point at a hub you already "
         "deployed)."
     )
+    # Just the privacy claim. This used to carry setup instructions too, which
+    # the explainer at the end now gives — and gave differently, telling you to
+    # pass -w and to set SWITCHBOARD_WORKSPACE in a cloud environment, both of
+    # which pin a machine to a workspace it should be reading from the repo.
     sealed_note = (
         f"this workspace is sealed with a key held only on this machine, so "
         f"other users of {MANAGED_HUB_URL} cannot read it. The hub still sees "
         "message timing, volume, and how many agents you run — a key hides "
-        "content, not metadata. Self-host if that matters.\n"
-        f"  Every agent that should see this workspace needs the same key and "
-        f"the same workspace name ({workspace}). They do not have to be on this "
-        "machine — run `switchboard init --key <key> -w " + workspace + "` in "
-        "each place, or set SWITCHBOARD_KEY and SWITCHBOARD_WORKSPACE in a "
-        "cloud environment's config."
+        "content, not metadata. Self-host if that matters."
     )
     if key and key_ok and managed_hub:
         managed_hub_note = sealed_note
@@ -2006,19 +2005,20 @@ def cmd_init(args: argparse.Namespace) -> int:
             print(f"       export SWITCHBOARD_TOKEN={token}")
             print("       switchboard serve")
             n += 1
-        if local_hub or not token_on_disk:
-            print(
-                f"  {n}. export SWITCHBOARD_TOKEN={token or '<token>'} in every agent's shell"
-            )
+        if local_hub:
+            print(f"  {n}. export SWITCHBOARD_TOKEN={token} in every agent's shell")
             n += 1
-        else:
-            # Already written where the MCP subprocess will read it, same as
-            # the workspace key. Telling someone to export it by hand here is
-            # how a stale token in a shell silently outranks the right one.
-            print(f"  {n}. this repo's token is in {_LOCAL_SETTINGS_REL}; set "
-                  "SWITCHBOARD_TOKEN in a cloud environment's secret store to "
-                  "let agents there join too")
+        elif not token_on_disk:
+            # Nothing useful to print as a value — `<token>` was a placeholder
+            # people were meant to fill from somewhere this never named. Say
+            # where it actually comes from instead.
+            print(f"  {n}. this repo has no token yet: `switchboard init` registers "
+                  "one against a hub that issues its own, or set SWITCHBOARD_TOKEN "
+                  "from whoever runs the hub")
             n += 1
+        # When the token *is* on disk there is nothing to do: the MCP
+        # subprocess reads it from there, and the explainer below covers
+        # handing it to another environment.
         print(f"  {n}. restart Claude Code and check `/mcp` — switchboard should show connected")
         if minted and key_ok:
             # Printed once, and never again: it is on disk but `init` will not
@@ -2037,11 +2037,12 @@ def cmd_init(args: argparse.Namespace) -> int:
             print(
                 f"  Give teammates: switchboard init --key {minted} -w {workspace}"
             )
+            # Where it is saved is the explainer's line now. What survives here
+            # is the part nothing else says: the hub cannot get it back for you.
             print(
-                f"  Saved to {_LOCAL_SETTINGS_REL} (gitignored) — `switchboard "
-                "whoami --show-key` prints it again. The hub never receives it, so "
-                "nobody there can read this workspace, and nobody there can recover "
-                "the key if you lose that file."
+                "  Saved on disk, and `switchboard whoami --show-key` prints it "
+                "again — but the hub never receives it, so nobody there can read "
+                "this workspace or recover the key if you lose the file."
             )
         if not local_hub:
             _print_scope_explainer(fmt, minted if key_ok else None, token_on_disk)
@@ -2049,29 +2050,37 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) -> None:
-    """Say which half of this setup travels with the repo and which does not.
+    """Say which part of this setup a clone brings and which it does not.
 
-    People read `init` as one job because it is one command. Nothing then
-    suggests a second machine needs anything, until its agents sit in an empty
-    room that looks exactly like nobody being around.
+    The split is committed versus secret, not repo versus machine. Both halves
+    sit in the repo — the secrets in a gitignored file — which is why a second
+    repo has to be given the key even on the same machine, and why calling
+    that half "the machine" was wrong: it reads as though the machine already
+    has it.
 
-    Kept to a handful of lines on purpose: the earlier version explained the
+    Kept to a handful of lines on purpose. An earlier version explained the
     whole model and was long enough that skimming past it was the likely
     outcome, which is the same as not printing it.
     """
     secrets = "key + token" if token_on_disk else "key"
     print()
     print(fmt.bold("Two halves"))
-    print(f"  {fmt.cyan('repo')}     .mcp.json, .switchboard/hooks — commit; every clone "
-          "gets them")
-    print(f"  {fmt.cyan('machine')}  {secrets} in {_LOCAL_SETTINGS_REL} — secret, and "
-          "not in the clone")
+    print(f"  {fmt.cyan('committed')}  .mcp.json, .switchboard/hooks — hub URL and "
+          "workspace; every clone gets these")
+    print(f"  {fmt.cyan('secret')}     {secrets} in {_LOCAL_SETTINGS_REL} — gitignored, "
+          "and written per repo")
     print()
-    # `<key>` rather than the value: it is printed directly above when we
-    # minted one, and repeating a 43-character secret here buys nothing.
-    print("  another repo here     switchboard init --key <key>   (no -w)")
-    print("  another machine       switchboard whoami --env   → paste it there")
-
+    # Per repo, so a second one needs the key handed to it even here. Exporting
+    # it once is the alternative, and worth naming: `init` reads the
+    # environment, so people who set it up that way never touch --key again.
+    print("  another repo      switchboard init --key <key>   (or export "
+          "SWITCHBOARD_KEY first)")
+    # The package first: without it `switchboard-mcp` is not on PATH and the
+    # MCP server never starts, so the secrets have nothing to reach the hub
+    # with. Two steps because it is genuinely two, and leaving one out is how
+    # a cloud session ends up with no switchboard tools and no clue why.
+    print("  another machine   1. pip install agent-switchboard   "
+          "2. paste `switchboard whoami --env`")
 
 
 # --- parser -----------------------------------------------------------------
