@@ -20,8 +20,10 @@ from typing import Any, Sequence
 
 import httpx
 
+from . import signing
 from .config import ClientConfig
 from .crypto import DecryptionError, WorkspaceCipher, is_sealed
+from .signing import SigningIdentity
 
 __all__ = [
     "SwitchboardError",
@@ -202,7 +204,7 @@ def _headers(token: str | None) -> dict[str, str]:
 #: move a sealed value from one field to another and have it still open.
 _SEAL_BODY: dict[str, dict[str, str]] = {
     "/agents/register": {"name": "agent.name", "branch": "agent.branch",
-                         "task": "agent.task"},
+                         "task": "agent.task", "pubkey": "agent.pubkey"},
     "/agents/heartbeat": {"task": "agent.task"},
     "/leases/acquire": {"note": "lease.note"},
     "/leases/renew": {"note": "lease.note"},
@@ -223,8 +225,10 @@ _BLIND_BODY: dict[str, dict[str, str]] = {
 
 #: Response keys that carry sealed fields, and the context each was sealed under.
 _OPEN_RESPONSE: dict[str, dict[str, str]] = {
-    "agents": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task"},
-    "agent": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task"},
+    "agents": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task",
+               "pubkey": "agent.pubkey"},
+    "agent": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task",
+              "pubkey": "agent.pubkey"},
     "leases": {"note": "lease.note"},
     "lease": {"note": "lease.note"},
     "messages": {"body": "message.body"},
@@ -303,6 +307,12 @@ class _Base:
         #: consistently, and a roster entry can be handed straight back to
         #: `dm()` because it is already in hub form.
         self.agent_id = self.cipher.blind(local, "agent") if self.cipher else local
+        #: This process's signing identity, generated here and never persisted.
+        #: See signing.py for why it must not touch a file: the peers it exists
+        #: to distinguish are usually sibling processes sharing a filesystem.
+        #: One per Client, so two clients in one process are two agents — which
+        #: is what they are.
+        self.signing = SigningIdentity.generate() if signing.AVAILABLE else None
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
@@ -387,6 +397,15 @@ class _Base:
         if cipher is _UNSET:
             cipher = self.cipher
         return cipher.blind(value, domain) if cipher else value
+
+    @property
+    def public_key(self) -> str | None:
+        """What peers verify this agent's signatures against.
+
+        Published at registration, sealed like any other content, so the hub
+        stores an opaque string and learns nothing from it.
+        """
+        return self.signing.public_key if self.signing else None
 
     def _seal_request(
         self, path: str, kwargs: dict[str, Any], cipher: WorkspaceCipher | None,
@@ -515,7 +534,7 @@ class Client(_Base):
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "ttl": ttl,
+            "meta": meta or {}, "pubkey": self.public_key, "ttl": ttl,
         })["agent"]
 
     def heartbeat(self, *, task: str | None = None, ttl: float | None = None,

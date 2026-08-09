@@ -691,3 +691,42 @@ def test_custom_scope_does_not_change_the_agents_default_identity(hub, key):
     default_id = a1.agent_id
     a1.post("plan", "x", custom_scope=side_scope())
     assert a1.agent_id == default_id
+
+
+# --- agent signing keys ------------------------------------------------------
+#
+# The workspace key proves "someone in this room wrote this". It cannot prove
+# *which member*, because every member holds it — so `agent_id` is a claim
+# rather than a fact. A per-agent signing key is the other half, and it is
+# published sealed so peers can attribute while the hub still cannot.
+
+
+def test_a_peer_reads_the_public_key_and_the_hub_never_does(hub, key):
+    http, db, store = hub
+    alice = bound(http, key, "alice")
+    bob = bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+
+    roster = {a["name"]: a for a in bob.agents()}
+    assert roster["alice"]["pubkey"] == alice.public_key
+    assert roster["alice"]["pubkey"] != roster["bob"]["pubkey"], "one key per agent"
+
+    # and it is nowhere on disk in the clear — same standard as message bodies
+    assert alice.public_key.encode() not in hub_bytes(db)
+
+
+def test_two_agents_in_one_process_are_two_identities(hub, key):
+    # A Client is an agent. Sharing a signing key between two would make the
+    # scheme claim something it cannot back.
+    http, _, _ = hub
+    assert bound(http, key, "a").public_key != bound(http, key, "b").public_key
+
+
+def test_the_private_half_never_reaches_a_repr(key):
+    from switchboard.signing import SigningIdentity
+
+    identity = SigningIdentity.generate()
+    # a traceback or a crash report must not carry it
+    assert "private" not in repr(identity).lower()
+    assert identity.public_key[:12] in repr(identity)

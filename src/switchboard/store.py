@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS agents (
     task          TEXT,
     channels      TEXT NOT NULL DEFAULT '[]',
     meta          TEXT NOT NULL DEFAULT '{}',
+    pubkey        TEXT,
     registered_at REAL NOT NULL,
     last_seen_at  REAL NOT NULL,
     expires_at    REAL NOT NULL,
@@ -177,6 +178,10 @@ class Agent:
     task: str | None
     channels: list[str]
     meta: dict[str, Any]
+    #: The agent's signing public key, sealed by the client. Opaque to the
+    #: hub: stored and echoed, never verified against — verification happens
+    #: between peers, who are the only ones holding the workspace key.
+    pubkey: str | None
     registered_at: float
     last_seen_at: float
     expires_at: float
@@ -236,6 +241,9 @@ def _agent(row: sqlite3.Row) -> Agent:
         task=row["task"],
         channels=_loads(row["channels"], []),
         meta=_loads(row["meta"], {}),
+        # Databases created before this column exists still answer here, so
+        # read it defensively rather than by subscript.
+        pubkey=row["pubkey"] if "pubkey" in row.keys() else None,
         registered_at=row["registered_at"],
         last_seen_at=row["last_seen_at"],
         expires_at=row["expires_at"],
@@ -316,6 +324,11 @@ class Store:
         redundant-but-harmless index creation — safe to run unconditionally
         every time the store opens.
         """
+        # Same reasoning for agents.pubkey: CREATE TABLE IF NOT EXISTS will
+        # not add a column to a database that predates it.
+        agent_cols = {row["name"] for row in conn.execute("PRAGMA table_info(agents)")}
+        if "pubkey" not in agent_cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN pubkey TEXT")
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(cursors)")}
         if "expires_at" not in cols:
             conn.execute("ALTER TABLE cursors ADD COLUMN expires_at REAL NOT NULL DEFAULT 0")
@@ -392,6 +405,7 @@ class Store:
         task: str | None = None,
         channels: Sequence[str] = (),
         meta: dict[str, Any] | None = None,
+        pubkey: str | None = None,
         ttl: float,
         now: float | None = None,
     ) -> Agent:
@@ -403,8 +417,8 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO agents (workspace, id, name, kind, branch, task, channels, meta,
-                                    registered_at, last_seen_at, expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                    pubkey, registered_at, last_seen_at, expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(workspace, id) DO UPDATE SET
                     name=excluded.name,
                     kind=excluded.kind,
@@ -412,12 +426,13 @@ class Store:
                     task=excluded.task,
                     channels=excluded.channels,
                     meta=excluded.meta,
+                    pubkey=excluded.pubkey,
                     last_seen_at=excluded.last_seen_at,
                     expires_at=excluded.expires_at
                 """,
                 (
                     workspace, agent_id, name, kind, branch, task, chan_json, meta_json,
-                    now, now, now + ttl,
+                    pubkey, now, now, now + ttl,
                 ),
             )
             row = conn.execute(
