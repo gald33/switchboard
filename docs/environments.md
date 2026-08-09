@@ -57,9 +57,10 @@ which is the failure this check exists to prevent. `--skip-token` opts out; it
 is the only step that uses the network, and a hub it cannot reach is reported
 rather than fatal, since the files it writes are correct either way.
 
-`switchboard whoami --env` prints all four values as `NAME=value` lines for
-exactly this — paste them into the environment's own secret store. On a
-terminal it offers to copy them to your clipboard.
+`switchboard whoami --env` prints exactly those two as `NAME=value` lines —
+paste them into the environment's own secret store. On a terminal it offers to
+copy them to your clipboard. It deliberately stops there: the URL and the
+workspace are the repo's half, and a clone already has them.
 
 Then set `SWITCHBOARD_TOKEN` and `SWITCHBOARD_KEY` in the cloud environment's
 secret settings, and in your CI provider's secret store if CI agents should
@@ -109,7 +110,10 @@ Supported, with two things that will bite.
 
 There is no `.mcp.json` to be found, so register the MCP server in the
 platform's own configuration, with the command `switchboard-mcp`, and supply
-all four values as environment variables rather than two.
+all four values as environment variables rather than two — this is the one
+case where the URL and workspace belong in the environment, because nothing
+else will supply them. `switchboard whoami --env --no-repo`, run from a
+checkout that is already set up, prints all four for exactly this.
 
 **Set `SWITCHBOARD_WORKSPACE` explicitly.** This is the one people skip. With
 nothing set the client falls back to `default-<tag>` — as it does everywhere,

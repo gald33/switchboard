@@ -396,16 +396,27 @@ def _saved_key(directory: Path) -> str | None:
     return _saved_setting(directory, "SWITCHBOARD_KEY")
 
 
-def _env_block(url: str, workspace: str, key: str | None, token: str | None) -> str:
-    """The four values a second environment needs, ready to paste into its
-    own env file. Omits what this machine does not know rather than emitting
-    a blank that would silently override a correct value set elsewhere."""
-    pairs = [
-        ("SWITCHBOARD_URL", url),
-        ("SWITCHBOARD_WORKSPACE", workspace),
-        ("SWITCHBOARD_KEY", key),
-        ("SWITCHBOARD_TOKEN", token),
-    ]
+def _env_block(
+    url: str, workspace: str, key: str | None, token: str | None, *, all_four: bool
+) -> str:
+    """What a second environment has to be told, ready to paste.
+
+    The secrets only, by default. The URL and the workspace live in the
+    committed `.mcp.json`, so a checkout already has them — setting them in
+    the environment as well pins that machine to values it should be reading
+    from the repo, and it then keeps the old ones when the repo moves. That is
+    the same class of silent divergence as a mismatched key, arrived at by
+    being helpful.
+
+    `all_four` is for the environment that genuinely has no checkout to read
+    from (see docs/environments.md), where nothing else supplies them.
+
+    Omits what this machine does not know rather than emitting a blank, which
+    would override a correct value already set at the far end.
+    """
+    pairs = [("SWITCHBOARD_KEY", key), ("SWITCHBOARD_TOKEN", token)]
+    if all_four:
+        pairs = [("SWITCHBOARD_URL", url), ("SWITCHBOARD_WORKSPACE", workspace)] + pairs
     return "\n".join(f"{name}={value}" for name, value in pairs if value)
 
 
@@ -468,8 +479,28 @@ def cmd_whoami(args: argparse.Namespace) -> int:
             # Exactly what a second environment needs, in the shape its own
             # config file wants — assembling these by hand from four places is
             # where a wrong workspace or a stale token creeps in.
-            block = _env_block(url, workspace, key, token)
+            block = _env_block(url, workspace, key, token, all_four=args.no_repo)
             print(block)
+            if _can_prompt(
+                no_input=getattr(args, "no_input", False), quiet=args.quiet,
+                as_json=args.json,
+            ):
+                if args.no_repo:
+                    print(
+                        f"\nAll four, for an environment with no checkout. Where there "
+                        f"is one, drop --no-repo: {url} and {workspace} come from the "
+                        "committed .mcp.json, and setting them by hand pins that machine "
+                        "to values it should be following.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "\nThe secrets only. A checkout gets the hub URL and workspace "
+                        "from the committed .mcp.json, so setting those by hand would "
+                        "pin that machine to values it should be following. For an "
+                        "environment with no checkout at all, use --no-repo.",
+                        file=sys.stderr,
+                    )
             _offer_clipboard(block, "these settings", args)
             return EXIT_OK
         print(key)
@@ -2173,10 +2204,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--env", action="store_true",
-        help="print SWITCHBOARD_URL, WORKSPACE, KEY and TOKEN as NAME=value lines, "
-             "ready to paste into another environment's env file or secret store. "
-             "On a terminal it offers to put them on your clipboard. Implies "
-             "--show-key, and prints secrets for the same reason that one does.",
+        help="print the secrets another environment needs — SWITCHBOARD_KEY and "
+             "SWITCHBOARD_TOKEN — as NAME=value lines, ready to paste into its env "
+             "file or secret store. On a terminal it offers to put them on your "
+             "clipboard. The hub URL and workspace are deliberately not included: "
+             "they live in the committed .mcp.json, so a checkout already has them. "
+             "Prints secrets for the same reason --show-key does.",
+    )
+    p.add_argument(
+        "--no-repo", action="store_true",
+        help="with --env, also print SWITCHBOARD_URL and SWITCHBOARD_WORKSPACE — for "
+             "an environment that has no checkout to read them from.",
     )
     p.add_argument(
         "--show-key", action="store_true",

@@ -25,10 +25,11 @@ which you meant; pass `--force` to repoint the file at a fresh opaque name, or
 `--no-input` to take the default without being asked.
 
 To hand a second environment what it needs, `switchboard whoami --env` prints
-all four values as `NAME=value` lines, ready to paste into that environment's
-env file or secret store, and offers to put them on your clipboard.
-Assembling them by hand from four places is where a stale token or the wrong
-workspace creeps in.
+the two secrets as `NAME=value` lines, ready to paste into that environment's
+env file or secret store, and offers to put them on your clipboard. Only the
+secrets: a checkout reads the hub URL and workspace from the committed
+`.mcp.json`, and setting those by hand pins that machine to values it should
+be following.
 
 Because it is written to a file rather than only printed, the key is not lost
 if you close the terminal — `switchboard whoami --show-key` reads it back and

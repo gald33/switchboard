@@ -1505,7 +1505,11 @@ def test_the_explainer_is_quiet_under_json_and_q(monkeypatch, capsys, tmp_path):
 # --- handing the settings to another environment -----------------------------
 
 
-def test_env_prints_a_paste_ready_block(monkeypatch, capsys, tmp_path):
+def test_env_prints_only_the_secrets(monkeypatch, capsys, tmp_path):
+    # The URL and workspace live in the committed .mcp.json. Setting them in
+    # the environment too pins that machine to values it should be following,
+    # so it keeps the old ones when the repo moves — the same silent
+    # divergence as a mismatched key, arrived at by being helpful.
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     run_init(monkeypatch, capsys, tmp_path, "--new-key")
     settings = _local_settings(tmp_path)["env"]
@@ -1513,12 +1517,24 @@ def test_env_prints_a_paste_ready_block(monkeypatch, capsys, tmp_path):
     assert main(["whoami", "--env"]) == 0
     lines = capsys.readouterr().out.strip().splitlines()
     got = dict(ln.split("=", 1) for ln in lines)
-    assert got["SWITCHBOARD_WORKSPACE"] == _mcp_ws(tmp_path)
+    assert set(got) == {"SWITCHBOARD_KEY", "SWITCHBOARD_TOKEN"}
     assert got["SWITCHBOARD_KEY"] == settings["SWITCHBOARD_KEY"]
     assert got["SWITCHBOARD_TOKEN"] == settings["SWITCHBOARD_TOKEN"]
-    assert got["SWITCHBOARD_URL"].startswith("http")
-    # every line must paste into an env file unchanged
     assert all(re.fullmatch(r"SWITCHBOARD_[A-Z]+=\S+", ln) for ln in lines), lines
+
+
+def test_no_repo_adds_what_nothing_else_would_supply(monkeypatch, capsys, tmp_path):
+    # The documented exception: an environment with no checkout has no
+    # .mcp.json to read the routing from, so it has to be told.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+
+    assert main(["whoami", "--env", "--no-repo"]) == 0
+    got = dict(ln.split("=", 1) for ln in capsys.readouterr().out.strip().splitlines())
+    assert set(got) == {
+        "SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY", "SWITCHBOARD_TOKEN",
+    }
+    assert got["SWITCHBOARD_WORKSPACE"] == _mcp_ws(tmp_path)
 
 
 def test_env_omits_what_this_machine_does_not_know(monkeypatch, capsys, tmp_path):
@@ -1544,7 +1560,7 @@ def test_the_clipboard_offer_copies_when_accepted(monkeypatch, capsys, tmp_path)
     run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
     make_interactive(monkeypatch, ["y"])
     assert main(["whoami", "--env"]) == 0
-    assert copied and copied[0].startswith("SWITCHBOARD_URL=")
+    assert copied and copied[0].startswith("SWITCHBOARD_KEY=")
 
 
 def test_declining_the_clipboard_copies_nothing(monkeypatch, capsys, tmp_path):
