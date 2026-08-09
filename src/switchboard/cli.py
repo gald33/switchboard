@@ -318,7 +318,7 @@ def cmd_keygen(args: argparse.Namespace) -> int:
 
 
 def cmd_register_key(args: argparse.Namespace) -> int:
-    """Generate a hub token locally and bind it to a workspace on a hub.
+    """Generate a workspace token locally and bind it to a workspace on a hub.
 
     A *token*, not a key: it is sent to the hub on every request and the hub
     stores a hash of it. The workspace key from ``keygen`` is the opposite —
@@ -1633,7 +1633,7 @@ _LOCAL_SECRETS = {
         "using the old one",
     ),
     "SWITCHBOARD_TOKEN": (
-        "hub token",
+        "workspace token",
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
@@ -2155,7 +2155,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-level", default="info")
     p.add_argument(
         "--tokens-file", "--keys-file", dest="keys_file",
-        help="JSON file of hub tokens scoped to workspaces, for a multi-tenant hub "
+        help="JSON file of workspace tokens, for a multi-tenant hub "
              "(env: SWITCHBOARD_KEYS_FILE). "
              "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
              "docstring for the file format.",
@@ -2164,7 +2164,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--self-issued-tokens", "--self-issued-keys", dest="self_issued_keys",
         action="store_true",
         help="multi-tenant without a curated file (env: SWITCHBOARD_SELF_ISSUED_KEYS=1) — "
-             "clients register their own hub token with `switchboard register-token`, "
+             "clients register their own workspace token with `switchboard register-token`, "
              "scoped to one workspace on a first-claim-wins basis. Mutually exclusive "
              "with --token and --tokens-file.",
     )
@@ -2291,15 +2291,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Generate a workspace key for end-to-end encryption. This key "
                     "never reaches the hub, which is what makes the hub unable to "
                     "read the workspace — and unable to help you recover it. Not to "
-                    "be confused with a hub token (`register-token`), which is sent "
+                    "be confused with a workspace token (`register-token`), which is sent "
                     "on every request and is what grants access to a workspace.",
     )
     p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser(
         "register-token", aliases=["register-key"],
-        help="generate a hub token bound to one workspace (self-issued hubs)",
-        description="Generate a hub token and bind it to a workspace. A token is "
+        help="generate a workspace token (self-issued hubs)",
+        description="Generate a workspace token and bind it to a workspace. It is "
                     "sent to the hub on every request and grants access to its "
                     "workspace; the hub stores only a hash of it. That is the "
                     "opposite of the workspace key from `keygen`, which is never "
