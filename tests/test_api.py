@@ -418,3 +418,43 @@ def test_every_ttl_path_is_clamped(client):
         "workspace": WS, "agent_id": "a", "ttl": huge, "lease_ttl": huge}).json()
     assert beat["leases"][0]["expires_in"] <= MAX_LEASE_TTL + 2
     assert MAX_MESSAGE_TTL > 0  # named so the import is not unused
+
+
+# --- agent signing keys ------------------------------------------------------
+
+
+def test_registering_without_a_signing_key_still_works(tmp_path):
+    # An older client sends no pubkey at all; the hub must not require one.
+    db = str(tmp_path / "s.db")
+    store = Store(db)
+    app = create_app(ServerConfig(db_path=db, token="tok"), store=store)
+    with TestClient(app) as http:
+        r = http.post("/agents/register",
+                      json={"workspace": "w", "name": "legacy", "agent_id": "legacy"},
+                      headers={"Authorization": "Bearer tok"})
+        assert r.status_code == 200
+        assert r.json()["agent"]["pubkey"] is None
+    store.close()
+
+
+def test_a_database_from_before_pubkey_existed_still_opens(tmp_path):
+    # CREATE TABLE IF NOT EXISTS will not add a column to an existing table.
+    import sqlite3
+
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE agents (workspace TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,"
+        " kind TEXT NOT NULL DEFAULT 'unknown', branch TEXT, task TEXT,"
+        " channels TEXT NOT NULL DEFAULT '[]', meta TEXT NOT NULL DEFAULT '{}',"
+        " registered_at REAL NOT NULL, last_seen_at REAL NOT NULL, expires_at REAL NOT NULL,"
+        " PRIMARY KEY (workspace, id))"
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db)
+    agent = store.register_agent(workspace="w", agent_id="a", name="n", ttl=60,
+                                 pubkey="PUBKEY")
+    assert agent.pubkey == "PUBKEY"
+    store.close()

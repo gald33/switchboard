@@ -83,6 +83,10 @@ class RegisterIn(BaseModel):
     workspace: str = "default"
     agent_id: str | None = None
     name: str
+    #: The agent's signing public key, sealed by the client like any other
+    #: content. Opaque here: the hub stores and echoes it, and cannot verify
+    #: anything with it — verification is between peers, who hold the key.
+    pubkey: str | None = None
     kind: str = "unknown"
     branch: str | None = None
     task: str | None = None
@@ -152,6 +156,7 @@ def dump_agent(a: Agent, now: float) -> dict[str, Any]:
         "task": a.task,
         "channels": a.channels,
         "meta": a.meta,
+        "pubkey": a.pubkey,
         "registered_at": iso(a.registered_at),
         "last_seen_at": iso(a.last_seen_at),
         "expires_at": iso(a.expires_at),
@@ -397,6 +402,7 @@ def create_app(
             task=payload.task,
             channels=payload.channels,
             meta=payload.meta,
+            pubkey=payload.pubkey,
             ttl=clamp_ttl(payload.ttl, DEFAULT_AGENT_TTL, MAX_AGENT_TTL),
             now=now,
         )
