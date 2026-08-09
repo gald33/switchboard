@@ -32,14 +32,18 @@ own `.claude/settings.local.json`, so a second repo has to be handed it — with
 `--key`, or by exporting `SWITCHBOARD_KEY` once so `init` picks it up from the
 environment instead. Same secret either way; only the storage differs.
 
-Whatever runs the agent also needs the package. `pip install agent-switchboard`
-belongs in the image, or in whatever setup script the environment runs before
-the agent starts — a cloud session, a devcontainer and a CI job each have one,
+Whatever runs the agent also needs the package.
+`pip install 'agent-switchboard[crypto]'` belongs in the image, or in whatever
+setup script the environment runs before the agent starts — a cloud session, a devcontainer and a CI job each have one,
 and it is the piece people forget because on their own machine it happened
 once, months ago.
 
-Without it `switchboard-mcp` is not on `PATH`, the MCP server never starts, and
-the session has no switchboard tools at all. The secrets being right does not
+The `[crypto]` extra matters whenever the workspace has a key — which
+`init --new-key` always gives it. `cryptography` is an optional dependency, so
+the bare package raises `CryptoError` at startup instead of connecting.
+
+Without the package at all, `switchboard-mcp` is not on `PATH`, the MCP server
+never starts, and the session has no switchboard tools. The secrets being right does not
 help: there is nothing to carry them to the hub. It is the first thing to check
 when a new environment comes up empty.
 

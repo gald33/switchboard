@@ -268,8 +268,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         store = Store(config.db_path)
         resolver = SelfIssuedKeyResolver(store)
         print(
-            "self-issued keys enabled — clients register via "
-            "`switchboard register-key --workspace <name>`",
+            "self-issued tokens enabled — clients register via "
+            "`switchboard register-token --workspace <name>`",
             file=sys.stderr,
         )
     elif not config.token:
@@ -318,9 +318,13 @@ def cmd_keygen(args: argparse.Namespace) -> int:
 
 
 def cmd_register_key(args: argparse.Namespace) -> int:
-    """Generate an auth key locally and bind it to a workspace on a hub.
+    """Generate a workspace token locally and bind it to a workspace on a hub.
 
-    Only meaningful against a hub running ``--self-issued-keys``; every other
+    A *token*, not a key: it is sent to the hub on every request and the hub
+    stores a hash of it. The workspace key from ``keygen`` is the opposite —
+    never transmitted, and the hub could not check it if it were.
+
+    Only meaningful against a hub running ``--self-issued-tokens``; every other
     hub already knows what its tokens are and has nothing to register. First
     key to claim a workspace name owns it — a teammate re-running this with
     the *same* key against the *same* workspace is a harmless no-op, but a
@@ -329,9 +333,14 @@ def cmd_register_key(args: argparse.Namespace) -> int:
     """
     import httpx
 
-    url = (args.url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
-    workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
-        Path(".").resolve()
+    url = (
+        getattr(args, "reg_url", None) or args.url
+        or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL
+    ).rstrip("/")
+    workspace = (
+        getattr(args, "reg_workspace", None) or args.workspace
+        or os.environ.get("SWITCHBOARD_WORKSPACE")
+        or _default_workspace(Path(".").resolve())
     )
     token = secrets.token_urlsafe(32)
     try:
@@ -1624,7 +1633,7 @@ _LOCAL_SECRETS = {
         "using the old one",
     ),
     "SWITCHBOARD_TOKEN": (
-        "hub token",
+        "workspace token",
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
@@ -1765,11 +1774,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("error: --local and --url are mutually exclusive — pick one.", file=sys.stderr)
         return EXIT_ERROR
 
-    key = getattr(args, "init_key", None) or args.key or os.environ.get("SWITCHBOARD_KEY")
-    if args.new_key and key:
+    given = getattr(args, "init_key", None) or args.key
+    if args.new_key and given:
         print(
             "error: --new-key and --key are mutually exclusive — mint a key or adopt "
             "one, not both.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if args.no_key and (given or args.new_key):
+        print(
+            "error: --no-key cannot be combined with --key or --new-key.",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -1780,13 +1795,28 @@ def cmd_init(args: argparse.Namespace) -> int:
     workspace = arg_workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
         directory
     )
+
+    # Encryption is the default posture, so a repo that has no key gets one.
+    # The alternative — plaintext unless someone knew to ask — meant the
+    # privacy of a workspace depended on having read the right doc first.
+    #
+    # Every already-known key wins over minting, including the one this repo
+    # may already hold on disk: minting a second key for a repo that has one
+    # is the divergence `_init_key` exists to refuse, and doing it by default
+    # would be doing it constantly.
+    key = given or os.environ.get("SWITCHBOARD_KEY") or _saved_key(directory)
     minted: str | None = None
-    if args.new_key:
+    if args.no_key:
+        key = None
+    elif args.new_key or not key:
         minted = key = generate_key()
-        # Pair it with an opaque name, for the reason `keygen` explains: the
-        # workspace is the one thing the hub always sees in the clear, and a
-        # repo slug tells an operator more than anything else we hand over.
-        if not explicit_workspace:
+        # `--new-key` also swaps in an opaque workspace name, for the reason
+        # `keygen` explains: the workspace is the one thing the hub always
+        # sees in the clear. Minting by default does *not* — a derived
+        # `org/repo` is what makes a laptop, a clone and CI agree for free,
+        # and silently replacing it with an opaque string would trade that
+        # away for a privacy win nobody asked for at that moment.
+        if args.new_key and not explicit_workspace:
             workspace = "w_" + generate_key()[:16]
     if args.local:
         url = "http://127.0.0.1:8787"
@@ -1911,19 +1941,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         "docs/deployment.md) and re-run `switchboard init --url https://your-hub` so "
         "that URL is what gets committed, or self-host locally with `--local`."
     )
+    # Only reachable with --no-key now. It used to say the managed hub is "a
+    # shared public hub with one token everyone uses" where "every other user
+    # can read and post to your workspace" — true of a shared-token
+    # deployment, and false of this one: it scopes each token to a single
+    # workspace, so a stranger's token gets a 401 rather than your messages.
+    # Overstating who can read you is not a safe kind of wrong; it teaches
+    # people to distrust the wrong thing.
     managed_hub_note = (
-        f"{MANAGED_HUB_URL} is a shared public hub with one token everyone uses — "
-        "that's what makes it zero-setup, and as set up here it means every other "
-        "user of the default hub can read and post to your workspace. Fine for "
-        "trying things out; not yet a private space.\n"
-        "  To make it private without leaving the hub, give your team a key: "
-        "re-run `switchboard init --new-key`. It mints one, pairs it with an "
-        "opaque workspace name, and prints the command your teammates run to "
-        "adopt it. Bodies, board values, lease notes and branch names are then sealed before "
-        "they leave your machine and the key never reaches the hub, so nobody else "
-        "on it can read your workspace or guess its name.\n"
-        "  What a key does not hide is metadata — the hub still sees message "
-        "timing, volume, and how many agents you run. If that matters, self-host: "
+        f"this workspace is not encrypted. On {MANAGED_HUB_URL} a token is bound "
+        "to one workspace, so other users cannot read yours — but the operator "
+        "runs the hub and everything reaching it is in the clear to them: message "
+        "bodies, board values, lease notes, branch names.\n"
+        "  `switchboard init` seals all of that by default; you passed --no-key. "
+        "Re-run it without that flag to mint a key, or `--new-key` to also replace "
+        "the workspace name with an opaque one so the hub cannot tell what the "
+        "workspace is about either.\n"
+        "  What a key never hides is metadata — the hub still sees message timing, "
+        "volume, and how many agents you run. If that matters, self-host: "
         "`switchboard init --local` (or `--url` to point at a hub you already "
         "deployed)."
     )
@@ -1933,9 +1968,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     # which pin a machine to a workspace it should be reading from the repo.
     sealed_note = (
         f"this workspace is sealed with a key held only on this machine, so "
-        f"other users of {MANAGED_HUB_URL} cannot read it. The hub still sees "
-        "message timing, volume, and how many agents you run — a key hides "
-        "content, not metadata. Self-host if that matters."
+        f"neither other users of {MANAGED_HUB_URL} nor whoever runs it can read "
+        "it. The hub still sees message timing, volume, and how many agents you "
+        "run — a key hides content, not metadata. If that matters, self-host: "
+        "`switchboard init --local` (or `--url` to point at a hub you already "
+        "deployed)."
     )
     if key and key_ok and managed_hub:
         managed_hub_note = sealed_note
@@ -2079,7 +2116,12 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     # MCP server never starts, so the secrets have nothing to reach the hub
     # with. Two steps because it is genuinely two, and leaving one out is how
     # a cloud session ends up with no switchboard tools and no clue why.
-    print("  another machine   1. pip install agent-switchboard   "
+    # [crypto], not the bare package: `cryptography` is an optional extra, and
+    # a workspace with a key — which `--new-key` always produces — makes the
+    # MCP server raise CryptoError at startup without it. Recommending the
+    # bare install alongside a flow that mints a key was a broken instruction.
+    extra = "'agent-switchboard[crypto]'" if minted or token_on_disk else "agent-switchboard"
+    print(f"  another machine   1. pip install {extra}   "
           "2. paste `switchboard whoami --env`")
 
 
@@ -2112,18 +2154,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help="SQLite path (env: SWITCHBOARD_DB)")
     p.add_argument("--log-level", default="info")
     p.add_argument(
-        "--keys-file",
-        help="JSON file of scoped keys for a multi-tenant hub (env: SWITCHBOARD_KEYS_FILE). "
+        "--tokens-file", "--keys-file", dest="keys_file",
+        help="JSON file of workspace tokens, for a multi-tenant hub "
+             "(env: SWITCHBOARD_KEYS_FILE). "
              "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
              "docstring for the file format.",
     )
     p.add_argument(
-        "--self-issued-keys",
+        "--self-issued-tokens", "--self-issued-keys", dest="self_issued_keys",
         action="store_true",
         help="multi-tenant without a curated file (env: SWITCHBOARD_SELF_ISSUED_KEYS=1) — "
-             "clients register their own key with `switchboard register-key`, scoped to "
-             "one workspace on a first-claim-wins basis. Mutually exclusive with --token "
-             "and --keys-file.",
+             "clients register their own workspace token with `switchboard register-token`, "
+             "scoped to one workspace on a first-claim-wins basis. Mutually exclusive "
+             "with --token and --tokens-file.",
     )
     p.set_defaults(func=cmd_serve)
 
@@ -2165,11 +2208,19 @@ def build_parser() -> argparse.ArgumentParser:
              "will be sealed correctly and routed somewhere else.",
     )
     p.add_argument(
+        "--no-key", action="store_true",
+        help="do not encrypt: skip minting a workspace key. `init` mints one by "
+             "default, so bodies, board values, lease notes and branch names are "
+             "sealed before they leave this machine. Use this only where the hub is "
+             "already trusted with plaintext.",
+    )
+    p.add_argument(
         "--new-key", action="store_true",
-        help="mint a fresh workspace key and an opaque workspace name to go with "
-             "it, then print the key once so you can share it. Use this on the "
-             "first machine only; every other machine adopts it with --key. "
-             "Mutually exclusive with --key.",
+        help="mint a fresh key *and* replace the derived workspace with an opaque "
+             "name, so the hub cannot read the workspace or guess what it is. `init` "
+             "already mints a key when the repo has none; this additionally hides the "
+             "name, and replaces a key the repo already had. Mutually exclusive "
+             "with --key.",
     )
     p.add_argument(
         "--no-input", action="store_true",
@@ -2235,14 +2286,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_whoami)
 
     p = sub.add_parser(
-        "keygen", help="generate a workspace key for end-to-end encryption")
+        "keygen",
+        help="generate a workspace key — encryption, never sent to the hub",
+        description="Generate a workspace key for end-to-end encryption. This key "
+                    "never reaches the hub, which is what makes the hub unable to "
+                    "read the workspace — and unable to help you recover it. Not to "
+                    "be confused with a workspace token (`register-token`), which is sent "
+                    "on every request and is what grants access to a workspace.",
+    )
     p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser(
-        "register-key",
-        help="generate an auth key and bind it to a workspace (hubs running "
-             "--self-issued-keys only)",
+        "register-token", aliases=["register-key"],
+        help="generate a workspace token (self-issued hubs)",
+        description="Generate a workspace token and bind it to a workspace. It is "
+                    "sent to the hub on every request and grants access to its "
+                    "workspace; the hub stores only a hash of it. That is the "
+                    "opposite of the workspace key from `keygen`, which is never "
+                    "transmitted. Only meaningful against a hub running "
+                    "--self-issued-tokens.",
     )
+    # Accept the connection options after the subcommand as well as before it.
+    # `serve`'s own startup warning tells you to run
+    # `register-token --workspace <name>`, which was an "unrecognized
+    # arguments" error — the same trap `init` was fixed for. Separate dests so
+    # the parent form keeps working; cmd_register_key reads both.
+    p.add_argument("-w", "--workspace", dest="reg_workspace", help=argparse.SUPPRESS)
+    p.add_argument("--url", dest="reg_url", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_register_key)
 
     p = sub.add_parser("health", help="check the hub is reachable")

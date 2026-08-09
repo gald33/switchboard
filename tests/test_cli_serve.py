@@ -79,5 +79,47 @@ def test_self_issued_keys_starts_the_server_with_that_resolver(tmp_path, capsys,
     code = main(["serve", "--self-issued-keys", "--db", str(tmp_path / "s.db")])
     assert code == 0
     assert "app" in captured
-    assert "self-issued keys enabled" in capsys.readouterr().err
+    assert "self-issued tokens enabled" in capsys.readouterr().err
     assert isinstance(captured["app"].state.config, object)  # sanity: app actually built
+
+
+# --- naming: "key" is the secret that is never sent, "token" is the one that is
+
+
+def test_the_old_flag_spellings_still_work():
+    """`--keys-file` and `--self-issued-keys` are in released docs, in people's
+    compose files and in CI config. The rename is for readers; nobody's
+    deployment should break for it."""
+    from switchboard.cli import build_parser
+
+    parser = build_parser()
+    old = parser.parse_args(["serve", "--self-issued-keys"])
+    new = parser.parse_args(["serve", "--self-issued-tokens"])
+    assert old.self_issued_keys is True and new.self_issued_keys is True
+
+    old = parser.parse_args(["serve", "--keys-file", "/tmp/k.json"])
+    new = parser.parse_args(["serve", "--tokens-file", "/tmp/k.json"])
+    assert old.keys_file == new.keys_file == "/tmp/k.json"
+
+
+def test_register_key_still_resolves_to_the_same_command():
+    from switchboard.cli import build_parser, cmd_register_key
+
+    parser = build_parser()
+    for name in ("register-token", "register-key"):
+        args = parser.parse_args([name, "--workspace", "w_x"])
+        assert args.func is cmd_register_key, name
+
+
+def test_the_two_secrets_are_described_as_opposites():
+    # The whole point of the rename: one is sent, one never is. If a help
+    # string ever stops saying which, this is the failure worth catching.
+    from switchboard.cli import build_parser
+
+    sub = build_parser()._subparsers._group_actions[0].choices
+    def flat(parser):
+        # argparse hard-wraps help, so match on unwrapped text
+        return " ".join(parser.format_help().split())
+
+    assert "never reaches the hub" in flat(sub["keygen"])
+    assert "sent to the hub on every request" in flat(sub["register-token"])

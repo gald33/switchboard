@@ -542,8 +542,7 @@ def test_bare_init_defaults_to_the_managed_hub(monkeypatch, capsys, tmp_path):
     assert mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_URL"] == MANAGED_HUB_URL
     # No self-hosted dev token: nothing here can issue one for a hub it doesn't run.
     assert not (tmp_path / ".env").exists()
-    assert "shared public hub" in out
-    assert "one token everyone uses" in out
+    assert "sealed with a key" in out, "init encrypts by default"
     assert "--local" in out
 
 
@@ -556,7 +555,7 @@ def test_managed_default_json_output(monkeypatch, capsys, tmp_path):
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["url"] == MANAGED_HUB_URL
-    assert "shared public hub" in payload["note"]
+    assert "sealed with a key" in payload["note"], "init encrypts by default"
 
 
 def test_local_flag_and_explicit_url_are_mutually_exclusive(monkeypatch, capsys, tmp_path):
@@ -769,14 +768,21 @@ def test_no_warning_when_the_workspace_is_explicit(monkeypatch, capsys, tmp_path
     assert "workspace defaulted to" not in out
 
 
-def test_managed_hub_note_reflects_that_a_key_makes_it_private(
-    monkeypatch, capsys, tmp_path
-):
-    _, public = run_init(monkeypatch, capsys, tmp_path)
-    assert "every other" in public and "can read and post" in public
+def test_the_plaintext_note_says_who_can_actually_read_you(monkeypatch, capsys, tmp_path):
+    # Reachable only via --no-key now. It used to claim every other user of
+    # the managed hub could read the workspace, which was true of a
+    # shared-token deployment and is false of this one — a token is bound to
+    # one workspace, so a stranger gets a 401. The operator is the real
+    # exposure, and overstating the rest teaches people to distrust the wrong
+    # thing.
+    _, plain = run_init(monkeypatch, capsys, tmp_path, "--no-key")
+    assert "not encrypted" in plain
+    assert "other users cannot read yours" in plain
+    assert "operator" in plain
+    assert "can read and post" not in plain
+
     _, sealed = run_init(monkeypatch, capsys, tmp_path, "--key", "TEAMKEY", "-w", "w_shared")
     assert "sealed with a key" in sealed
-    assert "can read and post" not in sealed
     # a key hides content, never metadata — saying otherwise would be the
     # kind of overclaim that gets someone to put real secrets on a public hub
     assert "metadata" in sealed or "timing, volume" in sealed
@@ -794,7 +800,8 @@ def test_json_output_includes_a_minted_key(monkeypatch, capsys, tmp_path):
 
 
 def test_no_key_means_no_local_settings_file(monkeypatch, capsys, tmp_path):
-    run_init(monkeypatch, capsys, tmp_path)
+    # Now an opt-out rather than the default.
+    run_init(monkeypatch, capsys, tmp_path, "--no-key")
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
     assert not (tmp_path / ".gitignore").exists()
 
@@ -827,6 +834,10 @@ def test_connection_flags_accepted_on_either_side_of_the_subcommand(
 # A key seals what leaves the machine; the workspace decides who it is sealed
 # *with*. When those two disagree nothing errors — both sides encrypt happily
 # and simply never see each other. That silence is what these tests are for.
+
+
+def _git(path, *args):
+    subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
 
 
 def _write_mcp(tmp_path, workspace, url=MANAGED_HUB_URL):
@@ -1595,7 +1606,10 @@ def test_the_explainer_names_the_package_install(monkeypatch, capsys, tmp_path):
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     machine_line = [ln for ln in out.splitlines() if "another machine" in ln][0]
-    assert "pip install agent-switchboard" in machine_line
+    assert "pip install" in machine_line
+    # [crypto] whenever a key is in play: cryptography is an optional extra,
+    # and without it the MCP server raises CryptoError instead of connecting.
+    assert "agent-switchboard[crypto]" in machine_line
     assert machine_line.index("pip install") < machine_line.index("whoami --env")
 
 
@@ -1639,3 +1653,92 @@ def test_the_teammate_line_still_pins_the_workspace(monkeypatch, capsys, tmp_pat
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     line = [ln for ln in out.splitlines() if "Give teammates" in ln][0]
     assert f"-w {_mcp_ws(tmp_path)}" in line
+
+
+# --- encryption is the default -----------------------------------------------
+#
+# Plaintext-unless-you-knew-to-ask made a workspace's privacy depend on having
+# read the right doc first. It also made `cryptography` feel optional, which is
+# how the bare package came to raise CryptoError at startup for anyone who did
+# take the advice and minted a key.
+
+
+def test_a_plain_init_encrypts(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+    assert "sealed with a key" in out
+
+
+def test_a_minted_default_keeps_the_derived_workspace(monkeypatch, capsys, tmp_path):
+    # --new-key swaps in an opaque name; minting by default must not. A derived
+    # org/repo is what makes a laptop, a clone and CI agree for free, and
+    # trading that away silently is not a privacy win anyone asked for here.
+    _git(tmp_path, "init")
+    _git(tmp_path, "remote", "add", "origin", "git@github.com:acme/api.git")
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path)
+    assert _mcp_ws(tmp_path) == "acme/api"
+
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init")
+    _git(other, "remote", "add", "origin", "git@github.com:acme/api.git")
+    monkeypatch.chdir(other)
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    main(["init", "--new-key"])
+    capsys.readouterr()
+    assert _mcp_ws(other).startswith("w_")
+
+
+def test_rerunning_init_does_not_mint_a_second_key(monkeypatch, capsys, tmp_path):
+    # The failure this would cause is the one _init_key exists to refuse:
+    # a repo whose agents hold two different keys and never meet.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path)
+    first = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
+
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == first
+    assert "already set" in out
+
+
+def test_an_ambient_key_is_adopted_not_replaced(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("SWITCHBOARD_KEY", "AMBIENT-KEY")
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path)
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"] == "AMBIENT-KEY"
+
+
+def test_no_key_opts_out(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--no-key")
+    assert code == 0
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+    assert "not encrypted" in out
+
+
+def test_no_key_conflicts_are_refused(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "--no-key", "--new-key"]) == 1
+    assert main(["init", "--no-key", "--key", "K"]) == 1
+
+
+def test_cryptography_is_not_optional():
+    # It was an extra, so `pip install agent-switchboard` produced an install
+    # that raises CryptoError the moment a key is present — which, now that
+    # init mints one by default, is always.
+    #
+    # Reads the built distribution's metadata rather than pyproject: it is what
+    # a user actually installs, and it works on 3.10, which has no tomllib.
+    from importlib.metadata import requires
+
+    reqs = requires("agent-switchboard") or []
+    base = [r for r in reqs if "extra ==" not in r]
+    assert any(r.startswith("cryptography") for r in base), base
+    # the old extra must still resolve for anything pinning it
+    from importlib.metadata import metadata
+
+    assert "crypto" in (metadata("agent-switchboard").get_all("Provides-Extra") or [])
