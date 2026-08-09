@@ -833,7 +833,20 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
                 "result also carries 'unread_dms' — how many direct messages are waiting, "
                 "kept current on every call so a ping is noticed as soon as you do "
                 "anything, not just when you next checkin. Treat a nonzero value as a cue "
-                "to call inbox or checkin soon rather than waiting."
+                "to call inbox or checkin soon rather than waiting.\n\n"
+                "If the user asks how to set switchboard up elsewhere, the thing to get "
+                "right is that it is two halves, not one. A repo carries the hub URL and "
+                "the workspace name in .mcp.json, plus the hooks in .switchboard/ — all "
+                "committed, so a clone gets them for free. An environment carries the two "
+                "secrets, SWITCHBOARD_KEY and SWITCHBOARD_TOKEN, which are gitignored and "
+                "reused by every repo set up on that machine. So: another repo on this "
+                "machine needs `switchboard init --key <key>`, with no -w, since each repo "
+                "should derive its own workspace and stay a separate room under the one "
+                "key. Another machine needs only those two secrets, set in its own secret "
+                "store, because the repo supplies the rest. Getting it wrong is quiet — an "
+                "agent holding the wrong key or workspace has an empty inbox that looks "
+                "exactly like a quiet one — so have them confirm with `switchboard agents` "
+                "from the new environment."
             ),
         })
 

@@ -1449,3 +1449,45 @@ def test_a_hub_too_old_to_advertise_still_works(monkeypatch, capsys, tmp_path):
     assert code == 0
     assert claimed == [_mcp_ws(tmp_path)]
     assert probed, "with nothing advertised, the route probe is the fallback"
+
+
+# --- explaining that setup is two halves -------------------------------------
+#
+# Setting this up is two jobs and reads as one: `init` runs once and appears to
+# have done everything. Nothing then suggests a second machine needs anything,
+# until its agents sit in an empty room that looks exactly like nobody being
+# around. These assert the explanation stays accurate, since a confidently
+# wrong one is worse than none.
+
+
+def test_init_explains_which_half_travels_with_the_repo(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert "this repo" in out and "this machine" in out
+    # the two secrets are the part that has to be carried to a new environment
+    assert "SWITCHBOARD_KEY=" in out and "SWITCHBOARD_TOKEN=" in out
+    # and the second-repo case, which is the one people get wrong by passing -w
+    assert "switchboard init --key" in out
+    assert "Omitting -w is deliberate" in out
+
+
+def test_the_explainer_does_not_claim_a_token_it_did_not_store(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    assert code == 0
+    assert "the key and token, in" not in out
+    assert "does not store one" in out
+
+
+def test_a_local_hub_gets_no_environment_explainer(monkeypatch, capsys, tmp_path):
+    # --local is one machine talking to itself; there is no second environment
+    # to bring in, and the .env token flow already covers what it needs.
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
+    assert code == 0
+    assert "To bring another environment in" not in out
+
+
+def test_the_explainer_is_quiet_under_json_and_q(monkeypatch, capsys, tmp_path):
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token", "-q")
+    assert code == 0
+    assert out.strip() == ""
