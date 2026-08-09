@@ -1396,15 +1396,27 @@ def _hub_reaches_workspace(url: str, token: str, workspace: str) -> bool | None:
 def _hub_issues_own_keys(url: str) -> bool | None:
     """Whether this hub lets a client bind its own token to a workspace.
 
-    Detected by whether ``/keys/register`` is mounted at all — the route only
-    exists under ``SelfIssuedKeyResolver`` (see server.py), so a GET answering
-    405 means "wrong method, right route" and 404 means the hub has no such
-    concept. Deliberately not read from ``/health``: hubs already deployed do
-    not report it, and this has to work against those.
+    ``/health`` says so directly, which is the answer to prefer — it is the
+    hub describing itself rather than us inferring from its routing table.
+
+    Hubs deployed before that field existed do not report it, and upgrading
+    every hub is not a precondition for `init` working against them, so the
+    fallback asks whether ``/keys/register`` is mounted at all: the route
+    exists only under ``SelfIssuedKeyResolver`` (see server.py), so a GET
+    answering 405 means "wrong method, right route" and 404 means the hub has
+    no such concept.
     """
     import httpx
 
     try:
+        health = httpx.get(f"{url}/health", timeout=10.0)
+        if health.status_code < 400:
+            try:
+                advertised = health.json().get("self_issued_keys")
+            except ValueError:
+                advertised = None
+            if isinstance(advertised, bool):
+                return advertised
         response = httpx.get(f"{url}/keys/register", timeout=10.0)
     except httpx.HTTPError:
         return None

@@ -27,9 +27,13 @@ Interactive docs are served at `/docs` on any running hub.
 ## Meta
 
 ### `GET /health`
-No auth. `{"ok": true, "version": "0.4.2", "auth": true}` — `auth` reports
-whether a token is required, which is how you check you didn't deploy an open
-hub by accident.
+No auth. `{"ok": true, "version": "0.4.2", "auth": true, "self_issued_keys":
+false}`. `auth` reports whether a token is required, which is how you check you
+didn't deploy an open hub by accident. `self_issued_keys` reports whether a
+client may claim a workspace with `POST /keys/register` — a client needing to
+reach a workspace nobody has bound yet has to know whether it can fix that
+itself or must ask an operator. Hubs older than this field omit it, so treat a
+missing value as unknown rather than `false`.
 
 ### `GET /stats`
 Live row counts per table plus the list of active workspaces.

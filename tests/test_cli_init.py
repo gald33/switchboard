@@ -1308,12 +1308,24 @@ class _Resp:
         return self._payload
 
 
-def fake_hub(monkeypatch, *, self_issued, reachable, register=None):
-    """Stand in for a hub. `register` records the workspace claimed, if any."""
+def fake_hub(monkeypatch, *, self_issued, reachable, register=None, advertises=True):
+    """Stand in for a hub. `register` records the workspace claimed, if any.
+
+    `advertises=False` models a hub deployed before /health reported its auth
+    mode — the case the route probe exists for.
+    """
     import httpx
 
+    probed = []
+
     def get(url, **kwargs):
+        if url.endswith("/health"):
+            body = {"ok": True, "version": "0.4.2", "auth": True}
+            if advertises:
+                body["self_issued_keys"] = self_issued
+            return _Resp(200, body)
         if url.endswith("/keys/register"):
+            probed.append(url)
             return _Resp(405 if self_issued else 404)
         if url.endswith("/agents"):
             return _Resp(200 if reachable else 403, {"detail": "no access"})
@@ -1327,6 +1339,7 @@ def fake_hub(monkeypatch, *, self_issued, reachable, register=None):
 
     monkeypatch.setattr(httpx, "get", get)
     monkeypatch.setattr(httpx, "post", post)
+    return probed
 
 
 def test_new_key_registers_a_token_for_the_workspace_it_minted(monkeypatch, capsys, tmp_path):
@@ -1411,3 +1424,28 @@ def test_an_existing_different_token_is_not_replaced_without_force(monkeypatch, 
     assert code == 0
     assert _local_settings(tmp_path)["env"]["SWITCHBOARD_TOKEN"] == "mine"
     assert "a different SWITCHBOARD_TOKEN is already set" in out
+
+
+def test_the_hub_describing_itself_beats_probing_its_routing_table(monkeypatch, capsys, tmp_path):
+    claimed = []
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "bound-elsewhere")
+    probed = fake_hub(monkeypatch, self_issued=True, reachable=False, register=claimed)
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert claimed == [_mcp_ws(tmp_path)]
+    assert probed == [], "/health answered, so /keys/register should not be probed"
+
+
+def test_a_hub_too_old_to_advertise_still_works(monkeypatch, capsys, tmp_path):
+    # Upgrading every hub is not a precondition for init working against them.
+    claimed = []
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "bound-elsewhere")
+    probed = fake_hub(
+        monkeypatch, self_issued=True, reachable=False, register=claimed, advertises=False
+    )
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert claimed == [_mcp_ws(tmp_path)]
+    assert probed, "with nothing advertised, the route probe is the fallback"

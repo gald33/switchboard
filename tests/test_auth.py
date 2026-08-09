@@ -414,3 +414,15 @@ def test_health_reports_auth_true_for_static_keys(multi):
 
 def test_health_reports_auth_true_for_self_issued_keys(self_issued):
     assert self_issued.get("/health").json()["auth"] is True
+
+
+def test_health_advertises_whether_clients_may_bind_their_own_keys(
+    self_issued, shared, multi
+):
+    """`init` has to know whether it can register a token for a workspace it
+    just minted, or has to send the user to an operator. Inferring that from
+    whether /keys/register happens to be mounted works, but it is a fact about
+    our routing table; the hub should say so itself."""
+    assert self_issued.get("/health").json()["self_issued_keys"] is True
+    assert shared.get("/health").json()["self_issued_keys"] is False
+    assert multi.get("/health").json()["self_issued_keys"] is False
