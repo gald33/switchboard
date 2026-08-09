@@ -886,8 +886,66 @@ _HOOKS_DIR = ".switchboard/hooks"
 #: It also stops the hooks being Claude-specific. A shell script is something
 #: any runner can invoke — see docs/codex-cli.md — so adding a second agent is
 #: a second registration, not a second implementation.
-_SESSION_START_BODY = "switchboard -q register -c build"
-_STOP_BODY = (
+#: What a fresh machine needs before any of this works: the package. That is
+#: the step people forget, and it fails in the worst way — `switchboard-mcp` is
+#: simply not on PATH, so the MCP server never starts and the session has no
+#: switchboard tools at all, with the secrets set correctly the whole time.
+#:
+#: So the committed config resolves the tool rather than assuming it. An
+#: installed binary wins, because an environment that pinned a version meant
+#: it. Otherwise `uvx` runs it from a cache without installing anything into
+#: the environment, so a clone or a cloud session works with no setup step.
+#:
+#: Deliberately no `pip install` fallback: fetching into a cache is one thing,
+#: mutating the environment from a file someone merely checked out is another.
+#: If neither is available it says so and exits, which is a failure you can
+#: read rather than a session that quietly has no tools.
+_UVX_SPEC = "agent-switchboard[crypto]"
+
+_NOT_FOUND_HINT = (
+    "switchboard: %s not found and uvx unavailable; "
+    "pip install '" + _UVX_SPEC + "'"
+)
+
+
+def _bootstrap_exec(binary: str) -> str:
+    """POSIX sh that execs `binary`, fetching it through uvx if it is absent."""
+    return (
+        "command -v {b} >/dev/null 2>&1 && exec {b}; "
+        "command -v uvx >/dev/null 2>&1 && exec uvx --from {spec} {b}; "
+        "echo {hint} >&2; exit 127"
+    ).format(
+        b=binary,
+        spec=shlex.quote(_UVX_SPEC),
+        hint=shlex.quote(_NOT_FOUND_HINT % binary),
+    )
+
+
+def _bootstrap_fn(binary: str, fn: str) -> str:
+    """The same resolution, as a shell function so a script can call it many
+    times without re-resolving on every line."""
+    return (
+        "if command -v {b} >/dev/null 2>&1; then\n"
+        "  {fn}() {{ {b} \"$@\"; }}\n"
+        "elif command -v uvx >/dev/null 2>&1; then\n"
+        "  {fn}() {{ uvx --from {spec} {b} \"$@\"; }}\n"
+        "else\n"
+        "  echo {hint} >&2\n"
+        "  exit 0\n"
+        "fi\n"
+    ).format(
+        b=binary,
+        fn=fn,
+        spec=shlex.quote(_UVX_SPEC),
+        hint=shlex.quote(_NOT_FOUND_HINT % binary),
+    )
+
+
+#: The v1 bodies, which invoked `switchboard` directly. Kept so a repo written
+#: by an earlier `init` is recognized as machine output and upgraded, rather
+#: than read as a hand edit and left alone forever.
+_SESSION_START_BODY_V1 = "switchboard -q register -c build"
+_STOP_BODY_V1 = (
     'switchboard --json claims --holder "$(switchboard --json whoami | '
     "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\" | "
     "python -c 'import sys,json,subprocess;"
@@ -895,8 +953,22 @@ _STOP_BODY = (
     "for l in json.load(sys.stdin)]'"
 )
 
+_SESSION_START_BODY = "sb -q register -c build"
+#: Every switchboard call goes through the `sb` function the prefix defines, so
+#: releasing happens in shell rather than from inside a python subprocess —
+#: a function is not visible to a spawned process, and re-resolving the binary
+#: per lease would be worse than reading it.
+_STOP_BODY = (
+    'holder="$(sb --json whoami | '
+    "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\"\n"
+    'sb --json claims --holder "$holder" | '
+    "python -c 'import sys,json;"
+    "[print(l[\"resource\"]) for l in json.load(sys.stdin)]' | "
+    'while IFS= read -r resource; do sb -q release "$resource"; done'
+)
 
-def _hook_script(body: str, url: str, workspace: str) -> str:
+
+def _hook_script(body: str, url: str, workspace: str, bootstrap: bool = True) -> str:
     """One lifecycle hook, as a standalone script.
 
     The URL and workspace are still baked in rather than read from the
@@ -913,16 +985,18 @@ def _hook_script(body: str, url: str, workspace: str) -> str:
         # rstrip: the prefix is shaped for inlining ahead of a command on one
         # line, which leaves a stray separator when it ends a line instead.
         f"{_hook_env_prefix(url, workspace).rstrip()}\n"
-        f"{body}\n"
+        + (_bootstrap_fn("switchboard", "sb") if bootstrap
+           else 'sb() { switchboard "$@"; }\n')
+        + f"{body}\n"
     )
 
 
-def _session_start_script(url: str, workspace: str) -> str:
-    return _hook_script(_SESSION_START_BODY, url, workspace)
+def _session_start_script(url: str, workspace: str, bootstrap: bool = True) -> str:
+    return _hook_script(_SESSION_START_BODY, url, workspace, bootstrap)
 
 
-def _stop_script(url: str, workspace: str) -> str:
-    return _hook_script(_STOP_BODY, url, workspace)
+def _stop_script(url: str, workspace: str, bootstrap: bool = True) -> str:
+    return _hook_script(_STOP_BODY, url, workspace, bootstrap)
 
 
 def _hook_shim(name: str) -> str:
@@ -1302,12 +1376,21 @@ def _mcp_workspace(directory: Path) -> str | None:
     return workspace if isinstance(workspace, str) else None
 
 
-def _init_mcp_json(directory: Path, url: str, workspace: str, *, overwrite: bool = False) -> str:
+def _init_mcp_json(
+    directory: Path, url: str, workspace: str, *, overwrite: bool = False,
+    bootstrap: bool = True,
+) -> str:
     path = directory / ".mcp.json"
-    entry = {
+    entry: dict[str, Any] = {
         "command": "switchboard-mcp",
         "env": {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace},
     }
+    if bootstrap:
+        # This file is committed, so it runs on machines that never ran
+        # `init` — a teammate's clone, a cloud session, a CI job. Assuming the
+        # binary is there is what makes those need a setup step first.
+        entry["command"] = "sh"
+        entry["args"] = ["-c", _bootstrap_exec("switchboard-mcp")]
     if path.exists():
         try:
             data = json.loads(path.read_text())
@@ -1369,9 +1452,25 @@ def _sync_hook(
 #: Past revisions of each hook script, for the same reason the command
 #: histories exist. Empty today — the scripts were only just introduced.
 _HOOK_SCRIPT_HISTORY: dict[str, list[Callable[[str, str], str]]] = {
-    "session-start": [],
-    "stop": [],
+    "session-start": [
+        lambda url, ws: _hook_script_v1(_SESSION_START_BODY_V1, url, ws),
+    ],
+    "stop": [
+        lambda url, ws: _hook_script_v1(_STOP_BODY_V1, url, ws),
+    ],
 }
+
+
+def _hook_script_v1(body: str, url: str, workspace: str) -> str:
+    """A script as `init` wrote it before the bootstrap prefix existed."""
+    return (
+        "#!/bin/sh\n"
+        "# Generated by `switchboard init`. Safe to delete; it will come back\n"
+        "# on the next run. If you edit it, `init` will leave it alone from\n"
+        "# then on and tell you so.\n"
+        f"{_hook_env_prefix(url, workspace).rstrip()}\n"
+        f"{body}\n"
+    )
 
 
 def _hooks_are_gitignored(directory: Path) -> bool:
@@ -1405,7 +1504,7 @@ def _hooks_are_gitignored(directory: Path) -> bool:
 
 def _init_hook_scripts(
     directory: Path, url: str, workspace: str, *, force: bool = False,
-    confirm: Callable[[str], bool] | None = None,
+    confirm: Callable[[str], bool] | None = None, bootstrap: bool = True,
 ) -> list[str]:
     """Write the hook bodies switchboard owns.
 
@@ -1415,8 +1514,8 @@ def _init_hook_scripts(
     """
     steps: list[str] = []
     scripts = {
-        "session-start": _session_start_script(url, workspace),
-        "stop": _stop_script(url, workspace),
+        "session-start": _session_start_script(url, workspace, bootstrap),
+        "stop": _stop_script(url, workspace, bootstrap),
     }
     for name, current in scripts.items():
         path = directory / _HOOKS_DIR / f"{name}.sh"
@@ -1900,13 +1999,19 @@ def cmd_init(args: argparse.Namespace) -> int:
         token, msg = _init_token(directory, arg_token)
         steps.append(msg)
     if not args.skip_mcp:
-        steps.append(_init_mcp_json(directory, url, workspace, overwrite=repoint_mcp))
+        steps.append(_init_mcp_json(
+            directory, url, workspace, overwrite=repoint_mcp,
+            bootstrap=not args.no_bootstrap,
+        ))
     if not args.skip_hooks:
         # Bodies first, then the registration that points at them — so a
         # half-finished run never leaves a hook calling a script that is not
         # there yet.
         steps.extend(
-            _init_hook_scripts(directory, url, workspace, force=args.force, confirm=confirm)
+            _init_hook_scripts(
+                directory, url, workspace, force=args.force, confirm=confirm,
+                bootstrap=not args.no_bootstrap,
+            )
         )
         steps.extend(
             _init_claude_settings(
@@ -2238,6 +2343,14 @@ def build_parser() -> argparse.ArgumentParser:
              "can reach it — otherwise a freshly minted workspace 403s on every "
              "call while init reports success. This is the only step that uses "
              "the network; failures are reported, never fatal.",
+    )
+    p.add_argument(
+        "--no-bootstrap", action="store_true",
+        help="write config that assumes `switchboard` is already installed. By "
+             "default the committed .mcp.json and hook scripts resolve it — an "
+             "installed binary first, else `uvx` from a cache — so a clone or a "
+             "cloud session needs no install step. Use this where the environment "
+             "pins its own version and nothing should reach the network.",
     )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(
