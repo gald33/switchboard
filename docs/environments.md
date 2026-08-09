@@ -57,6 +57,10 @@ which is the failure this check exists to prevent. `--skip-token` opts out; it
 is the only step that uses the network, and a hub it cannot reach is reported
 rather than fatal, since the files it writes are correct either way.
 
+`switchboard whoami --env` prints all four values as `NAME=value` lines for
+exactly this — paste them into the environment's own secret store. On a
+terminal it offers to copy them to your clipboard.
+
 Then set `SWITCHBOARD_TOKEN` and `SWITCHBOARD_KEY` in the cloud environment's
 secret settings, and in your CI provider's secret store if CI agents should
 join too. You do not need to set `SWITCHBOARD_WORKSPACE` there: the committed

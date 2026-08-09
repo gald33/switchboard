@@ -24,6 +24,12 @@ because that is the one your agents actually route to. On a terminal it asks
 which you meant; pass `--force` to repoint the file at a fresh opaque name, or
 `--no-input` to take the default without being asked.
 
+To hand a second environment what it needs, `switchboard whoami --env` prints
+all four values as `NAME=value` lines, ready to paste into that environment's
+env file or secret store, and offers to put them on your clipboard.
+Assembling them by hand from four places is where a stale token or the wrong
+workspace creeps in.
+
 Because it is written to a file rather than only printed, the key is not lost
 if you close the terminal — `switchboard whoami --show-key` reads it back and
 prints the command that hands it to a teammate. What *is* unrecoverable is

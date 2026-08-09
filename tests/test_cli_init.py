@@ -1464,19 +1464,28 @@ def test_init_explains_which_half_travels_with_the_repo(monkeypatch, capsys, tmp
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     assert code == 0
-    assert "this repo" in out and "this machine" in out
-    # the two secrets are the part that has to be carried to a new environment
-    assert "SWITCHBOARD_KEY=" in out and "SWITCHBOARD_TOKEN=" in out
-    # and the second-repo case, which is the one people get wrong by passing -w
-    assert "switchboard init --key" in out
-    assert "Omitting -w is deliberate" in out
+    assert "Two halves" in out
+    assert "repo" in out and "machine" in out
+    # the two moves people actually need next
+    assert "switchboard init --key <key>" in out and "(no -w)" in out
+    assert "whoami --env" in out
+
+
+def test_the_explainer_stays_short(monkeypatch, capsys, tmp_path):
+    # It earns its place by being read. The first version ran to ~25 lines,
+    # which is long enough that skimming past it is the likely outcome — the
+    # same as not printing it at all.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    explainer = out[out.index("Two halves"):]
+    assert len(explainer.strip().splitlines()) <= 8, explainer
+    assert max(len(ln) for ln in explainer.splitlines()) <= 100, "must not wrap in a terminal"
 
 
 def test_the_explainer_does_not_claim_a_token_it_did_not_store(monkeypatch, capsys, tmp_path):
     code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
     assert code == 0
-    assert "the key and token, in" not in out
-    assert "does not store one" in out
+    assert "key + token" not in out
 
 
 def test_a_local_hub_gets_no_environment_explainer(monkeypatch, capsys, tmp_path):
@@ -1484,10 +1493,76 @@ def test_a_local_hub_gets_no_environment_explainer(monkeypatch, capsys, tmp_path
     # to bring in, and the .env token flow already covers what it needs.
     code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
     assert code == 0
-    assert "To bring another environment in" not in out
+    assert "Two halves" not in out
 
 
 def test_the_explainer_is_quiet_under_json_and_q(monkeypatch, capsys, tmp_path):
     code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token", "-q")
     assert code == 0
     assert out.strip() == ""
+
+
+# --- handing the settings to another environment -----------------------------
+
+
+def test_env_prints_a_paste_ready_block(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    settings = _local_settings(tmp_path)["env"]
+
+    assert main(["whoami", "--env"]) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    got = dict(ln.split("=", 1) for ln in lines)
+    assert got["SWITCHBOARD_WORKSPACE"] == _mcp_ws(tmp_path)
+    assert got["SWITCHBOARD_KEY"] == settings["SWITCHBOARD_KEY"]
+    assert got["SWITCHBOARD_TOKEN"] == settings["SWITCHBOARD_TOKEN"]
+    assert got["SWITCHBOARD_URL"].startswith("http")
+    # every line must paste into an env file unchanged
+    assert all(re.fullmatch(r"SWITCHBOARD_[A-Z]+=\S+", ln) for ln in lines), lines
+
+
+def test_env_omits_what_this_machine_does_not_know(monkeypatch, capsys, tmp_path):
+    # A blank would silently override a correct value already set there.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    assert main(["whoami", "--env"]) == 0
+    assert "SWITCHBOARD_TOKEN=" not in capsys.readouterr().out
+
+
+def test_env_does_not_prompt_without_a_terminal(monkeypatch, capsys, tmp_path):
+    # A pipe must get the block and nothing else — no prompt to hang on.
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    assert main(["whoami", "--env"]) == 0
+    assert "clipboard" not in capsys.readouterr().out
+
+
+def test_the_clipboard_offer_copies_when_accepted(monkeypatch, capsys, tmp_path):
+    import switchboard.cli as cli
+
+    copied = []
+    monkeypatch.setattr(cli, "_copy_to_clipboard", lambda text: copied.append(text) or "fake")
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    make_interactive(monkeypatch, ["y"])
+    assert main(["whoami", "--env"]) == 0
+    assert copied and copied[0].startswith("SWITCHBOARD_URL=")
+
+
+def test_declining_the_clipboard_copies_nothing(monkeypatch, capsys, tmp_path):
+    import switchboard.cli as cli
+
+    copied = []
+    monkeypatch.setattr(cli, "_copy_to_clipboard", lambda text: copied.append(text) or "fake")
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    make_interactive(monkeypatch, ["n"])
+    assert main(["whoami", "--env"]) == 0
+    assert copied == []
+
+
+def test_no_clipboard_tool_is_not_an_error(monkeypatch, capsys, tmp_path):
+    import switchboard.cli as cli
+
+    monkeypatch.setattr(cli, "_copy_to_clipboard", lambda text: None)
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    err = make_interactive(monkeypatch, ["y"])
+    assert main(["whoami", "--env"]) == 0, "no clipboard over SSH is normal, not a failure"
+    assert "no clipboard tool found" in err.getvalue()

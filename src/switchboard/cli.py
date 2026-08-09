@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -61,6 +62,32 @@ def _can_prompt(*, no_input: bool, quiet: bool, as_json: bool) -> bool:
     if os.environ.get("CI"):
         return False
     return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _copy_to_clipboard(text: str) -> str | None:
+    """Put `text` on the system clipboard, returning the tool used or None.
+
+    Best effort by design: there is no clipboard at all over SSH or in a
+    container, and failing to find one is not an error worth reporting as one
+    — the value has already been printed, so nothing is lost.
+    """
+    candidates = [
+        (["pbcopy"], "pbcopy"),                                  # macOS
+        (["wl-copy"], "wl-copy"),                                # Wayland
+        (["xclip", "-selection", "clipboard"], "xclip"),         # X11
+        (["xsel", "--clipboard", "--input"], "xsel"),
+        (["clip.exe"], "clip.exe"),                              # WSL
+    ]
+    for argv, name in candidates:
+        if shutil.which(argv[0]) is None:
+            continue
+        try:
+            proc = subprocess.run(argv, input=text.encode(), timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0:
+            return name
+    return None
 
 
 def _ask(question: str, *, default: bool) -> bool:
@@ -345,13 +372,13 @@ def cmd_register_key(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _saved_key(directory: Path) -> str | None:
-    """The workspace key `init` wrote for this repo, if it is still there.
+def _saved_setting(directory: Path, name: str) -> str | None:
+    """A secret `init` wrote for this repo, if it is still there.
 
     Read straight off disk rather than from the environment: Claude Code
     injects this file's `env` into the agents it spawns, but a plain shell has
     nothing exported, and the shell is exactly where someone stands when they
-    need to hand the key to a teammate.
+    need to hand these to a teammate or a second machine.
     """
     path = directory / _LOCAL_SETTINGS_REL
     if not path.exists():
@@ -361,8 +388,42 @@ def _saved_key(directory: Path) -> str | None:
     except ValueError:
         return None
     env = data.get("env")
-    key = env.get("SWITCHBOARD_KEY") if isinstance(env, dict) else None
-    return key if isinstance(key, str) else None
+    value = env.get(name) if isinstance(env, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _saved_key(directory: Path) -> str | None:
+    return _saved_setting(directory, "SWITCHBOARD_KEY")
+
+
+def _env_block(url: str, workspace: str, key: str | None, token: str | None) -> str:
+    """The four values a second environment needs, ready to paste into its
+    own env file. Omits what this machine does not know rather than emitting
+    a blank that would silently override a correct value set elsewhere."""
+    pairs = [
+        ("SWITCHBOARD_URL", url),
+        ("SWITCHBOARD_WORKSPACE", workspace),
+        ("SWITCHBOARD_KEY", key),
+        ("SWITCHBOARD_TOKEN", token),
+    ]
+    return "\n".join(f"{name}={value}" for name, value in pairs if value)
+
+
+def _offer_clipboard(text: str, what: str, args: argparse.Namespace) -> None:
+    """On a terminal, offer to copy. Defaults to yes: the only reason to run
+    this is to move the value somewhere else, and it is already on screen, so
+    the clipboard adds no exposure the command has not already caused."""
+    if not _can_prompt(
+        no_input=getattr(args, "no_input", False), quiet=args.quiet, as_json=args.json
+    ):
+        return
+    if not _ask(f"\ncopy {what} to the clipboard?", default=True):
+        return
+    tool = _copy_to_clipboard(text)
+    if tool:
+        print(f"copied ({tool})", file=sys.stderr)
+    else:
+        print("no clipboard tool found — copy it from above", file=sys.stderr)
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
@@ -387,7 +448,9 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         or _mcp_workspace(directory)
         or config.workspace
     )
-    if args.show_key:
+    url = args.url or os.environ.get("SWITCHBOARD_URL") or _mcp_url(directory) or config.url
+    token = args.token or config.token or _saved_setting(directory, "SWITCHBOARD_TOKEN")
+    if args.show_key or args.env:
         # Only ever on request. Printing a key into scrollback, CI logs or a
         # screen share is the kind of thing that should take a deliberate flag.
         if not key:
@@ -401,13 +464,26 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         if args.json:
             _print_json({"key": key, "workspace": workspace})
             return EXIT_OK
+        if args.env:
+            # Exactly what a second environment needs, in the shape its own
+            # config file wants — assembling these by hand from four places is
+            # where a wrong workspace or a stale token creeps in.
+            block = _env_block(url, workspace, key, token)
+            print(block)
+            _offer_clipboard(block, "these settings", args)
+            return EXIT_OK
         print(key)
-        if sys.stdout.isatty():
+        if _can_prompt(
+            no_input=getattr(args, 'no_input', False), quiet=args.quiet,
+            as_json=args.json,
+        ):
             print(
-                "\nGive teammates:\n"
-                f"  switchboard init --key {key} -w {workspace}",
+                f"\nGive teammates:  switchboard init --key {key} -w {workspace}\n"
+                "For another machine of your own, `--env` prints a block you can "
+                "paste straight into its environment.",
                 file=sys.stderr,
             )
+            _offer_clipboard(key, "the key", args)
         return EXIT_OK
     payload = {
         "agent_id": identity.agent_id,
@@ -1136,6 +1212,31 @@ def _init_token(directory: Path, token: str | None) -> tuple[str, str]:
     with env_path.open("a") as f:
         f.write(f"SWITCHBOARD_TOKEN={generated}\n")
     return generated, "generated a dev token, saved to .env (already gitignored)"
+
+
+def _mcp_entry(directory: Path) -> dict | None:
+    """The switchboard MCP server entry already registered in this repo."""
+    path = directory / ".mcp.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        return None
+    servers = data.get("mcpServers")
+    entry = servers.get("switchboard") if isinstance(servers, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def _mcp_env(directory: Path, name: str) -> str | None:
+    entry = _mcp_entry(directory)
+    env = entry.get("env") if entry else None
+    value = env.get(name) if isinstance(env, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _mcp_url(directory: Path) -> str | None:
+    return _mcp_env(directory, "SWITCHBOARD_URL")
 
 
 def _mcp_workspace(directory: Path) -> str | None:
@@ -1917,54 +2018,29 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) -> None:
-    """Say what `init` just set up, and which half of it moves where.
+    """Say which half of this setup travels with the repo and which does not.
 
-    Setting this up is two jobs, and people reliably read it as one. What
-    lands in the repo travels with the clone and is meant to be committed;
-    what lands in the environment is secret, is shared by every repo set up on
-    that machine, and does not travel at all.
+    People read `init` as one job because it is one command. Nothing then
+    suggests a second machine needs anything, until its agents sit in an empty
+    room that looks exactly like nobody being around.
 
-    Someone who has only ever run `init` here sees a single command that did
-    everything, so nothing suggests a second machine needs anything — until
-    its agents sit in an empty room that looks exactly like nobody being
-    around. That is the failure this text exists to pre-empt, and it is worth
-    the lines: every other way of learning it costs more.
+    Kept to a handful of lines on purpose: the earlier version explained the
+    whole model and was long enough that skimming past it was the likely
+    outcome, which is the same as not printing it.
     """
-    key_arg = minted or "<key>"
+    secrets = "key + token" if token_on_disk else "key"
     print()
-    print(fmt.bold("What just got set up, and where it lives"))
-    print(f"  {fmt.cyan('this repo')}      .mcp.json and .switchboard/hooks — commit them,")
-    print("                 and every clone gets the hub URL and workspace for free")
-    stored = "the key and token" if token_on_disk else "the workspace key"
-    print(f"  {fmt.cyan('this machine')}   {stored}, in {_LOCAL_SETTINGS_REL}")
-    print("                 — secret, gitignored, and reused by every repo you")
-    print("                 set up here")
-    if not token_on_disk:
-        print("                 The hub token comes from your environment; this repo")
-        print("                 does not store one.")
+    print(fmt.bold("Two halves"))
+    print(f"  {fmt.cyan('repo')}     .mcp.json, .switchboard/hooks — commit; every clone "
+          "gets them")
+    print(f"  {fmt.cyan('machine')}  {secrets} in {_LOCAL_SETTINGS_REL} — secret, and "
+          "not in the clone")
     print()
-    print("  Only the second half is per-environment. That is the part a new machine")
-    print("  needs and the part a clone will not bring with it.")
+    # `<key>` rather than the value: it is printed directly above when we
+    # minted one, and repeating a 43-character secret here buys nothing.
+    print("  another repo here     switchboard init --key <key>   (no -w)")
+    print("  another machine       switchboard whoami --env   → paste it there")
 
-    print()
-    print(fmt.bold("To add another repo on this machine"))
-    print(f"    switchboard init --key {key_arg}")
-    print("  Omitting -w is deliberate: each repo derives its own workspace, so they")
-    print("  stay separate rooms under one key. Reuse this machine's token too.")
-
-    print()
-    print(fmt.bold("To bring another environment in — laptop, cloud session, CI"))
-    print("  The repo already carries the URL and workspace, so only the secrets move.")
-    print("  Set both in that environment's own secret store:")
-    print(f"    SWITCHBOARD_KEY={key_arg}")
-    print("    SWITCHBOARD_TOKEN=<this machine's token>")
-    if not minted:
-        print(f"  The key is in {_LOCAL_SETTINGS_REL} — `switchboard whoami "
-              "--show-key`")
-        print("  prints it back.")
-    print()
-    print("  Then check it there with `switchboard agents`. An agent holding the wrong")
-    print("  key or workspace has an empty inbox that looks exactly like a quiet one.")
 
 
 # --- parser -----------------------------------------------------------------
@@ -2091,6 +2167,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
+    p.add_argument(
+        "--no-input", action="store_true",
+        help="never stop to ask — skips the offer to copy to your clipboard.",
+    )
+    p.add_argument(
+        "--env", action="store_true",
+        help="print SWITCHBOARD_URL, WORKSPACE, KEY and TOKEN as NAME=value lines, "
+             "ready to paste into another environment's env file or secret store. "
+             "On a terminal it offers to put them on your clipboard. Implies "
+             "--show-key, and prints secrets for the same reason that one does.",
+    )
     p.add_argument(
         "--show-key", action="store_true",
         help="print this repo's workspace key, and the command that hands it to a "
