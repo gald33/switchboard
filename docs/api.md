@@ -27,7 +27,7 @@ Interactive docs are served at `/docs` on any running hub.
 ## Meta
 
 ### `GET /health`
-No auth. `{"ok": true, "version": "0.4.4", "auth": true, "self_issued_keys":
+No auth. `{"ok": true, "version": "0.4.5", "auth": true, "self_issued_keys":
 false}`. `auth` reports whether a token is required, which is how you check you
 didn't deploy an open hub by accident. `self_issued_keys` reports whether a
 client may claim a workspace with `POST /keys/register` — a client needing to
