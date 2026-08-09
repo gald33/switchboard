@@ -1911,7 +1911,60 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "nobody there can read this workspace, and nobody there can recover "
                 "the key if you lose that file."
             )
+        if not local_hub:
+            _print_scope_explainer(fmt, minted if key_ok else None, token_on_disk)
     return EXIT_OK if key_ok else EXIT_ERROR
+
+
+def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) -> None:
+    """Say what `init` just set up, and which half of it moves where.
+
+    Setting this up is two jobs, and people reliably read it as one. What
+    lands in the repo travels with the clone and is meant to be committed;
+    what lands in the environment is secret, is shared by every repo set up on
+    that machine, and does not travel at all.
+
+    Someone who has only ever run `init` here sees a single command that did
+    everything, so nothing suggests a second machine needs anything — until
+    its agents sit in an empty room that looks exactly like nobody being
+    around. That is the failure this text exists to pre-empt, and it is worth
+    the lines: every other way of learning it costs more.
+    """
+    key_arg = minted or "<key>"
+    print()
+    print(fmt.bold("What just got set up, and where it lives"))
+    print(f"  {fmt.cyan('this repo')}      .mcp.json and .switchboard/hooks — commit them,")
+    print("                 and every clone gets the hub URL and workspace for free")
+    stored = "the key and token" if token_on_disk else "the workspace key"
+    print(f"  {fmt.cyan('this machine')}   {stored}, in {_LOCAL_SETTINGS_REL}")
+    print("                 — secret, gitignored, and reused by every repo you")
+    print("                 set up here")
+    if not token_on_disk:
+        print("                 The hub token comes from your environment; this repo")
+        print("                 does not store one.")
+    print()
+    print("  Only the second half is per-environment. That is the part a new machine")
+    print("  needs and the part a clone will not bring with it.")
+
+    print()
+    print(fmt.bold("To add another repo on this machine"))
+    print(f"    switchboard init --key {key_arg}")
+    print("  Omitting -w is deliberate: each repo derives its own workspace, so they")
+    print("  stay separate rooms under one key. Reuse this machine's token too.")
+
+    print()
+    print(fmt.bold("To bring another environment in — laptop, cloud session, CI"))
+    print("  The repo already carries the URL and workspace, so only the secrets move.")
+    print("  Set both in that environment's own secret store:")
+    print(f"    SWITCHBOARD_KEY={key_arg}")
+    print("    SWITCHBOARD_TOKEN=<this machine's token>")
+    if not minted:
+        print(f"  The key is in {_LOCAL_SETTINGS_REL} — `switchboard whoami "
+              "--show-key`")
+        print("  prints it back.")
+    print()
+    print("  Then check it there with `switchboard agents`. An agent holding the wrong")
+    print("  key or workspace has an empty inbox that looks exactly like a quiet one.")
 
 
 # --- parser -----------------------------------------------------------------
