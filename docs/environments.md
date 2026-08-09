@@ -25,6 +25,13 @@ That asymmetry is the thing to hold onto. **The two non-secrets are per-repo
 and travel with the clone. The two secrets are per-environment and are set
 once for all repos in it.** Every flow below follows from that.
 
+"Set once" is literal in a cloud environment or CI, where the variables are
+the environment's own and every repo in it reads the same pair. On a developer
+machine there is no such shared place: `init` writes the key into each repo's
+own `.claude/settings.local.json`, so a second repo has to be handed it — with
+`--key`, or by exporting `SWITCHBOARD_KEY` once so `init` picks it up from the
+environment instead. Same secret either way; only the storage differs.
+
 Whatever runs the agent also needs the package: `pip install agent-switchboard`
 in the image, or `switchboard-mcp` is not on `PATH` and the MCP server simply
 fails to start.

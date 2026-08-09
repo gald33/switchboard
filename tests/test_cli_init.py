@@ -1465,9 +1465,12 @@ def test_init_explains_which_half_travels_with_the_repo(monkeypatch, capsys, tmp
     code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     assert code == 0
     assert "Two halves" in out
-    assert "repo" in out and "machine" in out
     # the two moves people actually need next
-    assert "switchboard init --key <key>" in out and "(no -w)" in out
+    # the secrets are written per repo, so a second one needs the key even
+    # on the same machine — and -w is not mentioned, since naming a flag only
+    # to say "do not pass it" is noise in a six-line summary
+    assert "switchboard init --key <key>" in out
+    assert "-w" not in out.split("Two halves")[1]
     assert "whoami --env" in out
 
 

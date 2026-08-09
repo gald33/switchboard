@@ -2049,29 +2049,32 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) -> None:
-    """Say which half of this setup travels with the repo and which does not.
+    """Say which part of this setup a clone brings and which it does not.
 
-    People read `init` as one job because it is one command. Nothing then
-    suggests a second machine needs anything, until its agents sit in an empty
-    room that looks exactly like nobody being around.
+    The split is committed versus secret, not repo versus machine. Both halves
+    sit in the repo — the secrets in a gitignored file — which is why a second
+    repo has to be given the key even on the same machine, and why calling
+    that half "the machine" was wrong: it reads as though the machine already
+    has it.
 
-    Kept to a handful of lines on purpose: the earlier version explained the
+    Kept to a handful of lines on purpose. An earlier version explained the
     whole model and was long enough that skimming past it was the likely
     outcome, which is the same as not printing it.
     """
     secrets = "key + token" if token_on_disk else "key"
     print()
     print(fmt.bold("Two halves"))
-    print(f"  {fmt.cyan('repo')}     .mcp.json, .switchboard/hooks — commit; every clone "
-          "gets them")
-    print(f"  {fmt.cyan('machine')}  {secrets} in {_LOCAL_SETTINGS_REL} — secret, and "
-          "not in the clone")
+    print(f"  {fmt.cyan('committed')}  .mcp.json, .switchboard/hooks — hub URL and "
+          "workspace; every clone gets these")
+    print(f"  {fmt.cyan('secret')}     {secrets} in {_LOCAL_SETTINGS_REL} — gitignored, "
+          "and written per repo")
     print()
-    # `<key>` rather than the value: it is printed directly above when we
-    # minted one, and repeating a 43-character secret here buys nothing.
-    print("  another repo here     switchboard init --key <key>   (no -w)")
-    print("  another machine       switchboard whoami --env   → paste it there")
-
+    # Per repo, so a second one needs the key handed to it even here. Exporting
+    # it once is the alternative, and worth naming: `init` reads the
+    # environment, so people who set it up that way never touch --key again.
+    print("  another repo      switchboard init --key <key>   (or export "
+          "SWITCHBOARD_KEY first)")
+    print("  another machine   switchboard whoami --env   → paste into its secret store")
 
 
 # --- parser -----------------------------------------------------------------
