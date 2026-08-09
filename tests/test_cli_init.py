@@ -55,7 +55,11 @@ def test_fresh_repo_writes_everything(monkeypatch, capsys, tmp_path):
     assert code == 0
 
     mcp = json.loads((tmp_path / ".mcp.json").read_text())
-    assert mcp["mcpServers"]["switchboard"]["command"] == "switchboard-mcp"
+    # the committed command resolves the binary rather than assuming it, so a
+    # clone or a cloud session needs no install step first
+    entry = mcp["mcpServers"]["switchboard"]
+    assert entry["command"] == "sh"
+    assert "switchboard-mcp" in entry["args"][1]
     assert mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_URL"] == "http://127.0.0.1:8787"
     assert "SWITCHBOARD_TOKEN" not in mcp["mcpServers"]["switchboard"]["env"]
 
@@ -1742,3 +1746,66 @@ def test_cryptography_is_not_optional():
     from importlib.metadata import metadata
 
     assert "crypto" in (metadata("agent-switchboard").get_all("Provides-Extra") or [])
+
+
+# --- setup that needs no prior install ---------------------------------------
+#
+# The step people forget is the package, and it fails in the worst way: the
+# binary is simply not on PATH, so the MCP server never starts and the session
+# has no switchboard tools at all, with the secrets set correctly throughout.
+
+
+def test_the_committed_config_resolves_the_binary(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+
+    entry = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]
+    script = entry["args"][1]
+    # installed binary first: an environment that pinned a version meant it
+    assert script.index("command -v switchboard-mcp") < script.index("uvx")
+    assert "agent-switchboard[crypto]" in script
+    # never mutates the environment from a file someone merely checked out:
+    # pip may be *suggested* in the failure message, never executed
+    assert "pip install" not in script.split("echo ")[0]
+    assert "pip install" in script, "the failure should say what to do"
+
+
+def test_the_hooks_resolve_it_too(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path, "--new-key")
+
+    for name in ("session-start", "stop"):
+        body = (tmp_path / ".switchboard" / "hooks" / f"{name}.sh").read_text()
+        assert "command -v switchboard" in body, name
+        # every call goes through the function; a bare invocation would bypass
+        # the resolution on a machine without the binary
+        assert "\nswitchboard " not in body, name
+
+
+def test_no_bootstrap_writes_the_plain_command(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    run_init(monkeypatch, capsys, tmp_path, "--new-key", "--no-bootstrap")
+
+    entry = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]
+    assert entry["command"] == "switchboard-mcp"
+    assert "args" not in entry
+    body = (tmp_path / ".switchboard" / "hooks" / "stop.sh").read_text()
+    assert "uvx" not in body
+
+
+def test_a_repo_from_an_earlier_init_upgrades_rather_than_looking_edited(
+    monkeypatch, capsys, tmp_path
+):
+    # The v1 scripts called `switchboard` directly. They must be recognized as
+    # our own output and replaced, not read as a hand edit and left forever.
+    from switchboard.cli import _SESSION_START_BODY_V1, _hook_script_v1
+
+    hooks = tmp_path / ".switchboard" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "session-start.sh").write_text(
+        _hook_script_v1(_SESSION_START_BODY_V1, MANAGED_HUB_URL, "acme/api")
+    )
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "-w", "acme/api", "--new-key")
+    assert "latest revision" in out
+    assert "command -v switchboard" in (hooks / "session-start.sh").read_text()
