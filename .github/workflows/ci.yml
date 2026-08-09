@@ -31,25 +31,25 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .
-      - name: import client, CLI and MCP bridge without server or crypto extras
+      - name: import client, CLI and MCP bridge without the server extra
         run: |
           python -c "import switchboard, switchboard.cli, switchboard.mcp_server, switchboard.crypto"
           python - <<'PY'
           import importlib.util as u
-          leaked = [p for p in ("fastapi", "uvicorn", "starlette", "cryptography")
-                    if u.find_spec(p)]
-          assert not leaked, f"optional deps leaked into the base install: {leaked}"
-          # crypto.py must still import without cryptography installed, so the
-          # error a user gets is an actionable message rather than ImportError
-          # at the top of an unrelated module.
+          # The server extra stays optional: nothing an agent runs needs a web
+          # framework. cryptography is deliberately *not* in this list any more
+          # — `init` encrypts by default, so a base install that cannot encrypt
+          # is not a working install. Leaving it optional is what shipped a
+          # package that raised CryptoError at startup for anyone following the
+          # documented flow.
+          leaked = [p for p in ("fastapi", "uvicorn", "starlette") if u.find_spec(p)]
+          assert not leaked, f"server extra leaked into the base install: {leaked}"
           import switchboard.crypto as c
-          assert c.AVAILABLE is False
-          try:
-              c.WorkspaceCipher.from_key("a" * 44, "w")
-          except c.CryptoError as exc:
-              assert "crypto extra" in str(exc), exc
-          else:
-              raise AssertionError("expected a CryptoError naming the extra")
+          assert c.AVAILABLE is True, "a base install must be able to encrypt"
+          # and the fallback path must still be honest if cryptography is ever
+          # unavailable for a platform reason, rather than ImportError-ing at
+          # the top of an unrelated module
+          assert c.WorkspaceCipher.from_key(c.generate_key(), "w") is not None
           PY
       - run: switchboard --version
       - name: the MCP bridge must answer initialize with no hub running

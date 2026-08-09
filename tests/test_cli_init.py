@@ -1730,9 +1730,15 @@ def test_cryptography_is_not_optional():
     # It was an extra, so `pip install agent-switchboard` produced an install
     # that raises CryptoError the moment a key is present — which, now that
     # init mints one by default, is always.
-    import tomllib
+    #
+    # Reads the built distribution's metadata rather than pyproject: it is what
+    # a user actually installs, and it works on 3.10, which has no tomllib.
+    from importlib.metadata import requires
 
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    assert any(d.startswith("cryptography") for d in data["project"]["dependencies"])
+    reqs = requires("agent-switchboard") or []
+    base = [r for r in reqs if "extra ==" not in r]
+    assert any(r.startswith("cryptography") for r in base), base
     # the old extra must still resolve for anything pinning it
-    assert "crypto" in data["project"]["optional-dependencies"]
+    from importlib.metadata import metadata
+
+    assert "crypto" in (metadata("agent-switchboard").get_all("Provides-Extra") or [])
