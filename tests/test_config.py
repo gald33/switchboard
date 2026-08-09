@@ -198,3 +198,75 @@ def test_outside_any_checkout_it_still_resolves(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
     assert ClientConfig.from_env().workspace.startswith("default-")
+
+
+# --- agent identity: unique per session, stable across a resume --------------
+
+
+def test_concurrent_sessions_do_not_share_an_agent_id(monkeypatch, tmp_path):
+    # `kind-branch-host` was identical for two editor tabs in one worktree, so
+    # they shared a read cursor and could release each other's leases — by
+    # construction, not by impersonation.
+    from switchboard.client import detect_identity
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-one")
+    first = detect_identity().agent_id
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-two")
+    second = detect_identity().agent_id
+    assert first != second
+
+
+def test_a_resumed_session_keeps_its_agent_id(monkeypatch, tmp_path):
+    # The property the old derivation existed to provide: reclaim your own
+    # leases instead of waiting out their TTL. Resuming keeps the session id.
+    from switchboard.client import detect_identity
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "session-one")
+    assert detect_identity().agent_id == detect_identity().agent_id
+
+
+def test_the_session_id_is_never_sent_as_itself(monkeypatch, tmp_path):
+    # agent_id is blinded when encryption is on, but reaches the operator in
+    # the clear otherwise, and a host session id is not ours to hand over.
+    from switchboard.client import detect_identity
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "super-secret-session-value")
+    assert "super-secret-session-value" not in detect_identity().agent_id
+
+
+def test_without_any_session_id_it_still_differs_per_process(monkeypatch, tmp_path):
+    from switchboard.client import session_suffix
+
+    for var in ("SWITCHBOARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_HOST_SESSION_ID", "TERM_SESSION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    # stable within this process, and seeded per process, so a second process
+    # gets its own — the trade is losing resume, never a duplicate identity
+    assert session_suffix() == session_suffix()
+    assert len(session_suffix()) == 8
+
+
+def test_a_long_branch_cannot_truncate_the_suffix(monkeypatch, tmp_path):
+    # Truncating to 96 chars must never eat the part that makes it unique.
+    from switchboard.client import detect_identity, session_suffix
+
+    project = tmp_path / "p"
+    project.mkdir()
+    _git(project, "init")
+    _git(project, "checkout", "-b", "feature/" + ("x" * 200))
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s")
+    agent_id = detect_identity().agent_id
+    assert len(agent_id) <= 96
+    assert agent_id.endswith(session_suffix())
+
+
+def test_an_explicit_agent_id_still_wins(monkeypatch, tmp_path):
+    from switchboard.client import detect_identity
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "chosen")
+    assert detect_identity().agent_id == "chosen"

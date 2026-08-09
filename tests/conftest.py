@@ -21,6 +21,17 @@ _SWITCHBOARD_ENV = (
     "SWITCHBOARD_DB",
     "SWITCHBOARD_KEYS_FILE",
     "SWITCHBOARD_AGENT_ID",
+    "SWITCHBOARD_SESSION_ID",
+)
+
+#: Session identifiers the agent id is derived from. Cleared for the same
+#: reason as the rest: a developer running the suite inside an editor session
+#: would otherwise have that session's id folded into every derived agent id,
+#: so a test asserting on identity passes or fails depending on where it ran.
+_SESSION_ENV = (
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "TERM_SESSION_ID",
 )
 
 
@@ -48,7 +59,7 @@ def no_outbound_http(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clean_switchboard_env(monkeypatch):
-    for name in _SWITCHBOARD_ENV:
+    for name in _SWITCHBOARD_ENV + _SESSION_ENV:
         monkeypatch.delenv(name, raising=False)
     # `init` only prompts when it detects a terminal, and never under CI. Tests
     # inherit neither, but be explicit: a test that blocks on input that never

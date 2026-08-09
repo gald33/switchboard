@@ -7,9 +7,11 @@ one, the MCP bridge uses the async one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
+import secrets
 import socket
 import subprocess
 import uuid
@@ -83,6 +85,50 @@ def _git(*args: str, cwd: str | None = None) -> str | None:
     return value or None
 
 
+#: Environment variables that identify one editor session, most specific
+#: first. Hashed, never sent as-is — see `session_suffix`.
+_SESSION_ID_VARS = (
+    "SWITCHBOARD_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "TERM_SESSION_ID",
+)
+
+#: Last-resort session tag, generated once per process. Module-level so every
+#: call in this process agrees; a new process is a new session, which is the
+#: honest answer when nothing else identifies one.
+_PROCESS_SESSION_ID = secrets.token_hex(16)
+
+
+def session_suffix() -> str:
+    """A short tag distinguishing one session from another on this machine.
+
+    `agent_id` was `kind-branch-host`, which is identical for two sessions on
+    one machine and branch — two editor tabs in one worktree shared a read
+    cursor and could release each other's leases. Not by impersonation: by
+    construction.
+
+    The session id is the right input because it satisfies both properties the
+    old derivation traded against. It differs between concurrent sessions, and
+    it survives a resume — so the deliberate behaviour in the docstring below,
+    a resumed session reclaiming its own leases rather than waiting out their
+    TTL, still holds.
+
+    Hashed rather than passed through: `agent_id` is blinded when encryption is
+    on, but on an unencrypted hub it reaches the operator in the clear, and a
+    host session id is not ours to hand over.
+
+    With nothing to go on, a per-process random. That gives up the resume
+    property, which is the correct trade in that order: a duplicate identity is
+    silently wrong, while a fresh one merely waits for a lease to expire.
+    """
+    for var in _SESSION_ID_VARS:
+        value = os.environ.get(var)
+        if value:
+            return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:8]
+    return hashlib.sha256(_PROCESS_SESSION_ID.encode()).hexdigest()[:8]
+
+
 def detect_identity(
     *,
     agent_id: str | None = None,
@@ -92,8 +138,9 @@ def detect_identity(
 ) -> Identity:
     """Infer a stable-ish identity for the current session.
 
-    The agent id is stable across restarts on the same machine + branch, so a
-    resumed session reclaims its own leases instead of colliding with itself.
+    The agent id is stable across restarts of the same session, so a resumed
+    session reclaims its own leases instead of waiting for them to expire — and
+    distinct between concurrent sessions, so two of them never share one.
     """
     branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
     repo = _git("rev-parse", "--show-toplevel", cwd=cwd)
@@ -112,7 +159,12 @@ def detect_identity(
         agent_id = os.environ.get("SWITCHBOARD_AGENT_ID")
     if agent_id is None:
         slug = (branch or "detached").replace("/", "-")
-        agent_id = f"{kind}-{slug}-{host}"[:96]
+        # Truncate the descriptive part, never the suffix: it is what makes
+        # the id unique, and a long branch name must not be able to trim it
+        # off and silently reintroduce the collision.
+        suffix = session_suffix()
+        head = f"{kind}-{slug}-{host}"[: 96 - len(suffix) - 1]
+        agent_id = f"{head}-{suffix}"
 
     if name is None:
         name = os.environ.get("SWITCHBOARD_AGENT_NAME") or f"{repo_name}:{branch or 'detached'}"
