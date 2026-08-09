@@ -13,3 +13,15 @@ build/
 .env
 .cursor/
 **/.claude/settings.local.json
+
+# This repo does not commit its own switchboard wiring. The hooks and
+# .mcp.json carry the workspace name in the clear, and this workspace is an
+# opaque one minted by `init --new-key` — publishing it in a public repo
+# defeats the unguessability it was minted for. Contributors run `init`
+# themselves and get their own.
+.mcp.json
+.switchboard/
+.claude/settings.json
+.claude/skills/
+CLAUDE.md
+uv.lock
