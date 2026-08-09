@@ -1287,3 +1287,127 @@ def test_skip_mcp_never_repoints_even_with_force(monkeypatch, capsys, tmp_path):
     assert _mcp_ws(tmp_path) == "acme/billing"
     minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
     assert f"--key {minted} -w acme/billing" in out
+
+
+# --- making sure the workspace is actually reachable -------------------------
+#
+# The gap #52 and #53 both left open. `init --new-key` mints a workspace that
+# is brand new by construction, so on a hub that scopes tokens to workspaces
+# nothing is bound to it — every call 403s while `init` reports success and
+# tells you to restart your editor. The managed hub runs exactly that mode, so
+# it was the default path, not an edge case.
+
+
+class _Resp:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = json.dumps(self._payload)
+
+    def json(self):
+        return self._payload
+
+
+def fake_hub(monkeypatch, *, self_issued, reachable, register=None):
+    """Stand in for a hub. `register` records the workspace claimed, if any."""
+    import httpx
+
+    def get(url, **kwargs):
+        if url.endswith("/keys/register"):
+            return _Resp(405 if self_issued else 404)
+        if url.endswith("/agents"):
+            return _Resp(200 if reachable else 403, {"detail": "no access"})
+        raise AssertionError(f"unexpected GET {url}")
+
+    def post(url, **kwargs):
+        assert url.endswith("/keys/register")
+        if register is not None:
+            register.append(kwargs["json"]["workspace"])
+        return _Resp(200, {"workspace": kwargs["json"]["workspace"]})
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(httpx, "post", post)
+
+
+def test_new_key_registers_a_token_for_the_workspace_it_minted(monkeypatch, capsys, tmp_path):
+    claimed = []
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "old-token-bound-elsewhere")
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=claimed)
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    settings = _local_settings(tmp_path)["env"]
+    assert claimed == [_mcp_ws(tmp_path)], "the token must be bound to the minted workspace"
+    assert settings["SWITCHBOARD_TOKEN"] not in ("", "old-token-bound-elsewhere")
+    assert "registered a token" in out
+
+
+def test_a_reachable_workspace_is_left_alone(monkeypatch, capsys, tmp_path):
+    claimed = []
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "already-works")
+    fake_hub(monkeypatch, self_issued=True, reachable=True, register=claimed)
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert claimed == []
+    assert "SWITCHBOARD_TOKEN" not in _local_settings(tmp_path)["env"]
+    assert "registered a token" not in out
+
+
+def test_a_hub_that_does_not_self_issue_gets_a_note_not_a_registration(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "operator-issued")
+    fake_hub(monkeypatch, self_issued=False, reachable=False)
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert "note:" in out and "does not let clients bind their own" in out
+    assert "SWITCHBOARD_TOKEN" not in _local_settings(tmp_path)["env"]
+
+
+def test_an_unreachable_hub_is_reported_but_never_fatal(monkeypatch, capsys, tmp_path):
+    # conftest already refuses outbound HTTP, which is exactly this case.
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "whatever")
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0, "init writes correct files with or without a reachable hub"
+    assert (tmp_path / ".mcp.json").exists()
+
+
+def test_skip_token_touches_the_network_at_all(monkeypatch, capsys, tmp_path):
+    import httpx
+
+    def explode(*a, **k):
+        raise AssertionError("--skip-token must not contact the hub")
+
+    monkeypatch.setattr(httpx, "get", explode)
+    monkeypatch.setattr(httpx, "post", explode)
+    code, _ = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--skip-token")
+    assert code == 0
+
+
+def test_local_hub_keeps_its_own_token_flow(monkeypatch, capsys, tmp_path):
+    import httpx
+
+    def explode(*a, **k):
+        raise AssertionError("--local must not register against a remote hub")
+
+    monkeypatch.setattr(httpx, "get", explode)
+    monkeypatch.setattr(httpx, "post", explode)
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
+    assert code == 0
+    assert "SWITCHBOARD_TOKEN=" in (tmp_path / ".env").read_text()
+
+
+def test_an_existing_different_token_is_not_replaced_without_force(monkeypatch, capsys, tmp_path):
+    # Same reasoning as the workspace key: silently swapping a token drops
+    # this agent's access to whatever the old one reached.
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.local.json").write_text(
+        json.dumps({"env": {"SWITCHBOARD_TOKEN": "mine"}})
+    )
+    fake_hub(monkeypatch, self_issued=True, reachable=False)
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert code == 0
+    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_TOKEN"] == "mine"
+    assert "a different SWITCHBOARD_TOKEN is already set" in out
