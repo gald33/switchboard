@@ -268,8 +268,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         store = Store(config.db_path)
         resolver = SelfIssuedKeyResolver(store)
         print(
-            "self-issued keys enabled — clients register via "
-            "`switchboard register-key --workspace <name>`",
+            "self-issued tokens enabled — clients register via "
+            "`switchboard register-token --workspace <name>`",
             file=sys.stderr,
         )
     elif not config.token:
@@ -318,9 +318,13 @@ def cmd_keygen(args: argparse.Namespace) -> int:
 
 
 def cmd_register_key(args: argparse.Namespace) -> int:
-    """Generate an auth key locally and bind it to a workspace on a hub.
+    """Generate a hub token locally and bind it to a workspace on a hub.
 
-    Only meaningful against a hub running ``--self-issued-keys``; every other
+    A *token*, not a key: it is sent to the hub on every request and the hub
+    stores a hash of it. The workspace key from ``keygen`` is the opposite —
+    never transmitted, and the hub could not check it if it were.
+
+    Only meaningful against a hub running ``--self-issued-tokens``; every other
     hub already knows what its tokens are and has nothing to register. First
     key to claim a workspace name owns it — a teammate re-running this with
     the *same* key against the *same* workspace is a harmless no-op, but a
@@ -329,9 +333,14 @@ def cmd_register_key(args: argparse.Namespace) -> int:
     """
     import httpx
 
-    url = (args.url or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL).rstrip("/")
-    workspace = args.workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
-        Path(".").resolve()
+    url = (
+        getattr(args, "reg_url", None) or args.url
+        or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL
+    ).rstrip("/")
+    workspace = (
+        getattr(args, "reg_workspace", None) or args.workspace
+        or os.environ.get("SWITCHBOARD_WORKSPACE")
+        or _default_workspace(Path(".").resolve())
     )
     token = secrets.token_urlsafe(32)
     try:
@@ -2079,7 +2088,12 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     # MCP server never starts, so the secrets have nothing to reach the hub
     # with. Two steps because it is genuinely two, and leaving one out is how
     # a cloud session ends up with no switchboard tools and no clue why.
-    print("  another machine   1. pip install agent-switchboard   "
+    # [crypto], not the bare package: `cryptography` is an optional extra, and
+    # a workspace with a key — which `--new-key` always produces — makes the
+    # MCP server raise CryptoError at startup without it. Recommending the
+    # bare install alongside a flow that mints a key was a broken instruction.
+    extra = "'agent-switchboard[crypto]'" if minted or token_on_disk else "agent-switchboard"
+    print(f"  another machine   1. pip install {extra}   "
           "2. paste `switchboard whoami --env`")
 
 
@@ -2112,18 +2126,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help="SQLite path (env: SWITCHBOARD_DB)")
     p.add_argument("--log-level", default="info")
     p.add_argument(
-        "--keys-file",
-        help="JSON file of scoped keys for a multi-tenant hub (env: SWITCHBOARD_KEYS_FILE). "
+        "--tokens-file", "--keys-file", dest="keys_file",
+        help="JSON file of hub tokens scoped to workspaces, for a multi-tenant hub "
+             "(env: SWITCHBOARD_KEYS_FILE). "
              "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
              "docstring for the file format.",
     )
     p.add_argument(
-        "--self-issued-keys",
+        "--self-issued-tokens", "--self-issued-keys", dest="self_issued_keys",
         action="store_true",
         help="multi-tenant without a curated file (env: SWITCHBOARD_SELF_ISSUED_KEYS=1) — "
-             "clients register their own key with `switchboard register-key`, scoped to "
-             "one workspace on a first-claim-wins basis. Mutually exclusive with --token "
-             "and --keys-file.",
+             "clients register their own hub token with `switchboard register-token`, "
+             "scoped to one workspace on a first-claim-wins basis. Mutually exclusive "
+             "with --token and --tokens-file.",
     )
     p.set_defaults(func=cmd_serve)
 
@@ -2235,14 +2250,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_whoami)
 
     p = sub.add_parser(
-        "keygen", help="generate a workspace key for end-to-end encryption")
+        "keygen",
+        help="generate a workspace key — encryption, never sent to the hub",
+        description="Generate a workspace key for end-to-end encryption. This key "
+                    "never reaches the hub, which is what makes the hub unable to "
+                    "read the workspace — and unable to help you recover it. Not to "
+                    "be confused with a hub token (`register-token`), which is sent "
+                    "on every request and is what grants access to a workspace.",
+    )
     p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser(
-        "register-key",
-        help="generate an auth key and bind it to a workspace (hubs running "
-             "--self-issued-keys only)",
+        "register-token", aliases=["register-key"],
+        help="generate a hub token bound to one workspace (self-issued hubs)",
+        description="Generate a hub token and bind it to a workspace. A token is "
+                    "sent to the hub on every request and grants access to its "
+                    "workspace; the hub stores only a hash of it. That is the "
+                    "opposite of the workspace key from `keygen`, which is never "
+                    "transmitted. Only meaningful against a hub running "
+                    "--self-issued-tokens.",
     )
+    # Accept the connection options after the subcommand as well as before it.
+    # `serve`'s own startup warning tells you to run
+    # `register-token --workspace <name>`, which was an "unrecognized
+    # arguments" error — the same trap `init` was fixed for. Separate dests so
+    # the parent form keeps working; cmd_register_key reads both.
+    p.add_argument("-w", "--workspace", dest="reg_workspace", help=argparse.SUPPRESS)
+    p.add_argument("--url", dest="reg_url", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_register_key)
 
     p = sub.add_parser("health", help="check the hub is reachable")

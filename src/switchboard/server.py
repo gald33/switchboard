@@ -266,7 +266,11 @@ def create_app(
         if not principal.may_access(workspace):
             raise HTTPException(
                 status_code=403,
-                detail=f"key {principal.key_id!r} has no access to workspace {workspace!r}",
+                # "token", not "key": this is the credential the hub checks, and
+                # calling it a key here is what makes people reach for their
+                # workspace key — the one thing that could never fix a 403.
+                detail=f"token {principal.key_id!r} has no access to workspace "
+                       f"{workspace!r}",
             )
         return principal
 

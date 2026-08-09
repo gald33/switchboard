@@ -1595,7 +1595,10 @@ def test_the_explainer_names_the_package_install(monkeypatch, capsys, tmp_path):
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     machine_line = [ln for ln in out.splitlines() if "another machine" in ln][0]
-    assert "pip install agent-switchboard" in machine_line
+    assert "pip install" in machine_line
+    # [crypto] whenever a key is in play: cryptography is an optional extra,
+    # and without it the MCP server raises CryptoError instead of connecting.
+    assert "agent-switchboard[crypto]" in machine_line
     assert machine_line.index("pip install") < machine_line.index("whoami --env")
 
 
