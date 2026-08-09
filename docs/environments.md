@@ -11,7 +11,7 @@ An agent needs four values. Where each one comes from is the whole subject:
 |---|---|---|
 | `SWITCHBOARD_URL` | `.mcp.json`, committed | no |
 | `SWITCHBOARD_WORKSPACE` | `.mcp.json`, committed | no |
-| `SWITCHBOARD_TOKEN` | the environment's own secret store | yes |
+| `SWITCHBOARD_TOKEN` | the environment's own secret store, or `init` on a hub that self-issues | yes |
 | `SWITCHBOARD_KEY` | the environment's own secret store | yes |
 
 The client reads all four from the environment and nowhere else — there is no
@@ -47,6 +47,15 @@ scripts. The agent's own config gets only a one-line shim pointing at them, so
 the same scripts serve any runner — see [Codex CLI](codex-cli.md) — and a
 clone that does not commit them ends up with hooks referring to files that are
 not there.
+
+Before it finishes, `init` checks that the workspace it just wired up is
+actually reachable with the token you have. A workspace it minted is new by
+construction, so on a hub that scopes tokens to workspaces — the managed hub
+does — nothing is bound to it yet, and `init` registers a token and writes it
+next to the key. Without that step every call 403s while the setup looks fine,
+which is the failure this check exists to prevent. `--skip-token` opts out; it
+is the only step that uses the network, and a hub it cannot reach is reported
+rather than fatal, since the files it writes are correct either way.
 
 Then set `SWITCHBOARD_TOKEN` and `SWITCHBOARD_KEY` in the cloud environment's
 secret settings, and in your CI provider's secret store if CI agents should

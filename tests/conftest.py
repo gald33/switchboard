@@ -25,6 +25,28 @@ _SWITCHBOARD_ENV = (
 
 
 @pytest.fixture(autouse=True)
+def no_outbound_http(monkeypatch):
+    """Fail module-level httpx calls rather than letting a test reach a hub.
+
+    `switchboard init` contacts the hub to check that its workspace is
+    actually reachable, and its default URL is the real managed hub — so
+    without this the suite would talk to production. Tests that exercise that
+    path patch these back with fakes of their own.
+
+    Only the module-level helpers are blocked. Starlette's TestClient is an
+    ``httpx.Client`` subclass and goes through instance methods, so the API
+    tests are unaffected.
+    """
+    import httpx
+
+    def refuse(*args, **kwargs):
+        raise httpx.ConnectError("outbound HTTP is disabled in tests")
+
+    monkeypatch.setattr(httpx, "get", refuse)
+    monkeypatch.setattr(httpx, "post", refuse)
+
+
+@pytest.fixture(autouse=True)
 def clean_switchboard_env(monkeypatch):
     for name in _SWITCHBOARD_ENV:
         monkeypatch.delenv(name, raising=False)

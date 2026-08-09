@@ -1373,14 +1373,142 @@ def _ensure_gitignored(directory: Path) -> str | None:
     return f"added {_GITIGNORE_PATTERN} to .gitignore"
 
 
-def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], bool]:
-    """Record the workspace key so agents in this repo pick it up.
+def _hub_reaches_workspace(url: str, token: str, workspace: str) -> bool | None:
+    """Whether `token` may act in `workspace`. None when the hub is unreachable.
 
-    Refuses to replace a *different* key already on disk without --force.
-    Silently swapping one is the worst available failure: nothing errors, but
-    this agent and the ones still holding the old key seal to different keys
-    and simply never see each other's messages again.
+    Any authenticated read answers this; presence is the cheapest and creates
+    nothing.
     """
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"{url}/agents",
+            params={"workspace": workspace},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        return None
+    return response.status_code < 400
+
+
+def _hub_issues_own_keys(url: str) -> bool | None:
+    """Whether this hub lets a client bind its own token to a workspace.
+
+    ``/health`` says so directly, which is the answer to prefer — it is the
+    hub describing itself rather than us inferring from its routing table.
+
+    Hubs deployed before that field existed do not report it, and upgrading
+    every hub is not a precondition for `init` working against them, so the
+    fallback asks whether ``/keys/register`` is mounted at all: the route
+    exists only under ``SelfIssuedKeyResolver`` (see server.py), so a GET
+    answering 405 means "wrong method, right route" and 404 means the hub has
+    no such concept.
+    """
+    import httpx
+
+    try:
+        health = httpx.get(f"{url}/health", timeout=10.0)
+        if health.status_code < 400:
+            try:
+                advertised = health.json().get("self_issued_keys")
+            except ValueError:
+                advertised = None
+            if isinstance(advertised, bool):
+                return advertised
+        response = httpx.get(f"{url}/keys/register", timeout=10.0)
+    except httpx.HTTPError:
+        return None
+    return response.status_code == 405
+
+
+def _init_hub_token(
+    directory: Path, url: str, workspace: str, token: str | None, *, force: bool
+) -> tuple[list[str], str | None]:
+    """Make sure some token can actually act in `workspace`, registering one
+    against a self-issued-keys hub when nothing can.
+
+    This is the step whose absence made `init --new-key` a quiet failure. A
+    minted workspace is brand new by construction, so on a hub that scopes
+    tokens to workspaces nothing is bound to it — every call 403s while `init`
+    reports success and tells you to restart your editor. The managed hub runs
+    exactly that mode, so it was the default path.
+
+    Network failures are reported, never fatal: `init` is a wiring tool and
+    the files it writes are still correct without a reachable hub.
+    """
+    if not token:
+        # Nothing to test with. On a self-issued hub we can mint one; on any
+        # other, the operator issues it and `init` has nothing to offer.
+        if _hub_issues_own_keys(url) is not True:
+            return [], None
+    elif _hub_reaches_workspace(url, token, workspace) is not False:
+        # Reachable, or the hub is down and we cannot tell. Either way there
+        # is nothing to fix from here.
+        return [], token
+
+    if token and _hub_issues_own_keys(url) is not True:
+        return [
+            f"note: this token has no access to workspace {workspace!r}, and {url} does "
+            "not let clients bind their own. Ask whoever runs it to grant this "
+            "workspace, or the agents here will fail on every call"
+        ], token
+
+    import httpx
+
+    fresh = secrets.token_urlsafe(32)
+    try:
+        response = httpx.post(
+            f"{url}/keys/register",
+            json={"workspace": workspace},
+            headers={"Authorization": f"Bearer {fresh}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        return [f"note: could not reach {url} to register a token ({exc})"], token
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        return [
+            f"note: could not bind a token to workspace {workspace!r}: {detail}"
+        ], token
+
+    steps, ok = _init_local_setting(directory, "SWITCHBOARD_TOKEN", fresh, force=force)
+    if not ok:
+        return steps, token
+    steps.insert(0, f"registered a token bound to workspace {workspace!r} on {url}")
+    return steps, fresh
+
+
+#: What each secret `init` may write is called when explaining itself, and why
+#: replacing an existing one without --force is refused.
+_LOCAL_SECRETS = {
+    "SWITCHBOARD_KEY": (
+        "workspace key",
+        "Replacing it silently would cut this agent off from everyone still "
+        "using the old one",
+    ),
+    "SWITCHBOARD_TOKEN": (
+        "hub token",
+        "Replacing it silently would drop this agent's access to whatever the "
+        "old one reached",
+    ),
+}
+
+
+def _init_local_setting(
+    directory: Path, name: str, value: str, *, force: bool
+) -> tuple[list[str], bool]:
+    """Record a secret in the gitignored local settings file.
+
+    Refuses to replace a *different* existing value without --force. Silently
+    swapping one is the worst available failure for either secret: nothing
+    errors, and the agent quietly stops reaching whoever it used to.
+    """
+    label, why = _LOCAL_SECRETS[name]
     steps: list[str] = []
     ignored = _ensure_gitignored(directory)
     if ignored:
@@ -1396,25 +1524,28 @@ def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], boo
     else:
         data = {}
     env = data.setdefault("env", {})
-    existing = env.get("SWITCHBOARD_KEY")
-    if existing == key:
-        steps.append(f"left {_LOCAL_SETTINGS_REL} alone: this key is already set")
+    existing = env.get(name)
+    if existing == value:
+        steps.append(f"left {_LOCAL_SETTINGS_REL} alone: this {label} is already set")
         return steps, True
     if existing and not force:
         steps.append(
-            f"left {_LOCAL_SETTINGS_REL} alone: a different SWITCHBOARD_KEY is "
-            "already set. Replacing it silently would cut this agent off from "
-            "everyone still using the old one — pass --force if that is what you want"
+            f"left {_LOCAL_SETTINGS_REL} alone: a different {name} is already "
+            f"set. {why} — pass --force if that is what you want"
         )
         return steps, False
-    env["SWITCHBOARD_KEY"] = key
+    env[name] = value
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
     steps.append(
-        f"{'replaced the key in' if existing else 'wrote the workspace key to'} "
+        f"{'replaced the ' + label + ' in' if existing else 'wrote the ' + label + ' to'} "
         f"{_LOCAL_SETTINGS_REL}"
     )
     return steps, True
+
+
+def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], bool]:
+    return _init_local_setting(directory, "SWITCHBOARD_KEY", key, force=force)
 
 
 _SKILL_NAME = "switchboard-coordinate"
@@ -1629,6 +1760,18 @@ def cmd_init(args: argparse.Namespace) -> int:
         key_steps, key_ok = _init_key(directory, key, force=args.force)
         steps.extend(key_steps)
 
+    # Last, and only against a remote hub: a token that cannot act in this
+    # workspace makes everything above correct and useless. `--local` has its
+    # own token flow and a resolver with no concept of workspace scoping.
+    token_on_disk = False
+    if not local_hub and not args.skip_token:
+        before = token or arg_token or os.environ.get("SWITCHBOARD_TOKEN")
+        token_steps, token = _init_hub_token(
+            directory, url, workspace, before, force=args.force
+        )
+        steps.extend(token_steps)
+        token_on_disk = bool(token) and token != before
+
     local_hub_note = (
         "this hub is only reachable from this machine — a cloud session or CI runner "
         "pointed at it would start its own separate, empty hub and never see agents "
@@ -1731,8 +1874,19 @@ def cmd_init(args: argparse.Namespace) -> int:
             print(f"       export SWITCHBOARD_TOKEN={token}")
             print("       switchboard serve")
             n += 1
-        print(f"  {n}. export SWITCHBOARD_TOKEN={token or '<token>'} in every agent's shell")
-        n += 1
+        if local_hub or not token_on_disk:
+            print(
+                f"  {n}. export SWITCHBOARD_TOKEN={token or '<token>'} in every agent's shell"
+            )
+            n += 1
+        else:
+            # Already written where the MCP subprocess will read it, same as
+            # the workspace key. Telling someone to export it by hand here is
+            # how a stale token in a shell silently outranks the right one.
+            print(f"  {n}. this repo's token is in {_LOCAL_SETTINGS_REL}; set "
+                  "SWITCHBOARD_TOKEN in a cloud environment's secret store to "
+                  "let agents there join too")
+            n += 1
         print(f"  {n}. restart Claude Code and check `/mcp` — switchboard should show connected")
         if minted and key_ok:
             # Printed once, and never again: it is on disk but `init` will not
@@ -1855,6 +2009,15 @@ def build_parser() -> argparse.ArgumentParser:
              "only when there is a terminal to ask on, so agents, CI and pipelines "
              "are unaffected either way. Not the same as answering yes: the "
              "defaults are the cautious answers, and --force is what says yes.",
+    )
+    p.add_argument(
+        "--skip-token", action="store_true",
+        help="do not contact the hub to check or register a token. Without it, "
+             "`init` verifies this workspace is actually reachable and, on a hub "
+             "that lets clients bind their own tokens, registers one when nothing "
+             "can reach it — otherwise a freshly minted workspace 403s on every "
+             "call while init reports success. This is the only step that uses "
+             "the network; failures are reported, never fatal.",
     )
     p.add_argument("--skip-mcp", action="store_true", help="do not write .mcp.json")
     p.add_argument(

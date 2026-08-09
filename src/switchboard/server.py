@@ -356,7 +356,19 @@ def create_app(
         # StaticKeyResolver or SelfIssuedKeyResolver hub always requires
         # auth, but neither one sets config.token, so it reported False.
         auth_required = not getattr(resolver, "open", False)
-        return {"ok": True, "version": API_VERSION, "auth": auth_required}
+        # Whether a client may bind its own token to a workspace here. A hub
+        # that scopes tokens will 403 every call against a workspace nobody
+        # has claimed, which is what a freshly minted one always is — so
+        # `init` has to know whether it can fix that itself or has to send the
+        # user to an operator. Advertised rather than left to be inferred from
+        # whether /keys/register happens to be mounted, which is a fact about
+        # our routing table that clients should not have to know.
+        return {
+            "ok": True,
+            "version": API_VERSION,
+            "auth": auth_required,
+            "self_issued_keys": isinstance(resolver, SelfIssuedKeyResolver),
+        }
 
     @app.get("/stats", dependencies=guard)
     def stats(workspace: str | None = None) -> dict[str, Any]:
