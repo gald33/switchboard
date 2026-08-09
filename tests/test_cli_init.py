@@ -1585,3 +1585,15 @@ def test_no_clipboard_tool_is_not_an_error(monkeypatch, capsys, tmp_path):
     err = make_interactive(monkeypatch, ["y"])
     assert main(["whoami", "--env"]) == 0, "no clipboard over SSH is normal, not a failure"
     assert "no clipboard tool found" in err.getvalue()
+
+
+def test_the_explainer_names_the_package_install(monkeypatch, capsys, tmp_path):
+    # Secrets alone do not make a new environment work: without the package,
+    # switchboard-mcp is not on PATH, the MCP server never starts, and the
+    # session has no switchboard tools at all — with the secrets set correctly
+    # the whole time. Two steps because it is genuinely two.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    machine_line = [ln for ln in out.splitlines() if "another machine" in ln][0]
+    assert "pip install agent-switchboard" in machine_line
+    assert machine_line.index("pip install") < machine_line.index("whoami --env")

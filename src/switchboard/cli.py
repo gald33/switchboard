@@ -2074,7 +2074,12 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     # environment, so people who set it up that way never touch --key again.
     print("  another repo      switchboard init --key <key>   (or export "
           "SWITCHBOARD_KEY first)")
-    print("  another machine   switchboard whoami --env   → paste into its secret store")
+    # The package first: without it `switchboard-mcp` is not on PATH and the
+    # MCP server never starts, so the secrets have nothing to reach the hub
+    # with. Two steps because it is genuinely two, and leaving one out is how
+    # a cloud session ends up with no switchboard tools and no clue why.
+    print("  another machine   1. pip install agent-switchboard   "
+          "2. paste `switchboard whoami --env`")
 
 
 # --- parser -----------------------------------------------------------------
