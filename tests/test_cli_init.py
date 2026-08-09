@@ -1597,3 +1597,45 @@ def test_the_explainer_names_the_package_install(monkeypatch, capsys, tmp_path):
     machine_line = [ln for ln in out.splitlines() if "another machine" in ln][0]
     assert "pip install agent-switchboard" in machine_line
     assert machine_line.index("pip install") < machine_line.index("whoami --env")
+
+
+# --- what init says above the explainer --------------------------------------
+
+
+def test_no_placeholder_token_survives(monkeypatch, capsys, tmp_path):
+    # `export SWITCHBOARD_TOKEN=<token>` told you to fill in a value from a
+    # place it never named. Where a token actually comes from is the useful
+    # thing to say.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    assert "<token>" not in out
+
+
+def test_a_registered_token_needs_no_next_step(monkeypatch, capsys, tmp_path):
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    nxt = out.split("Next")[1].split("Two halves")[0]
+    assert "SWITCHBOARD_TOKEN" not in nxt, "it is on disk; saying so twice is noise"
+    assert "restart Claude Code" in nxt
+
+
+def test_the_sealed_note_no_longer_gives_setup_instructions(monkeypatch, capsys, tmp_path):
+    # It used to say `init --key <key> -w <workspace>` and to set
+    # SWITCHBOARD_WORKSPACE in a cloud environment — both of which pin a
+    # machine to a workspace it should be reading from the committed
+    # .mcp.json, and both contradicted the explainer below it.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    note = out.split("Note: ")[1].split("Next")[0]
+    assert "sealed with a key" in note
+    assert "-w " not in note
+    assert "SWITCHBOARD_WORKSPACE" not in note
+
+
+def test_the_teammate_line_still_pins_the_workspace(monkeypatch, capsys, tmp_path):
+    # The one case where -w is right: a teammate must land in *your* room, so
+    # theirs has to match. That is the opposite of your own second repo.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    line = [ln for ln in out.splitlines() if "Give teammates" in ln][0]
+    assert f"-w {_mcp_ws(tmp_path)}" in line
