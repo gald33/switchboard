@@ -11,3 +11,5 @@ build/
 *.db-wal
 *.db-shm
 .env
+.cursor/
+**/.claude/settings.local.json
