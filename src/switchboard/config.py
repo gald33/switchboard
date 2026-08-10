@@ -6,9 +6,6 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_TOKEN        shared bearer token (server + client)
     SWITCHBOARD_KEYS_FILE    path to a JSON file of scoped keys (server) — see
                              below; mutually exclusive with SWITCHBOARD_TOKEN
-    SWITCHBOARD_SELF_ISSUED_KEYS  "1" to run multi-tenant with client-generated
-                             keys instead of an operator-curated file (server)
-                             — mutually exclusive with the two above
     SWITCHBOARD_URL          hub base URL (client)
     SWITCHBOARD_WORKSPACE    workspace to join (client). Unset, the client
                              derives one — see ``default_workspace`` and
@@ -31,12 +28,6 @@ generates their own (e.g. ``python -c 'import secrets;print(secrets.token_urlsaf
 and gives it to the operator to add to the file. Changes need a restart to
 take effect, same as rotating SWITCHBOARD_TOKEN does today.
 
-A hub with SWITCHBOARD_SELF_ISSUED_KEYS=1 is also multi-tenant, but without
-an operator-curated file: a client picks its own token (``switchboard
-register-key --workspace <name>``, the same shape as ``keygen``) and the hub
-binds it to that workspace itself, first-claim-wins, no restart needed. See
-auth.SelfIssuedKeyResolver and docs/managed-hub.md for why a self-issued key
-has to scope down to be worth anything at all.
 """
 
 from __future__ import annotations
@@ -113,9 +104,6 @@ class ServerConfig:
     #: granting access to all of them. Mutually exclusive with ``token`` —
     #: ``cmd_serve`` rejects both being set rather than silently picking one.
     keys_file: str | None = None
-    #: Multi-tenant without a curated file: clients register their own keys.
-    #: Mutually exclusive with ``token`` and ``keys_file``, same reasoning.
-    self_issued_keys: bool = False
     sweep_interval: float = SWEEP_INTERVAL_SECONDS
 
     @classmethod
@@ -124,8 +112,6 @@ class ServerConfig:
             db_path=os.environ.get("SWITCHBOARD_DB", "switchboard.db"),
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
             keys_file=os.environ.get("SWITCHBOARD_KEYS_FILE") or None,
-            self_issued_keys=os.environ.get("SWITCHBOARD_SELF_ISSUED_KEYS", "").lower()
-            in {"1", "true", "yes"},
             sweep_interval=_env_float("SWITCHBOARD_SWEEP_INTERVAL", SWEEP_INTERVAL_SECONDS),
         )
 

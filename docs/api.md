@@ -27,13 +27,13 @@ Interactive docs are served at `/docs` on any running hub.
 ## Meta
 
 ### `GET /health`
-No auth. `{"ok": true, "version": "0.4.6", "auth": true, "self_issued_keys":
-false}`. `auth` reports whether a token is required, which is how you check you
-didn't deploy an open hub by accident. `self_issued_keys` reports whether a
-client may claim a workspace with `POST /keys/register` — a client needing to
-reach a workspace nobody has bound yet has to know whether it can fix that
-itself or must ask an operator. Hubs older than this field omit it, so treat a
-missing value as unknown rather than `false`.
+No auth. `{"ok": true, "version": "0.4.6", "auth": true}`. `auth` reports
+whether a token is required, which is how you check you didn't deploy an open
+hub by accident.
+
+`self_issued_keys` used to appear here. Nothing binds a token to a workspace
+any more: a room identifier is `hash(workspace_token)`, derived rather than
+claimed, so there is no registry to consult and `POST /keys/register` is gone.
 
 ### `GET /stats`
 Live row counts per table plus the list of active workspaces.
