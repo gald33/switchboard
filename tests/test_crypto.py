@@ -846,3 +846,93 @@ def _resign(client, item, seq):
     return client.signing.sign(signing.message_payload(
         sender=client.agent_id, channel=item["channel"], seq=seq, body=item["body"],
     ))
+# --- key epochs --------------------------------------------------------------
+#
+# One thing rotates: the payload key. The room identifier cannot, because both
+# hub and client must know it — and blinding must not, because the hub
+# *compares* blinded values and a rotating blind key would stop a channel
+# matching itself across a boundary.
+
+
+def test_reading_follows_the_message_not_the_clock(key):
+    # The property everything else rests on. A message written seconds before a
+    # boundary stays readable past it, and a reader joining later opens history,
+    # both because the epoch comes from the envelope.
+    writer = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    reader = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    sealed = writer.seal({"m": "hello"}, "message.body")
+    assert reader.unseal(sealed, "message.body") == {"m": "hello"}
+
+
+def test_a_reader_with_rotation_off_still_opens_rotated_content(key):
+    # What makes a read-first rollout safe: understanding epochs does not
+    # require writing them.
+    rotating = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    plain = WorkspaceCipher.from_key(key, WS, epoch_period=0)
+    assert plain.unseal(rotating.seal("x", "message.body"), "message.body") == "x"
+
+
+def test_epoch_zero_writes_the_bytes_it_always_did(key):
+    # A client with rotation off must produce envelopes an older reader opens,
+    # so the field is omitted rather than written as 0.
+    plain = WorkspaceCipher.from_key(key, WS, epoch_period=0)
+    assert "e" not in plain.seal("x", "message.body")
+
+
+def test_different_epochs_use_different_keys(key):
+    cipher = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    assert cipher._payload_key_for(0) != cipher._payload_key_for(1)
+    assert cipher._payload_key_for(1) != cipher._payload_key_for(2)
+    # and epoch 0 is the original derivation, so old content is untouched
+    assert cipher._payload_key_for(0) == cipher._payload_key
+
+
+def test_a_derived_key_is_cached_not_recomputed(key):
+    cipher = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    first = cipher._payload_key_for(7)
+    assert cipher._subkeys[7] is first
+    assert cipher._payload_key_for(7) is first
+
+
+def test_blinding_does_not_rotate(key):
+    # The hub compares blinded values; rotating this would break routing.
+    a = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    b = WorkspaceCipher.from_key(key, WS, epoch_period=1)
+    assert a.blind("build", "channel") == b.blind("build", "channel")
+
+
+def test_a_nonsense_epoch_is_refused(key):
+    cipher = WorkspaceCipher.from_key(key, WS, epoch_period=900)
+    sealed = cipher.seal("x", "message.body")
+    for bad in ("later", -1, 1.5, True):
+        with pytest.raises(DecryptionError):
+            cipher.unseal({**sealed, "e": bad}, "message.body")
+
+
+def test_rotation_is_on_by_default(monkeypatch, key):
+    monkeypatch.delenv("SWITCHBOARD_KEY_EPOCH_PERIOD", raising=False)
+    assert WorkspaceCipher.from_key(key, WS).current_epoch() > 0
+
+
+def test_rotation_can_be_switched_off(monkeypatch, key):
+    # The escape hatch for a fleet that still has pre-epoch readers: writing
+    # epoch 0 produces bytes they can open.
+    monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "0")
+    cipher = WorkspaceCipher.from_key(key, WS)
+    assert cipher.current_epoch() == 0
+    assert "e" not in cipher.seal("x", "message.body")
+
+
+def test_the_period_can_be_switched_on_by_environment(monkeypatch, key):
+    monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "900")
+    cipher = WorkspaceCipher.from_key(key, WS)
+    assert cipher.current_epoch(now=1_800_000) == 2000
+    assert cipher.current_epoch(now=1_800_899) == 2000
+    assert cipher.current_epoch(now=1_800_900) == 2001
+
+
+def test_a_broken_period_setting_falls_back_to_the_default(monkeypatch, key):
+    # Not to 0: a typo in an environment variable should not silently switch
+    # rotation off for that agent while its peers keep rotating.
+    monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "every-so-often")
+    assert WorkspaceCipher.from_key(key, WS).current_epoch() > 0

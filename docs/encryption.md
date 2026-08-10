@@ -48,6 +48,33 @@ Either way the key never reaches the hub.
 That is the whole setup. Everything else — `claim`, `say`, `inbox`, `checkin`,
 the MCP tools — behaves exactly as before.
 
+## Key epochs
+
+The payload key rotates on a schedule, with no coordination. Every message is
+sealed under `KDF(key, workspace, floor(now / period))` — 15 minutes by
+default — and the epoch number travels in the envelope.
+
+Readers take the epoch **from the message**, never from their own clock. Three
+things follow: nobody has to agree on a schedule, a message written seconds
+before a boundary stays readable by someone already past it, and history stays
+readable forever because any epoch is derivable from the same key. Two agents
+running different periods interoperate for the same reason.
+
+`SWITCHBOARD_KEY_EPOCH_PERIOD=0` switches it off, and epoch 0 omits the field
+entirely, producing exactly the bytes a pre-epoch client wrote. That is the
+escape hatch if you still run readers too old to understand epochs: upgrading
+a *reader* is always safe, since reading follows whatever the message says —
+it is writing epochs that an old peer cannot follow. Note that the `uvx`
+bootstrap caches, so an environment can sit on an older build until
+`uvx --refresh`.
+
+What rotation buys is bounded exposure of a *derived* key: one that leaks is
+useless after the next boundary. It is **not** forward secrecy — the workspace
+key derives every epoch, past and future — and it does not help if the
+workspace key itself leaks. Blinded identifiers deliberately do not rotate:
+the hub compares them to route, so a rotating blind key would stop a channel
+matching itself across a boundary.
+
 ## What it costs
 
 Measured on a 4-core VM, AES-256-GCM over a realistic 127-byte structured
