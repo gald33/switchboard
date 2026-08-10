@@ -232,31 +232,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config.db_path = args.db
     if args.token:
         config.token = args.token
-    if args.keys_file:
-        config.keys_file = args.keys_file
-    if bool(config.token) and bool(config.keys_file):
+
+    if not config.token:
+        # The one thing worth saying loudly at startup: with no token this hub
+        # admits anyone who can reach it. Rooms are still unguessable and still
+        # sealed, but nothing stops a stranger addressing one they learn.
         print(
-            "error: --token/SWITCHBOARD_TOKEN and --tokens-file/SWITCHBOARD_KEYS_FILE "
-            "are mutually exclusive — a hub runs in exactly one auth mode.",
+            "warning: no token set — this hub admits any caller. Fine on "
+            "localhost; set --token/SWITCHBOARD_TOKEN for anything reachable "
+            "from elsewhere.",
             file=sys.stderr,
         )
-        return EXIT_ERROR
-
-    resolver = None
-    store = None
-    if config.keys_file:
-        from .auth import load_static_keys
-
-        try:
-            resolver = load_static_keys(config.keys_file)
-        except (OSError, ValueError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return EXIT_ERROR
-        print(f"loaded {len(resolver)} scoped key(s) from {config.keys_file}", file=sys.stderr)
 
     print(f"switchboard {__version__} → http://{args.host}:{args.port}  db={config.db_path}")
     uvicorn.run(
-        create_app(config, store=store, resolver=resolver), host=args.host, port=args.port,
+        create_app(config), host=args.host, port=args.port,
         log_level=args.log_level,
     )
     return EXIT_OK
@@ -2164,13 +2154,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8787)
     p.add_argument("--db", help="SQLite path (env: SWITCHBOARD_DB)")
     p.add_argument("--log-level", default="info")
-    p.add_argument(
-        "--tokens-file", "--keys-file", dest="keys_file",
-        help="JSON file of workspace tokens, for a multi-tenant hub "
-             "(env: SWITCHBOARD_KEYS_FILE). "
-             "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
-             "docstring for the file format.",
-    )
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser(

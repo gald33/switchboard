@@ -1,70 +1,58 @@
-"""Who is calling, and which workspaces they may touch.
+"""The hub's front door, which is all that is left of authentication.
 
-A self-hosted hub has one shared token and every caller may use every
-workspace — workspaces there are a *namespace*, for keeping one team's
-coordination out of another's way, and that is all they need to be.
+There used to be three credential models here: a shared bearer token, an
+operator-curated file mapping tokens to the workspaces they may touch, and
+tokens clients issued themselves and bound to a workspace on first use. Two of
+them treated a workspace as something *ownable* — a name an authority assigns
+and defends on your behalf.
 
-A hub shared between parties that do not trust each other needs the same
-workspaces to be a *boundary*. That is a different requirement, and it cannot
-be bolted on later without breaking every deployed client, because it changes
-what a token means rather than how it is sent.
+That went away with #61. A room identifier is ``hash(workspace_token)``:
+derived rather than claimed, computed identically by anyone holding the token,
+with nothing to register and no third party to arbitrate a name nobody typed.
+Which leaves exactly one credential in the system, and nobody issues it.
 
-So the seam lives here from the start: a resolver turns a bearer token into a
-:class:`Principal`, and routes authorize the requested workspace against it.
-The shipped resolver reproduces the shared-token behaviour exactly, so
-self-hosted hubs are unaffected. A managed deployment supplies a resolver that
-looks keys up wherever it keeps them.
+So there is no resolver, no principal, and no per-workspace authorization. Two
+things protect a room, and neither is the hub:
 
-Deliberately NOT decided here: how keys are issued, stored, revoked or billed.
-Those are deployment policy. This module only defines what the rest of the hub
-needs to know about a caller.
+- **knowing its identifier**, which is unguessable unless someone tells you
+- **holding its key**, without which the contents are ciphertext
+
+What remains here is a **perimeter**, not authorization. An optional shared
+token keeps a hub off the open internet, which matters the moment one has a
+public address. It does not scope anything, does not protect one room from
+another, and must never be described as though it does — every caller who gets
+through the door can reach every room they can name.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Protocol
-
-#: Tier of an anonymous/self-hosted caller. Tiers exist so that a hub under
-#: contention can order work by them; nothing in the open-source hub treats
-#: one tier differently from another, and `standard` is what everyone gets.
-DEFAULT_TIER = "standard"
+import hashlib
+import hmac
 
 
-@dataclass(frozen=True)
-class Principal:
-    """An authenticated caller."""
+def hash_token(token: str) -> str:
+    """One-way digest of a bearer token.
 
-    key_id: str
-    #: Workspaces this caller may touch. ``None`` means *all of them* — which
-    #: is right for a self-hosted hub and wrong for a shared one.
-    workspaces: frozenset[str] | None = None
-    tier: str = DEFAULT_TIER
-    label: str | None = None
-    meta: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def unrestricted(self) -> bool:
-        return self.workspaces is None
-
-    def may_access(self, workspace: str) -> bool:
-        return self.unrestricted or workspace in self.workspaces
+    Used where a token would otherwise be compared or logged in the clear.
+    Kept as a function rather than inlined so there is one definition of what
+    "the same token" means.
+    """
+    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
 
 
-class PrincipalResolver(Protocol):
-    """Turns a bearer token into a :class:`Principal`, or ``None`` to reject."""
-
-    def resolve(self, token: str | None) -> Principal | None:
-        ...
+def _constant_time_eq(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode("utf-8", "replace"), b.encode("utf-8", "replace"))
 
 
-class SharedTokenResolver:
-    """One token, full access — the self-hosted default.
+class Perimeter:
+    """Whether a caller may talk to this hub at all.
 
-    With ``token=None`` the hub is open: every caller is accepted and may use
-    every workspace. That is a reasonable default for something bound to
-    localhost and an unreasonable one for anything else, which is why
-    ``switchboard serve`` warns loudly about it at startup.
+    With no token, the hub is open: every caller is accepted, which is right
+    for something bound to localhost and wrong for anything with a public
+    address — ``switchboard serve`` warns about it at startup.
+
+    With a token, callers must present it. That is the entire check. It says
+    nothing about *which* rooms they may reach, because rooms are not owned.
     """
 
     def __init__(self, token: str | None) -> None:
@@ -74,105 +62,7 @@ class SharedTokenResolver:
     def open(self) -> bool:
         return self._token is None
 
-    def resolve(self, token: str | None) -> Principal | None:
+    def admits(self, presented: str | None) -> bool:
         if self._token is None:
-            return Principal(key_id="anonymous", label="open hub")
-        if token is None or not _constant_time_eq(token, self._token):
-            return None
-        return Principal(key_id="shared", label="shared token")
-
-
-class StaticKeyResolver:
-    """Several keys, each scoped to named workspaces.
-
-    Enough to run a small shared hub from a config file, and a worked example
-    of the interface for anything larger. Build the mapping however you like —
-    a database, a secrets manager, an identity provider.
-    """
-
-    def __init__(self, keys: dict[str, Principal]) -> None:
-        self._keys = dict(keys)
-
-    def __len__(self) -> int:
-        return len(self._keys)
-
-    def resolve(self, token: str | None) -> Principal | None:
-        if token is None:
-            return None
-        # Linear scan with a constant-time compare: correct regardless of key
-        # count, and key counts here are small. A dict lookup on the raw token
-        # would leak length/prefix information through timing.
-        for candidate, principal in self._keys.items():
-            if _constant_time_eq(token, candidate):
-                return principal
-        return None
-
-
-def hash_token(token: str) -> str:
-    """One-way digest of a bearer token, for tokens that get persisted.
-
-    `StaticKeyResolver` and `SharedTokenResolver` compare tokens in memory,
-    against values that only ever lived in a config file or an env var, so
-    they never store the raw token anywhere new. `SelfIssuedKeyResolver` is
-    different: its bindings live in the hub's own database, so the token
-    itself must not — a leaked database file must not hand out working
-    credentials. A plain SHA-256 is enough (not a slow password KDF): the
-    input is a high-entropy random token, not a memorable secret, so there is
-    nothing for a slow hash to protect against that a fast one does not
-    already make infeasible.
-    """
-    import hashlib
-
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-def _constant_time_eq(a: str, b: str) -> bool:
-    import hmac
-
-    return hmac.compare_digest(a.encode(), b.encode())
-
-
-def load_static_keys(path: str) -> StaticKeyResolver:
-    """Build a :class:`StaticKeyResolver` from a JSON keys file.
-
-    File shape — token -> {"workspaces": [...], "label": "...", "tier": "..."}::
-
-        {
-          "the-bearer-token-for-acme": {"workspaces": ["acme/app"], "label": "acme"}
-        }
-
-    ``workspaces`` is required and must be non-empty: an entry with no
-    workspaces would be indistinguishable from a typo that dropped the field,
-    and silently granting ``unrestricted`` access on a *missing* key is
-    exactly the failure mode this file exists to prevent. ``label`` and
-    ``tier`` are optional; ``key_id`` is derived from ``label`` if given,
-    else a truncated hash of the token (never the token itself — this ends
-    up in logs).
-    """
-    import hashlib
-    import json
-
-    with open(path, encoding="utf-8") as f:
-        raw = json.load(f)
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path}: expected a JSON object mapping token -> key config")
-
-    keys: dict[str, Principal] = {}
-    for token, entry in raw.items():
-        if not isinstance(entry, dict):
-            raise ValueError(f"{path}: entry for a key must be an object, got {type(entry)!r}")
-        workspaces = entry.get("workspaces")
-        if not isinstance(workspaces, list) or not workspaces:
-            raise ValueError(
-                f"{path}: key {entry.get('label', '<unlabeled>')!r} needs a non-empty "
-                "\"workspaces\" list — omitting it is not the same as \"all workspaces\""
-            )
-        label = entry.get("label")
-        key_id = label or hashlib.sha256(token.encode()).hexdigest()[:12]
-        keys[token] = Principal(
-            key_id=key_id,
-            workspaces=frozenset(workspaces),
-            tier=entry.get("tier", DEFAULT_TIER),
-            label=label,
-        )
-    return StaticKeyResolver(keys)
+            return True
+        return presented is not None and _constant_time_eq(presented, self._token)
