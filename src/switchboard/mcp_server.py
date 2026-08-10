@@ -454,7 +454,11 @@ class Bridge:
     def whoami(self) -> dict[str, Any]:
         unread_dms = self._touch()
         out = {
-            "agent_id": self.identity.agent_id,
+            # What peers address, not what this process calls itself: with a
+            # workspace key those differ, and this tool exists to answer
+            # "how will other agents refer to me?"
+            "agent_id": self.client.agent_id,
+            "local_agent_id": self.identity.agent_id,
             "name": self.identity.name,
             "kind": self.identity.kind,
             "branch": self.identity.branch,
@@ -482,6 +486,23 @@ class Bridge:
         except Exception:
             return None
         if report["samples"] < MIN_SAMPLES:
+            # Normally silence is right: rates from two samples are noise.
+            # But "no history" and "history that never accrues" look
+            # identical from here, and only one of them is a problem the
+            # agent can act on — so when windows are being discarded,
+            # say so instead of staying dark.
+            if report.get("discarded_from_other_runs"):
+                return {
+                    "samples": report["samples"],
+                    "discarded_from_other_runs": report["discarded_from_other_runs"],
+                    "note": (
+                        "Forecast windows are being discarded because a different "
+                        "run closed them, so no history is accumulating and every "
+                        "forecast stays on its bootstrap prior. This is what a "
+                        "runtime identity that changes between declaring and "
+                        "looking looks like — see SWITCHBOARD_RUNTIME_ID."
+                    ),
+                }
             return None
         summary = {
             "samples": report["samples"],

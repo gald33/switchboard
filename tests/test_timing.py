@@ -153,7 +153,7 @@ def test_calibration_is_empty_without_history():
     model = TimingModel(":memory:")
     assert model.calibration("a", "ws") == {
         "samples": 0, "p50_hit_rate": None, "p95_hit_rate": None,
-        "dropped_as_outliers": 0,
+        "dropped_as_outliers": 0, "discarded_from_other_runs": 0,
     }
 
 
@@ -301,6 +301,42 @@ def test_a_different_named_run_still_does_not_score(tmp_path):
     other.note_look("a", "ws", now=300.0)
 
     assert other._deltas("a", "ws", "coding", "medium") == []
+
+
+def test_a_window_another_run_closed_is_counted_not_silently_dropped(tmp_path):
+    """Discarding is right; discarding invisibly is not.
+
+    A caller whose runtime id changes between declaring and looking throws
+    away every window it opens, and the only symptom was a sample count that
+    never moved — indistinguishable from an agent that simply had not worked
+    yet. This is what makes the two tellable apart.
+    """
+    db = str(tmp_path / "timing.db")
+    for run in range(3):
+        TimingModel(db, runtime_id=f"declare-{run}").declare(
+            "a", "ws", "coding", "medium", now=float(run * 100))
+        TimingModel(db, runtime_id=f"look-{run}").note_look(
+            "a", "ws", now=float(run * 100 + 30))
+
+    report = TimingModel(db).calibration("a", "ws")
+    assert report["samples"] == 0
+    assert report["discarded_from_other_runs"] == 3
+    # Not folded into the outlier count: these were never observations, so
+    # they carry none of the truncation bias `dropped` exists to expose.
+    assert report["dropped_as_outliers"] == 0
+
+
+def test_a_healthy_run_reports_no_discards(tmp_path):
+    """The counter has to stay at zero when nothing is wrong, or it is just
+    noise on every report."""
+    db = str(tmp_path / "timing.db")
+    model = TimingModel(db, runtime_id="steady")
+    for run in range(3):
+        cycle(model, "coding", "medium", at=float(run * 100), look_at=float(run * 100 + 30))
+
+    report = model.calibration("a", "ws")
+    assert report["samples"] == 3
+    assert report["discarded_from_other_runs"] == 0
 
 
 # --- truncation and retention ------------------------------------------------

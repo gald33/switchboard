@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from switchboard import mcp_server
 from switchboard.client import Client, Identity
 from switchboard.config import ClientConfig, ServerConfig
+from switchboard.crypto import WorkspaceCipher
 from switchboard.mcp_server import TOOLS, Bridge, handle_request, serve_stdio
 from switchboard.server import create_app
 from switchboard.store import Store
@@ -640,9 +641,48 @@ def test_a_live_forecast_is_not_flagged(hub):
     assert "expired" not in msg["timing_forecast"]
 
 
+def test_whoami_reports_the_id_peers_address(hub):
+    """The bridge had the same defect as the CLI (#90): it answered "how am I
+    addressed?" with the process's own name, which is not what a peer sees
+    once a workspace key blinds everything on the way out."""
+    a1 = make_bridge(hub, "a1")
+    a1.client.cipher = WorkspaceCipher.from_key("K" * 43, WS)
+    a1.client.agent_id = a1.client.cipher.blind("a1", "agent")
+
+    payload, _ = call(a1, "whoami")
+    assert payload["local_agent_id"] == "a1"
+    assert payload["agent_id"] == a1.client.agent_id != "a1"
+
+
 def test_whoami_stays_quiet_until_there_is_enough_history(hub):
     a1 = make_bridge(hub, "a1")
     assert "forecast_calibration" not in call(a1, "whoami")[0]
+
+
+def test_whoami_speaks_up_when_history_is_being_discarded(hub, tmp_path):
+    """Silence below MIN_SAMPLES is right for an agent that simply has not
+    worked yet, and wrong for one whose windows are all being thrown away —
+    they look identical from here, and only the second is actionable.
+
+    This is the state a per-call MCP server lands in: a fresh runtime id
+    every time, so no declaration is ever closed by the run that opened it.
+    """
+    a1 = make_bridge(hub, "a1")
+    ws = a1.config.workspace
+    # A real file rather than the fixture's ":memory:", since the point is
+    # several runs sharing one store.
+    db = str(tmp_path / "timing.db")
+    a1.timing = TimingModel(db, runtime_id="the-bridge")
+    for run in range(3):
+        TimingModel(db, runtime_id=f"declare-{run}").declare(
+            "a1", ws, "coding", "medium", now=float(run * 100))
+        TimingModel(db, runtime_id=f"look-{run}").note_look(
+            "a1", ws, now=float(run * 100 + 30))
+
+    report = call(a1, "whoami")[0]["forecast_calibration"]
+    assert report["samples"] == 0
+    assert report["discarded_from_other_runs"] == 3
+    assert "SWITCHBOARD_RUNTIME_ID" in report["note"]
 
 
 def test_whoami_surfaces_calibration_once_it_means_something(hub):
