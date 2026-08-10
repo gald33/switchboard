@@ -2498,6 +2498,57 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
 # --- parser -----------------------------------------------------------------
 
 
+#: Global options that also work *after* the subcommand. `switchboard say
+#: general hi --json` is what everyone types first, and argparse's answer was
+#: "unrecognized arguments" — including for `-q` and `--url`, and including in
+#: places switchboard's own output tells you to type them. It cost a real
+#: agent its roster presence mid-run: `announce --json` failed, so it never
+#: registered, and nothing about the error said the flag was merely misplaced.
+_GLOBAL_FLAGS: tuple[tuple[tuple[str, ...], dict[str, Any]], ...] = (
+    (("--url",), {}),
+    (("--token",), {}),
+    (("-w", "--workspace"), {}),
+    (("--agent-id",), {}),
+    (("--key",), {}),
+    (("--json",), {"action": "store_true"}),
+    (("-q", "--quiet"), {"action": "store_true"}),
+)
+
+
+def _accept_global_flags_after_subcommand(parser: argparse.ArgumentParser) -> None:
+    """Let every subcommand take the global flags too, in either position.
+
+    The trick is `default=SUPPRESS`: a subparser option sharing a dest with
+    its parent normally *overwrites* the parent's value with its own default
+    whenever the flag is not repeated after the subcommand — the exact trap
+    `init` sidestepped with separate dests and a note. Suppressed defaults
+    leave the attribute unset instead, so the parent's value survives and one
+    dest serves both positions, with no command needing to read two.
+
+    `init` keeps its bespoke handling: its options are already declared with
+    their own dests, and re-declaring the same strings here would be an
+    argparse conflict. Nested subcommands (`board set`) are walked too, since
+    that is where the flag lands when a command has its own subcommands.
+    """
+    seen: set[int] = set()
+
+    def walk(p: argparse.ArgumentParser, name: str | None) -> None:
+        if id(p) in seen:  # aliases (announce/register) share one parser
+            return
+        seen.add(id(p))
+        if name is not None and name != "init":
+            for flags, options in _GLOBAL_FLAGS:
+                p.add_argument(
+                    *flags, default=argparse.SUPPRESS, help=argparse.SUPPRESS, **options
+                )
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child_name, child in action.choices.items():
+                    walk(child, child_name)
+
+    walk(parser, None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="switchboard",
@@ -2786,6 +2837,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("board_key", metavar="key")
     p.set_defaults(func=cmd_board)
 
+    _accept_global_flags_after_subcommand(parser)
     return parser
 
 
