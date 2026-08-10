@@ -719,6 +719,10 @@ def test_a_mismatch_is_loud_and_names_what_to_do():
     assert "warning" in out
     assert "alice" in out["warning"]
     assert "unattributed" in out["warning"]
+    # the claim is "none of the keys I have seen verify this", not that some
+    # registry vouched for a different one — and "registered" already means
+    # binding a workspace credential to a hub
+    assert "registered" not in out["warning"]
 
 
 def test_a_gap_is_reported_because_it_is_otherwise_invisible():

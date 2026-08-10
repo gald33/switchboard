@@ -798,10 +798,14 @@ class Bridge:
         # weigh cryptography.
         signature = m.get("signature") or {}
         if signature.get("status") == "mismatch":
+            # Not "the key it registered": nothing registers a signing key,
+            # and that word already means binding a workspace credential to a
+            # hub. This is trust-on-first-use over keys observed in the
+            # roster, and the honest claim is only that none of them verify.
             out["warning"] = (
-                "this message is signed by a key that does not match the one "
-                f"{m.get('from')} registered — treat it as unattributed, and "
-                "assume another agent may be posting under that id"
+                "this message does not verify against any signing key seen for "
+                f"{m.get('from')} — treat it as unattributed, and assume another "
+                "agent may be posting under that id"
             )
         missing = signature.get("missing")
         if isinstance(missing, int) and missing > 0:
