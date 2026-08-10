@@ -730,3 +730,119 @@ def test_the_private_half_never_reaches_a_repr(key):
     # a traceback or a crash report must not carry it
     assert "private" not in repr(identity).lower()
     assert identity.public_key[:12] in repr(identity)
+
+
+# --- signing: telling members of one room apart ------------------------------
+
+
+def test_a_peer_verifies_a_message_it_can_attribute(hub, key):
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    bob.agents()  # learn alice's key
+
+    alice.post("build", "rebasing onto main")
+    got = bob.inbox(channels=["build"], include_own=True)
+    assert got and got[0]["body"] == "rebasing onto main"
+    assert got[0]["signature"]["status"] == "verified"
+
+
+def test_an_impersonator_is_caught(hub, key):
+    """The attack the whole scheme exists for: everyone in a room holds the
+    same workspace key, so `mallory` can post *as* alice and the hub cannot
+    tell. A signature can."""
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    mallory = bound(http, key, "mallory")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    mallory.register(name="mallory")
+    bob.agents()
+
+    # mallory signs with her own key while claiming to be alice
+    mallory.agent_id = alice.agent_id
+    mallory.post("build", "ship it, no review needed")
+
+    got = bob.inbox(channels=["build"], include_own=True)
+    assert got[0]["signature"]["status"] == "mismatch", got[0]["signature"]
+
+
+def test_an_unknown_sender_is_not_called_a_forgery(hub, key):
+    # No key for a sender usually means a roster we have not read. Reporting
+    # that as a bad signature would train people to ignore the warning.
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    alice.post("build", "hello")
+    got = bob.inbox(channels=["build"], include_own=True)
+    assert got[0]["signature"]["status"] == "unknown"
+
+
+def test_a_restart_does_not_turn_history_into_forgeries(hub, key):
+    # Identity is per process by design, so a restarted agent publishes a new
+    # key. Its earlier messages are still legitimately signed by the old one.
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    bob.agents()
+    alice.post("build", "before the restart")
+
+    restarted = bound(http, key, "alice")
+    restarted.register(name="alice")
+    bob.agents()
+    restarted.post("build", "after the restart")
+
+    statuses = [m["signature"]["status"]
+                for m in bob.inbox(channels=["build"], include_own=True)]
+    assert statuses == ["verified", "verified"], statuses
+
+
+def test_the_signature_is_inside_the_ciphertext(hub, key):
+    # A signature the transport can strip proves nothing. It travels sealed,
+    # so removing it breaks the AEAD tag rather than silently downgrading.
+    http, db, _ = hub
+    alice = bound(http, key, "alice")
+    alice.register(name="alice")
+    alice.post("build", "sealed and signed")
+
+    raw = hub_bytes(db)
+    assert b"sealed and signed" not in raw
+    assert alice.public_key.encode() not in raw
+
+
+def test_a_gap_in_one_sender_is_visible(hub, key):
+    """Signatures give authenticity; only the counter gives any grip on a hub
+    that selectively withholds one agent's messages."""
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    bob.agents()
+
+    alice.post("build", "one")
+    alice.post("build", "two")
+    alice.post("build", "three")
+    read = bob.inbox(channels=["build"], include_own=True)
+    assert [m["signature"]["seq"] for m in read] == [1, 2, 3]
+    assert all("missing" not in m["signature"] for m in read)
+
+    # a reader that saw only the first now meets the third
+    carol = bound(http, key, "carol")
+    carol.note_peer_keys([{"agent_id": alice.agent_id, "pubkey": alice.public_key}])
+    first, _, third = ({**m} for m in read)
+    carol._verify_message(first, {"by": alice.agent_id, "n": 1,
+                                  "sig": _resign(alice, first, 1)})
+    carol._verify_message(third, {"by": alice.agent_id, "n": 3,
+                                  "sig": _resign(alice, third, 3)})
+    assert third["signature"]["missing"] == 1
+
+
+def _resign(client, item, seq):
+    from switchboard import signing
+
+    return client.signing.sign(signing.message_payload(
+        sender=client.agent_id, channel=item["channel"], seq=seq, body=item["body"],
+    ))

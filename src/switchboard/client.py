@@ -280,8 +280,11 @@ def _is_labelled(opened: Any) -> bool:
     Checked structurally rather than assumed, so a body that happens to be a
     dict from an older client still round-trips instead of being mangled.
     """
-    return isinstance(opened, dict) and set(opened) == {"b", "ch"} \
+    return (
+        isinstance(opened, dict)
+        and set(opened) in ({"b", "ch"}, {"b", "ch", "s"})
         and isinstance(opened["ch"], str)
+    )
 
 
 #: Sentinel distinguishing "caller did not pass a cipher" from "caller
@@ -313,6 +316,13 @@ class _Base:
         #: One per Client, so two clients in one process are two agents — which
         #: is what they are.
         self.signing = SigningIdentity.generate() if signing.AVAILABLE else None
+        #: Monotonic per-process message counter, so a reader can see gaps.
+        self._seq = 0
+        #: Signing keys seen for each peer, and the highest sequence read from
+        #: each. Both are per-process: identity here does not outlive a process
+        #: by design, so neither should the memory of it.
+        self._peer_keys: dict[str, set[str]] = {}
+        self._peer_seq: dict[tuple[str, str], int] = {}
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
@@ -398,6 +408,64 @@ class _Base:
             cipher = self.cipher
         return cipher.blind(value, domain) if cipher else value
 
+    def _sign_message(self, channel: str, body: Any) -> dict[str, Any] | None:
+        """The signature block for one outgoing message, or None unsigned."""
+        if self.signing is None:
+            return None
+        self._seq += 1
+        payload = signing.message_payload(
+            sender=self.agent_id, channel=channel, seq=self._seq, body=body,
+        )
+        return {"by": self.agent_id, "n": self._seq, "sig": self.signing.sign(payload)}
+
+    def note_peer_keys(self, agents: list[dict[str, Any]]) -> None:
+        """Learn signing keys from a roster read.
+
+        Keys accumulate rather than replace. An agent that restarts publishes a
+        new key, and its earlier messages are still legitimately signed by the
+        old one — dropping it would turn a normal restart into a wall of
+        apparent forgeries.
+        """
+        for agent in agents:
+            key = agent.get("pubkey")
+            if isinstance(key, str) and key:
+                self._peer_keys.setdefault(agent.get("agent_id", ""), set()).add(key)
+
+    def _verify_message(self, item: dict[str, Any], block: Any) -> None:
+        """Attach a verdict to one message. Never raises: an unverifiable
+        message is information, not an error."""
+        sender = item.get("from")
+        if not isinstance(block, dict) or "sig" not in block:
+            item["signature"] = {"status": "unsigned"}
+            return
+        known = self._peer_keys.get(sender, set())
+        if not known:
+            # No key for this sender — usually just a roster we have not read.
+            # Distinct from a bad signature, and must not be reported as one.
+            item["signature"] = {"status": "unknown", "seq": block.get("n")}
+            return
+        payload = signing.message_payload(
+            sender=block.get("by"), channel=item.get("channel"),
+            seq=block.get("n"), body=item.get("body"),
+        )
+        match = next(
+            (k for k in known if signing.verify(k, payload, block["sig"])), None,
+        )
+        if match is None or block.get("by") != sender:
+            item["signature"] = {"status": "mismatch", "seq": block.get("n")}
+            return
+        verdict: dict[str, Any] = {"status": "verified", "seq": block.get("n"), "key": match}
+        # Gaps are per signer *and* per key: a restart resets the counter, and
+        # reading that as 40 missing messages would be worse than saying
+        # nothing.
+        seen = self._peer_seq.get((sender, match))
+        if isinstance(seen, int) and isinstance(block.get("n"), int):
+            if block["n"] > seen + 1:
+                verdict["missing"] = block["n"] - seen - 1
+        if isinstance(block.get("n"), int):
+            self._peer_seq[(sender, match)] = max(seen or 0, block["n"])
+        item["signature"] = verdict
+
     @property
     def public_key(self) -> str | None:
         """What peers verify this agent's signatures against.
@@ -422,7 +490,15 @@ class _Base:
             # this, every message an agent reads is labelled with 22 opaque
             # characters, which defeats the point of a coordination tool.
             if path == "/messages" and isinstance(body.get("channel"), str):
-                body["body"] = {"b": body.get("body"), "ch": body["channel"]}
+                labelled = {"b": body.get("body"), "ch": body["channel"]}
+                # Signed here, *before* sealing, so the signature travels
+                # inside the ciphertext. A hub cannot read it, alter it, or
+                # strip it without breaking the AEAD tag — which is the point:
+                # a signature the transport can quietly remove proves nothing.
+                block = self._sign_message(body["channel"], body.get("body"))
+                if block is not None:
+                    labelled["s"] = block
+                body["body"] = labelled
             for field, context in _SEAL_BODY.get(path, {}).items():
                 if body.get(field) is not None:
                     body[field] = (
@@ -486,8 +562,23 @@ class _Base:
                         # Restore the readable channel name that travelled
                         # sealed alongside the body.
                         item["channel"] = opened["ch"]
+                        block = opened.get("s")
                         opened = opened["b"]
+                        item[field] = opened
+                        self._verify_message(item, block)
+                        continue
                     item[field] = opened
+
+        # Only now: `pubkey` is sealed like every other field, so learning
+        # keys before this loop would cache ciphertext. Doing it here rather
+        # than in `agents()` means every path returning agents teaches the
+        # verifier — heartbeat included, which is what an idle agent calls.
+        for roster_key in ("agents", "agent"):
+            value = payload.get(roster_key)
+            if isinstance(value, list):
+                self.note_peer_keys([a for a in value if isinstance(a, dict)])
+            elif isinstance(value, dict):
+                self.note_peer_keys([value])
         return payload
 
 

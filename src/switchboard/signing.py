@@ -37,7 +37,9 @@ restarting.
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass, field
+from typing import Any
 
 try:  # pragma: no cover - exercised by the minimal-install CI job
     from cryptography.exceptions import InvalidSignature
@@ -108,3 +110,28 @@ def verify(public_key: str, message: bytes, signature: str) -> bool:
     except (InvalidSignature, ValueError, TypeError):
         return False
     return True
+
+
+def message_payload(*, sender: str, channel: str, seq: int, body: Any) -> bytes:
+    """The exact bytes a message signature covers.
+
+    Binds four things, and each for a reason:
+
+    - ``sender`` is the agent id *as the hub knows it* — blinded, when
+      encrypting — so a reader can look the key up from the roster against the
+      same string the message arrived with, rather than inverting a one-way
+      blind.
+    - ``channel`` stops a signed message being replayed into another channel.
+    - ``seq`` makes gaps visible: signatures prove authenticity, and only a
+      counter gives any grip on a hub that selectively withholds.
+    - ``body`` is the content itself.
+
+    Serialized with sorted keys and no whitespace so that two processes agree
+    on the bytes. ``default=str`` keeps an exotic value from raising here —
+    the body has already been accepted by the caller, and refusing to sign
+    something we are about to send would be the wrong end to fail at.
+    """
+    return json.dumps(
+        {"by": sender, "ch": channel, "n": seq, "b": body},
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode()
