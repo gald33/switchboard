@@ -23,7 +23,7 @@ needs to know about a caller.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 #: Tier of an anonymous/self-hosted caller. Tiers exist so that a hub under
 #: contention can order work by them; nothing in the open-source hub treats
@@ -106,37 +106,6 @@ class StaticKeyResolver:
             if _constant_time_eq(token, candidate):
                 return principal
         return None
-
-
-class SelfIssuedKeyResolver:
-    """Tokens a client generates itself, bound to a workspace on first use.
-
-    There is no issuance path here — a client picks its own random token
-    (the same way ``switchboard keygen`` already does for the encryption key)
-    and registers it via ``POST /keys/register``, not through :meth:`resolve`.
-    By the time ``resolve`` runs the request's workspace is not yet known
-    (see ``server.require_principal``'s ordering), so binding has to happen
-    as its own explicit step; this class only ever looks an existing binding
-    up, it never creates one.
-
-    First-claim-wins, in both directions, enforced by :meth:`Store.bind_key`:
-    a token binds to exactly one workspace, and a workspace accepts exactly
-    one token. A key that stays unrestricted after registration would be
-    worthless — redundant with an opaque workspace name, since the caller
-    would already be unrestricted either way — so this is the one resolver
-    that *cannot* return a `Principal` with ``workspaces=None``.
-    """
-
-    def __init__(self, store: Any) -> None:
-        self._store = store
-
-    def resolve(self, token: str | None) -> Principal | None:
-        if token is None:
-            return None
-        workspace = self._store.lookup_key_binding(hash_token(token))
-        if workspace is None:
-            return None
-        return Principal(key_id=hash_token(token)[:12], workspaces=frozenset({workspace}))
 
 
 def hash_token(token: str) -> str:

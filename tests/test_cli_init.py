@@ -1323,11 +1323,13 @@ class _Resp:
         return self._payload
 
 
-def fake_hub(monkeypatch, *, self_issued, reachable, register=None, advertises=True):
-    """Stand in for a hub. `register` records the workspace claimed, if any.
+def fake_hub(monkeypatch, *, self_issued=False, reachable=True, register=None,
+             advertises=True):
+    """Stand in for a hub.
 
-    `advertises=False` models a hub deployed before /health reported its auth
-    mode — the case the route probe exists for.
+    Nothing registers anything any more — a room identifier is derived from its
+    token rather than claimed — so the only question `init` asks is whether the
+    workspace is reachable.
     """
     import httpx
 
@@ -1335,13 +1337,7 @@ def fake_hub(monkeypatch, *, self_issued, reachable, register=None, advertises=T
 
     def get(url, **kwargs):
         if url.endswith("/health"):
-            body = {"ok": True, "version": "0.4.2", "auth": True}
-            if advertises:
-                body["self_issued_keys"] = self_issued
-            return _Resp(200, body)
-        if url.endswith("/keys/register"):
-            probed.append(url)
-            return _Resp(405 if self_issued else 404)
+            return _Resp(200, {"ok": True, "version": "0.4.6", "auth": True})
         if url.endswith("/agents"):
             return _Resp(200 if reachable else 403, {"detail": "no access"})
         raise AssertionError(f"unexpected GET {url}")
@@ -1355,43 +1351,6 @@ def fake_hub(monkeypatch, *, self_issued, reachable, register=None, advertises=T
     monkeypatch.setattr(httpx, "get", get)
     monkeypatch.setattr(httpx, "post", post)
     return probed
-
-
-def test_new_key_registers_a_token_for_the_workspace_it_minted(monkeypatch, capsys, tmp_path):
-    claimed = []
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "old-token-bound-elsewhere")
-    fake_hub(monkeypatch, self_issued=True, reachable=False, register=claimed)
-
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    settings = _local_settings(tmp_path)["env"]
-    assert claimed == [_mcp_ws(tmp_path)], "the token must be bound to the minted workspace"
-    assert settings["SWITCHBOARD_TOKEN"] not in ("", "old-token-bound-elsewhere")
-    assert "registered a token" in out
-
-
-def test_a_reachable_workspace_is_left_alone(monkeypatch, capsys, tmp_path):
-    claimed = []
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "already-works")
-    fake_hub(monkeypatch, self_issued=True, reachable=True, register=claimed)
-
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    assert claimed == []
-    assert "SWITCHBOARD_TOKEN" not in _local_settings(tmp_path)["env"]
-    assert "registered a token" not in out
-
-
-def test_a_hub_that_does_not_self_issue_gets_a_note_not_a_registration(
-    monkeypatch, capsys, tmp_path
-):
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "operator-issued")
-    fake_hub(monkeypatch, self_issued=False, reachable=False)
-
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    assert "note:" in out and "does not let clients bind their own" in out
-    assert "SWITCHBOARD_TOKEN" not in _local_settings(tmp_path)["env"]
 
 
 def test_an_unreachable_hub_is_reported_but_never_fatal(monkeypatch, capsys, tmp_path):
@@ -1425,54 +1384,6 @@ def test_local_hub_keeps_its_own_token_flow(monkeypatch, capsys, tmp_path):
     code, out = run_init(monkeypatch, capsys, tmp_path, "--local")
     assert code == 0
     assert "SWITCHBOARD_TOKEN=" in (tmp_path / ".env").read_text()
-
-
-def test_an_existing_different_token_is_not_replaced_without_force(monkeypatch, capsys, tmp_path):
-    # Same reasoning as the workspace key: silently swapping a token drops
-    # this agent's access to whatever the old one reached.
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "settings.local.json").write_text(
-        json.dumps({"env": {"SWITCHBOARD_TOKEN": "mine"}})
-    )
-    fake_hub(monkeypatch, self_issued=True, reachable=False)
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    assert _local_settings(tmp_path)["env"]["SWITCHBOARD_TOKEN"] == "mine"
-    assert "a different SWITCHBOARD_TOKEN is already set" in out
-
-
-def test_the_hub_describing_itself_beats_probing_its_routing_table(monkeypatch, capsys, tmp_path):
-    claimed = []
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "bound-elsewhere")
-    probed = fake_hub(monkeypatch, self_issued=True, reachable=False, register=claimed)
-
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    assert claimed == [_mcp_ws(tmp_path)]
-    assert probed == [], "/health answered, so /keys/register should not be probed"
-
-
-def test_a_hub_too_old_to_advertise_still_works(monkeypatch, capsys, tmp_path):
-    # Upgrading every hub is not a precondition for init working against them.
-    claimed = []
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "bound-elsewhere")
-    probed = fake_hub(
-        monkeypatch, self_issued=True, reachable=False, register=claimed, advertises=False
-    )
-
-    code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    assert code == 0
-    assert claimed == [_mcp_ws(tmp_path)]
-    assert probed, "with nothing advertised, the route probe is the fallback"
-
-
-# --- explaining that setup is two halves -------------------------------------
-#
-# Setting this up is two jobs and reads as one: `init` runs once and appears to
-# have done everything. Nothing then suggests a second machine needs anything,
-# until its agents sit in an empty room that looks exactly like nobody being
-# around. These assert the explanation stays accurate, since a confidently
-# wrong one is worse than none.
 
 
 def test_init_explains_which_half_travels_with_the_repo(monkeypatch, capsys, tmp_path):
@@ -1531,13 +1442,13 @@ def test_env_prints_only_the_secrets(monkeypatch, capsys, tmp_path):
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     run_init(monkeypatch, capsys, tmp_path, "--new-key")
     settings = _local_settings(tmp_path)["env"]
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "T")
 
     assert main(["whoami", "--env"]) == 0
     lines = capsys.readouterr().out.strip().splitlines()
     got = dict(ln.split("=", 1) for ln in lines)
     assert set(got) == {"SWITCHBOARD_KEY", "SWITCHBOARD_TOKEN"}
     assert got["SWITCHBOARD_KEY"] == settings["SWITCHBOARD_KEY"]
-    assert got["SWITCHBOARD_TOKEN"] == settings["SWITCHBOARD_TOKEN"]
     assert all(re.fullmatch(r"SWITCHBOARD_[A-Z]+=\S+", ln) for ln in lines), lines
 
 
@@ -1547,6 +1458,7 @@ def test_no_repo_adds_what_nothing_else_would_supply(monkeypatch, capsys, tmp_pa
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     run_init(monkeypatch, capsys, tmp_path, "--new-key")
 
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "T")
     assert main(["whoami", "--env", "--no-repo"]) == 0
     got = dict(ln.split("=", 1) for ln in capsys.readouterr().out.strip().splitlines())
     assert set(got) == {
@@ -1627,14 +1539,6 @@ def test_no_placeholder_token_survives(monkeypatch, capsys, tmp_path):
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     assert "<token>" not in out
-
-
-def test_a_registered_token_needs_no_next_step(monkeypatch, capsys, tmp_path):
-    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
-    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
-    nxt = out.split("Next")[1].split("Two halves")[0]
-    assert "SWITCHBOARD_TOKEN" not in nxt, "it is on disk; saying so twice is noise"
-    assert "restart Claude Code" in nxt
 
 
 def test_the_sealed_note_no_longer_gives_setup_instructions(monkeypatch, capsys, tmp_path):

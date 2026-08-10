@@ -33,9 +33,7 @@ from . import __version__
 from .auth import (
     Principal,
     PrincipalResolver,
-    SelfIssuedKeyResolver,
     SharedTokenResolver,
-    hash_token,
 )
 from .config import (
     DEFAULT_AGENT_TTL,
@@ -137,10 +135,6 @@ class BoardIn(BaseModel):
     agent_id: str
     ttl: float | None = Field(default=None, gt=0)
     if_revision: int | None = None
-
-
-class KeyRegisterIn(BaseModel):
-    workspace: str
 
 
 # --- serialization ----------------------------------------------------------
@@ -331,30 +325,6 @@ def create_app(
     async def _store_error(_, exc: StoreError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": "conflict", "detail": str(exc)})
 
-    # --- self-issued keys ---------------------------------------------------
-
-    # Only mounted when the hub actually runs this resolver — a hub using
-    # SharedTokenResolver or StaticKeyResolver has no concept of a client
-    # registering its own key, and the route should not exist there, not
-    # just reject calls to it. See auth.SelfIssuedKeyResolver.
-    if isinstance(resolver, SelfIssuedKeyResolver):
-
-        @app.post("/keys/register")
-        def register_key(
-            payload: KeyRegisterIn, authorization: str | None = Header(default=None)
-        ) -> dict[str, Any]:
-            if not authorization or not authorization.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail="missing bearer token")
-            token = authorization[len("Bearer "):]
-            if len(token) < 16:
-                raise HTTPException(
-                    status_code=400,
-                    detail="token too short — generate one with "
-                           "python -c 'import secrets;print(secrets.token_urlsafe(32))'",
-                )
-            workspace = store.bind_key(token_hash=hash_token(token), workspace=payload.workspace)
-            return {"workspace": workspace}
-
     # --- meta --------------------------------------------------------------
 
     @app.get("/health")
@@ -365,18 +335,16 @@ def create_app(
         # StaticKeyResolver or SelfIssuedKeyResolver hub always requires
         # auth, but neither one sets config.token, so it reported False.
         auth_required = not getattr(resolver, "open", False)
-        # Whether a client may bind its own token to a workspace here. A hub
-        # that scopes tokens will 403 every call against a workspace nobody
-        # has claimed, which is what a freshly minted one always is — so
-        # `init` has to know whether it can fix that itself or has to send the
-        # user to an operator. Advertised rather than left to be inferred from
-        # whether /keys/register happens to be mounted, which is a fact about
-        # our routing table that clients should not have to know.
+        # `self_issued_keys` used to appear here, reporting whether a client
+        # could bind its own token to a workspace. Nothing binds anything now:
+        # a room identifier is hash(workspace_token), so it is derived rather
+        # than claimed and there is no registry to consult. Kept absent rather
+        # than reported false, so a client written against the old field reads
+        # "unknown" instead of a confident wrong answer.
         return {
             "ok": True,
             "version": API_VERSION,
             "auth": auth_required,
-            "self_issued_keys": isinstance(resolver, SelfIssuedKeyResolver),
         }
 
     @app.get("/stats", dependencies=guard)

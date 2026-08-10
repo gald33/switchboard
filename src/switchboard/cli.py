@@ -234,14 +234,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config.token = args.token
     if args.keys_file:
         config.keys_file = args.keys_file
-    if args.self_issued_keys:
-        config.self_issued_keys = True
-    modes_set = sum([bool(config.token), bool(config.keys_file), config.self_issued_keys])
-    if modes_set > 1:
+    if bool(config.token) and bool(config.keys_file):
         print(
-            "error: --token/SWITCHBOARD_TOKEN, --keys-file/SWITCHBOARD_KEYS_FILE and "
-            "--self-issued-keys/SWITCHBOARD_SELF_ISSUED_KEYS are mutually exclusive — "
-            "a hub runs in exactly one auth mode.",
+            "error: --token/SWITCHBOARD_TOKEN and --tokens-file/SWITCHBOARD_KEYS_FILE "
+            "are mutually exclusive — a hub runs in exactly one auth mode.",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -257,27 +253,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_ERROR
         print(f"loaded {len(resolver)} scoped key(s) from {config.keys_file}", file=sys.stderr)
-    elif config.self_issued_keys:
-        from .auth import SelfIssuedKeyResolver
-        from .store import Store
 
-        # Built here rather than left to create_app's own default so the same
-        # instance backs both the resolver's lookups and the app's routes —
-        # two Store objects would still agree (same file, WAL-mode SQLite),
-        # but there is no reason to open the database twice.
-        store = Store(config.db_path)
-        resolver = SelfIssuedKeyResolver(store)
-        print(
-            "self-issued tokens enabled — clients register via "
-            "`switchboard register-token --workspace <name>`",
-            file=sys.stderr,
-        )
-    elif not config.token:
-        print(
-            "warning: no token set — this hub accepts any caller. "
-            "Set SWITCHBOARD_TOKEN or pass --token before exposing it.",
-            file=sys.stderr,
-        )
     print(f"switchboard {__version__} → http://{args.host}:{args.port}  db={config.db_path}")
     uvicorn.run(
         create_app(config, store=store, resolver=resolver), host=args.host, port=args.port,
@@ -312,70 +288,6 @@ def cmd_keygen(args: argparse.Namespace) -> int:
             "Use an opaque one and it stops being the most descriptive thing\n"
             "the hub holds. Keep the readable name in your own notes:\n"
             f"  export SWITCHBOARD_WORKSPACE={workspace}",
-            file=sys.stderr,
-        )
-    return EXIT_OK
-
-
-def cmd_register_key(args: argparse.Namespace) -> int:
-    """Generate a workspace token locally and bind it to a workspace on a hub.
-
-    A *token*, not a key: it is sent to the hub on every request and the hub
-    stores a hash of it. The workspace key from ``keygen`` is the opposite —
-    never transmitted, and the hub could not check it if it were.
-
-    Only meaningful against a hub running ``--self-issued-tokens``; every other
-    hub already knows what its tokens are and has nothing to register. First
-    key to claim a workspace name owns it — a teammate re-running this with
-    the *same* key against the *same* workspace is a harmless no-op, but a
-    different key claiming a name already taken is rejected, the same way a
-    squatted username would be.
-    """
-    import httpx
-
-    url = (
-        getattr(args, "reg_url", None) or args.url
-        or os.environ.get("SWITCHBOARD_URL") or MANAGED_HUB_URL
-    ).rstrip("/")
-    workspace = (
-        getattr(args, "reg_workspace", None) or args.workspace
-        or os.environ.get("SWITCHBOARD_WORKSPACE")
-        or _default_workspace(Path(".").resolve())
-    )
-    token = secrets.token_urlsafe(32)
-    try:
-        response = httpx.post(
-            f"{url}/keys/register",
-            json={"workspace": workspace},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
-        )
-    except httpx.HTTPError as exc:
-        print(f"error: could not reach {url}: {exc}", file=sys.stderr)
-        return EXIT_ERROR
-
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail", response.text)
-        except ValueError:
-            detail = response.text
-        print(f"error: {detail}", file=sys.stderr)
-        return EXIT_ERROR
-
-    if args.json:
-        _print_json({"token": token, "workspace": workspace, "url": url})
-        return EXIT_OK
-    print(token)
-    if sys.stdout.isatty():
-        print(
-            f"\nBound to workspace {workspace!r} on {url}.\n"
-            "Share this with the agents in the workspace and nobody else:\n"
-            f"  export SWITCHBOARD_TOKEN={token}\n"
-            f"  export SWITCHBOARD_URL={url}\n"
-            f"  export SWITCHBOARD_WORKSPACE={workspace}\n"
-            "\nThe hub stores only a hash of this, never the key itself. If it's\n"
-            "lost, there is no recovery — generate a new one against a new\n"
-            "workspace name, the same as `switchboard keygen` for encryption.",
             file=sys.stderr,
         )
     return EXIT_OK
@@ -1691,94 +1603,30 @@ def _hub_reaches_workspace(url: str, token: str, workspace: str) -> bool | None:
     return response.status_code < 400
 
 
-def _hub_issues_own_keys(url: str) -> bool | None:
-    """Whether this hub lets a client bind its own token to a workspace.
-
-    ``/health`` says so directly, which is the answer to prefer — it is the
-    hub describing itself rather than us inferring from its routing table.
-
-    Hubs deployed before that field existed do not report it, and upgrading
-    every hub is not a precondition for `init` working against them, so the
-    fallback asks whether ``/keys/register`` is mounted at all: the route
-    exists only under ``SelfIssuedKeyResolver`` (see server.py), so a GET
-    answering 405 means "wrong method, right route" and 404 means the hub has
-    no such concept.
-    """
-    import httpx
-
-    try:
-        health = httpx.get(f"{url}/health", timeout=10.0)
-        if health.status_code < 400:
-            try:
-                advertised = health.json().get("self_issued_keys")
-            except ValueError:
-                advertised = None
-            if isinstance(advertised, bool):
-                return advertised
-        response = httpx.get(f"{url}/keys/register", timeout=10.0)
-    except httpx.HTTPError:
-        return None
-    return response.status_code == 405
-
-
 def _init_hub_token(
     directory: Path, url: str, workspace: str, token: str | None, *, force: bool
 ) -> tuple[list[str], str | None]:
-    """Make sure some token can actually act in `workspace`, registering one
-    against a self-issued-keys hub when nothing can.
+    """Check that this workspace is actually reachable, and say so if not.
 
-    This is the step whose absence made `init --new-key` a quiet failure. A
-    minted workspace is brand new by construction, so on a hub that scopes
-    tokens to workspaces nothing is bound to it — every call 403s while `init`
-    reports success and tells you to restart your editor. The managed hub runs
-    exactly that mode, so it was the default path.
+    `init` used to be able to *fix* an unreachable workspace by registering a
+    token for it. Nothing registers anything now — a room identifier is
+    derived from its token rather than claimed — so an unreachable workspace
+    means the hub wants a credential this environment does not have, and only
+    whoever runs it can supply one.
 
-    Network failures are reported, never fatal: `init` is a wiring tool and
-    the files it writes are still correct without a reachable hub.
+    Network failures are reported, never fatal: `init` is a wiring tool and the
+    files it writes are correct with or without a reachable hub.
     """
     if not token:
-        # Nothing to test with. On a self-issued hub we can mint one; on any
-        # other, the operator issues it and `init` has nothing to offer.
-        if _hub_issues_own_keys(url) is not True:
-            return [], None
-    elif _hub_reaches_workspace(url, token, workspace) is not False:
-        # Reachable, or the hub is down and we cannot tell. Either way there
-        # is nothing to fix from here.
+        return [], None
+    reachable = _hub_reaches_workspace(url, token, workspace)
+    if reachable is not False:
         return [], token
-
-    if token and _hub_issues_own_keys(url) is not True:
-        return [
-            f"note: this token has no access to workspace {workspace!r}, and {url} does "
-            "not let clients bind their own. Ask whoever runs it to grant this "
-            "workspace, or the agents here will fail on every call"
-        ], token
-
-    import httpx
-
-    fresh = secrets.token_urlsafe(32)
-    try:
-        response = httpx.post(
-            f"{url}/keys/register",
-            json={"workspace": workspace},
-            headers={"Authorization": f"Bearer {fresh}"},
-            timeout=10.0,
-        )
-    except httpx.HTTPError as exc:
-        return [f"note: could not reach {url} to register a token ({exc})"], token
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail", response.text)
-        except ValueError:
-            detail = response.text
-        return [
-            f"note: could not bind a token to workspace {workspace!r}: {detail}"
-        ], token
-
-    steps, ok = _init_local_setting(directory, "SWITCHBOARD_TOKEN", fresh, force=force)
-    if not ok:
-        return steps, token
-    steps.insert(0, f"registered a token bound to workspace {workspace!r} on {url}")
-    return steps, fresh
+    return [
+        f"note: this token cannot reach workspace {workspace!r} on {url}. Ask "
+        "whoever runs that hub for one that can, or point at a hub you run "
+        "yourself with --local"
+    ], token
 
 
 #: What each secret `init` may write is called when explaining itself, and why
@@ -2323,14 +2171,6 @@ def build_parser() -> argparse.ArgumentParser:
              "Mutually exclusive with --token/SWITCHBOARD_TOKEN — see config.py's module "
              "docstring for the file format.",
     )
-    p.add_argument(
-        "--self-issued-tokens", "--self-issued-keys", dest="self_issued_keys",
-        action="store_true",
-        help="multi-tenant without a curated file (env: SWITCHBOARD_SELF_ISSUED_KEYS=1) — "
-             "clients register their own workspace token with `switchboard register-token`, "
-             "scoped to one workspace on a first-claim-wins basis. Mutually exclusive "
-             "with --token and --tokens-file.",
-    )
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser(
@@ -2476,25 +2316,6 @@ def build_parser() -> argparse.ArgumentParser:
                     "on every request and is what grants access to a workspace.",
     )
     p.set_defaults(func=cmd_keygen)
-
-    p = sub.add_parser(
-        "register-token", aliases=["register-key"],
-        help="generate a workspace token (self-issued hubs)",
-        description="Generate a workspace token and bind it to a workspace. It is "
-                    "sent to the hub on every request and grants access to its "
-                    "workspace; the hub stores only a hash of it. That is the "
-                    "opposite of the workspace key from `keygen`, which is never "
-                    "transmitted. Only meaningful against a hub running "
-                    "--self-issued-tokens.",
-    )
-    # Accept the connection options after the subcommand as well as before it.
-    # `serve`'s own startup warning tells you to run
-    # `register-token --workspace <name>`, which was an "unrecognized
-    # arguments" error — the same trap `init` was fixed for. Separate dests so
-    # the parent form keeps working; cmd_register_key reads both.
-    p.add_argument("-w", "--workspace", dest="reg_workspace", help=argparse.SUPPRESS)
-    p.add_argument("--url", dest="reg_url", help=argparse.SUPPRESS)
-    p.set_defaults(func=cmd_register_key)
 
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)

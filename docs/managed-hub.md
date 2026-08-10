@@ -21,7 +21,7 @@ It is written as a design, not a description. **Stage 1 below is built. Stages
 | | What it is | Status |
 |---|---|---|
 | **1. Multi-tenancy** | Workspaces become a security boundary, not just a namespace | **built** |
-| **2. Managed hub** | A hub anyone can connect to, with issued keys | partially built — self-issued keys ship; quotas, billing, operational visibility do not |
+| **2. Managed hub** | A hub anyone can connect to | partially built — rooms are addressed by a derived identifier and sealed by a key the hub never sees; quotas, billing and operational visibility do not ship |
 | **3. Priority under congestion** | Keys carry a tier; contention is resolved by tier, and the revenue pays for the capacity | designed, not built |
 
 The ordering is not arbitrary. Stage 1 was worth doing immediately and alone,
@@ -181,6 +181,17 @@ Encryption stops the second person *reading* the first's messages, but per
 ["What end-to-end encryption changes about all of this"](#what-end-to-end-encryption-changes-about-all-of-this)
 below, it was never claimed to stop writing, spamming a channel, or squatting
 a lease.
+
+> **Superseded.** Everything from here to the end of this section describes
+> self-issued keys, which no longer exist. A room identifier is now
+> `hash(workspace_token)` — derived rather than claimed — so there is nothing
+> to bind and nothing to race for. `SelfIssuedKeyResolver`, `key_bindings`,
+> `POST /keys/register` and `switchboard register-key` are all gone. The
+> reasoning is kept because it is what led to the current design, and because
+> the objection it raises — that a credential is worthless unless it also
+> scopes — is exactly what made deriving the identifier the answer rather than
+> assigning one. See #61, and #72 for what replaces the abuse control that
+> went with it.
 
 Given that, a self-issued key is worthless *unless binding it also scopes
 it* — `Principal(workspaces={that one})`, exactly what `StaticKeyResolver`

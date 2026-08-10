@@ -121,13 +121,6 @@ CREATE TABLE IF NOT EXISTS counters (
 -- on a timer would be a surprise outage rather than the usual harmless decay.
 -- token_hash, never the raw token — this table is the one place in the store
 -- that would matter if the database file leaked.
-CREATE TABLE IF NOT EXISTS key_bindings (
-    token_hash TEXT NOT NULL,
-    workspace  TEXT NOT NULL,
-    bound_at   REAL NOT NULL,
-    PRIMARY KEY (token_hash)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_key_bindings_workspace ON key_bindings(workspace);
 """
 
 
@@ -147,25 +140,6 @@ class LeaseConflict(StoreError):
 
 class NotLeaseHolder(StoreError):
     """The caller tried to renew or release a lease it does not hold."""
-
-
-class KeyAlreadyBound(StoreError):
-    """This token is already bound to a different workspace than requested."""
-
-    def __init__(self, workspace: str) -> None:
-        super().__init__(f"this key is already bound to workspace {workspace!r}")
-        self.workspace = workspace
-
-
-class WorkspaceAlreadyClaimed(StoreError):
-    """This workspace is already bound to a different token."""
-
-    def __init__(self, workspace: str) -> None:
-        super().__init__(f"workspace {workspace!r} is already claimed by a different key")
-        self.workspace = workspace
-
-
-# --- row helpers ------------------------------------------------------------
 
 
 @dataclass
@@ -925,38 +899,3 @@ class Store:
         return out
 
     # --- key bindings --------------------------------------------------------
-
-    def bind_key(self, *, token_hash: str, workspace: str, now: float | None = None) -> str:
-        """Bind ``token_hash`` to ``workspace``, first-claim-wins.
-
-        Re-binding a token to the workspace it is already bound to is a no-op,
-        not a conflict — the same token reaching this twice (a retried
-        request, a second teammate re-registering the key they were handed)
-        must succeed the second time exactly as it did the first.
-        """
-        now = time.time() if now is None else now
-        with self._tx() as conn:
-            existing = conn.execute(
-                "SELECT workspace FROM key_bindings WHERE token_hash=?", (token_hash,)
-            ).fetchone()
-            if existing is not None:
-                if existing["workspace"] != workspace:
-                    raise KeyAlreadyBound(existing["workspace"])
-                return existing["workspace"]
-            taken = conn.execute(
-                "SELECT 1 FROM key_bindings WHERE workspace=?", (workspace,)
-            ).fetchone()
-            if taken is not None:
-                raise WorkspaceAlreadyClaimed(workspace)
-            conn.execute(
-                "INSERT INTO key_bindings (token_hash, workspace, bound_at) VALUES (?,?,?)",
-                (token_hash, workspace, now),
-            )
-        return workspace
-
-    def lookup_key_binding(self, token_hash: str) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT workspace FROM key_bindings WHERE token_hash=?", (token_hash,)
-            ).fetchone()
-        return row["workspace"] if row is not None else None
