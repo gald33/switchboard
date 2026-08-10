@@ -27,7 +27,17 @@ from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
-from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
+from .timing import (
+    EFFORT_LEVELS,
+    MIN_SAMPLES,
+    Forecast,
+    TimingModel,
+    declare_safely,
+    note_look_safely,
+    sender_forecast,
+    unwrap_body,
+    wrap_body,
+)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -301,25 +311,12 @@ class _Timing:
         return self._model
 
     def note_look(self) -> None:
-        """Close the open window: the agent just read its inbox, which is
-        the one event every forecast predicts."""
-        model = self.model
-        if model is None:
-            return
-        try:
-            model.note_look(self.agent_id, self.workspace)
-        except Exception:
-            pass
+        note_look_safely(self.model, self.agent_id, self.workspace)
 
     def declare(self) -> Forecast | None:
-        model = self.model
-        if model is None:
-            return None
-        try:
-            return model.declare(
-                self.agent_id, self.workspace, self.execution_class, self.effort)
-        except Exception:
-            return None
+        return declare_safely(
+            self.model, self.agent_id, self.workspace,
+            self.execution_class, self.effort)
 
     def close(self) -> None:
         if self._model is not None:
@@ -329,34 +326,12 @@ class _Timing:
                 pass
 
 
-def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
-    """What the sender gets back about its own forecast: the two shared
-    timestamps plus a countdown, since "now" is this exact moment and a
-    relative number is more use than re-deriving one."""
-    return {
-        **forecast.as_message_meta(),
-        "p50_in_seconds": round(forecast.p50_seconds),
-        "p95_in_seconds": round(forecast.p95_seconds),
-    }
-
-
-def _body_with_forecast(body: Any, forecast: Forecast | None) -> Any:
-    """Fold a forecast into an outgoing body, in the shape the MCP bridge
-    reads back (`Bridge._msg`), so a CLI agent and an MCP agent can hold the
-    same conversation."""
-    if forecast is None:
-        return body
-    return {"text": body, "timing_forecast": forecast.as_message_meta()}
-
-
-def _split_forecast(body: Any) -> tuple[Any, dict[str, Any] | None]:
-    """Inverse of `_body_with_forecast`. Mirrors `Bridge._msg`'s unwrapping,
-    including its conservative key check, so an ordinary dict body that
-    happens to have a `text` key is left alone."""
-    if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
-            and "timing_forecast" in body):
-        return body.get("text"), body.get("timing_forecast")
-    return body, None
+# The envelope and the sender's view of a forecast are one implementation in
+# timing.py, shared with the MCP bridge — see the wire-contract section there
+# for why these stopped being two.
+_sender_forecast = sender_forecast
+_body_with_forecast = wrap_body
+_split_forecast = unwrap_body
 
 
 def _forecast_line(fmt: Fmt, forecast: dict[str, Any], subject: str) -> str:
