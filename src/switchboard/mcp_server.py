@@ -27,6 +27,7 @@ from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
 from .crypto import generate_key
+from .signing import SigningServer
 from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
@@ -973,11 +974,24 @@ def main(argv: list[str] | None = None) -> int:
         f"agent={bridge.identity.agent_id} workspace={bridge.config.workspace} "
         f"hub={bridge.config.url}"
     )
+    # This process holds the signing key for the whole agent, so it serves the
+    # others. Best effort: where a unix socket is unavailable, every process
+    # simply signs as itself, which is what happened before this existed.
+    signer = None
+    if bridge.client.signing is not None:
+        signer = SigningServer(bridge.client.signing, bridge.identity.agent_id)
+        if signer.start():
+            log(f"signing for this agent at {signer.path}")
+        else:
+            signer = None
+
     try:
         serve_stdio(bridge)
     except KeyboardInterrupt:
         pass
     finally:
+        if signer is not None:
+            signer.close()
         bridge.close()
     return 0
 
