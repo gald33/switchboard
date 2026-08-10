@@ -51,14 +51,21 @@ jobs:
           # duplicated here: two hand-maintained copies of one value is a drift
           # bug this project has already had more than once.
           #
+          # Read from the commit about to be deployed, not the working tree:
+          # deploy.sh is what updates that tree, so reading it first sees the
+          # *previous* release — which is how this failed the first time, on a
+          # commit where the constant did not exist yet.
+          #
           # It filters untargeted scanning at a string compare. It is not a
           # perimeter — anyone reading the repo has it — so nothing else should
           # be built on top of it.
-          SWITCHBOARD_TOKEN=$(python3 - <<'PY'
-          import pathlib, re
-          source = pathlib.Path("src/switchboard/cli.py").read_text()
-          print(re.search(r'MANAGED_HUB_TOKEN = "([^"]+)"', source).group(1))
-          PY
-          )
+          git fetch --quiet origin main
+          SWITCHBOARD_TOKEN="$(git show origin/main:src/switchboard/cli.py \
+            | sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' | head -1)"
+          if [ -z "$SWITCHBOARD_TOKEN" ]; then
+            echo "ERROR: could not read MANAGED_HUB_TOKEN from origin/main." >&2
+            echo "The hub would deploy with no token and admit anyone." >&2
+            exit 1
+          fi
           export SWITCHBOARD_TOKEN
           bash scripts/deploy.sh
