@@ -12,40 +12,6 @@ expiring on their own. This skill covers which tool to call when, and the
 shared convention that keeps independently triggered sessions from talking
 past each other — the thing coordination primitives alone don't guarantee.
 
-## Two ways to call these
-
-This skill names each primitive by its concept — `roster`, `claim`,
-`checkin`. There are two surfaces that provide them, and you may only have
-one, so check your tool list before assuming:
-
-- **MCP tools**, if a `switchboard` MCP server is registered. Arguments are
-  tool fields: `dm(agent="...", execution_class="coding")`.
-- **The `switchboard` CLI**, otherwise — run through your shell. Arguments
-  are flags: `switchboard dm <agent> "..." --execution-class coding`. Add
-  `--json` when you intend to parse the result rather than read it.
-
-Both talk to the same hub and interoperate: a CLI agent and an MCP agent can
-hold the same conversation, timing forecasts included. But the spellings are
-not identical, and two primitives are named differently enough to fail
-outright if you guess:
-
-| Concept | MCP tool | CLI |
-|---|---|---|
-| Who is active | `roster` | `switchboard agents` |
-| Blackboard | `board_set` / `board_get` / `board_list` | `switchboard board set` / `get` / `list` |
-| Claim, release, say, dm, inbox, checkin, whoami | same name | `switchboard <name>` |
-| When you will next look | `execution_class` / `effort` fields | `--execution-class` / `--effort` flags |
-| Your forecast accuracy | `whoami` → `forecast_calibration` | `switchboard timing` |
-
-Two things exist only on the MCP surface, called out again where they come
-up below: the `unread_dms` count on every tool result, and the `now`
-timestamp that incoming forecasts are compared against. The CLI has no
-equivalent of the first, and does the second for you.
-
-If you have neither surface, `switchboard init` in the repo root wires up
-the MCP server and installs this skill; the CLI is `pip install
-agent-switchboard`.
-
 ## The primitives, in order of use
 
 - **Before starting work**, call `roster` to see who else is active and what
@@ -66,9 +32,6 @@ agent-switchboard`.
   which is worth interrupting for in a way general channel traffic is not.
   It only helps while you are still making tool calls, though — it does
   nothing once you go idle. See "Ending a turn mid-wait" below for that case.
-  **MCP only.** The CLI does not report this on other commands, so there is
-  nothing passive to watch: on the CLI, run `checkin` on the few-minute
-  rhythm above and treat that as your only notification of a waiting DM.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
@@ -100,54 +63,6 @@ If your current tool list has nothing like that, say so plainly in your final
 message instead of implying the wait will resolve itself — a human or the
 next turn needs to know picking this back up is on them, not on Switchboard.
 
-## Telling others when you will next look
-
-`say`, `dm`, `checkin` and `inbox` all take two optional judgments:
-`execution_class` (a short free-form label — "coding", "research", whatever
-fits; there is no fixed list) and `effort` (`low` / `medium` / `high`). On
-the CLI they are flags — `--execution-class` and `--effort` — accepted by
-those four plus `watch`:
-
-```
-switchboard dm reviewer "starting the migration" \
-  --execution-class coding --effort high
-```
-
-That pair is the entire burden on you. Your runtime keeps a private history
-of how long you actually go between reading messages, converts the pair into
-an estimate, and attaches it to the message for collaborators. You never
-estimate seconds, and nothing about your history leaves your machine. Supply
-them when a message precedes a stretch of heads-down work; omit them and
-everything behaves exactly as before.
-
-Incoming messages may carry a `timing_forecast` — `p50` and `p95` timestamps,
-compared against the `now` field in the same result. The CLI resolves that
-comparison for you, printing a relative countdown under the message ("they
-expect to be looking again ~28s (p50), ~2m58s (p95)"), so there is no `now`
-to reach for; `--json` gives you the raw timestamps if you would rather do
-the arithmetic yourself.
-
-Read a forecast as the sender's estimate of when *it* will next look, not a
-promise, and not something you are obliged to obey. If you use it, prefer
-sizing **how often** you check to the forecast over checking exactly at p50
-and p95; that difference measurably changes whether the hint helps at all. A
-forecast marked `expired` has already elapsed and carries no information.
-
-`whoami` reports `forecast_calibration` once you have enough history; on the
-CLI that lives in `switchboard timing`, which also lists the classes you have
-been using and will preview a forecast for a given pair without recording it.
-If the hit rates are far off, the runtime is already correcting for the drift
-— what it cannot fix is labels that do not separate your work, so that is the
-part worth reconsidering.
-
-One CLI-specific caveat: the history is keyed to a runtime id, and each CLI
-invocation is a separate process. The CLI names its run from
-`SWITCHBOARD_RUNTIME_ID`, falling back to one stable id per agent, so a
-forecast declared by `dm` is closed by the `inbox` that follows it. If you
-set `SWITCHBOARD_RUNTIME_ID`, keep it stable across the calls of a single
-agent's session — vary it per call and every observation is discarded as
-belonging to a dead run, leaving the estimator permanently on its priors.
-
 ## The handoff convention
 
 Coordination primitives are not a protocol by themselves. Two sessions can
@@ -161,8 +76,7 @@ only reaches whoever happened to be told directly.
 **1. Check the blackboard prefix before starting work.**
 
 ```
-board_list prefix="coord/"                    # MCP
-switchboard board list --prefix coord/        # CLI
+board_list prefix="coord/"
 ```
 
 If someone already posted a proposal, status, or report relevant to what
@@ -183,14 +97,6 @@ carries the payload; the message is just a notification that it exists:
 ```
 board_set "coord/reports/migration-0142" {...the actual plan...}
 say "backend" "posted migration plan — see coord/reports/migration-0142"
-```
-
-The same on the CLI — `--json-body` is what makes the value a structured
-payload rather than an opaque string:
-
-```
-switchboard board set coord/reports/migration-0142 '{...}' --json-body
-switchboard say backend "posted migration plan — see coord/reports/migration-0142"
 ```
 
 Reversed — payload in the message, nothing on the blackboard — and the
@@ -258,11 +164,6 @@ board_get "coord/reports/auth-refactor"            → the files and notes
 B finds the handoff without having seen A's message — which already expired
 by the time B's turn started — because the payload lived on the blackboard,
 not in the message.
-
-Both fences above name the MCP tools. On the CLI the same three calls are
-`switchboard agents`, `switchboard board list --prefix coord/`, and
-`switchboard board get coord/reports/auth-refactor` — and where the sections
-below say `inbox(wait=...)`, the CLI spelling is `switchboard inbox --wait N`.
 
 ## Limits, stated plainly
 

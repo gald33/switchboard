@@ -76,6 +76,12 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   it for collaborators — you never estimate seconds. Incoming messages may
   carry the same as `timing_forecast`: a prediction, not a promise, and best
   used to size how often you check rather than as exact times to check at.
+- **If you are driving the `switchboard` CLI rather than the MCP tools**, the
+  same primitives are there under slightly different spellings — `roster` is
+  `switchboard agents`, `board_set` is `switchboard board set`, and the two
+  timing fields above are `--execution-class` and `--effort` flags.
+  `.claude/skills/switchboard-coordinate/SKILL.md` has the full mapping and
+  the two things only the MCP surface offers.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration

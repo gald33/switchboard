@@ -1357,6 +1357,12 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   it for collaborators — you never estimate seconds. Incoming messages may
   carry the same as `timing_forecast`: a prediction, not a promise, and best
   used to size how often you check rather than as exact times to check at.
+- **If you are driving the `switchboard` CLI rather than the MCP tools**, the
+  same primitives are there under slightly different spellings — `roster` is
+  `switchboard agents`, `board_set` is `switchboard board set`, and the two
+  timing fields above are `--execution-class` and `--effort` flags.
+  `.claude/skills/switchboard-coordinate/SKILL.md` has the full mapping and
+  the two things only the MCP surface offers.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
@@ -1498,6 +1504,53 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
+
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
+- **Optionally, when a message precedes a stretch of heads-down work**, pass
+  `execution_class` (a short label like "coding") and `effort`
+  (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
+  that pair into an estimate of when you will next read messages and attaches
+  it for collaborators — you never estimate seconds. Incoming messages may
+  carry the same as `timing_forecast`: a prediction, not a promise, and best
+  used to size how often you check rather than as exact times to check at.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
@@ -1987,11 +2040,26 @@ def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], boo
 
 _SKILL_NAME = "switchboard-coordinate"
 
-#: Every SKILL.md `init` has ever installed, oldest first, excluding the
-#: current one. Empty today — the skill was only just introduced — but this
-#: is where a future content revision gets recorded, the same as the two
-#: history lists above.
-_SKILL_HISTORY: list[str] = []
+def _skill_history() -> list[str]:
+    """Every SKILL.md `init` has ever installed, oldest first, excluding the
+    current one — the skill's equivalent of the two history lists above.
+
+    Kept as files rather than string literals because the skill is a few
+    hundred lines of prose: a past revision is copied out of git verbatim
+    (`git show <rev>:...SKILL.md > history/00N-SKILL.md`), so it cannot drift
+    from what actually shipped the way a retyped literal can. Ordering is by
+    filename, which is why they are zero-padded.
+
+    Revisions 001 and 002 were backfilled rather than recorded as they
+    shipped, so a repo initialised before this existed would have had its
+    SKILL.md read as hand-edited and left frozen at whatever `init` wrote.
+    """
+    directory = resources.files("switchboard").joinpath("skill", "history")
+    return [
+        f.read_text(encoding="utf-8")
+        for f in sorted(directory.iterdir(), key=lambda f: f.name)
+        if f.name.endswith(".md")
+    ]
 
 
 def _skill_source() -> str:
@@ -2015,7 +2083,7 @@ def _init_skill(
         path.write_text(current)
         return f"installed the {_SKILL_NAME} skill"
     label = path.relative_to(directory)
-    status = _revision_status(path.read_text(), current, _SKILL_HISTORY)
+    status = _revision_status(path.read_text(), current, _skill_history())
     if status == "current":
         return f"left {label} alone: already up to date"
     if status == "stale" or force:

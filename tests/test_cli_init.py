@@ -29,6 +29,7 @@ from switchboard.cli import (
     _hook_env_prefix,
     _session_start_cmd,
     _session_start_script,
+    _skill_history,
     _skill_source,
     _stop_cmd,
     _stop_script,
@@ -445,6 +446,39 @@ def test_skill_file_already_up_to_date_is_left_alone_without_force(
     code, out = run_init(monkeypatch, capsys, tmp_path)
     assert code == 0
     assert "left" in out and "already up to date" in out
+
+
+# A repo initialised by an older switchboard has an older SKILL.md. Until the
+# revision history below was backfilled it matched no known revision, so
+# `init` read it as hand-edited and refused to touch it — a repo could never
+# pick up a skill revision without `--force`, which is the opposite of the
+# intent. One case per recorded revision, so a history entry that has drifted
+# from what `init` can actually recognise fails here. Note what this cannot
+# check: a revision nobody recorded is invisible to a test parametrised over
+# the recordings. Comparing against git history would catch it, but CI clones
+# shallowly, so recording a superseded revision stays a review-time habit.
+
+
+@pytest.mark.parametrize("revision", range(len(_skill_history())))
+def test_every_past_skill_revision_upgrades_in_place(
+    monkeypatch, capsys, tmp_path, revision
+):
+    skill_path = tmp_path / ".claude" / "skills" / "switchboard-coordinate" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(_skill_history()[revision])
+    code, out = run_init(monkeypatch, capsys, tmp_path)
+    assert code == 0
+    assert skill_path.read_text() == _skill_source()
+    assert "updated the switchboard-coordinate skill" in out
+
+
+def test_skill_history_excludes_the_current_revision():
+    # `_revision_status` checks the current revision first, so a duplicate
+    # here would be harmless — but it would also mean the newest entry was
+    # never actually superseded, i.e. someone recorded history too early.
+    history = _skill_history()
+    assert _skill_source() not in history
+    assert len(set(history)) == len(history)
 
 
 def test_workspace_inferred_from_git_remote(monkeypatch, capsys, tmp_path):
