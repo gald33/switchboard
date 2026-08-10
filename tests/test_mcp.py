@@ -674,3 +674,64 @@ def test_badly_calibrated_forecasts_come_with_a_warning(hub):
         t += 4000
     report = call(a1, "whoami")[0]["forecast_calibration"]
     assert "note" in report
+
+
+# --- what the model is told about signatures ---------------------------------
+#
+# Verification happens in the client; this is the boundary that decides what
+# reaches the model. The rule is that only an actionable result crosses it.
+
+
+def _project(message):
+    from switchboard.mcp_server import Bridge
+
+    return Bridge._msg(message)
+
+
+def _msg(**over):
+    base = {"seq": 1, "from": "alice", "channel": "build", "body": "hi",
+            "created_at": "2026-08-09T00:00:00Z", "type": "note"}
+    base.update(over)
+    return base
+
+
+def test_a_verified_message_says_nothing_about_it():
+    # The overwhelmingly common path. A per-message "verified" line is noise,
+    # and noise is how a warning stops being read.
+    out = _project(_msg(signature={"status": "verified", "seq": 3, "key": "k" * 43}))
+    assert "warning" not in out
+    assert "signature" not in out and "key" not in out
+
+
+def test_an_unknown_sender_says_nothing_either():
+    # Usually just a roster we have not read. Reporting it would train the
+    # model to skim past the case that matters.
+    assert "warning" not in _project(_msg(signature={"status": "unknown", "seq": 1}))
+
+
+def test_an_unsigned_message_says_nothing():
+    assert "warning" not in _project(_msg(signature={"status": "unsigned"}))
+    assert "warning" not in _project(_msg())
+
+
+def test_a_mismatch_is_loud_and_names_what_to_do():
+    out = _project(_msg(signature={"status": "mismatch", "seq": 2}))
+    assert "warning" in out
+    assert "alice" in out["warning"]
+    assert "unattributed" in out["warning"]
+    # the claim is "none of the keys I have seen verify this", not that some
+    # registry vouched for a different one — and "registered" already means
+    # binding a workspace credential to a hub
+    assert "registered" not in out["warning"]
+
+
+def test_a_gap_is_reported_because_it_is_otherwise_invisible():
+    out = _project(_msg(signature={"status": "verified", "seq": 7, "missing": 2}))
+    assert out["missing_before"] == 2
+    assert "warning" not in out, "a gap is not an impersonation"
+
+
+def test_the_raw_proof_never_reaches_the_model():
+    # 43 characters of base64 per message with no decision attached to them.
+    out = _project(_msg(signature={"status": "mismatch", "seq": 2, "key": "K" * 43}))
+    assert "K" * 43 not in json.dumps(out)
