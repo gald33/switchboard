@@ -323,6 +323,11 @@ class _Base:
         #: by design, so neither should the memory of it.
         self._peer_keys: dict[str, set[str]] = {}
         self._peer_seq: dict[tuple[str, str], int] = {}
+        #: Whether each peer looked alive when last seen, and which peers have
+        #: had their published key change while it did. Per process, like the
+        #: identities themselves.
+        self._peer_live: dict[str, bool] = {}
+        self._peer_key_swaps: set[str] = set()
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
@@ -419,17 +424,44 @@ class _Base:
         return {"by": self.agent_id, "n": self._seq, "sig": self.signing.sign(payload)}
 
     def note_peer_keys(self, agents: list[dict[str, Any]]) -> None:
-        """Learn signing keys from a roster read.
+        """Learn signing keys from a roster read, and notice a swap.
 
         Keys accumulate rather than replace. An agent that restarts publishes a
         new key, and its earlier messages are still legitimately signed by the
         old one — dropping it would turn a normal restart into a wall of
         apparent forgeries.
+
+        The roster entry is a noticeboard entry: an announcement upserts on
+        ``(workspace, agent_id)`` and nothing validates it, so anyone may
+        announce as anyone and replace the published key. That is what a
+        noticeboard without an authority means, and it is not the hub's job to
+        adjudicate — a first-writer-wins column there would be a registry in
+        disguise, which is the thing that was deliberately removed.
+
+        So the noticing happens here, where the witnessing already lives. A
+        *restart* is ordinary: the previous entry had gone stale first. A key
+        changing while the same id is still being heartbeated is not, and that
+        is the distinction worth surfacing — one an authority is not needed to
+        draw.
         """
         for agent in agents:
             key = agent.get("pubkey")
-            if isinstance(key, str) and key:
-                self._peer_keys.setdefault(agent.get("agent_id", ""), set()).add(key)
+            if not isinstance(key, str) or not key:
+                continue
+            agent_id = agent.get("agent_id", "")
+            known = self._peer_keys.setdefault(agent_id, set())
+            was_live = self._peer_live.get(agent_id)
+            if known and key not in known and was_live:
+                # Seen alive under a different key, and now a different one.
+                self._peer_key_swaps.add(agent_id)
+                agent["key_changed_while_live"] = True
+            elif agent_id in self._peer_key_swaps:
+                agent["key_changed_while_live"] = True
+            known.add(key)
+            # "Live" as the roster itself reports it, rather than a clock this
+            # process keeps: `stale` is the hub's own 60-second judgement and
+            # is what a reader would go by.
+            self._peer_live[agent_id] = not agent.get("stale", False)
 
     def _verify_message(self, item: dict[str, Any], block: Any) -> None:
         """Attach a verdict to one message. Never raises: an unverifiable
