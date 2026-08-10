@@ -813,6 +813,19 @@ _LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
 #: with `switchboard init --local` (or any other `--url`).
 MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
 
+#: The managed hub's access token, and deliberately not a secret. It ships with
+#: the URL because it *is* reachability information: every client uses the same
+#: value, nothing issues it, and publishing it here is the point.
+#:
+#: What it buys is that unauthenticated internet noise gets a 401 from a string
+#: compare instead of a database query. Most scanning is untargeted, so that is
+#: a real saving for no friction — nobody ever types this.
+#:
+#: What it does not buy is a boundary. Anyone who reads this file has it. A hub
+#: that wants a real perimeter sets a secret token instead, and that one never
+#: goes in a committed file — see `_init_mcp_json`.
+MANAGED_HUB_TOKEN = "sb_public_lucille"  # noqa: S105 - published on purpose
+
 def _hook_env_prefix(url: str, workspace: str) -> str:
     """`SessionStart`/`Stop` hooks run as plain shell commands, not inside the
     `switchboard-mcp` subprocess — `.mcp.json`'s `env` block never reaches
@@ -1341,9 +1354,16 @@ def _init_mcp_json(
     bootstrap: bool = True,
 ) -> str:
     path = directory / ".mcp.json"
+    env = {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace}
+    if url == MANAGED_HUB_URL:
+        # Only ever the published constant, and only for the hub it belongs to.
+        # This file is committed, so a secret token written here would be a
+        # secret published — the reason this is a hardcoded comparison rather
+        # than "whatever token we happen to hold".
+        env["SWITCHBOARD_TOKEN"] = MANAGED_HUB_TOKEN
     entry: dict[str, Any] = {
         "command": "switchboard-mcp",
-        "env": {"SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace},
+        "env": env,
     }
     if bootstrap:
         # This file is committed, so it runs on machines that never ran

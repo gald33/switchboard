@@ -11,7 +11,7 @@ An agent needs four values. Where each one comes from is the whole subject:
 |---|---|---|
 | `SWITCHBOARD_URL` | `.mcp.json`, committed | no |
 | `SWITCHBOARD_WORKSPACE` | `.mcp.json`, committed | no |
-| `SWITCHBOARD_TOKEN` | the environment's own secret store, or `init` on a hub that self-issues | yes |
+| `SWITCHBOARD_TOKEN` | `.mcp.json`, committed, on the managed hub — the environment's own secret store on a hub with a real perimeter | only when it is a secret |
 | `SWITCHBOARD_KEY` | the environment's own secret store | yes |
 
 The client reads all four from the environment and nowhere else — there is no
