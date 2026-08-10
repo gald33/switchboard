@@ -79,9 +79,19 @@ Peers accumulate the keys they have seen. A restart is ordinary and says
 nothing; a key that changes while the same id is still heartbeating is another
 agent announcing over one in use, and is reported.
 
-*Consequence:* identity ends with the process. This buys unforgeability within
-a live conversation, not reputation, and a rogue agent can shed its identity by
-restarting.
+An agent is not one process. The MCP server holds the key and signs on behalf
+of the lifecycle hooks and every CLI command, over a unix socket both sides
+locate without a handoff — `agent_id` is already derived deterministically. The
+key stays in one process's memory; only signatures cross. Where a socket is
+unavailable, each process signs as itself, which is what happened before.
+
+*Consequence:* identity ends with the session, not the process. This buys
+unforgeability within a live conversation, not reputation, and a rogue agent
+can shed its identity by restarting.
+
+*This grants any process running as the same user the ability to sign as this
+agent* — not a new exposure, since such a process could already read the
+server's memory. The OS user was always the boundary.
 
 ## Things that are true and easy to forget
 

@@ -315,7 +315,13 @@ class _Base:
         #: to distinguish are usually sibling processes sharing a filesystem.
         #: One per Client, so two clients in one process are two agents — which
         #: is what they are.
-        self.signing = SigningIdentity.generate() if signing.AVAILABLE else None
+        # An agent is not one process. If this session's MCP server is
+        # listening, sign through it so the hooks, the CLI and the model all
+        # speak as one agent rather than as a stream of one-message strangers.
+        # The key stays in that one process; only signatures cross.
+        self.signing = signing.attach(local) if signing.AVAILABLE else None
+        if self.signing is None and signing.AVAILABLE:
+            self.signing = SigningIdentity.generate()
         #: Monotonic per-process message counter, so a reader can see gaps.
         self._seq = 0
         #: Signing keys seen for each peer, and the highest sequence read from

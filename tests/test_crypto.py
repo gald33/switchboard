@@ -974,3 +974,76 @@ def test_a_restart_is_not_reported_as_a_swap(hub, key):
     restarted.register(name="alice")
     roster = {a["name"]: a for a in bob.agents()}
     assert "key_changed_while_live" not in roster["alice"]
+
+
+# --- one identity across the processes that make up one agent ----------------
+#
+# The MCP server is long-lived and holds the keypair; the lifecycle hooks and
+# every CLI command are separate processes. Without a bridge each generates its
+# own, so an agent appears as a stream of one-message strangers and `release`
+# from the Stop hook — an impersonation target — is signed by nobody in
+# particular.
+
+
+def test_a_second_process_signs_as_the_same_agent(hub, key):
+    from switchboard.signing import SigningServer
+
+    http, _, _ = hub
+    session = bound(http, key, "alice")
+    server = SigningServer(session.signing, "alice")
+    if not server.start():
+        pytest.skip("no unix sockets here")
+    try:
+        hook = bound(http, key, "alice")
+        assert hook.public_key == session.public_key
+        # and a peer verifies what the hook wrote against the session's key
+        bob = bound(http, key, "bob")
+        session.register(name="alice")
+        bob.register(name="bob")
+        bob.agents()
+        hook.post("build", "released the lease")
+        got = bob.inbox(channels=["build"], include_own=True)
+        assert got[0]["signature"]["status"] == "verified"
+    finally:
+        server.close()
+
+
+def test_a_different_agent_gets_its_own_identity(hub, key):
+    from switchboard.signing import SigningServer
+
+    http, _, _ = hub
+    session = bound(http, key, "alice")
+    server = SigningServer(session.signing, "alice")
+    if not server.start():
+        pytest.skip("no unix sockets here")
+    try:
+        assert bound(http, key, "mallory").public_key != session.public_key
+    finally:
+        server.close()
+
+
+def test_no_session_means_sign_as_yourself(hub, key):
+    # A CLI command must not fail or hang because no MCP server is running.
+    from switchboard.signing import SigningIdentity
+
+    http, _, _ = hub
+    assert isinstance(bound(http, key, "nobody-listening").signing, SigningIdentity)
+
+
+def test_the_key_itself_never_crosses_the_socket(hub, key):
+    from switchboard.signing import SigningServer, _ask, socket_path
+
+    http, _, _ = hub
+    session = bound(http, key, "alice")
+    server = SigningServer(session.signing, "alice")
+    if not server.start():
+        pytest.skip("no unix sockets here")
+    try:
+        path = socket_path("alice")
+        assert 0o777 & path.stat().st_mode == 0o600, "owner only"
+        for op in ({"op": "pubkey"}, {"op": "sign", "payload": "aGk"}):
+            reply = _ask(path, op)
+            assert "private" not in json.dumps(reply).lower()
+            assert set(reply) <= {"pubkey", "sig"}
+    finally:
+        server.close()
