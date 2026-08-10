@@ -22,6 +22,7 @@ _SWITCHBOARD_ENV = (
     "SWITCHBOARD_KEYS_FILE",
     "SWITCHBOARD_AGENT_ID",
     "SWITCHBOARD_SESSION_ID",
+    "SWITCHBOARD_KEY_EPOCH_PERIOD",
 )
 
 #: Session identifiers the agent id is derived from. Cleared for the same

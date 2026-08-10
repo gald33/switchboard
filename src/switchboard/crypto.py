@@ -42,7 +42,8 @@ import base64
 import json
 import os
 import secrets
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 try:
@@ -56,6 +57,32 @@ except ImportError:  # pragma: no cover - exercised by the no-extra install
 
 #: Marker on a sealed value. Its presence is how a client tells an envelope
 #: from an ordinary JSON body.
+#: How often the payload key rotates, in seconds. Zero writes everything under
+#: epoch 0 — the key the cipher has always used — so a client with rotation off
+#: produces bytes an older reader still opens.
+#:
+#: Off by default on purpose. Reading honours whatever epoch a message names
+#: from the moment this ships, so a fleet upgrades read-first: once every agent
+#: understands epochs, turning writing on breaks nobody. Shipping it enabled
+#: would mean a new agent writing content its not-yet-upgraded peers cannot
+#: open, which is the failure this project keeps removing.
+DEFAULT_EPOCH_PERIOD = 0
+
+#: Sensible period for anyone switching it on: short enough that a leaked
+#: derived key dies quickly, long enough that a day is ~96 cached subkeys.
+SUGGESTED_EPOCH_PERIOD = 900
+
+
+def _default_period() -> int:
+    raw = os.environ.get("SWITCHBOARD_KEY_EPOCH_PERIOD")
+    if not raw:
+        return DEFAULT_EPOCH_PERIOD
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_EPOCH_PERIOD
+
+
 ENVELOPE_KEY = "$swb"
 ENVELOPE_VERSION = 1
 
@@ -130,6 +157,15 @@ class WorkspaceCipher:
     workspace: str
     _payload_key: bytes
     _blind_key: bytes
+    #: The raw key, kept so a payload subkey can be derived for any epoch. The
+    #: blind subkey above is derived once and never rotates: the hub *compares*
+    #: blinded channel names, lease resources and agent ids, so a rotating
+    #: blind key would stop a channel matching itself across a boundary.
+    _raw: bytes = b""
+    #: Seconds per key epoch, or 0 to write everything under epoch 0.
+    #: Reading always honours whatever epoch a message names, whatever this is.
+    _period: int = 0
+    _subkeys: dict[int, bytes] = field(default_factory=dict, repr=False)
     #: Pad plaintext to a size bucket before sealing. On by default: the point
     #: of encrypting is privacy, and an unpadded ciphertext announces its
     #: plaintext length to the byte.
@@ -137,7 +173,7 @@ class WorkspaceCipher:
 
     @classmethod
     def from_key(cls, key: str | bytes, workspace: str,
-                 pad: bool = True) -> WorkspaceCipher:
+                 pad: bool = True, epoch_period: int | None = None) -> WorkspaceCipher:
         if not AVAILABLE:
             raise CryptoError(_MISSING)
         raw = key if isinstance(key, bytes) else _decode_key(key)
@@ -159,8 +195,32 @@ class WorkspaceCipher:
             workspace=workspace,
             _payload_key=_derive(raw, b"switchboard/v1/payload", workspace),
             _blind_key=_derive(raw, b"switchboard/v1/identifier", workspace),
+            _raw=raw,
+            _period=epoch_period if epoch_period is not None else _default_period(),
             pad=pad,
         )
+
+    def _payload_key_for(self, epoch: int) -> bytes:
+        """The payload subkey for one epoch, derived once and cached.
+
+        Epoch 0 is the original derivation, unchanged, so everything written
+        before epochs existed still opens with exactly the same key.
+        """
+        if epoch == 0:
+            return self._payload_key
+        cached = self._subkeys.get(epoch)
+        if cached is None:
+            cached = _derive(
+                self._raw, b"switchboard/v1/payload", f"{self.workspace}\0{epoch}",
+            )
+            self._subkeys[epoch] = cached
+        return cached
+
+    def current_epoch(self, now: float | None = None) -> int:
+        """Which epoch to write under. 0 disables rotation entirely."""
+        if self._period <= 0:
+            return 0
+        return int((time.time() if now is None else now) // self._period)
 
     # --- payloads ---
 
@@ -175,14 +235,22 @@ class WorkspaceCipher:
         plaintext = _pad(json.dumps(value, separators=(",", ":")).encode()) \
             if self.pad else json.dumps(value, separators=(",", ":")).encode()
         nonce = os.urandom(12)
-        ciphertext = AESGCM(self._payload_key).encrypt(
+        epoch = self.current_epoch()
+        ciphertext = AESGCM(self._payload_key_for(epoch)).encrypt(
             nonce, plaintext, self._aad(context)
         )
-        return {
+        envelope = {
             ENVELOPE_KEY: ENVELOPE_VERSION,
             "n": _b64e(nonce),
             "c": _b64e(ciphertext),
         }
+        if epoch:
+            # Omitted at epoch 0 so that a client with rotation switched off
+            # writes bytes an older reader still understands. A reader that
+            # knows about epochs treats a missing field as 0, which is the
+            # same key it always used.
+            envelope["e"] = epoch
+        return envelope
 
     def unseal(self, envelope: Any, context: str) -> Any:
         """Open an envelope. Raises rather than falling back to plaintext.
@@ -202,7 +270,14 @@ class WorkspaceCipher:
         if version != ENVELOPE_VERSION:
             raise DecryptionError(f"unsupported envelope version {version!r}")
         try:
-            plaintext = AESGCM(self._payload_key).decrypt(
+            # The epoch comes from the message, never from our own clock: a
+            # message written seconds before a boundary must stay readable by
+            # someone already past it, and a reader joining later must be able
+            # to open history. Both fall out of following the writer.
+            epoch = envelope.get("e", 0)
+            if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+                raise DecryptionError(f"invalid key epoch {epoch!r}")
+            plaintext = AESGCM(self._payload_key_for(epoch)).decrypt(
                 _b64d(envelope["n"]), _b64d(envelope["c"]), self._aad(context)
             )
         except Exception as exc:  # InvalidTag and malformed input alike
