@@ -936,3 +936,41 @@ def test_a_broken_period_setting_falls_back_to_the_default(monkeypatch, key):
     # rotation off for that agent while its peers keep rotating.
     monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "every-so-often")
     assert WorkspaceCipher.from_key(key, WS).current_epoch() > 0
+
+
+def test_a_key_swap_under_a_live_identity_is_noticed(hub, key):
+    """The announcement upserts and nothing validates it, so anyone may
+    announce as anyone and replace the published key. The hub cannot be asked
+    to arbitrate — a first-writer-wins column there would be the registry that
+    was deliberately removed — so the peer notices instead."""
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    mallory = bound(http, key, "mallory")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    bob.agents()  # witness alice, alive, under her own key
+
+    # mallory announces under alice's id, replacing the published key
+    mallory.agent_id = alice.agent_id
+    mallory.register(name="alice")
+
+    roster = {a["name"]: a for a in bob.agents()}
+    assert roster["alice"].get("key_changed_while_live") is True
+
+
+def test_a_restart_is_not_reported_as_a_swap(hub, key):
+    # The distinction that makes the signal worth reading: a restart goes quiet
+    # first, so the previous entry is stale by the time the new key appears.
+    http, _, _ = hub
+    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    for entry in bob.agents():
+        if entry["name"] == "alice":
+            entry["stale"] = True
+            bob.note_peer_keys([entry])
+
+    restarted = bound(http, key, "alice")
+    restarted.register(name="alice")
+    roster = {a["name"]: a for a in bob.agents()}
+    assert "key_changed_while_live" not in roster["alice"]
