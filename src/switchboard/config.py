@@ -49,6 +49,8 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import rooms
+
 # --- TTL defaults (seconds) -------------------------------------------------
 # Every record in Switchboard expires. These are the defaults applied when a
 # caller does not pass an explicit ttl; each can be overridden per call, and
@@ -206,6 +208,24 @@ def default_workspace() -> str:
     return f"default-{machine_suffix(_checkout_root(os.getcwd()))}"
 
 
+def _selected_room(directory: Path):
+    """The room this repo and this environment agree on, or None.
+
+    Deliberately swallows a resolution failure rather than raising here.
+    `from_env` is on the path of every command, including ones that have
+    nothing to do with a hub, so a malformed rooms file must not make
+    `switchboard --help` fail. The failure surfaces where it is actionable —
+    see `switchboard rooms`, which reports it in full.
+    """
+    try:
+        declared = rooms.load(directory)
+        if not declared:
+            return None
+        return rooms.select(declared)
+    except rooms.RoomsError:
+        return None
+
+
 @dataclass
 class ClientConfig:
     """Client-side settings, read from the environment."""
@@ -223,13 +243,34 @@ class ClientConfig:
     timing_db: str = "~/.switchboard/timing.db"
 
     @classmethod
-    def from_env(cls) -> ClientConfig:
+    def from_env(cls, directory: Path | None = None) -> ClientConfig:
+        """Resolve a client's settings.
+
+        A repo that declares rooms (see rooms.py) supplies the workspace, the
+        key and the hub together, as one record — which is what stops a key and
+        a workspace disagreeing, since they are no longer two values that have
+        to be kept in step.
+
+        The environment still wins over the record, for the ordinary reason:
+        it is how a cloud environment or a one-off command overrides what a
+        checkout says. A repo with no rooms file behaves exactly as before.
+        """
+        url = os.environ.get("SWITCHBOARD_URL", "").rstrip("/") or None
+        workspace = os.environ.get("SWITCHBOARD_WORKSPACE") or None
+        key = os.environ.get("SWITCHBOARD_KEY") or None
+
+        room = _selected_room(Path.cwd() if directory is None else directory)
+        if room is not None:
+            url = url or room.hub_url
+            workspace = workspace or room.workspace_token
+            key = key or rooms.key_for(room.key_id)
+
         return cls(
-            url=os.environ.get("SWITCHBOARD_URL", "http://127.0.0.1:8787").rstrip("/"),
+            url=url or "http://127.0.0.1:8787",
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
-            workspace=os.environ.get("SWITCHBOARD_WORKSPACE") or default_workspace(),
+            workspace=workspace or default_workspace(),
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
-            key=os.environ.get("SWITCHBOARD_KEY") or None,
+            key=key,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
         )
 
