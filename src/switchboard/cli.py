@@ -27,6 +27,7 @@ from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
+from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -189,6 +190,7 @@ def _dur(seconds: float | None) -> str:
 
 
 def _body_text(body: Any) -> str:
+    body, _ = _split_forecast(body)
     if isinstance(body, str):
         return body
     return json.dumps(body, ensure_ascii=False)
@@ -201,7 +203,21 @@ def _print_json(obj: Any) -> None:
 # --- command implementations ------------------------------------------------
 
 
-def _make_client(args: argparse.Namespace) -> Client:
+def _add_timing_args(p: argparse.ArgumentParser) -> None:
+    """The two semantic judgments a model supplies for adaptive timing.
+
+    Deliberately not time estimates: the model says what kind of work it is
+    about to do and roughly how big, and the local model converts that into
+    seconds from this agent's own history (docs/adaptive-timing.md).
+    """
+    p.add_argument("--execution-class", metavar="LABEL",
+                   help="short label for the work ahead, e.g. coding, research. "
+                        "Free-form — the taxonomy emerges from use")
+    p.add_argument("--effort", choices=EFFORT_LEVELS,
+                   help="rough size of the work ahead")
+
+
+def _make_config(args: argparse.Namespace) -> ClientConfig:
     config = ClientConfig.from_env()
     if args.url:
         config.url = args.url.rstrip("/")
@@ -211,8 +227,158 @@ def _make_client(args: argparse.Namespace) -> Client:
         config.workspace = args.workspace
     if getattr(args, "key", None):
         config.key = args.key
+    return config
+
+
+def _make_client(args: argparse.Namespace) -> Client:
+    config = _make_config(args)
     identity = detect_identity(agent_id=args.agent_id)
     return Client(config, agent_id=identity.agent_id)
+
+
+# --- adaptive timing --------------------------------------------------------
+#
+# The client-side half of adaptive timing (docs/adaptive-timing.md), which
+# until now only the MCP bridge could reach. The model supplies two cheap
+# judgments — `--execution-class` and `--effort` — and everything downstream
+# (history, quantiles, self-correction) is timing.py's job.
+#
+# One thing works differently here than in the bridge, and it is the whole
+# reason this needed more than argument plumbing. The bridge is a live
+# process: it declares and later observes its own look, so a forecast window
+# lives in memory-adjacent state owned by one run. A CLI run is a *sequence
+# of processes* — `dm --effort high` exits, and the `inbox` that closes that
+# window is a different process entirely. timing.py drops a window whose
+# runtime does not match, precisely so a crashed agent's downtime is not
+# learned as behaviour, so under CLI use every observation would be discarded
+# and the estimator would sit on its bootstrap priors forever.
+#
+# So the CLI names its run explicitly instead of inheriting process identity.
+
+
+def _runtime_id(agent_id: str) -> str:
+    """Identify the *run* a CLI declaration belongs to.
+
+    `SWITCHBOARD_RUNTIME_ID` lets a caller scope this deliberately — export
+    it once per script and every command in that script shares one window,
+    while a second concurrent script gets its own.
+
+    Without it the fallback is stable per agent, so the common case (a loop
+    of plain CLI calls) learns rather than silently discarding everything.
+    The cost is that a window left open by an abandoned run is closed by
+    whatever looks next, turning downtime into one long observation — which
+    is why timing.py's 24h ceiling and its `dropped` counter matter here:
+    such an observation is rejected and counted, not averaged in.
+    """
+    return os.environ.get("SWITCHBOARD_RUNTIME_ID") or f"cli:{agent_id}"
+
+
+class _Timing:
+    """Declare/observe helper for one CLI command.
+
+    Every method swallows its errors. A forecast is advisory — a corrupt or
+    unwritable local store should cost a hint, never the coordination call
+    the user actually made. Same contract as `Bridge._declare`.
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        config = _make_config(args)
+        self.workspace = config.workspace
+        self.agent_id = detect_identity(agent_id=args.agent_id).agent_id
+        self.execution_class = getattr(args, "execution_class", None)
+        self.effort = getattr(args, "effort", None)
+        self._model: TimingModel | None = None
+        self._db_path = config.timing_db
+
+    @property
+    def model(self) -> TimingModel | None:
+        if self._model is None:
+            try:
+                self._model = TimingModel(
+                    self._db_path, runtime_id=_runtime_id(self.agent_id))
+            except Exception:
+                return None
+        return self._model
+
+    def note_look(self) -> None:
+        """Close the open window: the agent just read its inbox, which is
+        the one event every forecast predicts."""
+        model = self.model
+        if model is None:
+            return
+        try:
+            model.note_look(self.agent_id, self.workspace)
+        except Exception:
+            pass
+
+    def declare(self) -> Forecast | None:
+        model = self.model
+        if model is None:
+            return None
+        try:
+            return model.declare(
+                self.agent_id, self.workspace, self.execution_class, self.effort)
+        except Exception:
+            return None
+
+    def close(self) -> None:
+        if self._model is not None:
+            try:
+                self._model.close()
+            except Exception:
+                pass
+
+
+def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
+    """What the sender gets back about its own forecast: the two shared
+    timestamps plus a countdown, since "now" is this exact moment and a
+    relative number is more use than re-deriving one."""
+    return {
+        **forecast.as_message_meta(),
+        "p50_in_seconds": round(forecast.p50_seconds),
+        "p95_in_seconds": round(forecast.p95_seconds),
+    }
+
+
+def _body_with_forecast(body: Any, forecast: Forecast | None) -> Any:
+    """Fold a forecast into an outgoing body, in the shape the MCP bridge
+    reads back (`Bridge._msg`), so a CLI agent and an MCP agent can hold the
+    same conversation."""
+    if forecast is None:
+        return body
+    return {"text": body, "timing_forecast": forecast.as_message_meta()}
+
+
+def _split_forecast(body: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Inverse of `_body_with_forecast`. Mirrors `Bridge._msg`'s unwrapping,
+    including its conservative key check, so an ordinary dict body that
+    happens to have a `text` key is left alone."""
+    if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
+            and "timing_forecast" in body):
+        return body.get("text"), body.get("timing_forecast")
+    return body, None
+
+
+def _forecast_line(fmt: Fmt, forecast: dict[str, Any], subject: str) -> str:
+    """One dim line describing when someone next expects to look."""
+    p50 = _until(forecast.get("p50"))
+    p95 = _until(forecast.get("p95"))
+    return fmt.dim(f"  {subject} looking again ~{p50} (p50), ~{p95} (p95)")
+
+
+def _until(iso: Any) -> str:
+    """Render a forecast checkpoint as a countdown. Past checkpoints say so
+    rather than showing a negative: past p95 the predicted event has almost
+    certainly already happened, and the forecast is spent."""
+    if not isinstance(iso, str):
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        delta = (then - datetime.now(timezone.utc)).total_seconds()
+    except ValueError:
+        return "?"
+    return _dur(delta) if delta > 0 else "already due"
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -615,23 +781,39 @@ def cmd_claims(args: argparse.Namespace) -> int:
 
 def cmd_say(args: argparse.Namespace) -> int:
     body = _read_body(args)
+    timing = _Timing(args)
+    forecast = timing.declare()
+    timing.close()
     with _make_client(args) as hub:
-        msg = hub.post(args.channel, body, type=args.type, thread=args.thread, ttl=args.ttl)
+        msg = hub.post(args.channel, _body_with_forecast(body, forecast),
+                       type=args.type, thread=args.thread, ttl=args.ttl)
     if args.json:
-        _print_json(msg)
+        _print_json({**msg, **({"timing_forecast": _sender_forecast(forecast)}
+                               if forecast else {})})
     elif not args.quiet:
         print(f"posted #{msg['seq']} to {msg['channel']}")
+        if forecast:
+            print(_forecast_line(Fmt(_use_color(sys.stdout)),
+                                 forecast.as_message_meta(), "you expect to be"))
     return EXIT_OK
 
 
 def cmd_dm(args: argparse.Namespace) -> int:
     body = _read_body(args)
+    timing = _Timing(args)
+    forecast = timing.declare()
+    timing.close()
     with _make_client(args) as hub:
-        msg = hub.send(args.to, body, type=args.type, thread=args.thread, ttl=args.ttl)
+        msg = hub.send(args.to, _body_with_forecast(body, forecast),
+                       type=args.type, thread=args.thread, ttl=args.ttl)
     if args.json:
-        _print_json(msg)
+        _print_json({**msg, **({"timing_forecast": _sender_forecast(forecast)}
+                               if forecast else {})})
     elif not args.quiet:
         print(f"sent #{msg['seq']} to {args.to}")
+        if forecast:
+            print(_forecast_line(Fmt(_use_color(sys.stdout)),
+                                 forecast.as_message_meta(), "you expect to be"))
     return EXIT_OK
 
 
@@ -657,20 +839,94 @@ def cmd_inbox(args: argparse.Namespace) -> int:
             peek=args.peek,
             include_own=args.include_own,
         )
+    # Reading is the event every forecast predicts, so it closes the open
+    # window whether or not the cursor moved and whether or not anything
+    # arrived: a peek is still a look, and an empty drain is still a look.
+    timing = _Timing(args)
+    timing.note_look()
+    forecast = timing.declare()
+    timing.close()
     if args.json:
-        _print_json(messages)
+        _print_json({
+            "messages": messages,
+            **({"timing_forecast": _sender_forecast(forecast)} if forecast else {}),
+        })
         return EXIT_OK
+    fmt = Fmt(_use_color(sys.stdout))
     if not messages:
         if not args.quiet:
             print("(nothing new)")
-        return EXIT_OK
-    fmt = Fmt(_use_color(sys.stdout))
     for m in messages:
         head = f"{fmt.cyan(m['channel'])} {fmt.bold(m['from'])} {fmt.dim(_ago(m['created_at']))}"
         if m.get("type") and m["type"] != "note":
             head += f" {fmt.dim('[' + m['type'] + ']')}"
         print(head)
         print(f"  {_body_text(m['body'])}")
+        _, incoming = _split_forecast(m["body"])
+        if incoming:
+            print(_forecast_line(fmt, incoming, "they expect to be"))
+    if forecast and not args.quiet:
+        print(_forecast_line(fmt, forecast.as_message_meta(), "you expect to be"))
+    return EXIT_OK
+
+
+def cmd_timing(args: argparse.Namespace) -> int:
+    """Show this agent's own timing model — the local diagnostics the MCP
+    bridge surfaces on its tool calls, which had no CLI surface at all.
+
+    Everything here is local to this machine and never leaves it.
+    """
+    timing = _Timing(args)
+    model = timing.model
+    if model is None:
+        print("no local timing store", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        report = model.calibration(timing.agent_id, timing.workspace)
+        classes = model.top_classes(timing.agent_id, timing.workspace)
+        preview = None
+        if args.execution_class or args.effort:
+            # A forecast for the given labels *without* opening a window:
+            # asking what the model would say must not be recorded as a
+            # declaration, or every question would corrupt the history it
+            # is asking about.
+            preview = model.forecast(
+                timing.agent_id, timing.workspace,
+                args.execution_class, args.effort)
+    finally:
+        timing.close()
+
+    if args.json:
+        _print_json({
+            "agent_id": timing.agent_id, "workspace": timing.workspace,
+            "calibration": report, "classes": classes,
+            **({"forecast": {**_sender_forecast(preview),
+                             "source": preview.source,
+                             "samples": preview.samples}} if preview else {}),
+        })
+        return EXIT_OK
+
+    fmt = Fmt(_use_color(sys.stdout))
+    print(f"{fmt.dim('agent')}      {timing.agent_id}")
+    print(f"{fmt.dim('classes')}    {', '.join(classes) or '(none yet)'}")
+    if report["samples"] < MIN_SAMPLES:
+        # Below MIN_SAMPLES the rates are noise, and a noisy number shown
+        # without that caveat is worse than no number.
+        print(f"{fmt.dim('samples')}    {report['samples']} "
+              f"(too few to judge calibration; {MIN_SAMPLES} needed)")
+    else:
+        print(f"{fmt.dim('samples')}    {report['samples']}")
+        print(f"{fmt.dim('p50 hits')}   {report['p50_hit_rate']:.0%} "
+              f"{fmt.dim('(target ~50%)')}")
+        print(f"{fmt.dim('p95 hits')}   {report['p95_hit_rate']:.0%} "
+              f"{fmt.dim('(target ~95%)')}")
+    if report["dropped_as_outliers"]:
+        print(f"{fmt.dim('dropped')}    {report['dropped_as_outliers']} "
+              f"{fmt.dim('too long to learn from — p95 above reads optimistic')}")
+    if preview:
+        print(f"{fmt.dim('forecast')}   p50 {_dur(preview.p50_seconds)}, "
+              f"p95 {_dur(preview.p95_seconds)} "
+              f"{fmt.dim('from ' + preview.source)}")
     return EXIT_OK
 
 
@@ -748,12 +1004,18 @@ def cmd_checkin(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         result = hub.heartbeat(task=args.task, ttl=args.ttl)
         messages = hub.inbox(wait=args.wait, limit=args.limit)
+    timing = _Timing(args)
+    timing.note_look()
+    forecast = timing.declare()
+    timing.close()
     payload = {
         "agent": result["agent"],
         "leases": result["leases"],
         "messages": messages,
     }
     if args.json:
+        if forecast:
+            payload["timing_forecast"] = _sender_forecast(forecast)
         _print_json(payload)
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
@@ -763,6 +1025,11 @@ def cmd_checkin(args: argparse.Namespace) -> int:
         print(f"{fmt.dim('new')}      {len(messages)} message(s)")
         for m in messages:
             print(f"  {fmt.cyan(m['channel'])} {fmt.bold(m['from'])}: {_body_text(m['body'])}")
+            _, incoming = _split_forecast(m["body"])
+            if incoming:
+                print(_forecast_line(fmt, incoming, "they expect to be"))
+    if forecast:
+        print(_forecast_line(fmt, forecast.as_message_meta(), "you expect to be"))
     return EXIT_OK
 
 
@@ -770,9 +1037,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
     """Follow messages continuously — a tail -f for the hub."""
     fmt = Fmt(_use_color(sys.stdout))
     with _make_client(args) as hub:
+        timing = _Timing(args)
         try:
             while True:
                 messages = hub.inbox(channels=args.channel, wait=25.0, limit=args.limit)
+                # Same rule as `inbox`: the drain is the look, empty or not.
+                timing.note_look()
                 for m in messages:
                     print(
                         f"{fmt.dim(_ago(m['created_at']))} {fmt.cyan(m['channel'])} "
@@ -2367,6 +2637,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--thread")
     p.add_argument("--ttl", type=float)
     p.add_argument("--json-body", action="store_true", help="parse the message as JSON")
+    _add_timing_args(p)
     p.set_defaults(func=cmd_say)
 
     p = sub.add_parser("dm", help="message one agent directly")
@@ -2376,6 +2647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--thread")
     p.add_argument("--ttl", type=float)
     p.add_argument("--json-body", action="store_true")
+    _add_timing_args(p)
     p.set_defaults(func=cmd_dm)
 
     p = sub.add_parser("inbox", help="drain new messages for this agent")
@@ -2384,11 +2656,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--peek", action="store_true", help="do not advance the read cursor")
     p.add_argument("--include-own", action="store_true")
+    _add_timing_args(p)
     p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")
     p.add_argument("-c", "--channel", action="append")
     p.add_argument("--limit", type=int, default=100)
+    _add_timing_args(p)
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("history", help="recent messages on a channel (cursor untouched)")
@@ -2404,7 +2678,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ttl", type=float)
     p.add_argument("--wait", type=float, default=0.0)
     p.add_argument("--limit", type=int, default=100)
+    _add_timing_args(p)
     p.set_defaults(func=cmd_checkin)
+
+    p = sub.add_parser("timing", help="this agent's own timing model (local, never shared)")
+    _add_timing_args(p)
+    p.set_defaults(func=cmd_timing)
 
     p = sub.add_parser("board", help="shared key/value scratch space")
     bsub = p.add_subparsers(dest="board_action", required=True)

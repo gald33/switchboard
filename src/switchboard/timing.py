@@ -161,9 +161,21 @@ class TimingModel:
     to the hub or to any other agent — see module docstring.
     """
 
-    def __init__(self, db_path: str = "~/.switchboard/timing.db") -> None:
+    def __init__(self, db_path: str = "~/.switchboard/timing.db",
+                 runtime_id: str | None = None) -> None:
         self.db_path = os.path.expanduser(db_path)
         self._conn: sqlite3.Connection | None = None
+        #: Identifies the run that owns a pending declaration. Defaults to
+        #: this process, which is right for a long-lived one (the MCP
+        #: bridge): if it dies mid-task, the gap measures downtime rather
+        #: than behaviour and must not be learned from.
+        #:
+        #: A caller whose "run" outlives the process must say so. The CLI is
+        #: the case in point — one command declares, a later command looks,
+        #: and they are always different processes — so process identity
+        #: there would reject every observation and the model would never
+        #: leave its bootstrap priors. See `cli._runtime_id`.
+        self._runtime_id = runtime_id or _RUNTIME_ID
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -328,7 +340,7 @@ class TimingModel:
                  forecast.p50_seconds if forecast else None,
                  forecast.p95_seconds if forecast else None,
                  forecast.source if forecast else None,
-                 _RUNTIME_ID,
+                 self._runtime_id,
                  forecast.raw_p50_seconds if forecast else None,
                  forecast.raw_p95_seconds if forecast else None),
             )
@@ -354,7 +366,7 @@ class TimingModel:
         prior = self._pending(agent_id, workspace)
         if prior is None:
             return
-        if prior[6] != _RUNTIME_ID:
+        if prior[6] != self._runtime_id:
             # Left behind by a previous run: the agent crashed or the
             # session ended between declaring and looking. The gap measures
             # downtime, not behaviour, and a restart shortly after a

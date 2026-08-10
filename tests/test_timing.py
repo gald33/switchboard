@@ -247,24 +247,60 @@ def test_sparse_buckets_are_pulled_toward_the_wide_prior():
 # --- restart safety ----------------------------------------------------------
 
 
-def test_a_declaration_from_a_previous_run_is_discarded_not_scored():
+def test_a_declaration_from_a_previous_run_is_discarded_not_scored(tmp_path):
     """Declare, die, restart, look: the elapsed time measures downtime, not
     behaviour, and a quick restart looks plausible enough to slip past the
-    outlier ceiling."""
-    import switchboard.timing as timing_module
+    outlier ceiling.
 
-    model = TimingModel(":memory:")
-    model.declare("a", "ws", "coding", "medium", now=0.0)
+    A restart is two model instances over one store, which is what this
+    builds — the process that declared is gone by the time anything looks.
+    """
+    db = str(tmp_path / "timing.db")
 
-    original = timing_module._RUNTIME_ID
-    try:
-        timing_module._RUNTIME_ID = "a-different-process"
-        model.note_look("a", "ws", now=600.0)
-    finally:
-        timing_module._RUNTIME_ID = original
+    # The dead run is the named one and the survivor takes the default, so
+    # this exercises the case that actually ships: a fresh process, with no
+    # runtime configured, refusing to score a window it did not open.
+    died = TimingModel(db, runtime_id="the-process-that-died")
+    died.declare("a", "ws", "coding", "medium", now=0.0)
+    died.close()
 
-    assert model._deltas("a", "ws", "coding", "medium") == []
-    assert model._pending("a", "ws") is None
+    restarted = TimingModel(db)
+    restarted.note_look("a", "ws", now=600.0)
+
+    assert restarted._deltas("a", "ws", "coding", "medium") == []
+    assert restarted._pending("a", "ws") is None
+
+
+def test_an_explicit_runtime_id_spans_processes(tmp_path):
+    """The CLI's case: every command is its own process, so the run has to
+    be named from outside or no observation would ever be scored.
+
+    The inverse of the test above, and the reason the runtime is injectable
+    rather than always this process: here the declaring process really is
+    gone, but the *run* it belonged to is not.
+    """
+    db = str(tmp_path / "timing.db")
+
+    declared = TimingModel(db, runtime_id="run-1")
+    declared.declare("a", "ws", "coding", "medium", now=0.0)
+    declared.close()
+
+    looked = TimingModel(db, runtime_id="run-1")
+    looked.note_look("a", "ws", now=300.0)
+
+    assert looked._deltas("a", "ws", "coding", "medium") == [300.0]
+
+
+def test_a_different_named_run_still_does_not_score(tmp_path):
+    """Naming the run must not become a way to score anything against
+    anything: two concurrent scripts each own their own windows."""
+    db = str(tmp_path / "timing.db")
+
+    TimingModel(db, runtime_id="run-1").declare("a", "ws", "coding", "medium", now=0.0)
+    other = TimingModel(db, runtime_id="run-2")
+    other.note_look("a", "ws", now=300.0)
+
+    assert other._deltas("a", "ws", "coding", "medium") == []
 
 
 # --- truncation and retention ------------------------------------------------
