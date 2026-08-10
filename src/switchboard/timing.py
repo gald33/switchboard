@@ -321,6 +321,24 @@ class TimingModel:
                     last_seconds    REAL,
                     PRIMARY KEY (agent_id, workspace, execution_class, effort)
                 );
+
+                -- Windows closed by a *different* run than declared them.
+                -- Discarding these is correct (see note_look), but doing it
+                -- silently is not: an agent whose runtime id is unstable
+                -- discards every window it opens and sees `samples 0`
+                -- forever with nothing to explain it. Counted separately
+                -- from `dropped` on purpose — these were never observations
+                -- and carry no truncation bias, they are measurements that
+                -- never happened.
+                CREATE TABLE IF NOT EXISTS abandoned (
+                    agent_id        TEXT NOT NULL,
+                    workspace       TEXT NOT NULL,
+                    execution_class TEXT NOT NULL,
+                    effort          TEXT NOT NULL,
+                    count           INTEGER NOT NULL DEFAULT 0,
+                    last_seconds    REAL,
+                    PRIMARY KEY (agent_id, workspace, execution_class, effort)
+                );
                 """
             )
             self._add_missing_columns(conn)
@@ -355,6 +373,19 @@ class TimingModel:
             self._conn = None
 
     # --- observation -----------------------------------------------------
+
+    def _record_abandoned(self, agent_id: str, workspace: str, execution_class: str,
+                          effort: str, seconds: float) -> None:
+        """Count a window discarded because another run closed it."""
+        conn = self._connection()
+        conn.execute(
+            "INSERT INTO abandoned (agent_id, workspace, execution_class, effort, "
+            "count, last_seconds) VALUES (?, ?, ?, ?, 1, ?) "
+            "ON CONFLICT(agent_id, workspace, execution_class, effort) DO UPDATE SET "
+            "count = count + 1, last_seconds = excluded.last_seconds",
+            (agent_id, workspace, execution_class, effort, seconds),
+        )
+        conn.commit()
 
     def _record(self, agent_id: str, workspace: str, execution_class: str,
                 effort: str, delta_seconds: float, now: float,
@@ -453,6 +484,13 @@ class TimingModel:
             # downtime, not behaviour, and a restart shortly after a
             # declaration yields a plausible-looking value the outlier
             # ceiling cannot catch. Drop it rather than learn from it.
+            #
+            # Counted, though. Discarding is right; discarding invisibly is
+            # not. A caller whose runtime id changes every call discards
+            # every window it opens, and the only symptom was a sample
+            # count that never moved.
+            self._record_abandoned(
+                agent_id, workspace, prior[0], prior[1], now - prior[2])
             self._clear_pending(agent_id, workspace)
             return
         self._record(agent_id, workspace, prior[0], prior[1], now - prior[2], now,
@@ -744,14 +782,24 @@ class TimingModel:
             "SELECT COALESCE(SUM(count), 0) FROM dropped "
             "WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
         ).fetchone()[0]
+        # Reported whether or not there is any history, because the case it
+        # explains is precisely the one with none: every window discarded
+        # means no samples ever accrue, and without this the only evidence
+        # is a number that stays at zero.
+        abandoned = conn.execute(
+            "SELECT COALESCE(SUM(count), 0) FROM abandoned "
+            "WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+        ).fetchone()[0]
         if not rows:
             return {"samples": 0, "p50_hit_rate": None, "p95_hit_rate": None,
-                    "dropped_as_outliers": dropped}
+                    "dropped_as_outliers": dropped,
+                    "discarded_from_other_runs": abandoned}
         return {
             "samples": len(rows),
             "p50_hit_rate": sum(d <= p50 for d, p50, _ in rows) / len(rows),
             "p95_hit_rate": sum(d <= p95 for d, _, p95 in rows) / len(rows),
             "dropped_as_outliers": dropped,
+            "discarded_from_other_runs": abandoned,
         }
 
     def calibration_by(self, agent_id: str, workspace: str,

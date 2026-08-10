@@ -228,7 +228,42 @@ def _add_timing_args(p: argparse.ArgumentParser) -> None:
 
 
 def _make_config(args: argparse.Namespace) -> ClientConfig:
+    """Resolve where this command talks to, and as whom.
+
+    Flags beat the environment, and the environment beats what the repo
+    declares — `.mcp.json` for the hub and workspace `init` wired up, and
+    `.claude/settings.local.json` for a token belonging to this machine
+    rather than the checkout.
+
+    That last tier used to exist only inside `whoami`, so `init` would wire
+    a repo up and every *other* command still dialled the default localhost
+    and died on connection refused. `whoami` reported a configuration
+    nothing else used, which is the worst version of this: the one command
+    you would check to find out looked healthy.
+
+    The workspace key is deliberately NOT resolved from the repo. Claude
+    Code injects `settings.local.json` into the agents it spawns, but a
+    plain shell has nothing exported and would send in the clear — so
+    reading it here would make `whoami` claim a channel is sealed when this
+    invocation would not seal it. See `cmd_whoami`.
+    """
     config = ClientConfig.from_env()
+    directory = Path(".").resolve()
+
+    # Only below the environment: an explicitly exported value is a
+    # deliberate override of whatever the checkout says.
+    if not os.environ.get("SWITCHBOARD_URL"):
+        config.url = _mcp_url(directory) or config.url
+    if not os.environ.get("SWITCHBOARD_WORKSPACE"):
+        # `config.workspace` falls back to the literal "default", which
+        # would otherwise mask the repo's real workspace.
+        config.workspace = _mcp_workspace(directory) or config.workspace
+    if not config.token:
+        # This machine's token first, then the one the checkout ships with:
+        # a personal token should win over a shared repo default.
+        config.token = (_saved_setting(directory, "SWITCHBOARD_TOKEN")
+                        or _mcp_env(directory, "SWITCHBOARD_TOKEN"))
+
     if args.url:
         config.url = args.url.rstrip("/")
     if args.token:
@@ -626,8 +661,17 @@ def cmd_whoami(args: argparse.Namespace) -> int:
             )
             _offer_clipboard(key, "the key", args)
         return EXIT_OK
+    # The id peers actually address, which is not `identity.agent_id` once a
+    # workspace key is in play: everything that leaves this machine is
+    # blinded, so a collaborator sees the blinded form and `whoami` was
+    # answering "how am I addressed?" with a name nobody can route to. Taken
+    # from the client rather than blinded again here, so there is one
+    # implementation of that mapping. Identical to the local id when there is
+    # no key, which is why this went unnoticed.
+    addressed_as = _make_client(args).agent_id
     payload = {
-        "agent_id": identity.agent_id,
+        "agent_id": addressed_as,
+        "local_agent_id": identity.agent_id,
         "name": identity.name,
         "kind": identity.kind,
         "branch": identity.branch,
@@ -642,6 +686,11 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     for field in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
         print(f"{fmt.dim(field.rjust(10))}  {payload[field]}")
+    if addressed_as != identity.agent_id:
+        # Only worth a line when they differ, which is exactly when someone
+        # would otherwise hand out the wrong one.
+        print(f"{fmt.dim('local'.rjust(10))}  {identity.agent_id} "
+              f"{fmt.dim('(this machine only — peers use agent_id above)')}")
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
@@ -898,6 +947,12 @@ def cmd_timing(args: argparse.Namespace) -> int:
     if report["dropped_as_outliers"]:
         print(f"{fmt.dim('dropped')}    {report['dropped_as_outliers']} "
               f"{fmt.dim('too long to learn from — p95 above reads optimistic')}")
+    if report.get("discarded_from_other_runs"):
+        # The one number that explains a sample count stuck at zero.
+        print(f"{fmt.dim('discarded')}  {report['discarded_from_other_runs']} "
+              f"{fmt.dim('closed by a different run — never learned from')}")
+        hint = "set SWITCHBOARD_RUNTIME_ID once per session if this keeps rising"
+        print(f"           {fmt.dim(hint)}")
     if preview:
         print(f"{fmt.dim('forecast')}   p50 {_dur(preview.p50_seconds)}, "
               f"p95 {_dur(preview.p95_seconds)} "
