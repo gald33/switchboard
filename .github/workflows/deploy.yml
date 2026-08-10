@@ -46,4 +46,19 @@ jobs:
             exit 1
           fi
           cd "$repo_dir"
+          # This hub is the managed one, so it runs with the published access
+          # token that ships in .mcp.json. Read from the source rather than
+          # duplicated here: two hand-maintained copies of one value is a drift
+          # bug this project has already had more than once.
+          #
+          # It filters untargeted scanning at a string compare. It is not a
+          # perimeter — anyone reading the repo has it — so nothing else should
+          # be built on top of it.
+          SWITCHBOARD_TOKEN=$(python3 - <<'PY'
+          import pathlib, re
+          source = pathlib.Path("src/switchboard/cli.py").read_text()
+          print(re.search(r'MANAGED_HUB_TOKEN = "([^"]+)"', source).group(1))
+          PY
+          )
+          export SWITCHBOARD_TOKEN
           bash scripts/deploy.sh

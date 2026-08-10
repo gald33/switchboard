@@ -260,7 +260,8 @@ with Client(agent_id=me.agent_id) as hub:
 - [Demo](demo/README.md) — two agents, two sessions, one terminal, ~40 seconds, reproducible
 - [Why the coordination protocol exists](docs/why-this-exists.md) — the failure that made "messages vs. blackboard" a written rule instead of a guess
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
-- [Concepts](docs/concepts.md) — the model, the TTL rules, and what Switchboard deliberately is *not*
+- [The model](docs/model.md) — **authoritative**: how identity, access and encryption work, what was rejected and why. If another doc disagrees with it, this one is right
+- [Concepts](docs/concepts.md) — the TTL rules, and what Switchboard deliberately is *not*
 - [Coordination skill](src/switchboard/skill/switchboard-coordinate/SKILL.md) — the shared convention `switchboard init` installs so turn-based agents stop talking past each other
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
