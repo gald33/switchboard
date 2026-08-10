@@ -23,7 +23,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import __version__
+from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
@@ -444,6 +444,64 @@ def _offer_clipboard(text: str, what: str, args: argparse.Namespace) -> None:
         print(f"copied ({tool})", file=sys.stderr)
     else:
         print("no clipboard tool found — copy it from above", file=sys.stderr)
+
+
+def cmd_rooms(args: argparse.Namespace) -> int:
+    """Show what this repo declares and what this environment can open.
+
+    `ClientConfig.from_env` deliberately swallows a bad rooms file — it runs on
+    the path of every command, including ones with nothing to do with a hub, so
+    a malformed file must not break `--help`. This is where that failure is
+    supposed to surface, in full, with the reason.
+    """
+    directory = Path(args.dir or ".").resolve()
+    try:
+        declared = rooms.load(directory)
+    except rooms.RoomsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if not declared:
+        print(
+            f"no rooms declared in this repo ({rooms.ROOMS_FILE} is absent), so the "
+            "workspace comes from the environment or is derived — see "
+            "`switchboard whoami`."
+        )
+        return EXIT_OK
+
+    selected = None
+    try:
+        selected = rooms.select(declared)
+    except rooms.RoomsError as exc:
+        problem = str(exc)
+    else:
+        problem = None
+
+    if args.json:
+        _print_json({
+            "rooms": [
+                {"name": r.name, "key_id": r.key_id, "hub_url": r.hub_url,
+                 "private": r.private, "have_key": bool(rooms.key_for(r.key_id)),
+                 "selected": selected is not None and r.name == selected.name}
+                for r in declared
+            ],
+            "selected": selected.name if selected else None,
+            "problem": problem,
+        })
+        return EXIT_OK if selected else EXIT_ERROR
+
+    fmt = Fmt(_use_color(sys.stdout))
+    for room in declared:
+        have = bool(rooms.key_for(room.key_id))
+        mark = (fmt.green("*") if selected and room.name == selected.name
+                else (" " if have else fmt.dim("·")))
+        note = "" if have else fmt.dim(f"  (no {rooms.env_var_for(room.key_id)})")
+        where = fmt.dim(" private") if room.private else ""
+        print(f"  {mark} {room.name}{where}  key={room.key_id}{note}")
+    if problem:
+        print()
+        print(fmt.yellow("Note: ") + problem)
+    return EXIT_OK if selected else EXIT_ERROR
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
@@ -2370,6 +2428,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_init)
 
+    p = sub.add_parser(
+        "rooms",
+        help="what this repo declares, and which of them you hold a key for",
+        description="A repo declares rooms; an environment holds keys; the agent "
+                    "joins the intersection. This shows both sides and, when they "
+                    "do not resolve to exactly one room, says why.",
+    )
+    p.add_argument("--dir", help="target repo directory (default: current directory)")
+    p.set_defaults(func=cmd_rooms)
+
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
     p.add_argument(
         "--no-input", action="store_true",
@@ -2434,7 +2502,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="hub-wide counts")
     p.set_defaults(func=cmd_stats)
 
-    p = sub.add_parser("register", help="announce this agent to the hub")
+    p = sub.add_parser(
+        "announce", aliases=["register"],
+        help="announce this agent to the hub",
+        description="Tell the hub this agent is here. Nothing is registered in "
+                    "any lasting sense: the record is self-asserted, expires in "
+                    "two minutes unless a heartbeat renews it, and no part of it "
+                    "is validated. Peers witness it; nothing vouches for it. The "
+                    "old name `register` still works.",
+    )
     p.add_argument("--name")
     p.add_argument("--kind", choices=["local", "cloud", "ci", "unknown"])
     p.add_argument("--task", help="what this agent is working on")
