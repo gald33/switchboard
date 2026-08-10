@@ -36,7 +36,13 @@ any more: a room identifier is `hash(workspace_token)`, derived rather than
 claimed, so there is no registry to consult and `POST /keys/register` is gone.
 
 ### `GET /stats`
-Live row counts per table plus the list of active workspaces.
+Live row counts per table, plus `workspace_count`.
+
+Deliberately **not** the list of workspace identifiers. A room identifier is
+`hash(workspace_token)` and, since authorization was removed, it is the only
+thing between a stranger and a room — publishing the set would let anyone
+enumerate every room and then read and post in all of them. Pass `?workspace=`
+for counts scoped to a room you already know.
 
 ### `POST /sweep`
 Force a sweep of expired rows. Runs automatically every 60s; this is for
