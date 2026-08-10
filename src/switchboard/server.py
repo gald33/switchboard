@@ -43,6 +43,7 @@ from .config import (
     ServerConfig,
     clamp_ttl,
 )
+from .load import LoadMeter
 from .notify import Notifier
 from .store import (
     Agent,
@@ -206,6 +207,7 @@ def create_app(
     config = config or ServerConfig.from_env()
     store = store or Store(config.db_path)
     notifier = Notifier()
+    meter = LoadMeter()
     perimeter = perimeter or Perimeter(config.token)
 
     async def _requested_workspace(request: Request) -> str | None:
@@ -272,6 +274,19 @@ def create_app(
         description="An ephemeral orchestration hub for AI coding agents.",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def measure(request: Request, call_next):
+        """Hold a slot for the duration of the request.
+
+        A long-poll gives its slot back while parked, so the number this
+        produces is work in progress rather than connections held — see
+        load.py for why that distinction decides whether the measurement is
+        usable at all.
+        """
+        with meter.serving():
+            return await call_next(request)
+
     app.state.store = store
     app.state.config = config
     app.state.notifier = notifier
@@ -328,6 +343,18 @@ def create_app(
         # runs out of — see docs/managed-hub.md. Reporting it is what lets an
         # operator autoscale on the real constraint instead of a proxy for it.
         payload["waiting_readers"] = notifier.waiting
+        # The numbers a load target would be chosen from. Reported rather than
+        # acted on: #72 asks for the target to come from measurement, and
+        # nobody has measured yet.
+        load = meter.snapshot()
+        payload["load"] = {
+            "active": load.active,
+            "parked": load.parked,
+            "peak_active": load.peak_active,
+            "delay_p50_ms": load.delay_p50_ms,
+            "delay_p95_ms": load.delay_p95_ms,
+            "samples": load.samples,
+        }
         return payload
 
     # --- presence ----------------------------------------------------------
@@ -533,10 +560,15 @@ def create_app(
                         # Woken by a writer, or by the slow floor. The floor is
                         # what makes this correct across multiple workers,
                         # where an in-process notifier sees nothing.
-                        await asyncio.wait_for(
-                            asyncio.shield(waiter),
-                            timeout=min(remaining, POLL_INTERVAL_SECONDS),
-                        )
+                        #
+                        # Parked, so an idle agent waiting here does not read
+                        # as load. This is the normal state of a quiet
+                        # workspace, and counting it would drown everything.
+                        with meter.parked():
+                            await asyncio.wait_for(
+                                asyncio.shield(waiter),
+                                timeout=min(remaining, POLL_INTERVAL_SECONDS),
+                            )
                     except asyncio.TimeoutError:
                         pass
                     messages = await run_in_threadpool(drain)
