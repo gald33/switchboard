@@ -1000,9 +1000,34 @@ def cmd_board(args: argparse.Namespace) -> int:
 
 
 def cmd_checkin(args: argparse.Namespace) -> int:
-    """Heartbeat, renew leases, and drain the inbox in one round-trip."""
+    """Heartbeat, renew leases, and drain the inbox in one round-trip.
+
+    Registers on demand, which the MCP bridge does for free and the CLI did
+    not. Presence lasts DEFAULT_AGENT_TTL (120s), so a CLI agent hits this
+    two ways: it never called `announce` at all, or it went quiet for longer
+    than the TTL between calls. Both surface as the same 404, and both used
+    to end the same way — an error telling the agent to go call something
+    else, on the one command the coordination protocol says to call on a
+    timer. The bridge recovers from exactly this in `_touch`/`checkin`; a
+    heartbeat is a claim to be present, so making it true is more useful
+    than reporting that it wasn't.
+    """
+    identity = detect_identity(agent_id=args.agent_id)
+
+    def _register(hub: Client) -> None:
+        hub.register(
+            name=identity.name, kind=identity.kind, branch=identity.branch,
+            task=args.task, meta=identity.meta, ttl=args.ttl,
+        )
+
     with _make_client(args) as hub:
-        result = hub.heartbeat(task=args.task, ttl=args.ttl)
+        try:
+            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+        except SwitchboardError as exc:
+            if exc.status != 404:
+                raise
+            _register(hub)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl)
         messages = hub.inbox(wait=args.wait, limit=args.limit)
     timing = _Timing(args)
     timing.note_look()
