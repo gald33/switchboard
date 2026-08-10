@@ -50,11 +50,9 @@ the MCP tools — behaves exactly as before.
 
 ## Key epochs
 
-The payload key can rotate on a schedule without anyone coordinating. Set
-`SWITCHBOARD_KEY_EPOCH_PERIOD` to a number of seconds — 900 is a reasonable
-start — and each message is sealed under
-`KDF(key, workspace, floor(now / period))`, with the epoch number recorded in
-the envelope.
+The payload key rotates on a schedule, with no coordination. Every message is
+sealed under `KDF(key, workspace, floor(now / period))` — 15 minutes by
+default — and the epoch number travels in the envelope.
 
 Readers take the epoch **from the message**, never from their own clock. Three
 things follow: nobody has to agree on a schedule, a message written seconds
@@ -62,10 +60,13 @@ before a boundary stays readable by someone already past it, and history stays
 readable forever because any epoch is derivable from the same key. Two agents
 running different periods interoperate for the same reason.
 
-Off by default, and the field is omitted entirely at epoch 0, so a client with
-rotation disabled writes exactly the bytes it always did. Reading honours
-epochs from the moment you upgrade — so a fleet upgrades read-first, and
-turning writing on later breaks nobody.
+`SWITCHBOARD_KEY_EPOCH_PERIOD=0` switches it off, and epoch 0 omits the field
+entirely, producing exactly the bytes a pre-epoch client wrote. That is the
+escape hatch if you still run readers too old to understand epochs: upgrading
+a *reader* is always safe, since reading follows whatever the message says —
+it is writing epochs that an old peer cannot follow. Note that the `uvx`
+bootstrap caches, so an environment can sit on an older build until
+`uvx --refresh`.
 
 What rotation buys is bounded exposure of a *derived* key: one that leaks is
 useless after the next boundary. It is **not** forward secrecy — the workspace

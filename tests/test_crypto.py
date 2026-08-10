@@ -909,11 +909,18 @@ def test_a_nonsense_epoch_is_refused(key):
             cipher.unseal({**sealed, "e": bad}, "message.body")
 
 
-def test_the_period_is_off_by_default(monkeypatch, key):
-    # Shipping it enabled would mean a new agent writing content its
-    # not-yet-upgraded peers cannot open.
+def test_rotation_is_on_by_default(monkeypatch, key):
     monkeypatch.delenv("SWITCHBOARD_KEY_EPOCH_PERIOD", raising=False)
-    assert WorkspaceCipher.from_key(key, WS).current_epoch() == 0
+    assert WorkspaceCipher.from_key(key, WS).current_epoch() > 0
+
+
+def test_rotation_can_be_switched_off(monkeypatch, key):
+    # The escape hatch for a fleet that still has pre-epoch readers: writing
+    # epoch 0 produces bytes they can open.
+    monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "0")
+    cipher = WorkspaceCipher.from_key(key, WS)
+    assert cipher.current_epoch() == 0
+    assert "e" not in cipher.seal("x", "message.body")
 
 
 def test_the_period_can_be_switched_on_by_environment(monkeypatch, key):
@@ -924,6 +931,8 @@ def test_the_period_can_be_switched_on_by_environment(monkeypatch, key):
     assert cipher.current_epoch(now=1_800_900) == 2001
 
 
-def test_a_broken_period_setting_does_not_break_encryption(monkeypatch, key):
+def test_a_broken_period_setting_falls_back_to_the_default(monkeypatch, key):
+    # Not to 0: a typo in an environment variable should not silently switch
+    # rotation off for that agent while its peers keep rotating.
     monkeypatch.setenv("SWITCHBOARD_KEY_EPOCH_PERIOD", "every-so-often")
-    assert WorkspaceCipher.from_key(key, WS).current_epoch() == 0
+    assert WorkspaceCipher.from_key(key, WS).current_epoch() > 0

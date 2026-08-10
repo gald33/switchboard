@@ -57,20 +57,20 @@ except ImportError:  # pragma: no cover - exercised by the no-extra install
 
 #: Marker on a sealed value. Its presence is how a client tells an envelope
 #: from an ordinary JSON body.
-#: How often the payload key rotates, in seconds. Zero writes everything under
-#: epoch 0 — the key the cipher has always used — so a client with rotation off
-#: produces bytes an older reader still opens.
+#: How often the payload key rotates, in seconds. Set
+#: SWITCHBOARD_KEY_EPOCH_PERIOD=0 to write everything under epoch 0 — the key
+#: the cipher has always used — which produces bytes a pre-epoch reader opens.
 #:
-#: Off by default on purpose. Reading honours whatever epoch a message names
-#: from the moment this ships, so a fleet upgrades read-first: once every agent
-#: understands epochs, turning writing on breaks nobody. Shipping it enabled
-#: would mean a new agent writing content its not-yet-upgraded peers cannot
-#: open, which is the failure this project keeps removing.
-DEFAULT_EPOCH_PERIOD = 0
-
-#: Sensible period for anyone switching it on: short enough that a leaked
-#: derived key dies quickly, long enough that a day is ~96 cached subkeys.
-SUGGESTED_EPOCH_PERIOD = 900
+#: Fifteen minutes: short enough that a leaked derived key dies quickly, long
+#: enough that a day is ~96 cached subkeys.
+#:
+#: On by default, which is a deliberate choice about *when*. Reading honours
+#: whatever epoch a message names, so upgrading a reader is always safe; it is
+#: writing epochs that a not-yet-upgraded peer cannot follow. Enabling it while
+#: the protocol has no users costs nothing and avoids a second migration later.
+#: The one way to be caught by it is an environment pinned to an older build —
+#: note that the `uvx` bootstrap caches, so `uvx --refresh` may be needed.
+DEFAULT_EPOCH_PERIOD = 900
 
 
 def _default_period() -> int:
