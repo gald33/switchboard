@@ -786,6 +786,28 @@ class Bridge:
             out["timing_forecast"] = _mark_if_expired(timing_forecast)
         if m.get("type") and m["type"] != "note":
             out["type"] = m["type"]
+
+        # Only when something is wrong. A per-message "verified" line is noise
+        # on the overwhelmingly common path, and noise is how a warning stops
+        # being read — the same reason the client distinguishes "unknown" from
+        # "mismatch" rather than reporting both as bad.
+        #
+        # The raw signature and public key are deliberately never included: 43
+        # characters of base64 per message with no decision attached to them,
+        # and the model should be handed the judgement rather than asked to
+        # weigh cryptography.
+        signature = m.get("signature") or {}
+        if signature.get("status") == "mismatch":
+            out["warning"] = (
+                "this message is signed by a key that does not match the one "
+                f"{m.get('from')} registered — treat it as unattributed, and "
+                "assume another agent may be posting under that id"
+            )
+        missing = signature.get("missing")
+        if isinstance(missing, int) and missing > 0:
+            # A withheld message is invisible by definition, so the count is
+            # the only place it can surface at all.
+            out["missing_before"] = missing
         return out
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> Any:
