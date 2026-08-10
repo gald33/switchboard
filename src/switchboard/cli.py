@@ -27,7 +27,17 @@ from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
-from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
+from .timing import (
+    EFFORT_LEVELS,
+    MIN_SAMPLES,
+    Forecast,
+    TimingModel,
+    declare_safely,
+    note_look_safely,
+    sender_forecast,
+    unwrap_body,
+    wrap_body,
+)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -301,25 +311,12 @@ class _Timing:
         return self._model
 
     def note_look(self) -> None:
-        """Close the open window: the agent just read its inbox, which is
-        the one event every forecast predicts."""
-        model = self.model
-        if model is None:
-            return
-        try:
-            model.note_look(self.agent_id, self.workspace)
-        except Exception:
-            pass
+        note_look_safely(self.model, self.agent_id, self.workspace)
 
     def declare(self) -> Forecast | None:
-        model = self.model
-        if model is None:
-            return None
-        try:
-            return model.declare(
-                self.agent_id, self.workspace, self.execution_class, self.effort)
-        except Exception:
-            return None
+        return declare_safely(
+            self.model, self.agent_id, self.workspace,
+            self.execution_class, self.effort)
 
     def close(self) -> None:
         if self._model is not None:
@@ -329,34 +326,12 @@ class _Timing:
                 pass
 
 
-def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
-    """What the sender gets back about its own forecast: the two shared
-    timestamps plus a countdown, since "now" is this exact moment and a
-    relative number is more use than re-deriving one."""
-    return {
-        **forecast.as_message_meta(),
-        "p50_in_seconds": round(forecast.p50_seconds),
-        "p95_in_seconds": round(forecast.p95_seconds),
-    }
-
-
-def _body_with_forecast(body: Any, forecast: Forecast | None) -> Any:
-    """Fold a forecast into an outgoing body, in the shape the MCP bridge
-    reads back (`Bridge._msg`), so a CLI agent and an MCP agent can hold the
-    same conversation."""
-    if forecast is None:
-        return body
-    return {"text": body, "timing_forecast": forecast.as_message_meta()}
-
-
-def _split_forecast(body: Any) -> tuple[Any, dict[str, Any] | None]:
-    """Inverse of `_body_with_forecast`. Mirrors `Bridge._msg`'s unwrapping,
-    including its conservative key check, so an ordinary dict body that
-    happens to have a `text` key is left alone."""
-    if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
-            and "timing_forecast" in body):
-        return body.get("text"), body.get("timing_forecast")
-    return body, None
+# The envelope and the sender's view of a forecast are one implementation in
+# timing.py, shared with the MCP bridge — see the wire-contract section there
+# for why these stopped being two.
+_sender_forecast = sender_forecast
+_body_with_forecast = wrap_body
+_split_forecast = unwrap_body
 
 
 def _forecast_line(fmt: Fmt, forecast: dict[str, Any], subject: str) -> str:
@@ -1000,9 +975,34 @@ def cmd_board(args: argparse.Namespace) -> int:
 
 
 def cmd_checkin(args: argparse.Namespace) -> int:
-    """Heartbeat, renew leases, and drain the inbox in one round-trip."""
+    """Heartbeat, renew leases, and drain the inbox in one round-trip.
+
+    Registers on demand, which the MCP bridge does for free and the CLI did
+    not. Presence lasts DEFAULT_AGENT_TTL (120s), so a CLI agent hits this
+    two ways: it never called `announce` at all, or it went quiet for longer
+    than the TTL between calls. Both surface as the same 404, and both used
+    to end the same way — an error telling the agent to go call something
+    else, on the one command the coordination protocol says to call on a
+    timer. The bridge recovers from exactly this in `_touch`/`checkin`; a
+    heartbeat is a claim to be present, so making it true is more useful
+    than reporting that it wasn't.
+    """
+    identity = detect_identity(agent_id=args.agent_id)
+
+    def _register(hub: Client) -> None:
+        hub.register(
+            name=identity.name, kind=identity.kind, branch=identity.branch,
+            task=args.task, meta=identity.meta, ttl=args.ttl,
+        )
+
     with _make_client(args) as hub:
-        result = hub.heartbeat(task=args.task, ttl=args.ttl)
+        try:
+            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+        except SwitchboardError as exc:
+            if exc.status != 404:
+                raise
+            _register(hub)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl)
         messages = hub.inbox(wait=args.wait, limit=args.limit)
     timing = _Timing(args)
     timing.note_look()
@@ -2498,6 +2498,57 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
 # --- parser -----------------------------------------------------------------
 
 
+#: Global options that also work *after* the subcommand. `switchboard say
+#: general hi --json` is what everyone types first, and argparse's answer was
+#: "unrecognized arguments" — including for `-q` and `--url`, and including in
+#: places switchboard's own output tells you to type them. It cost a real
+#: agent its roster presence mid-run: `announce --json` failed, so it never
+#: registered, and nothing about the error said the flag was merely misplaced.
+_GLOBAL_FLAGS: tuple[tuple[tuple[str, ...], dict[str, Any]], ...] = (
+    (("--url",), {}),
+    (("--token",), {}),
+    (("-w", "--workspace"), {}),
+    (("--agent-id",), {}),
+    (("--key",), {}),
+    (("--json",), {"action": "store_true"}),
+    (("-q", "--quiet"), {"action": "store_true"}),
+)
+
+
+def _accept_global_flags_after_subcommand(parser: argparse.ArgumentParser) -> None:
+    """Let every subcommand take the global flags too, in either position.
+
+    The trick is `default=SUPPRESS`: a subparser option sharing a dest with
+    its parent normally *overwrites* the parent's value with its own default
+    whenever the flag is not repeated after the subcommand — the exact trap
+    `init` sidestepped with separate dests and a note. Suppressed defaults
+    leave the attribute unset instead, so the parent's value survives and one
+    dest serves both positions, with no command needing to read two.
+
+    `init` keeps its bespoke handling: its options are already declared with
+    their own dests, and re-declaring the same strings here would be an
+    argparse conflict. Nested subcommands (`board set`) are walked too, since
+    that is where the flag lands when a command has its own subcommands.
+    """
+    seen: set[int] = set()
+
+    def walk(p: argparse.ArgumentParser, name: str | None) -> None:
+        if id(p) in seen:  # aliases (announce/register) share one parser
+            return
+        seen.add(id(p))
+        if name is not None and name != "init":
+            for flags, options in _GLOBAL_FLAGS:
+                p.add_argument(
+                    *flags, default=argparse.SUPPRESS, help=argparse.SUPPRESS, **options
+                )
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child_name, child in action.choices.items():
+                    walk(child, child_name)
+
+    walk(parser, None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="switchboard",
@@ -2786,6 +2837,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("board_key", metavar="key")
     p.set_defaults(func=cmd_board)
 
+    _accept_global_flags_after_subcommand(parser)
     return parser
 
 

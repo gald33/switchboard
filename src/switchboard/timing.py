@@ -153,6 +153,87 @@ class Forecast:
         }
 
 
+# --- the wire contract, shared by both surfaces -----------------------------
+#
+# `as_message_meta` above defines what travels; these define how it rides on a
+# message and what the sender gets back. The MCP bridge and the CLI both need
+# exactly this, and having grown their own copies is what let them drift:
+# adaptive timing shipped bridge-only, and the CLI's later copy had to be
+# checked against `Bridge._msg` by a test asserting two implementations agreed.
+# One implementation is the point.
+#
+# Deliberately NOT folded here: how an elapsed forecast is presented. The
+# bridge flags the whole forecast off p95, the CLI reports each checkpoint as
+# "already due" as it passes. That is two considered answers to "what does a
+# reader need", not one behaviour duplicated, so unifying it would be a
+# behaviour change wearing a refactor's clothes.
+
+
+def sender_forecast(forecast: Forecast) -> dict[str, Any]:
+    """What the *sender* gets back about its own forecast.
+
+    Everything that travels, plus relative seconds: the sender knows "now" is
+    this exact moment, so a countdown is more use than two timestamps it would
+    have to difference itself.
+    """
+    return {
+        **forecast.as_message_meta(),
+        "p50_in_seconds": round(forecast.p50_seconds),
+        "p95_in_seconds": round(forecast.p95_seconds),
+    }
+
+
+def wrap_body(text: Any, forecast: Forecast | None) -> Any:
+    """Fold a forecast into an outgoing message body.
+
+    No forecast means the body goes out untouched — a bare string stays a bare
+    string, so agents that ignore the feature see nothing new.
+    """
+    if forecast is None:
+        return text
+    return {"text": text, "timing_forecast": forecast.as_message_meta()}
+
+
+def unwrap_body(body: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Inverse of `wrap_body`.
+
+    The key check is deliberately conservative: an ordinary dict body that
+    happens to carry a `text` key is a message, not an envelope, and must come
+    back out unchanged.
+    """
+    if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
+            and "timing_forecast" in body):
+        return body.get("text"), body.get("timing_forecast")
+    return body, None
+
+
+def declare_safely(model: TimingModel | None, agent_id: str, workspace: str,
+                   execution_class: str | None, effort: str | None) -> Forecast | None:
+    """Open a forecast window, or give up quietly.
+
+    The whole feature is advisory, so a missing or broken local store costs a
+    hint and never the coordination call it was riding on.
+    """
+    if model is None:
+        return None
+    try:
+        return model.declare(agent_id, workspace, execution_class, effort)
+    except Exception:
+        return None
+
+
+def note_look_safely(model: TimingModel | None, agent_id: str, workspace: str) -> None:
+    """Close the open window: the agent read its inbox, which is the one event
+    every forecast predicts. Never raises, same reasoning as `declare_safely`.
+    """
+    if model is None:
+        return
+    try:
+        model.note_look(agent_id, workspace)
+    except Exception:
+        pass
+
+
 class TimingModel:
     """Local (never-shared) store of one agent's check-in timing history.
 

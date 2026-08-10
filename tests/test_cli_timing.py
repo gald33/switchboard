@@ -64,8 +64,14 @@ def test_effort_is_constrained_but_execution_class_is_free_form():
 
 
 def test_the_body_shape_matches_what_the_mcp_bridge_reads_back():
-    """A CLI agent and an MCP agent must be able to hold one conversation,
-    so the envelope has to be the exact shape `Bridge._msg` unwraps."""
+    """A CLI agent and an MCP agent must be able to hold one conversation.
+
+    Wrap and unwrap are now one implementation (`timing.wrap_body` /
+    `unwrap_body`), so this no longer asserts that two copies agree — it
+    asserts the bridge still reads a CLI-produced body correctly through
+    everything `_msg` does around the unwrap: field renaming, the expiry
+    flag, the type field.
+    """
     from switchboard.mcp_server import Bridge
 
     forecast = _forecast()

@@ -28,7 +28,17 @@ from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identi
 from .config import ClientConfig
 from .crypto import generate_key
 from .signing import SigningServer
-from .timing import EFFORT_LEVELS, MIN_SAMPLES, Forecast, TimingModel
+from .timing import (
+    EFFORT_LEVELS,
+    MIN_SAMPLES,
+    Forecast,
+    TimingModel,
+    declare_safely,
+    note_look_safely,
+    sender_forecast,
+    unwrap_body,
+    wrap_body,
+)
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
 # for something else we answer with our newest and let it decide.
@@ -639,50 +649,20 @@ class Bridge:
     def _body_with_forecast(self, message: str, execution_class: str | None,
                              effort: str | None) -> tuple[Any, Forecast | None]:
         """Classify this send locally and fold any resulting forecast into
-        the outgoing body. Purely advisory — see timing.py; never raises on
-        a bad/missing local timing store, since a forecast is a nice-to-have,
-        not something correctness can depend on.
-        """
+        the outgoing body."""
         forecast = self._declare(execution_class, effort)
-        if forecast is None:
-            return message, None
-        return {"text": message, "timing_forecast": forecast.as_message_meta()}, forecast
+        return wrap_body(message, forecast), forecast
 
     def _declare(self, execution_class: str | None,
                  effort: str | None) -> Forecast | None:
-        """Open a forecast window. Never raises: the whole feature is
-        advisory, so a broken local timing store costs a hint, not a call.
-        """
-        try:
-            return self.timing.declare(
-                self.identity.agent_id, self.config.workspace, execution_class, effort,
-            )
-        except Exception:
-            return None
+        return declare_safely(
+            self.timing, self.identity.agent_id, self.config.workspace,
+            execution_class, effort)
 
     def _note_look(self) -> None:
-        """Tell the timing model the agent just read its inbox — the event
-        every forecast is a prediction of. Never raises, same reasoning.
-        """
-        try:
-            self.timing.note_look(self.identity.agent_id, self.config.workspace)
-        except Exception:
-            pass
+        note_look_safely(self.timing, self.identity.agent_id, self.config.workspace)
 
-    @staticmethod
-    def _sender_forecast(forecast: Forecast) -> dict[str, Any]:
-        """The richer view the *sender* gets back on its own tool call.
-
-        Includes everything shared over the wire (absolute p50/p95, so it
-        matches what a receiver sees) plus relative seconds, since the
-        sender already knows "now" is this exact moment and a countdown is
-        more directly useful than re-deriving one from two timestamps.
-        """
-        return {
-            **forecast.as_message_meta(),
-            "p50_in_seconds": round(forecast.p50_seconds),
-            "p95_in_seconds": round(forecast.p95_seconds),
-        }
+    _sender_forecast = staticmethod(sender_forecast)
 
     def say(self, channel: str, message: str, type: str = "note",
             ttl: float | None = None,
@@ -787,12 +767,7 @@ class Bridge:
 
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
-        body = m["body"]
-        timing_forecast = None
-        if (isinstance(body, dict) and set(body.keys()) <= {"text", "timing_forecast"}
-                and "timing_forecast" in body):
-            timing_forecast = body.get("timing_forecast")
-            body = body.get("text")
+        body, timing_forecast = unwrap_body(m["body"])
         out = {
             "seq": m["seq"],
             "from": m["from"],

@@ -42,21 +42,6 @@ up below: the `unread_dms` count on every tool result, and the `now`
 timestamp that incoming forecasts are compared against. The CLI has no
 equivalent of the first, and does the second for you.
 
-One more difference decides whether anyone can see you at all. The MCP
-bridge registers you on your first tool call, so `roster` lists you without
-your having asked. The CLI does not: reading the roster, saying things and
-claiming resources all work while you are still invisible on `roster`
-yourself. Announce yourself once at the start of a CLI session —
-
-```
-switchboard announce --task "what you are working on"
-```
-
-— which is also where a task description and extra channels get set. If you
-skip it, your first `checkin` registers you anyway, so the rhythm below is
-safe either way; you just stay absent from `roster` until then, and a peer
-deciding whether to wait on you sees nobody there.
-
 If you have neither surface, `switchboard init` in the repo root wires up
 the MCP server and installs this skill; the CLI is `pip install
 agent-switchboard`.
@@ -73,8 +58,7 @@ agent-switchboard`.
   expire and free themselves — which is correct if you have crashed and wrong
   if you are still working. (Your read position in `inbox` is unaffected
   either way — it survives a quiet stretch on its own, much longer than
-  presence does.) Coming back needs nothing special: presence lapses after
-  two quiet minutes, and the next `checkin` re-registers you and carries on.
+  presence does.)
 - **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
   live count of direct messages waiting for you, kept current on every call
   so a ping is noticed as soon as you do anything at all. A nonzero value
