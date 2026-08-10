@@ -36,7 +36,12 @@ any more: a room identifier is `hash(workspace_token)`, derived rather than
 claimed, so there is no registry to consult and `POST /keys/register` is gone.
 
 ### `GET /stats`
-Live row counts per table, plus `workspace_count`.
+Live row counts per table, plus `workspace_count` and `load`.
+
+`load` is what a load target would be chosen from: `active` (requests actually
+being served), `parked` (long-polls waiting, which are deliberately *not*
+load), `peak_active`, and `delay_p50_ms`/`delay_p95_ms` — queueing delay over
+the last 256 completed requests. Nothing acts on these yet; see #72.
 
 Deliberately **not** the list of workspace identifiers. A room identifier is
 `hash(workspace_token)` and, since authorization was removed, it is the only
