@@ -85,6 +85,11 @@ class ServerConfig:
     db_path: str = "switchboard.db"
     token: str | None = None
     sweep_interval: float = SWEEP_INTERVAL_SECONDS
+    #: Queueing-delay target in milliseconds. Zero disables admission control
+    #: entirely, which is the default: the target is meant to be chosen from
+    #: measured p95 (see /stats "load"), and shipping a number here would be
+    #: the invented constant #72 exists to avoid.
+    load_target_ms: float = 0.0
 
     @classmethod
     def from_env(cls) -> ServerConfig:
@@ -92,6 +97,7 @@ class ServerConfig:
             db_path=os.environ.get("SWITCHBOARD_DB", "switchboard.db"),
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
             sweep_interval=_env_float("SWITCHBOARD_SWEEP_INTERVAL", SWEEP_INTERVAL_SECONDS),
+            load_target_ms=_env_float("SWITCHBOARD_LOAD_TARGET_MS", 0.0),
         )
 
 

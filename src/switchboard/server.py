@@ -43,7 +43,7 @@ from .config import (
     ServerConfig,
     clamp_ttl,
 )
-from .load import LoadMeter
+from .load import CLASS_ADMIT, CLASS_READ, CLASS_WRITE, Admission, LoadMeter, Rejected
 from .notify import Notifier
 from .store import (
     Agent,
@@ -199,6 +199,21 @@ def dump_board(e: BoardEntry, now: float) -> dict[str, Any]:
 # --- app --------------------------------------------------------------------
 
 
+def _work_class(request: Request) -> str:
+    """Which reservation this request draws on.
+
+    Coarse on purpose. What matters is that a flood of one kind cannot starve
+    another, and the kind worth protecting is a room the hub has not seen —
+    otherwise flooding messages blocks new rooms, which is the cheap attack.
+    """
+    path = request.url.path
+    if path.startswith("/agents/register"):
+        return CLASS_ADMIT
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        return CLASS_WRITE
+    return CLASS_READ
+
+
 def create_app(
     config: ServerConfig | None = None,
     store: Store | None = None,
@@ -208,6 +223,7 @@ def create_app(
     store = store or Store(config.db_path)
     notifier = Notifier()
     meter = LoadMeter()
+    admission = Admission(meter, target_ms=config.load_target_ms)
     perimeter = perimeter or Perimeter(config.token)
 
     async def _requested_workspace(request: Request) -> str | None:
@@ -284,8 +300,21 @@ def create_app(
         load.py for why that distinction decides whether the measurement is
         usable at all.
         """
+        work_class = _work_class(request)
         with meter.serving():
-            return await call_next(request)
+            try:
+                with admission.admit(work_class):
+                    return await call_next(request)
+            except Rejected as shed:
+                # Shedding is a scheduling decision, not an error: say which
+                # class and when to return, so a caller backs off rather than
+                # retrying into the same wall.
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "busy", "work_class": shed.work_class,
+                             "retry_after": shed.retry_after},
+                    headers={"Retry-After": str(int(shed.retry_after) or 1)},
+                )
 
     app.state.store = store
     app.state.config = config
@@ -354,6 +383,7 @@ def create_app(
             "delay_p50_ms": load.delay_p50_ms,
             "delay_p95_ms": load.delay_p95_ms,
             "samples": load.samples,
+            "admission": admission.snapshot(),
         }
         return payload
 

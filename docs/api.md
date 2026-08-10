@@ -38,6 +38,13 @@ claimed, so there is no registry to consult and `POST /keys/register` is gone.
 ### `GET /stats`
 Live row counts per table, plus `workspace_count` and `load`.
 
+Set `SWITCHBOARD_LOAD_TARGET_MS` to a queueing-delay target in milliseconds to
+turn admission control on; it is **off by default**, because the target is
+meant to come from the measurements below rather than a guess. Over target the
+hub sheds with `429` and `{"error": "busy", "work_class", "retry_after"}`,
+and each class of work has a reserved share so a flood of one cannot starve
+another — in particular, messages cannot block new rooms.
+
 `load` is what a load target would be chosen from: `active` (requests actually
 being served), `parked` (long-polls waiting, which are deliberately *not*
 load), `peak_active`, and `delay_p50_ms`/`delay_p95_ms` — queueing delay over
