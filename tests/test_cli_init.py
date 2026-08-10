@@ -910,7 +910,9 @@ def test_no_key_leaves_a_differing_workspace_alone(monkeypatch, capsys, tmp_path
     code, out = run_init(monkeypatch, capsys, tmp_path, "-w", "w_other")
     assert code == 0
     assert _mcp_ws(tmp_path) == "acme/billing"
-    assert "left .mcp.json alone" in out
+    # the workspace is what must not move; on the managed hub the file is still
+    # touched, to add the token an existing repo would otherwise never get
+    assert "left the rest alone" in out or "left .mcp.json alone" in out
 
 
 # --- prompting ---------------------------------------------------------------
@@ -1746,3 +1748,48 @@ def test_a_local_hub_keeps_its_own_token_out_of_the_committed_file(
     run_init(monkeypatch, capsys, tmp_path, "--local")
     env = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]["env"]
     assert "SWITCHBOARD_TOKEN" not in env, "a generated dev token is a secret"
+
+
+def test_an_existing_repo_gets_the_token_it_never_had(monkeypatch, capsys, tmp_path):
+    """Leaving an entry alone must not mean leaving it broken.
+
+    A repo set up before the hub required a token has none, and the hub now
+    refuses it — so `init` adds the published constant in place while leaving
+    everything the user may have customised exactly as it was.
+    """
+    from switchboard.cli import MANAGED_HUB_TOKEN
+
+    _write_mcp(tmp_path, "w_existing")
+    fake_hub(monkeypatch, reachable=True)
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+
+    env = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]["env"]
+    assert env["SWITCHBOARD_TOKEN"] == MANAGED_HUB_TOKEN
+    assert env["SWITCHBOARD_WORKSPACE"] == "w_existing", "the workspace must not move"
+    assert "added the hub's public token" in out
+
+
+def test_a_token_already_there_is_not_overwritten(monkeypatch, capsys, tmp_path):
+    # Someone may have set a real one by hand; replacing it would lock them out.
+    import json as _json
+
+    _write_mcp(tmp_path, "w_existing")
+    path = tmp_path / ".mcp.json"
+    data = _json.loads(path.read_text())
+    data["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_TOKEN"] = "mine"
+    path.write_text(_json.dumps(data))
+
+    fake_hub(monkeypatch, reachable=True)
+    run_init(monkeypatch, capsys, tmp_path)
+    env = _json.loads(path.read_text())["mcpServers"]["switchboard"]["env"]
+    assert env["SWITCHBOARD_TOKEN"] == "mine"
+
+
+def test_the_next_step_does_not_point_at_a_command_that_cannot_help(
+    monkeypatch, capsys, tmp_path
+):
+    # Registration is gone; telling someone to run `init` to obtain a token
+    # sends them to a command that will never produce one.
+    fake_hub(monkeypatch, reachable=True)
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--url", "https://hub.example.com")
+    assert "registers one against a hub" not in out

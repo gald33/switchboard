@@ -1378,6 +1378,17 @@ def _init_mcp_json(
             return f"left .mcp.json alone: existing file is not valid JSON ({exc})"
         servers = data.setdefault("mcpServers", {})
         if "switchboard" in servers and not overwrite:
+            # Leaving the entry alone must not mean leaving it *broken*. A repo
+            # set up before the hub required a token has none, and the hub now
+            # refuses it — so the published constant is added in place while
+            # everything the user may have customised (command, args, url,
+            # workspace) is left exactly as it was.
+            existing = servers["switchboard"].setdefault("env", {})
+            if url == MANAGED_HUB_URL and "SWITCHBOARD_TOKEN" not in existing:
+                existing["SWITCHBOARD_TOKEN"] = MANAGED_HUB_TOKEN
+                path.write_text(json.dumps(data, indent=2) + "\n")
+                return ("added the hub's public token to .mcp.json; left the rest "
+                        "alone, a \"switchboard\" server was already registered")
             return 'left .mcp.json alone: a "switchboard" server is already registered'
         repointed = "switchboard" in servers
         servers["switchboard"] = entry
@@ -2066,13 +2077,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         if local_hub:
             print(f"  {n}. export SWITCHBOARD_TOKEN={token} in every agent's shell")
             n += 1
-        elif not token_on_disk:
-            # Nothing useful to print as a value — `<token>` was a placeholder
-            # people were meant to fill from somewhere this never named. Say
-            # where it actually comes from instead.
-            print(f"  {n}. this repo has no token yet: `switchboard init` registers "
-                  "one against a hub that issues its own, or set SWITCHBOARD_TOKEN "
-                  "from whoever runs the hub")
+        elif not _mcp_env(directory, "SWITCHBOARD_TOKEN"):
+            # Registration is gone, so nothing here can obtain a token. Only
+            # whoever runs the hub can, and saying otherwise sends people to
+            # run a command that will never produce one.
+            print(f"  {n}. this hub needs a token and this repo has none: ask "
+                  "whoever runs it, then set SWITCHBOARD_TOKEN in your "
+                  "environment")
             n += 1
         # When the token *is* on disk there is nothing to do: the MCP
         # subprocess reads it from there, and the explainer below covers
