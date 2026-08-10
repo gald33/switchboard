@@ -170,6 +170,41 @@ def test_agent_ids_are_blinded_once_at_the_client(key):
     assert c.blind_channel("build") != "build"
 
 
+def test_a_dm_to_a_local_alias_reaches_that_agents_channel(key):
+    """#90. The two forms are indistinguishable at the call site — a roster
+    entry and the name an agent calls itself both go in as `dm(<something>)` —
+    and passing both through unchanged meant one was delivered and the other
+    discarded with no signal at all.
+
+    A local alias has to be blinded, because the recipient's own inbox is
+    keyed on the blinded form.
+    """
+    c = WorkspaceCipher.from_key(key, WS)
+    assert c.blind_channel("@thinker") == "@" + c.blind("thinker", "agent")
+
+
+def test_a_hub_form_id_is_never_blinded_twice(key):
+    """The other half, and the reason this cannot simply blind everything:
+    `blind(blind(id))` addresses a channel no inbox resolves to."""
+    c = WorkspaceCipher.from_key(key, WS)
+    hub_id = c.blind("thinker", "agent")
+    assert c.blind_channel(f"@{hub_id}") == f"@{hub_id}"
+    # Both spellings of the same agent land in one place, which is the
+    # property that makes the two interchangeable at the call site.
+    assert c.blind_channel("@thinker") == c.blind_channel(f"@{hub_id}")
+
+
+def test_the_two_forms_are_told_apart_by_shape_not_by_asking_the_hub(key):
+    """Resolving through the roster would have been the other option, and it
+    fails the common case: turn-based agents are absent from `roster` between
+    turns, so a DM to one would error even though blinding delivers it
+    correctly — `blind` is deterministic, so the message waits in exactly the
+    channel that agent resolves to when it comes back."""
+    c = WorkspaceCipher.from_key(key, WS)
+    never_registered = c.blind_channel("@has-never-announced")
+    assert never_registered == "@" + c.blind("has-never-announced", "agent")
+
+
 def test_a_short_key_is_rejected():
     with pytest.raises(Exception, match="at least 32 bytes"):
         WorkspaceCipher.from_key("dGlueQ", WS)
