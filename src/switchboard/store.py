@@ -894,8 +894,19 @@ class Store:
                         (now,),
                     ).fetchone()
                 out[table] = row["n"]
+            # Deliberately not a list of workspace identifiers.
+            #
+            # A room identifier is the only thing standing between a stranger
+            # and a room: `hash(workspace_token)`, unguessable, and since
+            # authorization was removed (#61) it is the *whole* protection.
+            # Publishing the set here handed it over — enumerate, then read and
+            # post in every room on the hub. That was survivable while a token
+            # was required and fatal the moment one was not.
+            #
+            # The count is kept because an operator wants to know how many
+            # rooms are live; which ones they are is not theirs to hand out.
             rows = conn.execute("SELECT DISTINCT workspace FROM agents").fetchall()
-            out["workspaces"] = sorted({r["workspace"] for r in rows})
+            out["workspace_count"] = len({r["workspace"] for r in rows})
         return out
 
     # --- key bindings --------------------------------------------------------

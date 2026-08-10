@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -458,3 +460,23 @@ def test_a_database_from_before_pubkey_existed_still_opens(tmp_path):
                                  pubkey="PUBKEY")
     assert agent.pubkey == "PUBKEY"
     store.close()
+
+
+def test_stats_does_not_enumerate_rooms(client):
+    """A room identifier is the whole protection now that authorization is
+    gone (#61): unguessable, and the only thing between a stranger and a room.
+    Publishing the set here handed it over — enumerate, then read and post
+    everywhere. Survivable while a token was required; fatal once one was not."""
+    client.post("/agents/register", json={"workspace": "w_secret", "name": "a"})
+    body = client.get("/stats").json()
+
+    assert "workspaces" not in body
+    assert "w_secret" not in json.dumps(body)
+    # an operator still learns how many rooms are live, just not which
+    assert body["workspace_count"] >= 1
+
+
+def test_stats_still_answers_for_a_workspace_you_already_know(client):
+    # Naming a room you already have the identifier for is not enumeration.
+    client.post("/agents/register", json={"workspace": "w_known", "name": "a"})
+    assert client.get("/stats", params={"workspace": "w_known"}).json()["agents"] == 1
