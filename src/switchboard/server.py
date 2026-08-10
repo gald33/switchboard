@@ -4,15 +4,13 @@ Run it with::
 
     switchboard serve --db ./switchboard.db --token "$SWITCHBOARD_TOKEN"
 
-By default auth is a single shared bearer token and every caller may use every
-workspace. For a hub coordinating agents that already share a codebase that is
-the right shape: per-agent identity is for *telling them apart*, not for
-keeping them apart. Do not expose such a hub publicly without a token set.
+Auth is one optional shared bearer token, and it is a perimeter rather than
+authorization: every admitted caller can reach every room whose identifier it
+knows. Do not expose a hub publicly without one set.
 
-For a hub shared between parties that do not trust each other, pass a
-different :class:`~switchboard.auth.PrincipalResolver` to :func:`create_app`.
-Workspaces then become a boundary rather than a namespace, enforced once in
-``require_principal`` for every guarded route. See ``auth.py``.
+What protects a room is not the hub. A room identifier is
+``hash(workspace_token)`` — unguessable unless someone tells you — and its
+contents are sealed with a key the hub never receives. See ``auth.py``.
 """
 
 from __future__ import annotations
@@ -30,11 +28,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
-from .auth import (
-    Principal,
-    PrincipalResolver,
-    SharedTokenResolver,
-)
+from .auth import Perimeter
 from .config import (
     DEFAULT_AGENT_TTL,
     DEFAULT_BOARD_TTL,
@@ -207,12 +201,12 @@ def dump_board(e: BoardEntry, now: float) -> dict[str, Any]:
 def create_app(
     config: ServerConfig | None = None,
     store: Store | None = None,
-    resolver: PrincipalResolver | None = None,
+    perimeter: Perimeter | None = None,
 ) -> FastAPI:
     config = config or ServerConfig.from_env()
     store = store or Store(config.db_path)
     notifier = Notifier()
-    resolver = resolver or SharedTokenResolver(config.token)
+    perimeter = perimeter or Perimeter(config.token)
 
     async def _requested_workspace(request: Request) -> str | None:
         """The workspace this request is about, from wherever it carries it.
@@ -233,45 +227,27 @@ def create_app(
                     return payload["workspace"]
         return None
 
-    async def require_principal(
-        request: Request, authorization: str | None = Header(default=None)
-    ) -> Principal:
-        """Authenticate, then authorize the workspace — for every guarded route.
+    async def require_admission(
+        authorization: str | None = Header(default=None)
+    ) -> None:
+        """The whole of the hub's access check.
 
-        Doing the workspace check inside the shared dependency rather than in
-        each handler is deliberate. There are ~19 endpoints that take a
-        workspace; a per-handler check is one forgotten line away from a
-        cross-tenant read that nothing would ever surface. Here it cannot be
-        forgotten, and `test_auth.py` walks the whole route table to prove it.
+        There is no per-workspace authorization left to do. A room identifier
+        is `hash(workspace_token)` — derived, not owned — so there is nobody to
+        check ownership against, and the two things that actually protect a
+        room are knowing its identifier and holding its key. Neither is the
+        hub's to enforce.
+
+        What is left is a perimeter: with a token configured, present it; with
+        none, the hub is open. Every caller who gets through can reach every
+        room they can name, which is why the docstring in auth.py insists this
+        is not authorization.
         """
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization[len("Bearer "):]
-        principal = resolver.resolve(token)
-        if principal is None:
+        if not perimeter.admits(token):
             raise HTTPException(status_code=401, detail="invalid or missing bearer token")
-
-        if principal.unrestricted:
-            return principal
-
-        workspace = await _requested_workspace(request)
-        if workspace is None:
-            # A scoped key may not ask questions that span every tenant, which
-            # is what an absent workspace means (e.g. GET /stats).
-            raise HTTPException(
-                status_code=403,
-                detail="this key is scoped to specific workspaces; name one explicitly",
-            )
-        if not principal.may_access(workspace):
-            raise HTTPException(
-                status_code=403,
-                # "token", not "key": this is the credential the hub checks, and
-                # calling it a key here is what makes people reach for their
-                # workspace key — the one thing that could never fix a 403.
-                detail=f"token {principal.key_id!r} has no access to workspace "
-                       f"{workspace!r}",
-            )
-        return principal
 
     async def sweeper() -> None:
         while True:
@@ -299,7 +275,7 @@ def create_app(
     app.state.store = store
     app.state.config = config
     app.state.notifier = notifier
-    guard = [Depends(require_principal)]
+    guard = [Depends(require_admission)]
 
     @app.exception_handler(LeaseConflict)
     async def _lease_conflict(_, exc: LeaseConflict) -> JSONResponse:
@@ -329,12 +305,10 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        # Whether a caller needs to authenticate at all — true unless the
-        # resolver is explicitly open (SharedTokenResolver with no token).
-        # `bool(config.token)` alone was wrong for every other resolver: a
-        # StaticKeyResolver or SelfIssuedKeyResolver hub always requires
-        # auth, but neither one sets config.token, so it reported False.
-        auth_required = not getattr(resolver, "open", False)
+        # Whether a caller has to get through the door at all. Not a claim
+        # about rooms: a hub reporting `auth: true` still lets every admitted
+        # caller reach every room they can name.
+        auth_required = not perimeter.open
         # `self_issued_keys` used to appear here, reporting whether a client
         # could bind its own token to a workspace. Nothing binds anything now:
         # a room identifier is hash(workspace_token), so it is derived rather

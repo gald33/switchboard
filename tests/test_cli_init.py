@@ -1713,3 +1713,36 @@ def test_a_repo_from_an_earlier_init_upgrades_rather_than_looking_edited(
     _, out = run_init(monkeypatch, capsys, tmp_path, "-w", "acme/api", "--new-key")
     assert "latest revision" in out
     assert "command -v switchboard" in (hooks / "session-start.sh").read_text()
+
+
+# --- the hub token is reachability, not a secret ------------------------------
+
+
+def test_the_managed_hub_token_ships_with_the_url(monkeypatch, capsys, tmp_path):
+    """Published on purpose: every client uses the same value, nothing issues
+    it, and bundling it is what makes it transparent — nobody types it. It buys
+    a 401 from a string compare instead of a database query for untargeted
+    scanning. It is not a boundary and must not be described as one."""
+    from switchboard.cli import MANAGED_HUB_TOKEN
+
+    fake_hub(monkeypatch, reachable=True)
+    run_init(monkeypatch, capsys, tmp_path)
+    env = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]["env"]
+    assert env["SWITCHBOARD_TOKEN"] == MANAGED_HUB_TOKEN
+
+
+def test_no_token_is_written_for_any_other_hub(monkeypatch, capsys, tmp_path):
+    # The committed file must never carry a secret. A hub that wants a real
+    # perimeter uses a secret token, and that one lives in the environment.
+    fake_hub(monkeypatch, reachable=True)
+    run_init(monkeypatch, capsys, tmp_path, "--url", "https://hub.example.com")
+    env = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]["env"]
+    assert "SWITCHBOARD_TOKEN" not in env
+
+
+def test_a_local_hub_keeps_its_own_token_out_of_the_committed_file(
+    monkeypatch, capsys, tmp_path
+):
+    run_init(monkeypatch, capsys, tmp_path, "--local")
+    env = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]["env"]
+    assert "SWITCHBOARD_TOKEN" not in env, "a generated dev token is a secret"

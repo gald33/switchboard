@@ -14,13 +14,7 @@ forever whether or not it was ever meant to be.
 
 from __future__ import annotations
 
-from .auth import (
-    DEFAULT_TIER,
-    Principal,
-    PrincipalResolver,
-    SharedTokenResolver,
-    StaticKeyResolver,
-)
+from .auth import Perimeter
 from .client import (
     AsyncClient,
     Client,
@@ -51,6 +45,7 @@ from .store import (
 __version__ = "0.4.6"
 
 __all__ = [
+    "Perimeter",
     "__version__",
     # client
     "Client",
@@ -63,11 +58,6 @@ __all__ = [
     "ClientConfig",
     "ServerConfig",
     # auth — workspaces as a boundary, for shared hubs
-    "Principal",
-    "PrincipalResolver",
-    "SharedTokenResolver",
-    "StaticKeyResolver",
-    "DEFAULT_TIER",
     "Notifier",
     # end-to-end encryption — the hub never sees the key
     "WorkspaceCipher",

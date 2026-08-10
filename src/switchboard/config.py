@@ -4,8 +4,6 @@ Everything is environment-driven so a hub can be stood up with no config file:
 
     SWITCHBOARD_DB           path to the SQLite file (server)
     SWITCHBOARD_TOKEN        shared bearer token (server + client)
-    SWITCHBOARD_KEYS_FILE    path to a JSON file of scoped keys (server) — see
-                             below; mutually exclusive with SWITCHBOARD_TOKEN
     SWITCHBOARD_URL          hub base URL (client)
     SWITCHBOARD_WORKSPACE    workspace to join (client). Unset, the client
                              derives one — see ``default_workspace`` and
@@ -14,19 +12,6 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_KEY          workspace key for end-to-end encryption (client only —
                              a hub must never be given one, and has no use for it)
 
-A hub with SWITCHBOARD_KEYS_FILE set runs multi-tenant: each key is scoped to
-specific workspaces rather than granting access to all of them (see auth.py).
-The file is a JSON object, token -> {"workspaces": [...], "label": "..."}:
-
-    {
-      "the-bearer-token-for-acme": {"workspaces": ["acme/app"], "label": "acme"},
-      "the-bearer-token-for-globex": {"workspaces": ["globex/app"], "label": "globex"}
-    }
-
-Nothing issues, stores, or rotates these tokens for you — each party
-generates their own (e.g. ``python -c 'import secrets;print(secrets.token_urlsafe(32))'``)
-and gives it to the operator to add to the file. Changes need a restart to
-take effect, same as rotating SWITCHBOARD_TOKEN does today.
 
 """
 
@@ -99,11 +84,6 @@ class ServerConfig:
 
     db_path: str = "switchboard.db"
     token: str | None = None
-    #: Path to a JSON keys file (see module docstring). When set, the hub is
-    #: multi-tenant: each key is scoped to specific workspaces rather than
-    #: granting access to all of them. Mutually exclusive with ``token`` —
-    #: ``cmd_serve`` rejects both being set rather than silently picking one.
-    keys_file: str | None = None
     sweep_interval: float = SWEEP_INTERVAL_SECONDS
 
     @classmethod
@@ -111,7 +91,6 @@ class ServerConfig:
         return cls(
             db_path=os.environ.get("SWITCHBOARD_DB", "switchboard.db"),
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
-            keys_file=os.environ.get("SWITCHBOARD_KEYS_FILE") or None,
             sweep_interval=_env_float("SWITCHBOARD_SWEEP_INTERVAL", SWEEP_INTERVAL_SECONDS),
         )
 
