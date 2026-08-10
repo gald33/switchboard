@@ -262,7 +262,7 @@ class ClientConfig:
         room = _selected_room(Path.cwd() if directory is None else directory)
         if room is not None:
             url = url or room.hub_url
-            workspace = workspace or room.workspace_token
+            workspace = workspace or room.workspace
             key = key or rooms.key_for(room.key_id)
 
         return cls(

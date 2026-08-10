@@ -2502,7 +2502,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="hub-wide counts")
     p.set_defaults(func=cmd_stats)
 
-    p = sub.add_parser("register", help="announce this agent to the hub")
+    p = sub.add_parser(
+        "announce", aliases=["register"],
+        help="announce this agent to the hub",
+        description="Tell the hub this agent is here. Nothing is registered in "
+                    "any lasting sense: the record is self-asserted, expires in "
+                    "two minutes unless a heartbeat renews it, and no part of it "
+                    "is validated. Peers witness it; nothing vouches for it. The "
+                    "old name `register` still works.",
+    )
     p.add_argument("--name")
     p.add_argument("--kind", choices=["local", "cloud", "ci", "unknown"])
     p.add_argument("--task", help="what this agent is working on")

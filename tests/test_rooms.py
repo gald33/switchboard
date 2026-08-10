@@ -34,7 +34,8 @@ def test_the_record_supplies_workspace_key_and_hub_together(tmp_path, monkeypatc
                       "workspace_token": "w_team", "hub_url": "https://h.example"}])
     monkeypatch.setenv("SWITCHBOARD_KEY", "K")
     config = ClientConfig.from_env(tmp_path)
-    assert (config.workspace, config.key, config.url) == ("w_team", "K", "https://h.example")
+    assert config.workspace == rooms.workspace_for("w_team")
+    assert (config.key, config.url) == ("K", "https://h.example")
 
 
 def test_the_environment_still_wins(tmp_path, monkeypatch):
@@ -54,7 +55,7 @@ def test_keys_are_referenced_by_id_never_by_position(tmp_path, monkeypatch):
     write(tmp_path, entries)
     first = ClientConfig.from_env(tmp_path).workspace
     write(tmp_path, list(reversed(entries)))
-    assert ClientConfig.from_env(tmp_path).workspace == first == "w_ops"
+    assert ClientConfig.from_env(tmp_path).workspace == first == rooms.workspace_for("w_ops")
 
 
 def test_a_missing_key_is_a_local_failure_that_names_it(tmp_path):
@@ -106,3 +107,37 @@ def test_a_room_without_a_workspace_token_is_refused(tmp_path):
     write(tmp_path, [{"name": "team", "key_id": "default"}])
     with pytest.raises(rooms.RoomsError, match="workspace_token"):
         rooms.load(tmp_path)
+
+
+# --- the wire identifier is derived, not assigned ----------------------------
+
+
+def test_the_workspace_is_derived_from_the_token(tmp_path, monkeypatch):
+    # Definitional rather than asserted: two parties holding the same token
+    # compute the same id without being told, which is why nothing needs to be
+    # registered anywhere.
+    write(tmp_path, [{"name": "team", "key_id": "default", "workspace_token": "shared-token"}])
+    monkeypatch.setenv("SWITCHBOARD_KEY", "K")
+    config = ClientConfig.from_env(tmp_path)
+    assert config.workspace == rooms.workspace_for("shared-token")
+    assert config.workspace != "shared-token", "the token itself must not be the wire value"
+
+
+def test_two_repos_with_one_token_land_in_one_room(tmp_path):
+    # N repos -> 1 room, the case that motivated multi-room in the first place.
+    a, b = tmp_path / "api", tmp_path / "web"
+    for d in (a, b):
+        write(d, [{"name": "team", "key_id": "default", "workspace_token": "same"}])
+    assert rooms.load(a)[0].workspace == rooms.load(b)[0].workspace
+
+
+def test_a_readable_token_does_not_become_a_readable_room(tmp_path):
+    # A token someone typed by hand must not turn into a guessable name the
+    # hub can read, or squat.
+    assert "acme" not in rooms.workspace_for("acme/api")
+    assert rooms.workspace_for("acme/api").startswith("w_")
+
+
+def test_the_derivation_is_stable_and_collision_free_enough(tmp_path):
+    assert rooms.workspace_for("x") == rooms.workspace_for("x")
+    assert len({rooms.workspace_for(str(n)) for n in range(500)}) == 500

@@ -28,6 +28,8 @@ resolves to the wrong one.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -44,6 +46,17 @@ ROOMS_LOCAL_FILE = ".switchboard/rooms.local.json"
 
 #: The unnamed key, so a setup that predates named keys keeps working.
 DEFAULT_KEY_ID = "default"
+
+
+def workspace_for(workspace_token: str) -> str:
+    """The wire identifier for a room, derived from its token.
+
+    The hub routes on this and the client filters on it, so both parties must
+    know it — which is exactly why it cannot be the secret-and-rotating value,
+    and why it is safe for it to be derived rather than assigned.
+    """
+    digest = hashlib.sha256(workspace_token.encode("utf-8", "replace")).digest()
+    return "w_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:22]
 
 
 class RoomsError(Exception):
@@ -66,6 +79,21 @@ class Room:
     #: Where this record came from, so a conflict can be explained rather than
     #: silently resolved.
     private: bool = False
+
+    @property
+    def workspace(self) -> str:
+        """What goes on the wire — `hash(workspace_token)`.
+
+        Definitional rather than asserted, which is the whole reason nothing
+        needs registering: two parties holding the same token compute the same
+        id without being told, and no third party can be asked to arbitrate a
+        name nobody typed.
+
+        Hashed rather than sent as-is so the wire value is uniform and opaque
+        whatever the token looks like — a token chosen by hand does not become
+        a readable room name on the hub just because someone wrote a word.
+        """
+        return workspace_for(self.workspace_token)
 
 
 def env_var_for(key_id: str) -> str:
