@@ -58,6 +58,27 @@ is never a commitment, and no agent is required to obey another's forecast.
   previous window, looking up history, computing percentiles, attaching the
   result) is automatic. `Bridge._declare` and `Bridge._note_look` are the
   only two call sites, and both swallow errors — see degradation below.
+- The CLI reaches the same machinery through `--execution-class` and
+  `--effort` on `say`, `dm`, `inbox`, `checkin` and `watch`, plus a
+  `switchboard timing` command for the local diagnostics (calibration, the
+  class shortlist, and a forecast preview that deliberately does *not* open
+  a window — asking what the model would say must not be recorded as a
+  declaration). `cli._Timing` mirrors `Bridge`'s two call sites and the
+  same swallow-everything contract.
+
+  One thing genuinely differs, and it is not cosmetic. The bridge is one
+  long-lived process, so a declaration and the look that closes it belong
+  to the same run by construction. A CLI run is a *sequence* of processes:
+  `dm --effort high` exits, and the `inbox` that closes its window is a
+  different process. Since a pending window is discarded when its runtime
+  does not match — the rule that stops a crashed agent's downtime being
+  learned as behaviour — CLI use would otherwise discard every observation
+  and sit on bootstrap priors forever. So `TimingModel` takes an explicit
+  `runtime_id`, and the CLI names its run (`SWITCHBOARD_RUNTIME_ID`,
+  falling back to one stable per agent) instead of inheriting process
+  identity. The tradeoff is that a window left open by an abandoned run is
+  closed by whatever looks next; the 24h ceiling rejects the resulting
+  observation and the `dropped` counter makes it visible.
 - The forecast rides inside the message `body` (`{"text": ...,
   "timing_forecast": {...}}`) rather than as a new column/field on the wire
   message model — `type`/`thread` are the only structured message metadata
