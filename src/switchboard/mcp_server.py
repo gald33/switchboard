@@ -35,6 +35,7 @@ from .timing import (
     TimingModel,
     declare_safely,
     note_look_safely,
+    note_speak_safely,
     sender_forecast,
     unwrap_body,
     wrap_body,
@@ -135,10 +136,14 @@ _CUSTOM_SCOPE = {
 _FORECAST_ADVICE = (
     " A message may carry 'timing_forecast' — the sender's own estimate of when it will "
     "next check its messages ('p50' ~50% likely by then, 'p95' ~95%), compared against "
-    "the 'now' field in this result. Predictions, not promises, and you are free to "
-    "ignore them. If you do use one, prefer sizing how often you check to the forecast "
-    "rather than checking exactly at p50 and p95; a stale forecast whose p95 has already "
-    "passed carries no information."
+    "the 'now' field in this result. It may also carry 'speak_p50'/'speak_p95': when the "
+    "sender expects to next POST something, which is a different and usually later moment "
+    "— reading a message and replying to it are separated by a whole turn. Use the look "
+    "pair to answer 'when will they see this?' and the speak pair for 'when will they "
+    "answer?' or 'when should I act so we act together?'. Predictions, not promises, and "
+    "you are free to ignore them. If you do use one, prefer sizing how often you check to "
+    "the forecast rather than checking exactly at p50 and p95; a stale forecast whose p95 "
+    "has already passed carries no information."
 )
 
 #: Optional semantic timing hints. This is the entire burden a model takes
@@ -671,6 +676,9 @@ class Bridge:
                              effort: str | None) -> tuple[Any, Forecast | None]:
         """Classify this send locally and fold any resulting forecast into
         the outgoing body."""
+        # Posting is the event a speak forecast predicts, so it closes that
+        # window before the next declaration opens a fresh one.
+        self._note_speak()
         forecast = self._declare(execution_class, effort)
         return wrap_body(message, forecast), forecast
 
@@ -682,6 +690,9 @@ class Bridge:
 
     def _note_look(self) -> None:
         note_look_safely(self.timing, self.identity.agent_id, self.config.workspace)
+
+    def _note_speak(self) -> None:
+        note_speak_safely(self.timing, self.identity.agent_id, self.config.workspace)
 
     _sender_forecast = staticmethod(sender_forecast)
 

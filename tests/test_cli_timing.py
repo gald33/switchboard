@@ -105,18 +105,24 @@ def test_round_trip_through_the_envelope_recovers_the_text():
     forecast = _forecast()
     text, carried = _split_forecast(_body_with_forecast("hello", forecast))
     assert text == "hello"
-    assert set(carried) == {"p50", "p95"}
+    assert set(carried) == {"p50", "p95", "speak_p50", "speak_p95"}
 
 
-def test_only_the_two_timestamps_travel():
+def test_only_timestamps_travel():
     """Sample counts, the fallback tier that produced the estimate and the
     self-correction multipliers are local diagnostics. Leaking them would
-    publish the shape of an agent's history to everyone on the hub."""
+    publish the shape of an agent's history to everyone on the hub.
+
+    Four checkpoints travel now rather than two — a look pair and a speak
+    pair — but the property being guarded is unchanged: everything on the
+    wire is a timestamp, and nothing describes the history behind it.
+    """
     forecast = _forecast()
     body = _body_with_forecast("hello", forecast)
-    assert set(body["timing_forecast"]) == {"p50", "p95"}
-    assert "source" not in json.dumps(body)
-    assert "samples" not in json.dumps(body)
+    assert set(body["timing_forecast"]) == {"p50", "p95", "speak_p50", "speak_p95"}
+    wire = json.dumps(body)
+    for internal in ("source", "samples", "correction", "raw_p50", "raw_p95", "kind"):
+        assert internal not in wire
 
 
 # --- run identity ------------------------------------------------------------

@@ -41,6 +41,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -112,6 +113,13 @@ def pad_bucket(length: int) -> int:
 #: channel names is not a thing that happens; short enough to stay readable in
 #: a log line.
 BLIND_BYTES = 16
+
+#: What a blinded id looks like once base64url-encoded, which is how a
+#: hub-form agent id is told apart from a local alias in `blind_channel`.
+#: Derived from BLIND_BYTES rather than written as a literal, so changing the
+#: token size cannot silently stop DM addressing from recognising its own
+#: output.
+_HUB_FORM_ID = re.compile(r"[A-Za-z0-9_-]{%d}" % -(-BLIND_BYTES * 4 // 3))
 
 _MISSING = (
     "end-to-end encryption needs the crypto extra: "
@@ -328,21 +336,37 @@ class WorkspaceCipher:
         return _b64e(digest[:BLIND_BYTES])
 
     def blind_channel(self, channel: str) -> str:
-        """Blind a named channel, and pass a direct-message channel through.
+        """Blind a named channel, and resolve a direct-message channel.
 
-        A ``@`` channel already carries a *hub-form* agent id: ids are blinded
-        once when the client is constructed, and a roster hands them back in
-        that same form, so `dm(roster_entry["agent_id"])` addresses the right
-        agent. Blinding again here would produce `blind(blind(id))`, which no
-        recipient's inbox resolves to — a DM that vanishes silently, which is
-        the worst way for this to fail.
+        A ``@`` channel carries an agent id, and it arrives in one of two
+        forms. A *hub-form* id — what the roster hands back, already blinded —
+        must pass through untouched: blinding again would produce
+        `blind(blind(id))`, which no recipient's inbox resolves to. A *local
+        alias*, the name an agent calls itself, must be blinded, because that
+        is what the recipient's own inbox is keyed on.
+
+        Passing both through unchanged is what made `dm("thinker")` vanish
+        silently while `dm(roster_entry["agent_id"])` worked — identical at
+        the call site, and only one of them delivered (#90).
+
+        The two are told apart by shape rather than by asking the hub, so a
+        DM to an agent that is between turns and absent from the roster still
+        lands: `blind` is deterministic, so the message waits in exactly the
+        channel that agent will resolve to when it comes back. A hub-form id
+        is `BLIND_BYTES` of base64url and nothing else; a local alias that
+        happened to be exactly that shape would be misread, which is the one
+        case this cannot see — and is why an agent should hand out the id
+        `whoami` reports rather than inventing one.
 
         The ``@`` prefix stays legible so the hub can resolve an agent's own
         inbox. It reveals only that a message is a DM, which the hub could
         infer from the traffic pattern anyway.
         """
         if channel.startswith("@"):
-            return channel
+            target = channel[1:]
+            if _HUB_FORM_ID.fullmatch(target):
+                return channel
+            return "@" + self.blind(target, "agent")
         return self.blind(channel, "channel")
 
     def _aad(self, context: str) -> bytes:

@@ -260,6 +260,7 @@ def test_say_with_timing_hints_attaches_bootstrap_forecast(hub):
     # countdown — the countdown never crosses the wire.
     assert set(payload["timing_forecast"].keys()) == {
         "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+        "speak_p50", "speak_p95", "speak_p50_in_seconds", "speak_p95_in_seconds",
     }
     assert "now" in payload
 
@@ -268,10 +269,17 @@ def test_say_with_timing_hints_attaches_bootstrap_forecast(hub):
     # The message body seen by the receiver is unwrapped back to plain text,
     # and its forecast is the sparse wire form only.
     assert msg["body"] == "digging into the parser bug"
-    assert set(msg["timing_forecast"].keys()) == {"p50", "p95"}
+    # The receiver gets the shareable checkpoints only: the two look ones it
+    # always got, plus the speak pair — and none of the sender's relative
+    # countdowns, which mean nothing once the message has travelled.
+    assert set(msg["timing_forecast"].keys()) == {
+        "p50", "p95", "speak_p50", "speak_p95",
+    }
     assert msg["timing_forecast"] == {
         "p50": payload["timing_forecast"]["p50"],
         "p95": payload["timing_forecast"]["p95"],
+        "speak_p50": payload["timing_forecast"]["speak_p50"],
+        "speak_p95": payload["timing_forecast"]["speak_p95"],
     }
     assert "now" in inbox
 
@@ -357,8 +365,12 @@ def test_inbox_can_declare_the_next_stretch(hub):
     payload, _ = call(a1, "inbox", execution_class="research", effort="high")
     assert set(payload["timing_forecast"]) == {
         "p50", "p95", "p50_in_seconds", "p95_in_seconds",
+        "speak_p50", "speak_p95", "speak_p50_in_seconds", "speak_p95_in_seconds",
     }
-    assert a1.timing._pending("a1", a1.config.workspace) is not None
+    # One declaration opens a window per kind, and both must be outstanding.
+    from switchboard.timing import LOOK, SPEAK
+    for kind in (LOOK, SPEAK):
+        assert a1.timing._pending("a1", a1.config.workspace, kind) is not None
 
 
 def test_tools_list_offers_this_agents_own_top_classes(hub):

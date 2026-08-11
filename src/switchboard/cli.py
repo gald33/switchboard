@@ -34,6 +34,7 @@ from .timing import (
     TimingModel,
     declare_safely,
     note_look_safely,
+    note_speak_safely,
     sender_forecast,
     unwrap_body,
     wrap_body,
@@ -348,6 +349,9 @@ class _Timing:
     def note_look(self) -> None:
         note_look_safely(self.model, self.agent_id, self.workspace)
 
+    def note_speak(self) -> None:
+        note_speak_safely(self.model, self.agent_id, self.workspace)
+
     def declare(self) -> Forecast | None:
         return declare_safely(
             self.model, self.agent_id, self.workspace,
@@ -370,10 +374,23 @@ _split_forecast = unwrap_body
 
 
 def _forecast_line(fmt: Fmt, forecast: dict[str, Any], subject: str) -> str:
-    """One dim line describing when someone next expects to look."""
-    p50 = _until(forecast.get("p50"))
-    p95 = _until(forecast.get("p95"))
-    return fmt.dim(f"  {subject} looking again ~{p50} (p50), ~{p95} (p95)")
+    """One or two dim lines: when someone next expects to look, and — when
+    they predicted it — when they next expect to speak.
+
+    Kept as separate lines because they answer different questions. "When
+    will they see this?" is the look; "when will they reply?" is the speak,
+    and a peer trying to act at the same moment needs the second one.
+    """
+    line = fmt.dim(
+        f"  {subject} looking again ~{_until(forecast.get('p50'))} (p50), "
+        f"~{_until(forecast.get('p95'))} (p95)"
+    )
+    if forecast.get("speak_p50"):
+        line += "\n" + fmt.dim(
+            f"  {subject} speaking again ~{_until(forecast.get('speak_p50'))} (p50), "
+            f"~{_until(forecast.get('speak_p95'))} (p95)"
+        )
+    return line
 
 
 def _until(iso: Any) -> str:
@@ -805,7 +822,10 @@ def cmd_claims(args: argparse.Namespace) -> int:
 
 def cmd_say(args: argparse.Namespace) -> int:
     body = _read_body(args)
+    # Posting is the event a speak forecast predicts, so it closes that
+    # window before the next declaration opens a fresh one.
     timing = _Timing(args)
+    timing.note_speak()
     forecast = timing.declare()
     timing.close()
     with _make_client(args) as hub:
@@ -825,6 +845,7 @@ def cmd_say(args: argparse.Namespace) -> int:
 def cmd_dm(args: argparse.Namespace) -> int:
     body = _read_body(args)
     timing = _Timing(args)
+    timing.note_speak()
     forecast = timing.declare()
     timing.close()
     with _make_client(args) as hub:

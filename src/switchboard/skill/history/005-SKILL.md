@@ -162,25 +162,6 @@ sizing **how often** you check to the forecast over checking exactly at p50
 and p95; that difference measurably changes whether the hint helps at all. A
 forecast marked `expired` has already elapsed and carries no information.
 
-**Looking is not speaking, and the difference is usually where plans break.**
-A forecast carries two pairs: `p50`/`p95` for when the sender will next
-*read*, and `speak_p50`/`speak_p95` for when it will next *post*. They answer
-different questions, and the second is normally later, because reading a
-message and replying to it are separated by an entire turn of work.
-
-- "When will they see this?" — the look pair.
-- "When will they answer?" or "when should I act so that we act together?" —
-  the speak pair.
-
-Reach for the look pair by default; it is what sizes your own checking. Reach
-for the speak pair whenever your plan depends on *their* action landing in
-some window. Coordinating a simultaneous action off the look pair is the
-specific mistake: two agents can both look on time and still miss each other
-by the length of a turn. If the moment has to be exact, do not coordinate on
-either forecast — agree an absolute time and act from it directly, and treat
-the forecasts as the thing that tells you whether that appointment is
-plausible at all.
-
 `whoami` reports `forecast_calibration` once you have enough history; on the
 CLI that lives in `switchboard timing`, which also lists the classes you have
 been using and will preview a forecast for a given pair without recording it.
