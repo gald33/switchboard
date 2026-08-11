@@ -12,11 +12,13 @@ import pytest
 from switchboard.timing import (
     CLASS_HALF_LIFE_SECONDS,
     DEFAULT_CLASSES,
+    LOOK,
     MAX_OBSERVATION_SECONDS,
     MAX_OBSERVATIONS_PER_BUCKET,
     MIN_RECALIBRATION_SAMPLES,
     MIN_SAMPLES,
     RECALIBRATION_BOUNDS,
+    SPEAK,
     TimingModel,
 )
 
@@ -561,3 +563,74 @@ def test_calibration_breakdown_rejects_an_unknown_dimension():
     model = TimingModel(":memory:")
     with pytest.raises(ValueError):
         model.calibration_by("a", "ws", "hostname")
+
+
+# --- looking versus speaking -------------------------------------------------
+#
+# Reading and replying are separated by a whole model turn. Predicting only
+# the first is what made a ten-second rendezvous unwinnable by message-passing
+# in dogfooding: the forecast said when the peer would *look*, both agents
+# aimed at it, and the window closed in the gap before either acted.
+
+
+def test_looking_and_speaking_are_learned_separately(tmp_path):
+    """An agent that reads promptly and replies slowly must not end up with
+    one averaged distribution that describes neither."""
+    db = str(tmp_path / "timing.db")
+    model = TimingModel(db, runtime_id="run")
+    t = 0.0
+    for _ in range(MIN_SAMPLES + 1):
+        model.declare("a", "ws", "coding", "low", now=t)
+        model.note_look("a", "ws", now=t + 2.0)     # looks in 2s
+        model.note_speak("a", "ws", now=t + 40.0)   # speaks in 40s
+        t += 100.0
+
+    assert model._deltas("a", "ws", "coding", "low", LOOK) == [2.0] * (MIN_SAMPLES + 1)
+    assert model._deltas("a", "ws", "coding", "low", SPEAK) == [40.0] * (MIN_SAMPLES + 1)
+
+    looking = model.forecast("a", "ws", "coding", "low", now=t, kind=LOOK)
+    speaking = model.forecast("a", "ws", "coding", "low", now=t, kind=SPEAK)
+    assert looking.p50_seconds < 10 < speaking.p50_seconds
+    assert looking.source == speaking.source == "class+effort"
+
+
+def test_a_read_does_not_close_the_speak_window(tmp_path):
+    """The two windows are independent, or looking would silently score as
+    speaking and the gap this exists to measure would vanish."""
+    db = str(tmp_path / "timing.db")
+    model = TimingModel(db, runtime_id="run")
+    model.declare("a", "ws", "coding", "low", now=0.0)
+    model.note_look("a", "ws", now=5.0)
+
+    assert model._pending("a", "ws", LOOK) is None      # closed
+    assert model._pending("a", "ws", SPEAK) is not None  # still open
+    assert model._deltas("a", "ws", "coding", "low", SPEAK) == []
+
+    model.note_speak("a", "ws", now=60.0)
+    assert model._deltas("a", "ws", "coding", "low", SPEAK) == [60.0]
+
+
+def test_one_declaration_carries_both_estimates(tmp_path):
+    """What a peer receives: the look pair it always got, and the speak pair
+    attached to the same declaration."""
+    model = TimingModel(str(tmp_path / "timing.db"), runtime_id="run")
+    forecast = model.declare("a", "ws", "coding", "low", now=0.0)
+    assert forecast.kind == LOOK
+    assert forecast.speak is not None and forecast.speak.kind == SPEAK
+    assert set(forecast.as_message_meta()) == {"p50", "p95", "speak_p50", "speak_p95"}
+
+
+def test_history_written_before_speaking_was_predicted_still_reads_as_looks(tmp_path):
+    """The `kind` column defaults to 'look' because that is what every
+    pre-existing row actually timed — the default is a fact about old data,
+    not a placeholder."""
+    db = str(tmp_path / "timing.db")
+    model = TimingModel(db, runtime_id="run")
+    model._connection().execute(
+        "INSERT INTO observations (agent_id, workspace, execution_class, effort,"
+        " delta_seconds, observed_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("a", "ws", "coding", "low", 12.0, 1.0),
+    )
+    model._connection().commit()
+    assert model._deltas("a", "ws", "coding", "low", LOOK) == [12.0]
+    assert model._deltas("a", "ws", "coding", "low", SPEAK) == []

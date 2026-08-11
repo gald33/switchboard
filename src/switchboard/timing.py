@@ -3,13 +3,15 @@
 This is infrastructure, not a scheduler. It never decides when an agent is
 allowed to act and a forecast is never a commitment.
 
-What is being predicted, precisely: **when this agent will next come and
-look for messages.** It is not an estimate of when a task will finish, nor
-of when the agent will next post. The question a collaborator actually has
-is "if I leave this here, when will they see it?", and that is answered by
-the agent's next *read* of its inbox. So the semantic classification
-describes the work about to be done only insofar as that work determines
-how long the agent will be heads-down before looking up again.
+What is being predicted, precisely: **when this agent will next look for
+messages, and when it will next post one.** Neither is an estimate of when a
+task will finish. They are separate questions with separate histories,
+because reading and replying are separated by a whole model turn: "if I
+leave this here, when will they *see* it?" is answered by the next read,
+while "when will they answer?" or "when will they act at the same moment as
+me?" is answered by the next post. Predicting only the first is what made a
+ten-second rendezvous unwinnable by message-passing — the window closed in
+the gap between looking and acting.
 
 Design boundary (see docs/adaptive-timing.md for the full writeup):
 
@@ -132,6 +134,17 @@ def _iso(epoch_seconds: float) -> str:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
+#: The two events a declaration predicts. They are genuinely different
+#: questions and an agent answers them at different times: LOOK is when it
+#: next reads its inbox, SPEAK is when it next posts. Between the two sits a
+#: whole model turn, which is why one cannot stand in for the other — a peer
+#: trying to arrive at the same moment as you needs SPEAK, and a peer deciding
+#: how long to keep waiting needs LOOK.
+LOOK = "look"
+SPEAK = "speak"
+KINDS = (LOOK, SPEAK)
+
+
 @dataclass
 class Forecast:
     p50_seconds: float
@@ -144,13 +157,29 @@ class Forecast:
     raw_p50_seconds: float | None = None
     raw_p95_seconds: float | None = None
     correction: tuple[float, float] = (1.0, 1.0)
+    #: Which of the two events above this estimates.
+    kind: str = LOOK
+    #: When this is a LOOK forecast, the SPEAK estimate made from the same
+    #: declaration. Held rather than flattened so one object still travels
+    #: through the wire helpers, and so a caller that only knows about looking
+    #: keeps reading exactly the fields it always did.
+    speak: Forecast | None = None
 
     def as_message_meta(self) -> dict[str, str]:
-        """The sparse, shareable summary. No internals leak past this."""
-        return {
+        """The sparse, shareable summary. No internals leak past this.
+
+        `p50`/`p95` keep meaning "when I will next look", unchanged, so a
+        reader written before speaking was predicted still reads correctly.
+        The speak checkpoints are additional keys rather than a reshaping.
+        """
+        meta = {
             "p50": _iso(self.now + self.p50_seconds),
             "p95": _iso(self.now + self.p95_seconds),
         }
+        if self.speak is not None:
+            meta["speak_p50"] = _iso(self.speak.now + self.speak.p50_seconds)
+            meta["speak_p95"] = _iso(self.speak.now + self.speak.p95_seconds)
+        return meta
 
 
 # --- the wire contract, shared by both surfaces -----------------------------
@@ -176,11 +205,15 @@ def sender_forecast(forecast: Forecast) -> dict[str, Any]:
     this exact moment, so a countdown is more use than two timestamps it would
     have to difference itself.
     """
-    return {
+    out = {
         **forecast.as_message_meta(),
         "p50_in_seconds": round(forecast.p50_seconds),
         "p95_in_seconds": round(forecast.p95_seconds),
     }
+    if forecast.speak is not None:
+        out["speak_p50_in_seconds"] = round(forecast.speak.p50_seconds)
+        out["speak_p95_in_seconds"] = round(forecast.speak.p95_seconds)
+    return out
 
 
 def wrap_body(text: Any, forecast: Forecast | None) -> Any:
@@ -223,13 +256,23 @@ def declare_safely(model: TimingModel | None, agent_id: str, workspace: str,
 
 
 def note_look_safely(model: TimingModel | None, agent_id: str, workspace: str) -> None:
-    """Close the open window: the agent read its inbox, which is the one event
-    every forecast predicts. Never raises, same reasoning as `declare_safely`.
+    """Close the look window: the agent read its inbox. Never raises, same
+    reasoning as `declare_safely`.
     """
     if model is None:
         return
     try:
         model.note_look(agent_id, workspace)
+    except Exception:
+        pass
+
+
+def note_speak_safely(model: TimingModel | None, agent_id: str, workspace: str) -> None:
+    """Close the speak window: the agent posted a message. Never raises."""
+    if model is None:
+        return
+    try:
+        model.note_speak(agent_id, workspace)
     except Exception:
         pass
 
@@ -288,14 +331,21 @@ class TimingModel:
                     -- error against an already-corrected number and then
                     -- correcting again is a feedback loop.
                     raw_p50         REAL,
-                    raw_p95         REAL
+                    raw_p95         REAL,
+                    -- Which event this observation timed: 'look' or 'speak'.
+                    -- Defaulted rather than backfilled, because every row
+                    -- written before speaking was predicted timed a look —
+                    -- so the default is the truth about old data, not a
+                    -- placeholder.
+                    kind            TEXT NOT NULL DEFAULT 'look'
                 );
                 CREATE INDEX IF NOT EXISTS idx_observations_lookup
-                    ON observations(agent_id, workspace, execution_class, effort);
+                    ON observations(agent_id, workspace, execution_class, effort, kind);
 
                 CREATE TABLE IF NOT EXISTS pending (
                     agent_id        TEXT NOT NULL,
                     workspace       TEXT NOT NULL,
+                    kind            TEXT NOT NULL DEFAULT 'look',
                     execution_class TEXT NOT NULL,
                     effort          TEXT NOT NULL,
                     since           REAL NOT NULL,
@@ -305,7 +355,7 @@ class TimingModel:
                     raw_p50         REAL,
                     raw_p95         REAL,
                     runtime         TEXT,
-                    PRIMARY KEY (agent_id, workspace)
+                    PRIMARY KEY (agent_id, workspace, kind)
                 );
 
                 -- Observations the ceiling rejected. Kept as counts so the
@@ -356,16 +406,44 @@ class TimingModel:
         wanted = {
             "observations": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
                               ("predicted_from", "TEXT"), ("raw_p50", "REAL"),
-                              ("raw_p95", "REAL")),
-            "pending": (("predicted_p50", "REAL"), ("predicted_p95", "REAL"),
-                         ("predicted_from", "TEXT"), ("raw_p50", "REAL"),
-                         ("raw_p95", "REAL"), ("runtime", "TEXT")),
+                              ("raw_p95", "REAL"),
+                              ("kind", "TEXT NOT NULL DEFAULT 'look'")),
         }
         for table, columns in wanted.items():
             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             for column, decl in columns:
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+        # `pending` gained `kind` in its PRIMARY KEY, which ALTER TABLE cannot
+        # express — an agent now has one open window per kind rather than one
+        # overall. Rebuilt rather than migrated: a pending row is a window
+        # that has not closed yet, at most one per agent, and dropping it
+        # costs a single observation. Carrying them over would mean guessing
+        # which kind each belonged to, and guessing wrong teaches the model a
+        # gap that never happened.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(pending)")}
+        if columns and "kind" not in columns:
+            conn.execute("DROP TABLE pending")
+            conn.execute(
+                """
+                CREATE TABLE pending (
+                    agent_id        TEXT NOT NULL,
+                    workspace       TEXT NOT NULL,
+                    kind            TEXT NOT NULL DEFAULT 'look',
+                    execution_class TEXT NOT NULL,
+                    effort          TEXT NOT NULL,
+                    since           REAL NOT NULL,
+                    predicted_p50   REAL,
+                    predicted_p95   REAL,
+                    predicted_from  TEXT,
+                    raw_p50         REAL,
+                    raw_p95         REAL,
+                    runtime         TEXT,
+                    PRIMARY KEY (agent_id, workspace, kind)
+                )
+                """
+            )
 
     def close(self) -> None:
         if self._conn is not None:
@@ -390,7 +468,8 @@ class TimingModel:
     def _record(self, agent_id: str, workspace: str, execution_class: str,
                 effort: str, delta_seconds: float, now: float,
                 predicted: tuple[float | None, float | None, str | None],
-                raw: tuple[float | None, float | None] = (None, None)) -> None:
+                raw: tuple[float | None, float | None] = (None, None),
+                kind: str = LOOK) -> None:
         conn = self._connection()
         if not (0 < delta_seconds <= MAX_OBSERVATION_SECONDS):
             conn.execute(
@@ -405,50 +484,58 @@ class TimingModel:
         conn.execute(
             "INSERT INTO observations "
             "(agent_id, workspace, execution_class, effort, delta_seconds, observed_at, "
-            " predicted_p50, predicted_p95, predicted_from, raw_p50, raw_p95) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " predicted_p50, predicted_p95, predicted_from, raw_p50, raw_p95, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (agent_id, workspace, execution_class, effort, delta_seconds, now,
-             *predicted, *raw),
+             *predicted, *raw, kind),
         )
         # Keep the bucket to a moving window. Deleting by id keeps the most
         # recent rows, so the distribution tracks how this agent behaves now
-        # rather than averaging over everything it has ever done.
+        # rather than averaging over everything it has ever done. Bucketed by
+        # kind too, so a chatty agent's speak history cannot evict its look
+        # history or the other way round.
         conn.execute(
             "DELETE FROM observations WHERE id IN ("
             "  SELECT id FROM observations"
             "  WHERE agent_id = ? AND workspace = ? AND execution_class = ? AND effort = ?"
+            "        AND kind = ?"
             "  ORDER BY id DESC LIMIT -1 OFFSET ?)",
-            (agent_id, workspace, execution_class, effort, MAX_OBSERVATIONS_PER_BUCKET),
+            (agent_id, workspace, execution_class, effort, kind,
+             MAX_OBSERVATIONS_PER_BUCKET),
         )
         conn.commit()
 
-    def _pending(self, agent_id: str, workspace: str) -> tuple | None:
+    def _pending(self, agent_id: str, workspace: str, kind: str = LOOK) -> tuple | None:
         return self._connection().execute(
             "SELECT execution_class, effort, since, predicted_p50, predicted_p95, "
             "predicted_from, runtime, raw_p50, raw_p95 FROM pending "
-            "WHERE agent_id = ? AND workspace = ?",
-            (agent_id, workspace),
+            "WHERE agent_id = ? AND workspace = ? AND kind = ?",
+            (agent_id, workspace, kind),
         ).fetchone()
 
-    def _clear_pending(self, agent_id: str, workspace: str) -> None:
+    def _clear_pending(self, agent_id: str, workspace: str, kind: str = LOOK) -> None:
         conn = self._connection()
         conn.execute(
-            "DELETE FROM pending WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+            "DELETE FROM pending WHERE agent_id = ? AND workspace = ? AND kind = ?",
+            (agent_id, workspace, kind),
         )
         conn.commit()
 
     def _set_pending(self, agent_id: str, workspace: str, execution_class: str | None,
-                      effort: str | None, now: float, forecast: Forecast | None) -> None:
+                      effort: str | None, now: float, forecast: Forecast | None,
+                      kind: str = LOOK) -> None:
         conn = self._connection()
         conn.execute(
-            "DELETE FROM pending WHERE agent_id = ? AND workspace = ?", (agent_id, workspace),
+            "DELETE FROM pending WHERE agent_id = ? AND workspace = ? AND kind = ?",
+            (agent_id, workspace, kind),
         )
         if execution_class or effort:
             conn.execute(
-                "INSERT INTO pending (agent_id, workspace, execution_class, effort, since, "
+                "INSERT INTO pending (agent_id, workspace, kind, execution_class, effort, since, "
                 "predicted_p50, predicted_p95, predicted_from, runtime, raw_p50, raw_p95) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (agent_id, workspace, execution_class or "unspecified", effort or "medium", now,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (agent_id, workspace, kind,
+                 execution_class or "unspecified", effort or "medium", now,
                  forecast.p50_seconds if forecast else None,
                  forecast.p95_seconds if forecast else None,
                  forecast.source if forecast else None,
@@ -460,27 +547,48 @@ class TimingModel:
 
     def note_look(self, agent_id: str, workspace: str,
                   now: float | None = None) -> None:
-        """Record that the agent just checked for messages.
+        """Record that the agent just read its inbox.
 
-        This is the event the whole feature predicts. A collaborator asking
-        "when will they see what I sent?" is asking when this agent next
-        *reads its inbox* — not when it next posts. So the only things that
-        close an open window are the tools that actually read: ``inbox``
-        and ``checkin``. Posting a message (``say``/``dm``) does not,
-        because an agent can talk without ever looking.
+        A collaborator asking "when will they *see* what I sent?" is asking
+        this. Only the tools that actually read close this window — ``inbox``
+        and ``checkin``; posting does not, because an agent can talk without
+        ever looking.
+        """
+        self._close_window(agent_id, workspace, LOOK, now)
 
-        Closes the open window, recording how long the agent's last
-        declaration actually took to be followed by a look. A no-op when no
-        declaration is outstanding — an unforecast look is not an
-        observation of anything.
+    def note_speak(self, agent_id: str, workspace: str,
+                   now: float | None = None) -> None:
+        """Record that the agent just posted a message.
+
+        The other half of the question, and a different one. Reading and
+        replying are separated by an entire model turn, so an agent that
+        looks in five seconds may not speak for another thirty — and a peer
+        trying to *arrive at the same moment* needs the second number, not
+        the first. Predicting only looks is what made a ten-second
+        rendezvous unwinnable by message-passing: the forecast answered when
+        they would look, and the window closed in the gap before they acted.
+
+        Closed by ``say`` and ``dm``. Reading does not close it.
+        """
+        self._close_window(agent_id, workspace, SPEAK, now)
+
+    def _close_window(self, agent_id: str, workspace: str, kind: str,
+                      now: float | None = None) -> None:
+        """Close one open window, recording how long the agent's last
+        declaration actually took to be followed by that event.
+
+        A no-op when no declaration is outstanding — an unforecast event is
+        not an observation of anything. One implementation for both kinds:
+        the runtime-mismatch rule below is subtle enough that a second copy
+        would be a place for the two to drift apart.
         """
         now = _now() if now is None else now
-        prior = self._pending(agent_id, workspace)
+        prior = self._pending(agent_id, workspace, kind)
         if prior is None:
             return
         if prior[6] != self._runtime_id:
             # Left behind by a previous run: the agent crashed or the
-            # session ended between declaring and looking. The gap measures
+            # session ended between declaring and acting. The gap measures
             # downtime, not behaviour, and a restart shortly after a
             # declaration yields a plausible-looking value the outlier
             # ceiling cannot catch. Drop it rather than learn from it.
@@ -491,11 +599,11 @@ class TimingModel:
             # count that never moved.
             self._record_abandoned(
                 agent_id, workspace, prior[0], prior[1], now - prior[2])
-            self._clear_pending(agent_id, workspace)
+            self._clear_pending(agent_id, workspace, kind)
             return
         self._record(agent_id, workspace, prior[0], prior[1], now - prior[2], now,
-                      (prior[3], prior[4], prior[5]), (prior[7], prior[8]))
-        self._clear_pending(agent_id, workspace)
+                      (prior[3], prior[4], prior[5]), (prior[7], prior[8]), kind)
+        self._clear_pending(agent_id, workspace, kind)
 
     def declare(
         self, agent_id: str, workspace: str,
@@ -503,27 +611,41 @@ class TimingModel:
         now: float | None = None,
     ) -> Forecast | None:
         """Open a forecast window: "here is the work I am about to do, so
-        here is when I expect to next come looking for messages."
+        here is when I expect to next look for messages, and when I expect
+        to next say something."
+
+        One declaration, two windows. The same judgment predicts both events
+        and they are closed independently — by a read and by a post — so an
+        agent that reads promptly but replies slowly learns two different
+        distributions rather than one averaged, misleading one.
 
         Returns None when nothing was declared. A new declaration replaces
         any outstanding one without recording an observation — the agent
-        revised its estimate before the look happened, so the superseded
+        revised its estimate before the event happened, so the superseded
         prediction was never actually tested and must not count against
         calibration.
         """
         if not (execution_class or effort):
             return None
         now = _now() if now is None else now
-        forecast = self.forecast(agent_id, workspace, execution_class, effort, now=now)
-        self._set_pending(agent_id, workspace, execution_class, effort, now, forecast)
-        return forecast
+        looking = self.forecast(agent_id, workspace, execution_class, effort,
+                                now=now, kind=LOOK)
+        speaking = self.forecast(agent_id, workspace, execution_class, effort,
+                                 now=now, kind=SPEAK)
+        looking.speak = speaking
+        self._set_pending(agent_id, workspace, execution_class, effort, now,
+                          looking, LOOK)
+        self._set_pending(agent_id, workspace, execution_class, effort, now,
+                          speaking, SPEAK)
+        return looking
 
     # --- estimation --------------------------------------------------------
 
     def _samples(self, agent_id: str, workspace: str,
-                 execution_class: str | None, effort: str | None) -> list[float]:
-        clauses = ["agent_id = ?", "workspace = ?"]
-        params: list[object] = [agent_id, workspace]
+                 execution_class: str | None, effort: str | None,
+                 kind: str = LOOK) -> list[float]:
+        clauses = ["agent_id = ?", "workspace = ?", "kind = ?"]
+        params: list[object] = [agent_id, workspace, kind]
         if execution_class is not None:
             clauses.append("execution_class = ?")
             params.append(execution_class)
@@ -538,10 +660,11 @@ class TimingModel:
         return [(r[0], r[1]) for r in rows]
 
     def _deltas(self, agent_id: str, workspace: str,
-                execution_class: str | None, effort: str | None) -> list[float]:
+                execution_class: str | None, effort: str | None,
+                kind: str = LOOK) -> list[float]:
         """Just the durations, without their timestamps."""
         return [v for v, _ in self._samples(
-            agent_id, workspace, execution_class, effort)]
+            agent_id, workspace, execution_class, effort, kind)]
 
     @staticmethod
     def _weighted_quantile(pairs: list[tuple[float, float]], q: float,
@@ -610,9 +733,10 @@ class TimingModel:
 
     def _estimate(self, agent_id: str, workspace: str,
                    execution_class: str | None, effort: str | None,
-                   source: str, effort_for_prior: str | None, now: float
+                   source: str, effort_for_prior: str | None, now: float,
+                   kind: str = LOOK
                    ) -> tuple[float, float, str, int] | None:
-        values = self._samples(agent_id, workspace, execution_class, effort)
+        values = self._samples(agent_id, workspace, execution_class, effort, kind)
         if len(values) < MIN_SAMPLES:
             return None
         n = len(values)
@@ -640,9 +764,9 @@ class TimingModel:
     def forecast(
         self, agent_id: str, workspace: str,
         execution_class: str | None, effort: str | None,
-        now: float | None = None,
+        now: float | None = None, kind: str = LOOK,
     ) -> Forecast:
-        """Estimate (p50, p95) seconds until this agent's next check-in.
+        """Estimate (p50, p95) seconds until this agent's next look or speak.
 
         Falls back through a hierarchy from the most specific bucket this
         agent has enough history for, down to a fixed bootstrap prior:
@@ -661,13 +785,17 @@ class TimingModel:
         candidates.append((None, None, "agent-wide"))
 
         for cls, eff, source in candidates:
-            result = self._estimate(agent_id, workspace, cls, eff, source, effort, now)
+            result = self._estimate(agent_id, workspace, cls, eff, source, effort, now, kind)
             if result is not None:
                 p50, p95, source, n = result
-                return self._corrected(agent_id, workspace, p50, p95, now, source, n)
+                out = self._corrected(agent_id, workspace, p50, p95, now, source, n)
+                out.kind = kind
+                return out
 
         p50, p95 = _BOOTSTRAP_SECONDS.get(effort or "", _DEFAULT_BOOTSTRAP)
-        return self._corrected(agent_id, workspace, p50, p95, now, "bootstrap", 0)
+        out = self._corrected(agent_id, workspace, p50, p95, now, "bootstrap", 0)
+        out.kind = kind
+        return out
 
     # --- self-correction ---------------------------------------------------
 
