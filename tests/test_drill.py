@@ -97,7 +97,37 @@ def test_claude_workers_carry_the_protocol_in_their_prompt():
     assert drill.brief_key("r2") in prompt        # told to read the brief
     assert drill.result_prefix("r2") in prompt    # told where to report
     assert drill.channel_for("r2") in prompt      # told where to speak
-    assert argv[3:] == ["--model", "sonnet"]
+    assert argv[3:] == ["--allowedTools", drill.CLAUDE_WORKER_TOOLS,
+                        "--model", "sonnet"]
+
+
+def test_claude_workers_may_use_the_hub_without_being_asked():
+    """A worker that has to ask permission is a worker that reports nothing.
+
+    `claude -p` is non-interactive, so an un-preapproved tool call blocks
+    forever and the worker exits having done nothing at all.
+    """
+    brief = drill.Brief(run_id="r2b", task="t")
+    argv = drill.build_workers(brief, count=1, kind="claude")[0].argv
+    assert "--allowedTools" in argv
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "Bash(switchboard:*)" in allowed
+    assert "git" not in allowed  # the prompt says don't commit; this enforces it
+
+
+def test_the_prompt_names_the_exact_key_the_observer_reads():
+    """The one place a worker and its coordinator have to agree.
+
+    Results are fetched by exact key, so a prompt that told the worker to
+    derive the key itself — from `whoami`, whose agent_id is blinded on a
+    sealed workspace — would land the write somewhere the observer never
+    looks, and every worker would be reported silent despite doing the work.
+    """
+    brief = drill.Brief(run_id="r2c", task="t")
+    worker = drill.build_workers(brief, count=1, kind="claude")[0]
+    expected = f"{drill.result_prefix('r2c')}{worker.agent_id}"
+    assert expected in worker.argv[2]
+    assert "whoami" not in worker.argv[2]
 
 
 def test_custom_workers_require_a_command():
