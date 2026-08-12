@@ -1294,9 +1294,17 @@ def cmd_drill(args: argparse.Namespace) -> int:
         kind = "claude" if drill.claude_available() else "builtin"
     else:
         kind = args.worker_kind
-    if kind == "claude" and not drill.claude_available():
+    if kind in ("claude", "claude-mcp") and not drill.claude_available():
         print("no `claude` on PATH — use --worker builtin, or install Claude Code",
               file=sys.stderr)
+        return EXIT_ERROR
+    if kind == "claude-mcp" and not drill.mcp_server_available():
+        # Its own check, and its own message: `claude` being present says
+        # nothing about whether the MCP server this kind depends on can
+        # start, and a worker whose server never starts has no hub tools at
+        # all — which arrives as a silent run rather than as an error.
+        print("no `switchboard-mcp` on PATH — install the package that provides it, "
+              "or use --worker claude", file=sys.stderr)
         return EXIT_ERROR
     if kind == "custom" and not args.worker_cmd:
         print("--worker custom needs --worker-cmd", file=sys.stderr)
@@ -1339,11 +1347,10 @@ def _print_drill_report(fmt: Fmt, report: dict[str, Any]) -> None:
     print(fmt.bold(f"\n{'WORKER':<8} {'VERDICT':<9} {'ANNOUNCE':<10} "
                    f"{'RESULT':<9} {'MSGS':<5} SUMMARY"))
     for worker in report["workers"]:
-        if worker["reported"]:
-            verdict = "passed" if worker["ok"] else "failed"
-        else:
-            verdict = "silent"
-        painted = {"passed": fmt.green, "failed": fmt.red, "silent": fmt.yellow}[verdict](verdict)
+        verdict = worker["verdict"]
+        paint = {"passed": fmt.green, "failed": fmt.red,
+                 "silent": fmt.yellow, "no-report": fmt.yellow}[verdict]
+        painted = paint(verdict)
         print(
             f"{worker['slot']:<8} {painted:<9} "
             f"{_secs(worker['announced_s']):<10} {_secs(worker['result_s']):<9} "
@@ -1354,10 +1361,18 @@ def _print_drill_report(fmt: Fmt, report: dict[str, Any]) -> None:
             print(f"         {mark} {check.get('name', '?')}: {check.get('detail', '')}")
     telemetry = report["telemetry"]
     latency = telemetry["announce_latency_s"]
-    print(fmt.dim(
-        f"\n{counts['workers']} worker(s): {counts['passed']} passed, "
-        f"{counts['failed']} failed, {counts['silent']} silent"
-    ))
+    tally = (f"\n{counts['workers']} worker(s): {counts['passed']} passed, "
+             f"{counts['failed']} failed, {counts['silent']} silent")
+    # Only when it happened. On the overwhelmingly common path this is zero,
+    # and a column of zeroes is how a line stops being read.
+    if counts.get("no_report"):
+        tally += f", {counts['no_report']} no-report"
+    print(fmt.dim(tally))
+    if counts.get("no_report"):
+        print(fmt.yellow(
+            "no-report: the hub carried these workers' presence or messages, so "
+            "coordination worked — look at the task, or at the result key they wrote to"
+        ))
     print(fmt.dim(
         f"announce latency  min {_secs(latency['min'])}  mean {_secs(latency['mean'])}  "
         f"max {_secs(latency['max'])}   channel messages {telemetry['channel_messages']}  "
@@ -3172,12 +3187,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--agents", type=int, default=drill.DEFAULT_AGENTS,
                    help=f"how many workers (default {drill.DEFAULT_AGENTS})")
     p.add_argument("--worker", dest="worker_kind", default="auto",
-                   choices=["auto", "claude", "builtin", "custom"],
+                   choices=["auto", "claude", "claude-mcp", "builtin", "custom"],
                    help="auto: real `claude` sessions when available, else the "
-                        "scripted builtin worker")
+                        "scripted builtin worker. claude-mcp: real sessions that "
+                        "reach the hub through the MCP server instead of the CLI")
     p.add_argument("--worker-cmd", help="command for --worker custom; "
                                         "{slot} and {run_id} are substituted")
-    p.add_argument("--model", help="model for --worker claude")
+    p.add_argument("--model", help="model for --worker claude and claude-mcp")
     p.add_argument("--verify", help="shell command each worker runs and reports on, "
                                     "e.g. 'pytest -q'")
     p.add_argument("--timeout", type=float, default=drill.DEFAULT_TIMEOUT,
