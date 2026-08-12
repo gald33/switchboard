@@ -52,6 +52,19 @@ jobs:
           assert c.WorkspaceCipher.from_key(c.generate_key(), "w") is not None
           PY
       - run: switchboard --version
+      - name: the test harness imports without the server extra
+        # `switchboard.testing` needs fastapi to *run* a hub, and says so. But
+        # importing it must not need one, or a conftest that imports it breaks
+        # collection for every client-only install — including the ones whose
+        # tests never call `hub()`. Its framework imports are deliberately
+        # inside the functions that use them; this is what keeps them there.
+        run: |
+          python - <<'PY'
+          import importlib.util as u
+          import switchboard.testing as t
+          assert t.Clock().advance(60) == t.EPOCH + 60
+          assert not u.find_spec("fastapi"), "importing the harness pulled in the server extra"
+          PY
       - name: the MCP bridge must answer initialize with no hub running
         run: |
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
