@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 import time
-from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -27,6 +26,7 @@ from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig, machine_suffix
 from .crypto import CryptoError, generate_key
+from .guidance import SKILL_NAME, skill_history, skill_text
 from .timing import (
     EFFORT_LEVELS,
     MIN_SAMPLES,
@@ -597,6 +597,28 @@ def cmd_rooms(args: argparse.Namespace) -> int:
         print()
         print(fmt.yellow("Note: ") + problem)
     return EXIT_OK if selected else EXIT_ERROR
+
+
+def cmd_help(args: argparse.Namespace) -> int:
+    """Print the coordination protocol.
+
+    `--help` describes the commands; this describes the *convention* — when to
+    claim, what a forecast means, where a handoff goes. An agent that has the
+    CLI but no installed skill has no other way to reach it, and that is the
+    common case rather than the odd one: a repo nobody ran `init` in, a
+    harness with no skill mechanism, a session that has hit something
+    confusing and needs the convention now.
+
+    Deliberately touches neither the hub nor the network. It is most useful
+    exactly when something is wrong, which is the worst moment to require a
+    working connection to read the instructions.
+    """
+    text = skill_text()
+    if args.json:
+        print(json.dumps({"skill": _SKILL_NAME, "text": text}, indent=2))
+    else:
+        print(text, end="" if text.endswith("\n") else "\n")
+    return EXIT_OK
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
@@ -2114,39 +2136,14 @@ def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], boo
     return _init_local_setting(directory, "SWITCHBOARD_KEY", key, force=force)
 
 
-_SKILL_NAME = "switchboard-coordinate"
+_SKILL_NAME = SKILL_NAME
 
-def _skill_history() -> list[str]:
-    """Every SKILL.md `init` has ever installed, oldest first, excluding the
-    current one — the skill's equivalent of the two history lists above.
-
-    Kept as files rather than string literals because the skill is a few
-    hundred lines of prose: a past revision is copied out of git verbatim
-    (`git show <rev>:...SKILL.md > history/00N-SKILL.md`), so it cannot drift
-    from what actually shipped the way a retyped literal can. Ordering is by
-    filename, which is why they are zero-padded.
-
-    Revisions 001 and 002 were backfilled rather than recorded as they
-    shipped, so a repo initialised before this existed would have had its
-    SKILL.md read as hand-edited and left frozen at whatever `init` wrote.
-    """
-    directory = resources.files("switchboard").joinpath("skill", "history")
-    return [
-        f.read_text(encoding="utf-8")
-        for f in sorted(directory.iterdir(), key=lambda f: f.name)
-        if f.name.endswith(".md")
-    ]
-
-
-def _skill_source() -> str:
-    """The packaged skill content — the single source `init` installs from
-    and `docs/claude-code.md`/`docs/codex-cli.md` link to, so there is only
-    ever one copy of this protocol to drift out of sync."""
-    return (
-        resources.files("switchboard")
-        .joinpath("skill", _SKILL_NAME, "SKILL.md")
-        .read_text(encoding="utf-8")
-    )
+# The skill's equivalent of the two hook-command history lists above. Both
+# accessors live in `guidance.py` because `help` and the MCP bridge serve the
+# same text and must not import the CLI to read a file; these names stay as
+# the spelling the init code and its tests already use.
+_skill_history = skill_history
+_skill_source = skill_text
 
 
 def _init_skill(
@@ -2756,6 +2753,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dir", help="target repo directory (default: current directory)")
     p.set_defaults(func=cmd_rooms)
+
+    p = sub.add_parser(
+        "help",
+        help="print the coordination protocol — how to work alongside other agents",
+        description="Print the switchboard-coordinate protocol: when to claim, how "
+                    "handoffs are addressed, what a timing forecast does and does not "
+                    "promise. `--help` covers the commands; this covers the convention "
+                    "they are meant to implement. Reads the copy packaged with this "
+                    "install and never touches the hub, so it works before setup and "
+                    "when the hub is unreachable.",
+    )
+    p.set_defaults(func=cmd_help)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
     p.add_argument(
