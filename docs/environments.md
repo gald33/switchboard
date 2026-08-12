@@ -149,8 +149,8 @@ normally makes automatic becomes something the model has to remember, via
 
 ## What the default workspace name means
 
-Two different questions live here, and conflating them is easy. `init` picks a
-name to *write down*. The client picks one when it finds nothing written.
+Two different questions live here. `init` picks a name to *write down*. The
+client picks one when it finds nothing written.
 
 **What `init` writes into `.mcp.json`:**
 
@@ -160,16 +160,40 @@ name to *write down*. The client picks one when it finds nothing written.
 | repo with no remote | `<directory>-<tag>` |
 | `--new-key` | `w_<opaque>`, replacing whichever of the above applied |
 
-The remote case is the good one, and the reason a laptop, a cloud session and
-a CI runner agree for free: every clone derives the same name from the same
-remote. A readable name is fine here because you chose it — you saw it printed,
-and it goes into a committed file that every clone reads.
+A readable name is right here because you chose it: you saw it printed, and it
+goes into a committed file every clone reads rather than derives. Wherever that
+file exists it wins, and nothing below applies.
 
-**What the client falls back to when nothing is set** — no `.mcp.json`, no
-`SWITCHBOARD_WORKSPACE`, `init` never run — is always `default-<tag>`, and
-never the git remote. A name nobody chose has to be unguessable: on a shared
-hub, `acme/payments` is a room a stranger can walk into just by knowing where
-you work. `init` is how you opt into a readable name deliberately.
+**What a client falls back to when nothing is written** — no `.mcp.json`, no
+`SWITCHBOARD_WORKSPACE`, `init` never run:
+
+| Situation | Name |
+|---|---|
+| repo with a remote and at least one commit | `w_<hash of org/repo + root commit>` |
+| anything else | `default-<tag>`, scoped to this machine and checkout |
+
+The hashed case has to satisfy two constraints at once, and either alone would
+be a bad default. It must be **identical in every clone**, or the thing it is a
+default *for* never happens — a laptop, a cloud session and a CI runner on one
+repo have to meet without anybody configuring anything. And it must be
+**unguessable**, because a name nobody chose is a room its occupants never
+agreed to be findable in; a plain `org/repo` would let anyone who knows where
+you work walk in.
+
+Salting the repo's identity with its root commit gives both. The root commit is
+the same in every clone, so agents agree; and it cannot be obtained without
+read access to the repo, so knowing the repo's *name* is not enough to derive
+the room. Finding it means walking history, so the answer is cached under
+`.git` — per clone, never committed, and never stale, since a history's root
+cannot change.
+
+With no remote, or no commit to salt with, there is no cross-machine matching
+on offer anyway, and an unsalted name is not worth having instead — so it falls
+back to the machine-scoped tag.
+
+Set `SWITCHBOARD_KEY` (as `init` does by default) and the question is moot in
+either direction: the workspace is blinded before it leaves your machine and
+the hub never sees a name at all. See [Encryption](encryption.md).
 
 The `<tag>` is eight hex characters, hashed from the machine plus the checkout
 root — so two unrelated directories both called `api`, or simply two different
@@ -180,10 +204,15 @@ hand over.
 
 The root is the enclosing checkout, not the working directory, so two terminals
 in different subdirectories of one project still meet with no configuration.
-A git worktree counts as its own checkout and gets its own room. Two agents on
-*different* machines deliberately do not match — anything coordinating across a
-network should be naming its workspace on purpose, and a name nobody chose
-silently matching is not a property worth relying on.
+Without a remote, agents on *different* machines deliberately do not match:
+there is nothing shared to derive from, and a bare directory name that happens
+to collide is not a room anyone chose.
+
+Worktrees follow the repo. A worktree's `.git` is a file pointing at the
+gitdir, which names the common dir the remote lives in — so every worktree of
+one repo derives one workspace, which is what you want from agents working the
+same repo a branch each. With no remote to follow, a worktree falls back to its
+own path-scoped tag and gets its own room.
 
 To hide the name from the hub entirely rather than merely disambiguate it, use
 `switchboard init --new-key`, which replaces it with an opaque one. See
@@ -207,3 +236,42 @@ An agent pointed at the wrong *workspace* does not even show up in the same
 listing — if two agents you expect to see each other are each alone in
 `switchboard agents`, compare their `SWITCHBOARD_WORKSPACE` before anything
 else.
+
+### The three ways an agent ends up alone
+
+They look identical from the inside — an empty roster, a quiet inbox, every
+command exiting 0 — and they have different causes:
+
+| What is wrong | What you see | What to compare |
+| --- | --- | --- |
+| Different workspace | you are alone; peers are alone too | `SWITCHBOARD_WORKSPACE` |
+| Different key, same workspace | peers appear, names will not open | `SWITCHBOARD_KEY` |
+| Different hub | you are alone; peers never appear | `SWITCHBOARD_URL` |
+
+The last one is the quietest, because a hub on `127.0.0.1` really is running,
+really is reachable, and really did accept your registration — it just exists
+only inside the container that started it. This is what a repo `init --local`
+wired up looks like once it is cloned somewhere that is not that laptop: the
+URL is committed in `.mcp.json`, so a cloud session or CI runner picks it up
+and dials a hub of its own.
+
+Switchboard warns about that case rather than leaving it to be discovered. A
+`cloud` or `ci` agent whose hub URL is loopback *and* came from a committed
+file rather than from its own environment gets a note on stderr from `whoami`,
+`register` and `health`, and a `WARNING` field from the MCP `whoami` tool:
+
+```
+warning: this cloud agent's hub is http://127.0.0.1:8787, which is reachable
+only from inside this container. It came from the committed .mcp.json, not
+from this environment.
+```
+
+It is a warning, not a failure: exit codes are unchanged, stdout is untouched
+so `--json` consumers keep parsing, and `--quiet` silences it. Setting
+`SWITCHBOARD_URL` — or passing `--url` — is taken as a deliberate choice made
+*in that environment* and never warns, so a CI job that deliberately runs a
+self-contained hub in its own container stays silent.
+
+What the warning cannot tell you is whether a *reachable* hub has your peers
+on it. A shared hub plus mismatched workspaces is still the first table row,
+and `switchboard agents` is still the check that settles it.

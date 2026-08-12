@@ -627,7 +627,9 @@ class Client(_Base):
                  timeout: float = 40.0, key: str | None = None) -> None:
         super().__init__(config, agent_id=agent_id, key=key)
         self._http = httpx.Client(
-            base_url=self.config.url, headers=_headers(self.config.token), timeout=timeout
+            base_url=self.config.url,
+            headers=_headers(self.config.effective_token()),
+            timeout=timeout,
         )
 
     def __enter__(self) -> Client:
@@ -798,7 +800,9 @@ class AsyncClient(_Base):
                  timeout: float = 40.0, key: str | None = None) -> None:
         super().__init__(config, agent_id=agent_id, key=key)
         self._http = httpx.AsyncClient(
-            base_url=self.config.url, headers=_headers(self.config.token), timeout=timeout
+            base_url=self.config.url,
+            headers=_headers(self.config.effective_token()),
+            timeout=timeout,
         )
 
     async def __aenter__(self) -> AsyncClient:

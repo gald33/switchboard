@@ -60,7 +60,7 @@ jobs:
           # perimeter — anyone reading the repo has it — so nothing else should
           # be built on top of it.
           git fetch --quiet origin main
-          SWITCHBOARD_TOKEN="$(git show origin/main:src/switchboard/cli.py \
+          SWITCHBOARD_TOKEN="$(git show origin/main:src/switchboard/config.py \
             | sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' | head -1)"
           if [ -z "$SWITCHBOARD_TOKEN" ]; then
             echo "ERROR: could not read MANAGED_HUB_TOKEN from origin/main." >&2

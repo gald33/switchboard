@@ -30,8 +30,12 @@ def test_machine_suffix_does_not_leak_the_hostname():
     assert host.split(".")[0].lower() not in machine_suffix().lower()
 
 
-def test_unconfigured_clients_do_not_all_share_one_workspace():
+def test_unconfigured_clients_do_not_all_share_one_workspace(tmp_path, monkeypatch):
     # `default` put every unconfigured user on a shared hub in one room.
+    # Outside a repo with a remote there is nothing shared to derive from, so
+    # the name stays machine-scoped and opaque rather than becoming a
+    # directory name every other user also has.
+    monkeypatch.chdir(tmp_path)
     assert default_workspace() != "default"
     assert default_workspace().startswith("default-")
 
@@ -118,28 +122,109 @@ def test_a_remote_still_overrides_all_of_that(tmp_path):
 
 # --- the client's fallback, as distinct from init's derivation ---------------
 #
-# Two different questions that are easy to conflate. `init` picks a name to
-# *write into a committed file*, so a git remote is right there: every clone
-# derives it and they all agree. The client's fallback fires when nobody named
-# anything, and a name nobody chose has to be unguessable — on a shared hub a
-# readable `org/repo` is a room a stranger can walk into. So the client stays
-# opaque and only disambiguates.
+# `init` picks a name to *write down*, so a readable `org/repo` is right: you
+# saw it printed, you chose to commit it, and every clone reads the file rather
+# than deriving anything. The client's fallback fires when nothing was written,
+# and has to satisfy two constraints at once — identical in every clone, or
+# cross-machine agents never meet; and unguessable, or a name nobody chose is a
+# room a stranger can walk into knowing only where you work.
+#
+# Hashing the remote with the repo's root commit gives both. The root commit is
+# already committed and in every clone, and cannot be obtained without read
+# access to the repo.
 
 
-def test_client_fallback_never_exposes_the_repo_name(tmp_path, monkeypatch):
-    project = tmp_path / "payments"
+def _commit(directory, content="x"):
+    (directory / "f.txt").write_text(content)
+    _git(directory, "add", "-A")
+    _git(directory, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init")
+
+
+def _repo(directory, remote="https://github.com/acme/api.git", content="x"):
+    # `content` distinguishes histories. Two commits with the same tree, author
+    # and message made in the same second hash identically, so a test that
+    # means "different history" has to actually make one.
+    directory.mkdir(parents=True, exist_ok=True)
+    _git(directory, "init")
+    _git(directory, "remote", "add", "origin", remote)
+    _commit(directory, content)
+    return directory
+
+
+def test_the_client_derives_an_opaque_name_from_the_repo(tmp_path, monkeypatch):
+    project = _repo(tmp_path / "payments", "git@github.com:acme/payments.git")
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+
+    workspace = ClientConfig.from_env().workspace
+    assert workspace.startswith("w_")
+    # The repo is what it is derived *from*, never what it says.
+    assert "acme" not in workspace and "payments" not in workspace
+    # init, asked about the same directory, answers differently on purpose:
+    # it is choosing a name to print and commit, not one nothing announced.
+    assert _default_workspace(project) == "acme/payments"
+
+
+def test_the_name_cannot_be_derived_from_the_repo_name_alone(tmp_path, monkeypatch):
+    """Two repos with the same remote and different histories do not collide,
+    which is the same property that stops a stranger computing yours."""
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    one = _repo(tmp_path / "one" / "api", content="one")
+    two = _repo(tmp_path / "two" / "api", content="two")
+
+    monkeypatch.chdir(one)
+    first = ClientConfig.from_env().workspace
+    monkeypatch.chdir(two)
+    assert ClientConfig.from_env().workspace != first
+
+
+def test_clones_of_one_repo_land_in_the_same_room(tmp_path, monkeypatch):
+    """The property a machine-scoped hash could not give: a laptop and a cloud
+    session, in separate checkouts of one repo, agree with no configuration."""
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    origin = _repo(tmp_path / "origin")
+    laptop, container = tmp_path / "a", tmp_path / "b"
+    for clone in (laptop, container):
+        _git(tmp_path, "clone", "-q", str(origin), str(clone))
+        _git(clone, "remote", "set-url", "origin", "https://github.com/acme/api.git")
+
+    monkeypatch.chdir(laptop)
+    first = ClientConfig.from_env().workspace
+    monkeypatch.chdir(container)
+    assert ClientConfig.from_env().workspace == first
+    assert first.startswith("w_")
+
+
+def test_a_repo_with_no_commits_falls_back_rather_than_going_unsalted(
+    tmp_path, monkeypatch
+):
+    """Nothing to salt with, so no cross-machine matching is on offer -- and a
+    guessable name is not worth having instead."""
+    project = tmp_path / "fresh"
     project.mkdir()
     _git(project, "init")
-    _git(project, "remote", "add", "origin", "git@github.com:acme/payments.git")
+    _git(project, "remote", "add", "origin", "https://github.com/acme/fresh.git")
     monkeypatch.chdir(project)
     monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
 
     workspace = ClientConfig.from_env().workspace
     assert workspace.startswith("default-")
-    assert "acme" not in workspace and "payments" not in workspace
-    # init, asked the same question about the same directory, answers
-    # differently on purpose — it is choosing a name to commit.
-    assert _default_workspace(project) == "acme/payments"
+    assert "acme" not in workspace
+
+
+def test_worktrees_of_one_repo_share_a_room(tmp_path, monkeypatch):
+    """A worktree's `.git` is a file pointing at a gitdir that names the common
+    dir. Following it means agents on one repo meet, a branch each."""
+    project = _repo(tmp_path / "proj", "git@github.com:acme/proj.git")
+    worktree = tmp_path / "wt"
+    _git(project, "worktree", "add", str(worktree))
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+
+    monkeypatch.chdir(project)
+    main_room = ClientConfig.from_env().workspace
+    assert (worktree / ".git").is_file()
+    monkeypatch.chdir(worktree)
+    assert ClientConfig.from_env().workspace == main_room
 
 
 def test_unrelated_directories_with_the_same_name_do_not_collide(tmp_path, monkeypatch):

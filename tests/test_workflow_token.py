@@ -1,7 +1,7 @@
 """One definition of the managed hub's token, and two workflows that read it.
 
 `deploy.yml` starts the hub with `MANAGED_HUB_TOKEN`, and `ci.yml` announces
-each run with it. Both pull the value out of `cli.py` with the same `sed`
+each run with it. Both pull the value out of `config.py` with the same `sed`
 rather than restating it, because a second copy is a copy that can go stale:
 CI carried a private one in `secrets.SWITCHBOARD_TOKEN`, the hub's token moved,
 and the announce 401'd for a day inside a green build (#96).
@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from switchboard.cli import MANAGED_HUB_TOKEN, MANAGED_HUB_URL
+from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL
 
 ROOT = Path(__file__).resolve().parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
@@ -31,7 +31,7 @@ EXTRACT = re.compile(r'^MANAGED_HUB_TOKEN = "([^"]*)"', re.MULTILINE)
 
 
 def _extracted() -> list[str]:
-    return EXTRACT.findall((ROOT / "src" / "switchboard" / "cli.py").read_text())
+    return EXTRACT.findall((ROOT / "src" / "switchboard" / "config.py").read_text())
 
 
 def test_the_workflows_sed_finds_the_token() -> None:
@@ -49,7 +49,7 @@ def test_both_workflows_read_the_token_rather_than_restating_it() -> None:
         text = path.read_text()
         assert "MANAGED_HUB_TOKEN" in text, f"{path.name} should read the constant"
         assert MANAGED_HUB_TOKEN not in text, (
-            f"{path.name} restates the token instead of reading it from cli.py"
+            f"{path.name} restates the token instead of reading it from config.py"
         )
 
 
