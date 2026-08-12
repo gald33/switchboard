@@ -245,31 +245,13 @@ def test_an_explicit_url_silences_it_at_any_kind(isolated_cloud_repo, capsys):
 
 
 @pytest.fixture
-def cli_bound_to_a_real_hub(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
+def cli_bound_to_a_real_hub(monkeypatch):
     import switchboard.cli as cli_module
-    from switchboard.client import Client as RealClient
-    from switchboard.config import ServerConfig
-    from switchboard.server import create_app
-    from switchboard.store import Store
+    from switchboard.testing import hub
 
-    store = Store(str(tmp_path / "hub.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "hub.db")), store=store)
-    with TestClient(app) as http:
-
-        class _Bound(RealClient):
-            def __init__(self, config=None, *, agent_id=None, timeout=40.0, key=None):
-                super().__init__(config, agent_id=agent_id, timeout=timeout, key=key)
-                self._http.close()
-                self._http = http
-
-            def close(self) -> None:
-                pass
-
-        monkeypatch.setattr(cli_module, "Client", _Bound)
-        yield
-    store.close()
+    with hub() as handle:
+        monkeypatch.setattr(cli_module, "Client", handle.client_class())
+        yield handle
 
 
 def test_register_warns_and_names_the_hub_it_registered_against(

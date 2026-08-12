@@ -5,31 +5,24 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
-from switchboard.config import ServerConfig
-from switchboard.server import create_app
 from switchboard.store import Store
+from switchboard.testing import hub
 
 WS = "api-ws"
 
 
 @pytest.fixture
-def client(tmp_path):
-    store = Store(str(tmp_path / "api.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "api.db")), store=store)
-    with TestClient(app) as c:
-        yield c
-    store.close()
+def client():
+    """Raw HTTP against a real hub — these tests are about the wire format."""
+    with hub() as h:
+        yield h.raw(token=None)
 
 
 @pytest.fixture
-def secured(tmp_path):
-    store = Store(str(tmp_path / "sec.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "sec.db"), token="s3cret"), store=store)
-    with TestClient(app) as c:
-        yield c
-    store.close()
+def secured():
+    with hub(token="s3cret") as h:
+        yield h.raw(token=None)
 
 
 def _register(client, agent_id: str, **kw):
@@ -427,16 +420,13 @@ def test_every_ttl_path_is_clamped(client):
 
 def test_registering_without_a_signing_key_still_works(tmp_path):
     # An older client sends no pubkey at all; the hub must not require one.
-    db = str(tmp_path / "s.db")
-    store = Store(db)
-    app = create_app(ServerConfig(db_path=db, token="tok"), store=store)
-    with TestClient(app) as http:
+    with hub(token="tok") as h:
+        http = h.raw(token=None)
         r = http.post("/agents/register",
                       json={"workspace": "w", "name": "legacy", "agent_id": "legacy"},
                       headers={"Authorization": "Bearer tok"})
         assert r.status_code == 200
         assert r.json()["agent"]["pubkey"] is None
-    store.close()
 
 
 def test_a_database_from_before_pubkey_existed_still_opens(tmp_path):

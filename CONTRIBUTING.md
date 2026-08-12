@@ -54,6 +54,22 @@ behaviour is tested exactly and instantly. Pass `now=` explicitly to every
 store call in a test that cares about time — including the assertions, since
 the reads default to wall-clock.
 
+Anything that needs a whole hub gets one from `switchboard.testing` rather
+than assembling `Store` + `create_app` + `TestClient` by hand:
+
+```python
+from switchboard.testing import hub
+
+with hub() as h:
+    h.client("a").acquire("r")
+    h.advance(901)          # the same synthetic-time discipline, over HTTP
+```
+
+It hands out real `Client`s, and `h.client_class()` is the supported way to
+point the CLI at it (`monkeypatch.setattr(switchboard.cli, "Client", ...)`).
+It is public API — [docs/testing.md](docs/testing.md) — so it is covered by
+`test_testing.py`, and changing its behaviour breaks other people's suites.
+
 `test_store.py::test_concurrent_acquire_yields_exactly_one_winner` is the one
 test that must never be weakened. It runs twelve real threads through a
 barrier at one resource and asserts exactly one winner. If it becomes flaky,

@@ -20,7 +20,7 @@ import contextlib
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -218,8 +218,26 @@ def create_app(
     config: ServerConfig | None = None,
     store: Store | None = None,
     perimeter: Perimeter | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> FastAPI:
+    """Build the hub application.
+
+    ``clock`` is the one source of "now" for every request this app serves,
+    defaulting to the wall clock. It exists because the whole model is TTLs,
+    and a test that wants to see a lease expire otherwise has to really wait
+    fifteen minutes. Injected per app rather than patched into the module, so
+    two hubs in one process keep two independent clocks — see
+    ``switchboard.testing``.
+
+    Every store call that takes a ``now`` is given one. The store would fall
+    back to ``time.time()`` on its own, and that fallback is exactly the leak
+    that makes a shifted clock inconsistent: presence expiring on hub time
+    while a sweep runs on wall time is worse than no control at all. (The
+    three that take none — deregister, release, board delete — are
+    unconditional deletes with no expiry to compare against.)
+    """
     config = config or ServerConfig.from_env()
+    now_fn: Callable[[], float] = clock or time.time
     store = store or Store(config.db_path)
     notifier = Notifier()
     meter = LoadMeter()
@@ -271,7 +289,7 @@ def create_app(
         while True:
             await asyncio.sleep(config.sweep_interval)
             with contextlib.suppress(Exception):
-                await run_in_threadpool(store.sweep)
+                await run_in_threadpool(store.sweep, now=now_fn())
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -331,7 +349,7 @@ def create_app(
                 "resource": exc.resource,
                 "holder": exc.holder,
                 "expires_at": iso(exc.expires_at),
-                "expires_in": round(exc.expires_at - time.time(), 1),
+                "expires_in": round(exc.expires_at - now_fn(), 1),
             },
         )
 
@@ -367,7 +385,7 @@ def create_app(
 
     @app.get("/stats", dependencies=guard)
     def stats(workspace: str | None = None) -> dict[str, Any]:
-        payload = store.stats(workspace=workspace)
+        payload = store.stats(workspace=workspace, now=now_fn())
         # Held long-poll connections, not row counts, are what a hub actually
         # runs out of — see docs/managed-hub.md. Reporting it is what lets an
         # operator autoscale on the real constraint instead of a proxy for it.
@@ -391,7 +409,7 @@ def create_app(
 
     @app.post("/agents/register", dependencies=guard)
     def register(payload: RegisterIn) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         agent = store.register_agent(
             workspace=payload.workspace,
             agent_id=payload.agent_id,
@@ -409,7 +427,7 @@ def create_app(
 
     @app.post("/agents/heartbeat", dependencies=guard)
     def heartbeat(payload: HeartbeatIn) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         agent, leases = store.heartbeat(
             workspace=payload.workspace,
             agent_id=payload.agent_id,
@@ -443,7 +461,7 @@ def create_app(
 
     @app.get("/agents", dependencies=guard)
     def list_agents(workspace: str = "default") -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         agents = store.list_agents(workspace=workspace, now=now)
         return {"agents": [dump_agent(a, now) for a in agents], "count": len(agents)}
 
@@ -459,7 +477,7 @@ def create_app(
 
     @app.post("/leases/acquire", dependencies=guard)
     def acquire(payload: LeaseIn) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         lease = store.acquire_lease(
             workspace=payload.workspace,
             resource=payload.resource,
@@ -473,7 +491,7 @@ def create_app(
 
     @app.post("/leases/renew", dependencies=guard)
     def renew(payload: LeaseIn) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         lease = store.renew_lease(
             workspace=payload.workspace,
             resource=payload.resource,
@@ -495,13 +513,13 @@ def create_app(
 
     @app.get("/leases", dependencies=guard)
     def leases(workspace: str = "default", holder: str | None = None) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         found = store.list_leases(workspace=workspace, holder=holder, now=now)
         return {"leases": [dump_lease(le, now) for le in found], "count": len(found)}
 
     @app.get("/leases/{resource:path}", dependencies=guard)
     def get_lease(resource: str, workspace: str = "default") -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         lease = store.get_lease(workspace=workspace, resource=resource, now=now)
         return {"lease": dump_lease(lease, now) if lease else None, "held": lease is not None}
 
@@ -520,6 +538,7 @@ def create_app(
             type=payload.type,
             thread=payload.thread,
             ttl=clamp_ttl(payload.ttl, DEFAULT_MESSAGE_TTL, MAX_MESSAGE_TTL),
+            now=now_fn(),
         )
         notifier.notify(payload.workspace, payload.channel)
         return {"message": dump_message(msg)}
@@ -532,7 +551,7 @@ def create_app(
         resolved: list[str] = []
         if agent_id:
             resolved.append(f"@{agent_id}")
-            agent = store.get_agent(workspace=workspace, agent_id=agent_id)
+            agent = store.get_agent(workspace=workspace, agent_id=agent_id, now=now_fn())
             if agent:
                 resolved.extend(agent.channels)
         return list(dict.fromkeys(resolved))
@@ -569,6 +588,7 @@ def create_app(
                 limit=limit,
                 include_own=include_own,
                 commit_cursor=not peek,
+                now=now_fn(),
             )
 
         if wait <= 0:
@@ -618,20 +638,20 @@ def create_app(
 
     @app.get("/channels", dependencies=guard)
     def channels(workspace: str = "default") -> dict[str, Any]:
-        found = store.list_channels(workspace=workspace)
+        found = store.list_channels(workspace=workspace, now=now_fn())
         return {"channels": found, "count": len(found)}
 
     @app.get("/channels/{channel:path}", dependencies=guard)
     def channel_history(channel: str, workspace: str = "default",
                         limit: int = Query(default=50, ge=1, le=500)) -> dict[str, Any]:
-        msgs = store.peek(workspace=workspace, channel=channel, limit=limit)
+        msgs = store.peek(workspace=workspace, channel=channel, limit=limit, now=now_fn())
         return {"messages": [dump_message(m) for m in msgs], "count": len(msgs)}
 
     # --- blackboard --------------------------------------------------------
 
     @app.put("/board", dependencies=guard)
     def board_set(payload: BoardIn) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         entry = store.board_set(
             workspace=payload.workspace,
             key=payload.key,
@@ -645,13 +665,13 @@ def create_app(
 
     @app.get("/board", dependencies=guard)
     def board_list(workspace: str = "default", prefix: str | None = None) -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         entries = store.board_list(workspace=workspace, prefix=prefix, now=now)
         return {"entries": [dump_board(e, now) for e in entries], "count": len(entries)}
 
     @app.get("/board/{key:path}", dependencies=guard)
     def board_get(key: str, workspace: str = "default") -> dict[str, Any]:
-        now = time.time()
+        now = now_fn()
         entry = store.board_get(workspace=workspace, key=key, now=now)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no live board entry at {key!r}")
@@ -665,7 +685,7 @@ def create_app(
 
     @app.post("/sweep", dependencies=guard)
     def sweep() -> dict[str, Any]:
-        return {"swept": store.sweep()}
+        return {"swept": store.sweep(now=now_fn())}
 
     return app
 

@@ -11,15 +11,13 @@ import io
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 from switchboard import mcp_server
-from switchboard.client import Client, Identity
-from switchboard.config import ClientConfig, ServerConfig
+from switchboard.client import Identity
 from switchboard.crypto import WorkspaceCipher
 from switchboard.mcp_server import TOOLS, Bridge, handle_request, serve_stdio
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.testing import Hub
+from switchboard.testing import hub as make_hub
 from switchboard.timing import TimingModel
 
 WS = "mcp-ws"
@@ -31,32 +29,19 @@ def _t(offset: float = 0.0) -> float:
 
 
 @pytest.fixture
-def hub(tmp_path):
-    """A real server, reached through TestClient's transport."""
-    store = Store(str(tmp_path / "mcp.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "mcp.db")), store=store)
-    with TestClient(app) as http:
-        yield http
-    store.close()
+def hub():
+    """A real server, reached in-process. See `switchboard.testing`."""
+    with make_hub(workspace=WS) as handle:
+        yield handle
 
 
-class _BoundClient(Client):
-    """A Client whose transport is the in-process TestClient."""
-
-    def __init__(self, http: TestClient, agent_id: str) -> None:
-        config = ClientConfig(url="http://testserver", workspace=WS, agent_id=agent_id)
-        super().__init__(config, agent_id=agent_id)
-        self._http.close()
-        self._http = http
-
-
-def make_bridge(hub: TestClient, agent_id: str = "mcp-agent") -> Bridge:
+def make_bridge(hub: Hub, agent_id: str = "mcp-agent") -> Bridge:
     bridge = Bridge.__new__(Bridge)
-    bridge.config = ClientConfig(url="http://testserver", workspace=WS, agent_id=agent_id)
+    bridge.config = hub.client_config(agent_id=agent_id)
     bridge.identity = Identity(
         agent_id=agent_id, name="mcp agent", kind="local", branch="feat/x", meta={}
     )
-    bridge.client = _BoundClient(hub, agent_id)
+    bridge.client = hub.client(agent_id, agent_id=agent_id)
     bridge.timing = TimingModel(":memory:")
     bridge._registered = False
     return bridge
@@ -168,7 +153,7 @@ def test_whoami_registers_lazily(hub):
     payload, is_error = call(bridge, "whoami")
     assert not is_error
     assert payload["agent_id"] == "a1"
-    assert hub.get("/agents", params={"workspace": WS}).json()["count"] == 1
+    assert hub.http.get("/agents", params={"workspace": WS}).json()["count"] == 1
 
 
 def test_roster_shows_other_agents_and_what_they_hold(hub):
@@ -430,10 +415,10 @@ def test_checkin_recovers_from_expired_presence(hub):
     """An agent whose presence lapsed must re-register rather than error out."""
     a1 = make_bridge(hub, "a1")
     call(a1, "whoami")
-    hub.delete("/agents/a1", params={"workspace": WS})
+    hub.http.delete("/agents/a1", params={"workspace": WS})
     payload, is_error = call(a1, "checkin")
     assert not is_error
-    assert hub.get("/agents", params={"workspace": WS}).json()["count"] == 1
+    assert hub.http.get("/agents", params={"workspace": WS}).json()["count"] == 1
 
 
 # --- automatic presence + DM notice, on every op, not just checkin ----------
@@ -477,10 +462,10 @@ def test_a_non_checkin_op_recovers_from_expired_presence(hub):
     """Every op relies on heartbeat now, so it needs checkin's same recovery."""
     a1 = make_bridge(hub, "a1")
     call(a1, "whoami")
-    hub.delete("/agents/a1", params={"workspace": WS})
+    hub.http.delete("/agents/a1", params={"workspace": WS})
     payload, is_error = call(a1, "say", channel="build", message="still here")
     assert not is_error
-    assert hub.get("/agents", params={"workspace": WS}).json()["count"] == 1
+    assert hub.http.get("/agents", params={"workspace": WS}).json()["count"] == 1
 
 
 def test_claim_conflict_still_reports_unread_dms(hub):
