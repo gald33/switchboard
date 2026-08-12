@@ -101,11 +101,11 @@ jobs:
           SWITCHBOARD_WORKSPACE: w_gAbpTxVh-Jl0pjx0Hnqupw
         run: |
           SWITCHBOARD_TOKEN="$(sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' \
-            src/switchboard/cli.py | head -1)"
+            src/switchboard/config.py | head -1)"
           export SWITCHBOARD_TOKEN
           if [ -z "$SWITCHBOARD_TOKEN" ]; then
             echo "::warning title=switchboard::MANAGED_HUB_TOKEN not found in" \
-              "src/switchboard/cli.py — this CI run was not announced"
+              "src/switchboard/config.py — this CI run was not announced"
             exit 0
           fi
           if ! out="$(switchboard -q register --kind ci -c build \

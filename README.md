@@ -79,7 +79,7 @@ To track `main` instead of a release — for unreleased fixes, or to
 contribute — install from GitHub instead:
 `pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"`,
 or pin a commit or tag by appending it to the URL:
-`git+https://github.com/gald33/switchboard.git@v0.6.0`.
+`git+https://github.com/gald33/switchboard.git@v0.7.0`.
 
 ## The fast path
 
@@ -105,13 +105,18 @@ up and why, or skip straight to `switchboard init --help`.
 
 ### Getting local, cloud, and CI agents onto the same hub
 
-`switchboard init` with no `--url` defaults to a hub on `127.0.0.1:8787` — a
-local dev instance reachable only from the machine it runs on. That's fine
-for two terminals on your laptop, but a cloud Claude Code session or a CI
-runner pointed at that same default would each spin up their *own* local
-hub and never see each other, even though the workspace name (inferred from
-your git remote) matches perfectly. Matching workspace names only matter
-once everyone is actually talking to the same hub.
+With no `--url`, both `switchboard init` and a client that was never `init`-ed
+point at the [managed hub](docs/managed-hub.md) — one URL, so the two cannot
+drift apart. `switchboard init --local` picks a hub on `127.0.0.1:8787`
+instead: a dev instance reachable only from the machine it runs on. That's
+fine for two terminals on your laptop, but a cloud Claude Code session or a CI
+runner that picks up that same committed URL reaches a hub inside its *own*
+container and never sees anyone, even though the workspace name (inferred from
+your git remote) matches perfectly. Matching workspace names only matter once
+everyone is actually talking to the same hub. A non-local agent that inherits
+a loopback URL says so on stderr rather than coordinating with nobody in
+silence — see [the three ways an agent ends up
+alone](docs/environments.md#the-three-ways-an-agent-ends-up-alone).
 
 To get local + cloud + CI coordinating with each other:
 

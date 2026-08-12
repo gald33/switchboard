@@ -25,7 +25,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
-from .config import ClientConfig
+from .config import ClientConfig, isolation_warning
 from .crypto import generate_key
 from .guidance import skill_text
 from .signing import SigningServer
@@ -498,6 +498,14 @@ class Bridge:
             "workspace": self.config.workspace,
             "hub": self.config.url,
         }
+        # An agent driving the bridge never runs the CLI, so a CLI-only
+        # warning would miss the audience this failure hits hardest: a cloud
+        # session that registers, sees nobody, and reports back that it is
+        # first to arrive. Uppercase like the key-mismatch warning below,
+        # which is how this file says "tell the user this" to a model.
+        alone = isolation_warning(self.config, self.identity.kind)
+        if alone:
+            out["WARNING"] = alone
         calibration = self._calibration()
         if calibration:
             out["forecast_calibration"] = calibration

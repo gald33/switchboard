@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import secrets
 import shlex
 import shutil
@@ -24,7 +23,14 @@ from typing import Any, Callable, Sequence
 
 from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
-from .config import ClientConfig, machine_suffix
+from .config import (
+    MANAGED_HUB_TOKEN,
+    MANAGED_HUB_URL,
+    ClientConfig,
+    git_remote_workspace,
+    isolation_warning,
+    machine_suffix,
+)
 from .crypto import CryptoError, generate_key
 from .guidance import SKILL_NAME, skill_history, skill_text
 from .timing import (
@@ -254,7 +260,12 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     # Only below the environment: an explicitly exported value is a
     # deliberate override of whatever the checkout says.
     if not os.environ.get("SWITCHBOARD_URL"):
-        config.url = _mcp_url(directory) or config.url
+        # Kept in step with the value, not inferred afterwards: by the time
+        # anything reads this, `config.url` is a plain string and every tier
+        # that could have set it looks identical. See `ClientConfig.url_source`.
+        from_mcp = _mcp_url(directory)
+        if from_mcp:
+            config.url, config.url_source = from_mcp, "mcp.json"
     if not os.environ.get("SWITCHBOARD_WORKSPACE"):
         # `config.workspace` falls back to the literal "default", which
         # would otherwise mask the repo's real workspace.
@@ -266,7 +277,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
                         or _mcp_env(directory, "SWITCHBOARD_TOKEN"))
 
     if args.url:
-        config.url = args.url.rstrip("/")
+        config.url, config.url_source = args.url.rstrip("/"), "flag"
     if args.token:
         config.token = args.token
     if args.workspace:
@@ -280,6 +291,32 @@ def _make_client(args: argparse.Namespace) -> Client:
     config = _make_config(args)
     identity = detect_identity(agent_id=args.agent_id)
     return Client(config, agent_id=identity.agent_id)
+
+
+def _warn_isolated(
+    args: argparse.Namespace,
+    config: ClientConfig | None = None,
+    kind: str | None = None,
+) -> None:
+    """Say, on stderr, that this agent is dialling a hub nobody else can reach.
+
+    Stderr and exit 0, unlike the key-mismatch warning next door in
+    `cmd_agents`, which exits non-zero so a hook notices. The difference is
+    that a mismatched key is never intentional, while a CI job running a
+    self-contained hub inside its own container is a real and legitimate
+    setup — failing it would be the regression. `isolation_warning` already
+    keeps quiet when the URL was chosen here; this only has to not shout over
+    `--quiet`.
+    """
+    if getattr(args, "quiet", False):
+        return
+    if config is None:
+        config = _make_config(args)
+    if kind is None:
+        kind = detect_identity(agent_id=getattr(args, "agent_id", None)).kind
+    note = isolation_warning(config, kind)
+    if note:
+        print(note, file=sys.stderr)
 
 
 # --- adaptive timing --------------------------------------------------------
@@ -643,7 +680,14 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         or _mcp_workspace(directory)
         or config.workspace
     )
-    url = args.url or os.environ.get("SWITCHBOARD_URL") or _mcp_url(directory) or config.url
+    # Resolved through the path every *other* command uses rather than off
+    # `config` directly. The payload below used to read `config.url`, which is
+    # `from_env` alone and skips `.mcp.json` — so in an `init`-ed repo `whoami`
+    # printed localhost while `announce`, one line later, talked to the
+    # committed hub, and `--env` printed a third answer. The one command you
+    # run to find out where you are pointed was the one that did not know.
+    resolved = _make_config(args)
+    url = resolved.url
     token = args.token or config.token or _saved_setting(directory, "SWITCHBOARD_TOKEN")
     if args.show_key or args.env:
         # Only ever on request. Printing a key into scrollback, CI logs or a
@@ -714,17 +758,34 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "name": identity.name,
         "kind": identity.kind,
         "branch": identity.branch,
-        "workspace": args.workspace or config.workspace,
-        "hub": args.url or config.url,
+        "workspace": workspace,
+        "hub": url,
         "encrypted": encrypted,
         "meta": identity.meta,
     }
     if args.json:
         _print_json(payload)
+        # Still worth saying under --json: a script parsing this is exactly
+        # the caller that will not notice an empty roster by eye. Stderr, so
+        # the document on stdout stays byte-identical.
+        _warn_isolated(args, resolved, identity.kind)
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
     for field in ("agent_id", "name", "kind", "branch", "workspace", "hub"):
-        print(f"{fmt.dim(field.rjust(10))}  {payload[field]}")
+        value = payload[field]
+        # Gated on `--quiet` as well as on the condition: the annotation points
+        # at the stderr note, and pointing at something that was suppressed is
+        # worse than saying nothing.
+        if (field == "hub" and not args.quiet
+                and isolation_warning(resolved, identity.kind)):
+            # Annotated in place rather than printed as a block on its own:
+            # the claim being qualified is this line, and a reader scanning
+            # six fields should not have to join them up. Deliberately does
+            # not say "see below" — the detail goes to stderr, and stdout to
+            # a pipe is block-buffered, so the two do not reliably interleave
+            # in the order they were written.
+            value = f"{value} {fmt.dim('(this container only — see warning on stderr)')}"
+        print(f"{fmt.dim(field.rjust(10))}  {value}")
     if addressed_as != identity.agent_id:
         # Only worth a line when they differ, which is exactly when someone
         # would otherwise hand out the wrong one.
@@ -733,12 +794,17 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
+    # Last, and after `encrypted` on purpose: a sealed channel to a hub with
+    # nobody else on it reads as reassurance, and this is the line that says
+    # what that reassurance is worth.
+    _warn_isolated(args, resolved, identity.kind)
     return EXIT_OK
 
 
 def cmd_register(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
-    with _make_client(args) as hub:
+    config = _make_config(args)
+    with Client(config, agent_id=identity.agent_id) as hub:
         agent = hub.register(
             name=args.name or identity.name,
             kind=args.kind or identity.kind,
@@ -751,7 +817,13 @@ def cmd_register(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(agent)
     elif not args.quiet:
-        print(f"registered {agent['agent_id']} ({agent['kind']}) in {agent['workspace']}")
+        # The hub URL belongs on this line. Registering against a shared hub
+        # and registering against one nobody else can reach printed the same
+        # sentence, and this is the moment the agent declares itself present —
+        # so it is the moment the claim is either true or a lie.
+        print(f"registered {agent['agent_id']} ({agent['kind']}) in "
+              f"{agent['workspace']} on {config.url}")
+    _warn_isolated(args, config, identity.kind)
     return EXIT_OK
 
 
@@ -1158,13 +1230,20 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 
 def cmd_health(args: argparse.Namespace) -> int:
+    config = _make_config(args)
     try:
-        with _make_client(args) as hub:
+        with Client(config, agent_id=detect_identity(agent_id=args.agent_id).agent_id) as hub:
             payload = hub.health()
     except Exception as exc:  # noqa: BLE001 - health check reports any failure
         print(f"unreachable: {exc}", file=sys.stderr)
         return EXIT_ERROR
+    # Note there is no `--json` branch here: this command's stdout is always
+    # the hub's JSON. So the warning has nowhere to go but stderr, which is
+    # where it belongs anyway — `{"ok": true}` about a hub nobody else can
+    # reach is the most misleading of the three outputs, and the one most
+    # likely to be piped into something that decides everything is fine.
     _print_json(payload)
+    _warn_isolated(args, config)
     return EXIT_OK
 
 
@@ -1177,22 +1256,13 @@ def cmd_health(args: argparse.Namespace) -> int:
 
 _LOCAL_HUB_URLS = {"http://127.0.0.1:8787", "http://localhost:8787"}
 
-#: The managed hub `switchboard init` points at by default. Self-host instead
-#: with `switchboard init --local` (or any other `--url`).
-MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
+# MANAGED_HUB_URL and MANAGED_HUB_TOKEN moved to config.py, and are imported
+# above so `switchboard.cli.MANAGED_HUB_URL` still resolves. They describe
+# where a *client* dials, and the MCP bridge builds its client straight from
+# `ClientConfig.from_env` without ever importing this module — a constant it
+# cannot see is a default it cannot honour, which is how `init` came to point
+# at the managed hub while every un-inited client dialled localhost.
 
-#: The managed hub's access token, and deliberately not a secret. It ships with
-#: the URL because it *is* reachability information: every client uses the same
-#: value, nothing issues it, and publishing it here is the point.
-#:
-#: What it buys is that unauthenticated internet noise gets a 401 from a string
-#: compare instead of a database query. Most scanning is untargeted, so that is
-#: a real saving for no friction — nobody ever types this.
-#:
-#: What it does not buy is a boundary. Anyone who reads this file has it. A hub
-#: that wants a real perimeter sets a secret token instead, and that one never
-#: goes in a committed file — see `_init_mcp_json`.
-MANAGED_HUB_TOKEN = "sb_public_lucille"  # noqa: S105 - published on purpose
 
 def _hook_env_prefix(url: str, workspace: str) -> str:
     """`SessionStart`/`Stop` hooks run as plain shell commands, not inside the
@@ -1667,21 +1737,14 @@ belongs in a commit message, a PR body, or a doc — not in a channel.
 
 
 def _git_remote_workspace(directory: Path) -> str | None:
-    """Guess `org/repo` from the git remote, or None if there isn't one."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(directory), "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    url = result.stdout.strip()
-    match = re.search(r"[:/]([^/:]+/[^/:]+?)(\.git)?$", url)
-    return match.group(1) if match else None
+    """Guess `org/repo` from the git remote, or None if there isn't one.
+
+    Delegates to `config.git_remote_workspace` rather than keeping a second
+    copy. `init` and the runtime default used to derive this separately, and
+    two derivations that can disagree are two rooms an unconfigured agent can
+    land in — the same shape of failure as the two hub defaults that drifted.
+    """
+    return git_remote_workspace(directory)
 
 
 def _default_workspace(directory: Path) -> str:

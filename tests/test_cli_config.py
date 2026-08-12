@@ -14,6 +14,7 @@ import json
 import pytest
 
 from switchboard.cli import _make_config, build_parser
+from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL
 
 ENV_VARS = ("SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_TOKEN",
             "SWITCHBOARD_KEY")
@@ -100,11 +101,22 @@ def test_the_workspace_key_is_not_taken_from_the_repo(clean_env, monkeypatch, tm
     assert config_for("agents").key is None
 
 
-def test_no_repo_config_still_falls_back_to_the_default(clean_env, monkeypatch, tmp_path):
-    """An empty directory must behave exactly as before this existed."""
+def test_no_repo_config_falls_back_to_the_managed_hub(clean_env, monkeypatch, tmp_path):
+    """An empty directory dials the same hub `init` writes.
+
+    This used to be localhost, which is what made the whole class of failure
+    possible: `init` pointed a repo at the managed hub while any path that
+    missed `.mcp.json` -- notably the MCP bridge, which never reads it --
+    quietly dialled a hub inside its own container instead.
+    """
     monkeypatch.chdir(tmp_path)
     config = config_for("agents")
-    assert config.url == "http://127.0.0.1:8787"
+    assert config.url == MANAGED_HUB_URL
+    assert config.url_source == "default"
+    # Published, not secret: without it the new default would 401 for anyone
+    # who never ran `init`, which is a worse out-of-the-box story than the
+    # localhost default it replaced.
+    assert config.effective_token() == MANAGED_HUB_TOKEN
     # per-machine suffix, so two unconfigured machines do not collide
     assert config.workspace.startswith("default")
     assert config.token is None
