@@ -74,10 +74,19 @@ jobs:
   # Dogfooding: this CI run announces itself on the same hub the rest of
   # this project coordinates over, same as local/cloud agents do via the
   # SessionStart hook `init` installs (see cli.py's _SESSION_START_CMD).
-  # Isolated to its own self-issued-keys workspace, not the interactive
-  # gald33/lucille one, so this credential's blast radius is CI-only and
-  # can be rotated without touching anything a human session depends on.
-  # Never gates the rest of CI: `|| true` on the one command that can fail.
+  # It announces into its own workspace rather than the interactive one, so a
+  # CI run never shows up in the middle of a human session's peers.
+  #
+  # The token is read from MANAGED_HUB_TOKEN in the checkout, the same way
+  # deploy.yml reads the value it starts the hub with. That is the whole point:
+  # a private second copy in `secrets.SWITCHBOARD_TOKEN` drifted from the hub's
+  # own token and locked this job out for a day without failing a build (#96).
+  # Since #76 a token admits a caller to the hub and scopes nothing, so there
+  # is nothing for a secret copy to protect that the published one does not.
+  #
+  # Never gates the rest of CI, and never fails silently either: the announce
+  # cannot break a build, but a failure is reported as a warning on the run
+  # instead of one line of stderr in a green job.
   register-switchboard:
     runs-on: ubuntu-latest
     steps:
@@ -90,8 +99,20 @@ jobs:
         env:
           SWITCHBOARD_URL: https://switchboard.lucille-ai.com
           SWITCHBOARD_WORKSPACE: w_gAbpTxVh-Jl0pjx0Hnqupw
-          SWITCHBOARD_TOKEN: ${{ secrets.SWITCHBOARD_TOKEN }}
         run: |
-          switchboard -q register --kind ci -c build \
-            --task "${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}" \
-            || true
+          SWITCHBOARD_TOKEN="$(sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' \
+            src/switchboard/cli.py | head -1)"
+          export SWITCHBOARD_TOKEN
+          if [ -z "$SWITCHBOARD_TOKEN" ]; then
+            echo "::warning title=switchboard::MANAGED_HUB_TOKEN not found in" \
+              "src/switchboard/cli.py — this CI run was not announced"
+            exit 0
+          fi
+          if ! out="$(switchboard -q register --kind ci -c build \
+              --task "${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}" 2>&1)"; then
+            # Last line only: an auth failure is one line, but a connection
+            # failure is a whole httpx traceback (#88), and a warning is a
+            # one-line surface. The last line is the diagnosis in both cases.
+            echo "::warning title=switchboard::announce failed:" \
+              "$(printf '%s' "${out:-no output}" | tail -n 1)"
+          fi
