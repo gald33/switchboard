@@ -2800,6 +2800,32 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     extra = "'agent-switchboard[crypto]'" if minted or token_on_disk else "agent-switchboard"
     print(f"  another machine   1. pip install {extra}   "
           "2. paste `switchboard whoami --env`")
+    # A cloud environment is the one `init` cannot do anything about: its
+    # configuration lives outside every repo, so nothing written into a
+    # checkout reaches it. Saying so is the whole value here — the alternative
+    # is a cloud session with no package, no tools, and nothing that looks
+    # like a failure.
+    #
+    # Split into two lines because they are two fields in the environment's
+    # settings, filled separately: a setup script that runs before the agent
+    # starts, and a list of variables. Printing them as one block of shell —
+    # `pip install` next to a couple of `export`s — is a block that cannot be
+    # pasted anywhere as-is, and the reader has to take it apart first.
+    # `--ignore-installed cryptography`, and only on this line. A container
+    # image is where a *system* cryptography lives — Debian ships one — and
+    # pip refuses to replace a package it did not install ("RECORD file not
+    # found"), so a plain install exits 1, the setup script fails, and the
+    # environment comes up with no switchboard and nothing that explains why.
+    # Scoped to the one package that collides: pip stops trying to uninstall
+    # the system copy and puts its own in /usr/local, which wins on sys.path.
+    # The bare package, not an extra: it already carries cryptography and
+    # `switchboard-mcp`, while `[all]` would drag in FastAPI and uvloop for an
+    # agent that will never run a hub — more to download and more to collide.
+    print("  a cloud env       two boxes, neither of them here:\n"
+          "                      setup script  pip install --ignore-installed "
+          "cryptography agent-switchboard\n"
+          "                      env vars      SWITCHBOARD_KEY, SWITCHBOARD_TOKEN "
+          "(from `whoami --env`)")
 
 
 # --- parser -----------------------------------------------------------------
