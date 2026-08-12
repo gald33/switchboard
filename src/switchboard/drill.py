@@ -121,6 +121,19 @@ class Brief:
         }
 
 
+#: What a `claude` worker is allowed to do, passed as `--allowedTools`.
+#:
+#: Not optional, and not something the run directory's settings.json can
+#: supply instead: a `claude -p` worker is non-interactive, so any tool call
+#: it cannot pre-approve blocks on a prompt nobody will answer, and a
+#: settings.json allowlist is ignored outright until the workspace has been
+#: trusted through the interactive trust dialog. Both failures look identical
+#: from the hub — the worker exits 0 having done nothing, and the drill calls
+#: it silent. The list stays narrow on purpose: the hub, plus the file tools
+#: the task itself needs. Notably absent is git; the prompt tells workers not
+#: to commit, and this is what makes that true rather than requested.
+CLAUDE_WORKER_TOOLS = "Bash(switchboard:*),Bash(swb:*),Read,Write,Edit,Glob,Grep"
+
 WORKER_PROMPT = """\
 You are worker `{slot}` in a Switchboard coordination drill (run `{run_id}`).
 
@@ -136,9 +149,9 @@ Protocol — follow it in order:
 4. `switchboard claim drill/{run_id}/{slot}` — your own slot, so it should
    succeed. If it does not, say so on the channel and keep going.
 5. Do the task described in the brief.
-6. `switchboard board set drill/{run_id}/results/$AGENT --json-body '<json>'`
-   where `$AGENT` is your agent id (`switchboard whoami --json`) and the
-   JSON is:
+6. `switchboard board set {result_key} --json-body '<json>'`
+   — that key is yours and is already spelled out above. Use it exactly as
+   written; do not build it out of your own agent id. The JSON is:
    {{"ok": true|false, "slot": "{slot}", "summary": "one line",
      "checks": [{{"name": "...", "ok": true|false, "detail": "..."}}]}}
    `ok` is your honest verdict on whether the task succeeded. Do not report
@@ -155,12 +168,25 @@ The task:
 """
 
 
+def worker_agent_id(run_id: str, slot: str) -> str:
+    """The id the coordinator assigns a worker, and looks for it under.
+
+    One formula, used by `build_workers` to set the worker's environment and
+    by the prompt to spell out its result key. They have to agree: the
+    observer fetches results by exact key (see `_poll_results`), so a worker
+    that keys its result any other way is indistinguishable from one that
+    never ran.
+    """
+    return f"drill-{run_id}-{slot}"
+
+
 def worker_prompt(brief: Brief, slot: str) -> str:
     return WORKER_PROMPT.format(
         slot=slot,
         run_id=brief.run_id,
         channel=channel_for(brief.run_id),
         brief_key=brief_key(brief.run_id),
+        result_key=f"{result_prefix(brief.run_id)}{worker_agent_id(brief.run_id, slot)}",
         task=brief.task,
     )
 
@@ -257,11 +283,12 @@ def build_workers(
     workers: list[Worker] = []
     for index in range(count):
         slot = f"w{index + 1}"
-        agent_id = f"drill-{brief.run_id}-{slot}"
+        agent_id = worker_agent_id(brief.run_id, slot)
         if kind == "builtin":
             argv = [sys.executable, "-m", "switchboard.drill", "worker"]
         elif kind == "claude":
-            argv = ["claude", "-p", worker_prompt(brief, slot)]
+            argv = ["claude", "-p", worker_prompt(brief, slot), "--allowedTools",
+                    CLAUDE_WORKER_TOOLS]
             if model:
                 argv += ["--model", model]
         elif kind == "custom":
