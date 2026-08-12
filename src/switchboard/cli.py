@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, rooms
+from . import __version__, drill, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import (
     MANAGED_HUB_TOKEN,
@@ -1278,6 +1278,100 @@ def cmd_checkin(args: argparse.Namespace) -> int:
     if forecast:
         print(_forecast_line(fmt, forecast.as_message_meta(), "you expect to be"))
     return EXIT_OK
+
+
+def cmd_drill(args: argparse.Namespace) -> int:
+    """Launch a few agents at one task and report what the hub saw.
+
+    The worker kind is resolved rather than defaulted: `auto` means a real
+    `claude` session when that binary exists and the scripted builtin
+    otherwise, so the command does something useful on a laptop and in CI
+    without either having to know which it is. Asking for `claude`
+    explicitly and not having it is an error — silently downgrading a run
+    the operator asked for to the fake one would make the report a lie.
+    """
+    if args.worker_kind == "auto":
+        kind = "claude" if drill.claude_available() else "builtin"
+    else:
+        kind = args.worker_kind
+    if kind == "claude" and not drill.claude_available():
+        print("no `claude` on PATH — use --worker builtin, or install Claude Code",
+              file=sys.stderr)
+        return EXIT_ERROR
+    if kind == "custom" and not args.worker_cmd:
+        print("--worker custom needs --worker-cmd", file=sys.stderr)
+        return EXIT_ERROR
+
+    fmt = Fmt(_use_color(sys.stdout))
+
+    def note(text: str) -> None:
+        if not args.quiet and not args.json:
+            print(fmt.dim(text), file=sys.stderr)
+
+    with _make_client(args) as hub:
+        report = drill.run_drill(
+            hub,
+            task=args.task,
+            count=args.agents,
+            kind=kind,
+            verify=args.verify,
+            timeout=args.timeout,
+            worker_cmd=args.worker_cmd,
+            model=args.model,
+            cwd=args.dir,
+            on_event=note,
+        )
+
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2) + "\n")
+    if args.json:
+        _print_json(report)
+        return EXIT_OK if report["ok"] else EXIT_ERROR
+    _print_drill_report(fmt, report)
+    return EXIT_OK if report["ok"] else EXIT_ERROR
+
+
+def _print_drill_report(fmt: Fmt, report: dict[str, Any]) -> None:
+    counts = report["counts"]
+    head = fmt.green("PASS") if report["ok"] else fmt.red("FAIL")
+    print(f"{head}  drill {report['run_id']}  {_dur(report['wall_s'])}")
+    print(fmt.dim(f"task    {report['task']}"))
+    print(fmt.bold(f"\n{'WORKER':<8} {'VERDICT':<9} {'ANNOUNCE':<10} "
+                   f"{'RESULT':<9} {'MSGS':<5} SUMMARY"))
+    for worker in report["workers"]:
+        if worker["reported"]:
+            verdict = "passed" if worker["ok"] else "failed"
+        else:
+            verdict = "silent"
+        painted = {"passed": fmt.green, "failed": fmt.red, "silent": fmt.yellow}[verdict](verdict)
+        print(
+            f"{worker['slot']:<8} {painted:<9} "
+            f"{_secs(worker['announced_s']):<10} {_secs(worker['result_s']):<9} "
+            f"{worker['messages']:<5} {worker['summary'] or '-'}"
+        )
+        for check in worker["checks"]:
+            mark = fmt.green("ok") if check.get("ok") else fmt.red("!!")
+            print(f"         {mark} {check.get('name', '?')}: {check.get('detail', '')}")
+    telemetry = report["telemetry"]
+    latency = telemetry["announce_latency_s"]
+    print(fmt.dim(
+        f"\n{counts['workers']} worker(s): {counts['passed']} passed, "
+        f"{counts['failed']} failed, {counts['silent']} silent"
+    ))
+    print(fmt.dim(
+        f"announce latency  min {_secs(latency['min'])}  mean {_secs(latency['mean'])}  "
+        f"max {_secs(latency['max'])}   channel messages {telemetry['channel_messages']}  "
+        f"hub polls {telemetry['hub_polls']}"
+    ))
+    if report["timed_out"]:
+        print(fmt.yellow("run hit its timeout — remaining workers were terminated"))
+    for err in telemetry["observer_errors"]:
+        print(fmt.yellow(f"observer: {err}"), file=sys.stderr)
+    print(fmt.dim(f"report kept on the board at {drill.report_key(report['run_id'])}"))
+
+
+def _secs(value: float | None) -> str:
+    return "-" if value is None else f"{value:.1f}s"
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -3039,6 +3133,33 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("timing", help="this agent's own timing model (local, never shared)")
     _add_timing_args(p)
     p.set_defaults(func=cmd_timing)
+
+    p = sub.add_parser(
+        "drill",
+        help="launch a few agents at one task and report what the hub saw",
+        description="Start N worker agents, brief them through the hub, and "
+                    "observe them only through presence, messages, leases and "
+                    "the blackboard. Exits non-zero if any worker failed or "
+                    "never reported.",
+    )
+    p.add_argument("task", help="what the workers should do")
+    p.add_argument("-n", "--agents", type=int, default=drill.DEFAULT_AGENTS,
+                   help=f"how many workers (default {drill.DEFAULT_AGENTS})")
+    p.add_argument("--worker", dest="worker_kind", default="auto",
+                   choices=["auto", "claude", "builtin", "custom"],
+                   help="auto: real `claude` sessions when available, else the "
+                        "scripted builtin worker")
+    p.add_argument("--worker-cmd", help="command for --worker custom; "
+                                        "{slot} and {run_id} are substituted")
+    p.add_argument("--model", help="model for --worker claude")
+    p.add_argument("--verify", help="shell command each worker runs and reports on, "
+                                    "e.g. 'pytest -q'")
+    p.add_argument("--timeout", type=float, default=drill.DEFAULT_TIMEOUT,
+                   help=f"seconds before unreported workers are terminated "
+                        f"(default {drill.DEFAULT_TIMEOUT:.0f})")
+    p.add_argument("--dir", help="working directory for the workers")
+    p.add_argument("--out", help="also write the report JSON to this path")
+    p.set_defaults(func=cmd_drill)
 
     p = sub.add_parser("board", help="shared key/value scratch space")
     bsub = p.add_subparsers(dest="board_action", required=True)
