@@ -14,6 +14,7 @@ in CI.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -149,6 +150,71 @@ def test_a_worker_that_never_reported_is_silent_not_failed():
     assert passed.verdict() == "passed"
 
 
+def test_a_worker_the_hub_heard_from_is_not_reported_silent():
+    """`silent` is an accusation against the hub, so it has to be earned.
+
+    A worker that announced, or spoke on the channel, and then produced no
+    result proves the opposite of what `silent` claims: its word was
+    carried. Reporting it as silent sends the investigation at the hub when
+    the fault is in the task, the worker, or the result key — which is
+    exactly how the `--allowedTools` bug hid behind a second one.
+    """
+    unheard = drill.Worker(slot="w1", agent_id="a", argv=[])
+    announced = drill.Worker(slot="w2", agent_id="b", argv=[], announced_at=1.0)
+    spoke = drill.Worker(slot="w3", agent_id="c", argv=[],
+                         messages=[{"body": "w3 up"}])
+    assert unheard.verdict() == "silent"
+    assert announced.verdict() == "no-report"
+    assert spoke.verdict() == "no-report"
+    # Still not ok — it just says which half of the system to go and look at.
+    assert announced.telemetry()["verdict"] == "no-report"
+    assert announced.telemetry()["ok"] is None
+
+
+def test_every_worker_gets_a_name_of_its_own():
+    """Without one they all register under the same derived name.
+
+    A roster of N rows that differ only by a blinded id cannot be read, by a
+    human or by a peer deciding who to hand work to.
+    """
+    brief = drill.Brief(run_id="r4", task="t")
+    names = {drill.worker_name(brief.run_id, w.slot)
+             for w in drill.build_workers(brief, count=3, kind="builtin")}
+    assert len(names) == 3
+
+
+def test_mcp_workers_are_given_the_mcp_surface_and_no_shell():
+    """The point of the kind. A `claude-mcp` worker that can still shell out
+    to the CLI would report a green MCP path it never used."""
+    brief = drill.Brief(run_id="r5", task="t")
+    argv = drill.build_workers(brief, count=1, kind="claude-mcp")[0].argv
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "mcp__switchboard__board_set" in allowed
+    assert "Bash" not in allowed
+    prompt = argv[2]
+    assert drill.worker_result_key("r5", "w1") in prompt   # told where to report
+    assert drill.brief_key("r5") in prompt                 # told where the brief is
+    # Pinned to the config the drill supplies, so the run cannot silently
+    # pick up some other switchboard server aimed at another workspace.
+    assert "--strict-mcp-config" in argv
+    assert "switchboard-mcp" in argv[argv.index("--mcp-config") + 1]
+
+
+def test_custom_workers_are_told_their_keys_rather_than_deriving_them():
+    """The shared-formula fix covered the claude prompt and stopped there.
+
+    A custom worker had run id and slot and nothing else, so every one of
+    them had to rebuild `drill/<run>/results/drill-<run>-<slot>` by hand —
+    reintroducing, per worker command, the drift that formula exists to
+    prevent.
+    """
+    brief = drill.Brief(run_id="r6", task="t")
+    env = drill._worker_env(brief, drill.worker_agent_id("r6", "w1"), {})
+    assert env["SWITCHBOARD_DRILL_RESULT_KEY"] == drill.worker_result_key("r6", "w1")
+    assert env["SWITCHBOARD_DRILL_BRIEF_KEY"] == drill.brief_key("r6")
+    assert env["SWITCHBOARD_DRILL_CHANNEL"] == drill.channel_for("r6")
+
+
 # --- end to end -------------------------------------------------------------
 
 
@@ -156,7 +222,8 @@ def test_drill_runs_workers_and_reports_through_the_hub(worker_env, hub_url):
     report = _run(hub_url, task="protocol check", count=2, kind="builtin")
 
     assert report["ok"], json.dumps(report, indent=2)
-    assert report["counts"] == {"workers": 2, "passed": 2, "failed": 0, "silent": 0}
+    assert report["counts"] == {"workers": 2, "passed": 2, "failed": 0, "silent": 0,
+                                "no_report": 0}
     assert not report["timed_out"]
 
     for worker in report["workers"]:
@@ -226,6 +293,50 @@ def test_a_worker_that_says_nothing_is_reported_silent(worker_env, hub_url):
     assert worker["reported"] is False
     assert worker["ok"] is None                 # not False: nothing was claimed
     assert worker["announced_s"] is None
+
+
+def test_workers_join_the_coordinators_workspace_not_one_they_derive(hub_url, tmp_path):
+    """`--dir` used to be a trapdoor, and it failed as a false accusation.
+
+    A client given no workspace derives one from its working directory, so
+    workers started outside the coordinator's repo joined a different
+    workspace, never found the brief, and came back `silent` — the drill
+    manufacturing the exact failure it exists to detect, and blaming the
+    hub for it.
+
+    Deliberately without the `worker_env` fixture: the environment handed to
+    the workers here names a hub and no workspace, which is precisely the
+    case where they used to go and invent their own.
+    """
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "PYTHONPATH", "SYSTEMROOT")}
+    env["SWITCHBOARD_URL"] = hub_url
+    assert "SWITCHBOARD_WORKSPACE" not in env
+
+    config = ClientConfig(url=hub_url, workspace=WS)
+    with Client(config, agent_id="drill-coordinator-elsewhere") as hub:
+        report = drill.run_drill(hub, task="find me", count=2, kind="builtin",
+                                 timeout=60, cwd=str(tmp_path), env=env)
+
+    assert report["ok"], json.dumps(report, indent=2)
+    assert report["counts"]["silent"] == 0
+
+
+def test_a_sealed_coordinator_hands_its_key_to_its_own_workers(hub_url, tmp_path):
+    """The same fault one layer in: a key passed as `--key` rather than set
+    in the environment sealed a brief the workers could not open."""
+    from switchboard.crypto import generate_key
+
+    key = generate_key()
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "PYTHONPATH", "SYSTEMROOT")}
+    env["SWITCHBOARD_URL"] = hub_url
+    assert "SWITCHBOARD_KEY" not in env
+
+    config = ClientConfig(url=hub_url, workspace=WS, key=key)
+    with Client(config, agent_id="drill-coordinator-keyed") as hub:
+        report = drill.run_drill(hub, task="sealed brief", count=1, kind="builtin",
+                                 timeout=60, cwd=str(tmp_path), env=env)
+
+    assert report["ok"], json.dumps(report, indent=2)
 
 
 def test_report_is_left_on_the_board(worker_env, hub_url):

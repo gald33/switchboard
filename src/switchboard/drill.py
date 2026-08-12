@@ -11,11 +11,17 @@ unknown, because that is the honest answer for a coordination tool: if the
 only way to know a worker is alive is to look at its terminal, the hub
 failed at its one job.
 
-Two kinds of worker exist, and the difference is deliberate:
+Three kinds of worker exist, and the differences are deliberate:
 
 * **claude** — a real `claude -p` session, given the protocol in its
   prompt. This is the real test, and it is nondeterministic, needs a
   binary on PATH and costs tokens.
+* **claude-mcp** — the same session reaching the hub through the MCP
+  server instead of the CLI. This package ships both surfaces, and a
+  drill that only ever exercises one of them cannot notice the other
+  going dark — which is precisely the class of fault a drill exists to
+  catch, since a worker unable to act at all reports exactly as one that
+  chose to say nothing.
 * **builtin** — ``switchboard drill worker``, a scripted agent in this
   module that walks the same protocol. It exercises the hub identically
   and finishes in under a second, so the drill itself is testable in CI.
@@ -34,6 +40,14 @@ The protocol, which is also what the claude prompt says:
 
 Steps 2, 3, 5 and 6 are each observable from the outside, which is what
 turns "did it work" into a measurement rather than an impression.
+
+Whatever the kind, the coordinator hands its workers the settings it
+resolved for itself — hub, workspace, key — rather than letting each one
+work them out again. A client with no workspace named derives one from its
+own working directory, so a worker started elsewhere under ``--dir`` joins
+a different workspace, never finds the brief, and is reported silent while
+the hub is working perfectly: the drill manufacturing the exact failure it
+exists to detect.
 """
 
 from __future__ import annotations
@@ -168,6 +182,80 @@ The task:
 """
 
 
+#: What a `claude-mcp` worker is allowed to do. The hub half is the MCP
+#: server's tools rather than a Bash prefix, and Bash is absent entirely:
+#: this worker has no reason to shell out, and leaving it off means the run
+#: cannot quietly fall back to the CLI and report a green MCP path that was
+#: never exercised.
+CLAUDE_MCP_WORKER_TOOLS = ",".join([
+    "mcp__switchboard__checkin",
+    "mcp__switchboard__roster",
+    "mcp__switchboard__say",
+    "mcp__switchboard__inbox",
+    "mcp__switchboard__history",
+    "mcp__switchboard__claim",
+    "mcp__switchboard__release",
+    "mcp__switchboard__board_get",
+    "mcp__switchboard__board_set",
+    "mcp__switchboard__board_list",
+    "Read", "Write", "Edit", "Glob", "Grep",
+])
+
+MCP_WORKER_PROMPT = """\
+You are worker `{slot}` in a Switchboard coordination drill (run `{run_id}`).
+On the roster you appear as `{name}`.
+
+Everything you need is on the hub, and everything you report goes back to it.
+Reach the hub only through the switchboard MCP tools (`mcp__switchboard__*`);
+they are already pointed at the right hub and workspace. There is no shell in
+this session, and the `switchboard` CLI is deliberately not available to you:
+this run exists to prove the MCP surface works on its own.
+
+Protocol — follow it in order:
+
+1. `mcp__switchboard__checkin` with task "drill {run_id} worker {slot}"
+2. `mcp__switchboard__board_get` key `{brief_key}` — this is your brief. Read it.
+3. `mcp__switchboard__say` channel `{channel}`, message "{name} up"
+4. `mcp__switchboard__claim` resource `drill/{run_id}/{slot}` — your own slot, so
+   it should succeed. If it does not, say so on the channel and keep going.
+5. Do the task described in the brief. Say what part of it you are taking
+   before you start, and read the channel first so you do not duplicate a
+   peer — prefix what you say with `{name}` so they can tell your messages
+   from theirs.
+6. `mcp__switchboard__board_set` key `{result_key}`, value:
+   {{"ok": true|false, "slot": "{slot}", "summary": "one line",
+     "checks": [{{"name": "...", "ok": true|false, "detail": "..."}}]}}
+   Use that key exactly as written; do not build it out of your own agent id.
+   `ok` is your honest verdict on whether the task succeeded. Do not report
+   true because the drill would look better; a drill that always passes
+   measures nothing.
+7. `mcp__switchboard__say` channel `{channel}`, message "{name} done"
+
+Then stop. Do not open a pull request, do not commit, and do not touch any
+file outside the working directory you were started in.
+
+The task:
+
+{task}
+"""
+
+
+def worker_name(run_id: str, slot: str) -> str:
+    """What this worker calls itself on the roster.
+
+    Without an explicit name a client derives one from its directory and
+    branch, which is *the same string for every worker in a run* — a roster
+    of N rows distinguished only by a blinded id, and a channel where no
+    reader can tell who said what. The signing keypair in `signing.py` is
+    already per-process, so attribution was never ambiguous to the client;
+    this is what makes it legible to the humans and agents reading along.
+
+    Shaped like the coordinator's own `drill-coordinator:<run>` so one
+    roster reads as one run.
+    """
+    return f"drill-{slot}:{run_id}"
+
+
 def worker_agent_id(run_id: str, slot: str) -> str:
     """The id the coordinator assigns a worker, and looks for it under.
 
@@ -180,15 +268,51 @@ def worker_agent_id(run_id: str, slot: str) -> str:
     return f"drill-{run_id}-{slot}"
 
 
+def worker_result_key(run_id: str, slot: str) -> str:
+    """Where a worker writes its result, and where the observer looks.
+
+    The other half of `worker_agent_id`'s job. Naming it here means every
+    way of telling a worker its key — the claude prompt, the MCP prompt,
+    the environment a custom worker reads — spells the same string, and
+    `_poll_results` is the one place that has to agree with it.
+    """
+    return f"{result_prefix(run_id)}{worker_agent_id(run_id, slot)}"
+
+
 def worker_prompt(brief: Brief, slot: str) -> str:
     return WORKER_PROMPT.format(
         slot=slot,
         run_id=brief.run_id,
         channel=channel_for(brief.run_id),
         brief_key=brief_key(brief.run_id),
-        result_key=f"{result_prefix(brief.run_id)}{worker_agent_id(brief.run_id, slot)}",
+        result_key=worker_result_key(brief.run_id, slot),
         task=brief.task,
     )
+
+
+def mcp_worker_prompt(brief: Brief, slot: str) -> str:
+    return MCP_WORKER_PROMPT.format(
+        slot=slot,
+        run_id=brief.run_id,
+        name=worker_name(brief.run_id, slot),
+        channel=channel_for(brief.run_id),
+        brief_key=brief_key(brief.run_id),
+        result_key=worker_result_key(brief.run_id, slot),
+        task=brief.task,
+    )
+
+
+def mcp_config_json() -> str:
+    """The `--mcp-config` payload for a `claude-mcp` worker.
+
+    Inline rather than a file: a temporary file would have to outlive the
+    launch and be cleaned up after a run that may be killed by `--timeout`,
+    and there is nothing in here worth persisting. No `env` block either —
+    the connection settings are already in the worker's environment (see
+    `_worker_env`), which the MCP subprocess inherits, so naming them twice
+    would just be two places to drift.
+    """
+    return json.dumps({"mcpServers": {"switchboard": {"command": "switchboard-mcp"}}})
 
 
 # --- launching --------------------------------------------------------------
@@ -236,6 +360,12 @@ class Worker:
             "messages": len(self.messages),
             "leases": sorted(set(self.leases)),
             "reported": self.result is not None,
+            # Carried rather than left for the reader to infer: the printer
+            # used to derive this itself from `reported`/`ok`, which was a
+            # second implementation of `verdict` that could not see the
+            # difference between a worker never heard from and one that
+            # spoke and then went quiet.
+            "verdict": self.verdict(),
             "ok": bool(result.get("ok")) if self.result is not None else None,
             "summary": result.get("summary"),
             "checks": checks,
@@ -244,26 +374,82 @@ class Worker:
     def verdict(self) -> str:
         """One word for what became of this worker.
 
-        `silent` and `failed` are kept apart on purpose. A worker that ran
-        and honestly reported failure tested the task; a worker that never
-        reported tested the hub, and found it — or the launch — wanting.
-        Collapsing them into "not ok" would hide which one happened.
+        Four, and each names a different thing to go and look at.
+
+        `failed` is kept apart from the two quiet verdicts because a worker
+        that ran and honestly reported failure tested the task; one that
+        never reported tested the hub, and found it — or the launch —
+        wanting.
+
+        `silent` and `no-report` are kept apart for the same reason one step
+        down, and it is the distinction that made the `--allowedTools` bug
+        take as long as it did to find. `silent` means nothing was ever
+        heard from this worker: it never announced, never spoke, and the
+        suspicion belongs on the launch or on the hub's ability to carry a
+        presence at all. `no-report` means the hub demonstrably *did* carry
+        this worker's word — it announced, or it posted — and then no result
+        arrived, which points at the task, the worker, or the one key both
+        sides have to agree on. Reporting both as `silent` sends every
+        investigation to the wrong half of the system half the time.
         """
         if self.result is None:
-            return "silent"
+            if self.announced_at is None and not self.messages:
+                return "silent"
+            return "no-report"
         return "passed" if self.result.get("ok") else "failed"
 
 
-def _worker_env(brief: Brief, worker_agent_id: str, base: dict[str, str]) -> dict[str, str]:
+def _worker_env(brief: Brief, worker_agent_id: str, base: dict[str, str],
+                *, hub: Client | None = None) -> dict[str, str]:
+    """The environment a worker is started in.
+
+    Two groups, and the second one is why this takes a `hub`.
+
+    The `SWITCHBOARD_DRILL_*` values describe the run. The keys among them
+    are not a convenience: a worker has to write its result to the one key
+    `_poll_results` reads, and the only alternative to being told is
+    rebuilding `drill/<run>/results/drill-<run>-<slot>` by hand. That is the
+    drift the shared `worker_agent_id` formula exists to prevent, and a
+    custom worker that has to re-derive it is outside that protection.
+
+    The connection settings pin *where* the worker reports. Left to itself a
+    client derives its workspace from its own working directory — the repo
+    remote and root commit, see `config.default_workspace` — so a worker
+    started under `--dir` outside the coordinator's repo joins a different
+    workspace, never sees the brief, and is reported silent while the hub
+    works perfectly. That is the failure a drill is supposed to detect,
+    manufactured by the drill itself. The coordinator has already resolved
+    all three values; passing them down is what makes the worker prompt's
+    promise — "already pointed at the right hub and workspace by the
+    environment" — true by construction rather than by coincidence.
+
+    The workspace key travels with them for the same reason and no other: a
+    coordinator that got its key from `--key` rather than the environment
+    would otherwise seal a brief its own workers cannot open. It goes no
+    further than a subprocess this process spawned, which is the trust
+    boundary it already lives on.
+    """
     env = dict(base)
     env["SWITCHBOARD_AGENT_ID"] = worker_agent_id
+    slot = worker_agent_id.rsplit("-", 1)[-1]
+    env["SWITCHBOARD_AGENT_NAME"] = worker_name(brief.run_id, slot)
     env["SWITCHBOARD_DRILL_RUN"] = brief.run_id
-    env["SWITCHBOARD_DRILL_SLOT"] = worker_agent_id.rsplit("-", 1)[-1]
+    env["SWITCHBOARD_DRILL_SLOT"] = slot
     env["SWITCHBOARD_DRILL_TASK"] = brief.task
+    env["SWITCHBOARD_DRILL_CHANNEL"] = channel_for(brief.run_id)
+    env["SWITCHBOARD_DRILL_BRIEF_KEY"] = brief_key(brief.run_id)
+    env["SWITCHBOARD_DRILL_RESULT_KEY"] = worker_result_key(brief.run_id, slot)
     if brief.verify:
         env["SWITCHBOARD_DRILL_VERIFY"] = brief.verify
     else:
         env.pop("SWITCHBOARD_DRILL_VERIFY", None)
+    if hub is not None:
+        env["SWITCHBOARD_WORKSPACE"] = hub.workspace
+        env["SWITCHBOARD_URL"] = hub.config.url
+        if hub.config.token:
+            env["SWITCHBOARD_TOKEN"] = hub.config.token
+        if hub.config.key:
+            env["SWITCHBOARD_KEY"] = hub.config.key
     return env
 
 
@@ -291,6 +477,16 @@ def build_workers(
                     CLAUDE_WORKER_TOOLS]
             if model:
                 argv += ["--model", model]
+        elif kind == "claude-mcp":
+            # --strict-mcp-config so the run cannot pick up a switchboard
+            # server some other config already registered, pointed at some
+            # other workspace. Without it the drill would be testing whatever
+            # the machine happened to have configured.
+            argv = ["claude", "-p", mcp_worker_prompt(brief, slot),
+                    "--allowedTools", CLAUDE_MCP_WORKER_TOOLS,
+                    "--mcp-config", mcp_config_json(), "--strict-mcp-config"]
+            if model:
+                argv += ["--model", model]
         elif kind == "custom":
             if not worker_cmd:
                 raise ValueError("--worker-cmd is required with --worker custom")
@@ -302,14 +498,15 @@ def build_workers(
 
 
 def launch(workers: Sequence[Worker], brief: Brief, *, cwd: str | None = None,
-           env: dict[str, str] | None = None, capture: bool = True) -> None:
+           env: dict[str, str] | None = None, capture: bool = True,
+           hub: Client | None = None) -> None:
     base = dict(env or os.environ)
     for worker in workers:
         worker.launched_at = time.time()
         worker.proc = subprocess.Popen(  # noqa: S603 - argv is built above, not shell
             worker.argv,
             cwd=cwd,
-            env=_worker_env(brief, worker.agent_id, base),
+            env=_worker_env(brief, worker.agent_id, base, hub=hub),
             stdout=subprocess.DEVNULL if capture else None,
             stderr=subprocess.PIPE if capture else None,
             text=True,
@@ -499,6 +696,7 @@ def build_report(brief: Brief, observer: Observer, *, started_at: float,
     passed = verdicts.count("passed")
     failed = verdicts.count("failed")
     silent = verdicts.count("silent")
+    no_report = verdicts.count("no-report")
     latencies = [w.telemetry()["announced_s"] for w in workers]
     observed = [x for x in latencies if x is not None]
     return {
@@ -510,12 +708,14 @@ def build_report(brief: Brief, observer: Observer, *, started_at: float,
         "timed_out": timed_out,
         # The verdict is the conjunction, not the majority: a drill exists
         # to notice the one worker that never spoke.
-        "ok": failed == 0 and silent == 0 and not timed_out and passed == len(workers),
+        "ok": (failed == 0 and silent == 0 and no_report == 0
+               and not timed_out and passed == len(workers)),
         "counts": {
             "workers": len(workers),
             "passed": passed,
             "failed": failed,
             "silent": silent,
+            "no_report": no_report,
         },
         "telemetry": {
             "hub_polls": observer.hub_polls,
@@ -571,8 +771,9 @@ def run_drill(
     hub.inbox(channels=[channel], limit=50)
 
     workers = build_workers(brief, count=count, kind=kind, worker_cmd=worker_cmd, model=model)
-    emit(f"launching {len(workers)} {kind} worker(s) on {channel}")
-    launch(workers, brief, cwd=cwd, env=env)
+    emit(f"launching {len(workers)} {kind} worker(s) on {channel} "
+         f"in workspace {hub.workspace}")
+    launch(workers, brief, cwd=cwd, env=env, hub=hub)
 
     observer = Observer(hub, brief, workers)
     deadline = started_at + timeout
@@ -614,6 +815,18 @@ def run_drill(
 
 def claude_available() -> bool:
     return shutil.which("claude") is not None
+
+
+def mcp_server_available() -> bool:
+    """Whether a `claude-mcp` worker would have a hub to talk to.
+
+    Separate from `claude_available` because they fail differently and only
+    one of them is visible: a missing `claude` is an execve error the
+    coordinator sees immediately, while a missing `switchboard-mcp` starts a
+    worker perfectly happily and merely leaves it with no switchboard tools
+    — indistinguishable, from the hub, from a worker that ignored its brief.
+    """
+    return shutil.which("switchboard-mcp") is not None
 
 
 # --- the builtin worker -----------------------------------------------------
