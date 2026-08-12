@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from . import __version__, rooms
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
@@ -28,6 +29,7 @@ from .config import (
     MANAGED_HUB_URL,
     ClientConfig,
     git_remote_workspace,
+    is_loopback,
     isolation_warning,
     machine_suffix,
 )
@@ -234,6 +236,26 @@ def _add_timing_args(p: argparse.ArgumentParser) -> None:
                    help="rough size of the work ahead")
 
 
+def _apply_repo_url(config: ClientConfig, directory: Path) -> None:
+    """Layer the committed `.mcp.json` hub URL onto `config`, in place.
+
+    Only below the environment: an explicitly exported value is a deliberate
+    override of whatever the checkout says.
+
+    Its own function because `serve` has to answer the same question a client
+    does — "where would a client started here dial?" — and a second copy of
+    this precedence is a second answer that can disagree with the first.
+    """
+    if os.environ.get("SWITCHBOARD_URL"):
+        return
+    # Kept in step with the value, not inferred afterwards: by the time
+    # anything reads this, `config.url` is a plain string and every tier that
+    # could have set it looks identical. See `ClientConfig.url_source`.
+    from_mcp = _mcp_url(directory)
+    if from_mcp:
+        config.url, config.url_source = from_mcp, "mcp.json"
+
+
 def _make_config(args: argparse.Namespace) -> ClientConfig:
     """Resolve where this command talks to, and as whom.
 
@@ -257,15 +279,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     config = ClientConfig.from_env()
     directory = Path(".").resolve()
 
-    # Only below the environment: an explicitly exported value is a
-    # deliberate override of whatever the checkout says.
-    if not os.environ.get("SWITCHBOARD_URL"):
-        # Kept in step with the value, not inferred afterwards: by the time
-        # anything reads this, `config.url` is a plain string and every tier
-        # that could have set it looks identical. See `ClientConfig.url_source`.
-        from_mcp = _mcp_url(directory)
-        if from_mcp:
-            config.url, config.url_source = from_mcp, "mcp.json"
+    _apply_repo_url(config, directory)
     if not os.environ.get("SWITCHBOARD_WORKSPACE"):
         # `config.workspace` falls back to the literal "default", which
         # would otherwise mask the repo's real workspace.
@@ -445,6 +459,58 @@ def _until(iso: Any) -> str:
     return _dur(delta) if delta > 0 else "already due"
 
 
+def _dialable_url(host: str, port: int) -> str:
+    """The URL a client on this machine should use for a hub bound here.
+
+    `0.0.0.0` and `::` mean "every interface", which is a binding instruction
+    and not an address anything dials — handing it to a client as-is is a
+    connection refused with a confusing cause.
+    """
+    if host in ("0.0.0.0", "::", ""):  # noqa: S104 - matching, not binding
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
+
+def _would_reach(url: str, host: str, port: int) -> bool:
+    """Whether `url` reaches a hub bound to `host`:`port` on this machine."""
+    parts = urlsplit(url)
+    if (parts.port or (443 if parts.scheme == "https" else 80)) != port:
+        return False
+    if not parts.hostname:
+        return False
+    if host in ("0.0.0.0", "::", ""):  # noqa: S104 - matching, not binding
+        # Bound everywhere, so anything that resolves here reaches it. Only
+        # loopback is decidable without a DNS lookup, which is not worth doing
+        # to phrase a hint.
+        return is_loopback(url)
+    return parts.hostname.lower() == host.lower() or (
+        is_loopback(url) and is_loopback(f"http://{host}")
+    )
+
+
+def _serve_client_note(url: str, host: str, port: int) -> str | None:
+    """What to tell someone starting a hub that their own clients will miss.
+
+    A client with nothing configured dials the managed hub, so `serve` in one
+    terminal and an agent in another no longer meet by default — the agent
+    reaches something real, which is exactly why it never complains. This is
+    the one moment we know both halves: what is being started, and what a
+    client standing in this directory would dial instead.
+
+    Silent when they already agree, which covers `SWITCHBOARD_URL` exported
+    for the shell and a repo that committed a local hub with `init --local`.
+    """
+    if _would_reach(url, host, port):
+        return None
+    return (
+        f"note: agents started here will dial {url}, not this hub. Point them "
+        f"at it:\n    export SWITCHBOARD_URL={_dialable_url(host, port)}\n"
+        "or commit it for the whole repo with `switchboard init --local`."
+    )
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -474,7 +540,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    print(f"switchboard {__version__} → http://{args.host}:{args.port}  db={config.db_path}")
+    # Flushed because the note below goes to stderr, which is unbuffered: to a
+    # terminal both are line-buffered and interleave correctly, but redirected
+    # to a log file this line would otherwise sit in a buffer until exit and
+    # the note would appear to precede the hub it is about.
+    print(f"switchboard {__version__} → http://{args.host}:{args.port}  db={config.db_path}",
+          flush=True)
+    if not getattr(args, "quiet", False):
+        client = ClientConfig.from_env()
+        _apply_repo_url(client, Path(".").resolve())
+        note = _serve_client_note(client.url, args.host, args.port)
+        if note:
+            print(note, file=sys.stderr)
     uvicorn.run(
         create_app(config), host=args.host, port=args.port,
         log_level=args.log_level,
