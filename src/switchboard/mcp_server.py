@@ -27,6 +27,7 @@ from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
 from .config import ClientConfig
 from .crypto import generate_key
+from .guidance import skill_text
 from .signing import SigningServer
 from .timing import (
     EFFORT_LEVELS,
@@ -174,6 +175,20 @@ _TIMING_EFFORT = {
 
 
 TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "help",
+        "description": (
+            "The coordination protocol these tools are meant to implement: when to claim, "
+            "how handoffs are addressed so a later session can find them, what a timing "
+            "forecast does and does not promise, and what an empty roster actually means. "
+            "Each tool description here says what that tool does; this says how to work "
+            "alongside other agents. Call it if your harness has not loaded the "
+            "switchboard-coordinate skill, or when coordination is behaving in a way you "
+            "did not expect. Local and free: it reads the copy packaged with this install "
+            "and never touches the hub, so it answers even when the hub does not."
+        ),
+        "inputSchema": _schema({}),
+    },
     {
         "name": "whoami",
         "description": (
@@ -455,6 +470,18 @@ class Bridge:
         return result.get("unread_dms", 0)
 
     # --- individual tools ---
+
+    def help(self) -> str:
+        """The coordination protocol, served from the packaged skill.
+
+        Alone among the tools this touches neither the hub nor `_touch()`,
+        which is the point rather than an omission: the moment an agent most
+        needs the convention is the moment coordination is already not
+        working, and requiring a reachable hub to read the instructions would
+        withhold them exactly then. It also means no `unread_dms` here — a
+        count is only honest if something asked the hub for it.
+        """
+        return skill_text()
 
     def whoami(self) -> dict[str, Any]:
         unread_dms = self._touch()

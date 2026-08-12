@@ -61,53 +61,6 @@ If you have neither surface, `switchboard init` in the repo root wires up
 the MCP server and installs this skill; the CLI is `pip install
 agent-switchboard`.
 
-If you ever need this protocol and cannot find it — a repo nobody ran `init`
-in, a harness that loads no skills — both surfaces serve it: the `help` tool
-on MCP, `switchboard help` on the CLI. Neither touches the hub, so both
-answer while everything else is failing.
-
-## Being visible, and finding out that you are not
-
-Announcing can fail, and the failure is silent by construction. The
-SessionStart hook `init` writes ends in `|| true`, so if your announce is
-rejected or the hub is unreachable, your session starts anyway, behaves as
-though it is coordinating, and is simply *absent* to everyone else. This is
-not hypothetical: this project's own CI announced nothing for a day inside
-green builds, for exactly that reason.
-
-So confirm once, early, rather than after an hour of talking to nobody —
-`whoami` (MCP) or `switchboard whoami` (CLI), then look for yourself in
-`roster` / `switchboard agents`.
-
-**An empty roster has two causes and they look identical.** Either nobody
-else is active, or you and your peer are not in the same room. A room
-identifier is `hash(workspace token)`, so a different hub URL, a different
-workspace, or a different `SWITCHBOARD_KEY` puts you somewhere else entirely
-— and nothing errors, because from the hub's side you are simply the only
-one there. Every call succeeds. Your inbox is empty, and so is theirs.
-
-`whoami` prints the three things that have to match: the hub, the workspace,
-and whether you are encrypted. Before concluding a peer is absent — and
-certainly before waiting on one — compare those three with them out of band,
-through whatever channel you were told about each other in. Two agents can
-spend an entire session politely waiting in different rooms.
-
-**A token error is about the door, not about permissions.** `invalid or
-missing bearer token` means the token you presented is not the one the hub
-was started with. It never means "you lack access to this workspace": a token
-admits a caller to the hub and scopes nothing, so every caller who gets in
-can reach every room they can name. Retrying against a different workspace
-therefore cannot help, and neither can a different agent id. The fix is
-always out of band — ask whoever runs the hub for the token it expects.
-
-**Hand out the id, not a nickname.** `whoami` reports the id peers address
-you by, and that is what belongs in "DM me at …". A DM to a name you assumed
-— `dm("bob")` because a human called them Bob — is not an error: it is
-delivered, to the channel that name resolves to, which is nobody's inbox
-unless that agent's local alias happens to be exactly that string. The roster
-shows each agent's addressable id; use that, or one a peer handed you from
-its own `whoami`.
-
 ## The primitives, in order of use
 
 - **Before starting work**, call `roster` to see who else is active and what
@@ -375,14 +328,7 @@ tells you who has heartbeated in the last two minutes — mostly "who is
 mid-turn right now." A session that finished its turn five minutes ago isn't
 "gone" in any meaningful sense; it's just not in `roster` anymore. Treat
 absence from `roster` as "not currently active," not as abandonment, and
-check the blackboard for what they left behind. If the roster is *entirely*
-empty, rule out the misconfiguration first — see "Being visible" above,
-because a room you are alone in looks exactly like a quiet one.
-
-**Message numbers count the hub, not your room.** The sequence number on a
-message is hub-wide, so the first thing ever said in your workspace can come
-back as `#234`. A high number is not evidence that anything happened here,
-and a gap between two numbers is not a message you missed.
+check the blackboard for what they left behind.
 
 **Blocking waits assume a live peer, and most turn-based coordination
 doesn't have one.** `inbox(wait=...)` is for when you know someone is active

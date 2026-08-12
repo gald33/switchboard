@@ -233,6 +233,7 @@ own. Releasing eagerly just frees the resource sooner.
 
 | Tool | Use it when |
 |---|---|
+| `help` | The coordination convention itself — when the skill is not loaded, or coordination is behaving unexpectedly. Local; answers even when the hub does not |
 | `whoami` | Session start — learn how others will address you |
 | `roster` | Before choosing work — who is active, what do they hold |
 | `checkin` | Every few minutes — heartbeat, renew, collect messages |
