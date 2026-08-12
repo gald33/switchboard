@@ -258,6 +258,23 @@ with Client(agent_id=me.agent_id) as hub:
         hub.release("db/migrations")
 ```
 
+And to test that code, a hub in your test process with a clock you control —
+so "the lease expired while the holder was busy" is an assertion rather than a
+fifteen-minute wait:
+
+```python
+from switchboard.testing import hub
+
+def test_a_lease_outlives_a_crashed_holder():
+    with hub() as h:
+        h.client("worker").acquire("db/migrations", ttl=900)
+        h.advance(901)  # the worker died; nothing released anything
+        assert h.client("next").acquire("db/migrations")["holder"] == "next"
+```
+
+The real app over the real store, reached in-process. See
+[Testing](docs/testing.md).
+
 ---
 
 ## Documentation
@@ -272,6 +289,7 @@ with Client(agent_id=me.agent_id) as hub:
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [Drills](docs/drills.md) — `switchboard drill`: launch a few agents at one task and measure the coordination end to end
+- [Testing](docs/testing.md) — `switchboard.testing`: a real hub in your test process, with a clock you can move
 - [HTTP API](docs/api.md) — every endpoint
 - [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade

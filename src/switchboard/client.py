@@ -624,9 +624,19 @@ class Client(_Base):
     """Synchronous client."""
 
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
-                 timeout: float = 40.0, key: str | None = None) -> None:
+                 timeout: float = 40.0, key: str | None = None,
+                 http: httpx.Client | None = None) -> None:
+        """``http`` replaces the transport this client would otherwise build.
+
+        The one supported use is reaching a hub that is not on a socket —
+        an app running in this same process, via Starlette's ``TestClient``.
+        See ``switchboard.testing``, which is the intended way to get one;
+        passing your own means you own its lifetime, so ``close()`` leaves it
+        open.
+        """
         super().__init__(config, agent_id=agent_id, key=key)
-        self._http = httpx.Client(
+        self._owns_http = http is None
+        self._http = http if http is not None else httpx.Client(
             base_url=self.config.url,
             headers=_headers(self.config.effective_token()),
             timeout=timeout,
@@ -639,7 +649,8 @@ class Client(_Base):
         self.close()
 
     def close(self) -> None:
-        self._http.close()
+        if self._owns_http:
+            self._http.close()
 
     def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
               ) -> dict[str, Any]:
@@ -797,9 +808,18 @@ class AsyncClient(_Base):
     """Asynchronous client — same surface as :class:`Client`."""
 
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
-                 timeout: float = 40.0, key: str | None = None) -> None:
+                 timeout: float = 40.0, key: str | None = None,
+                 http: httpx.AsyncClient | None = None) -> None:
+        """``http`` replaces the transport, as on :class:`Client`.
+
+        The async case has a native answer — ``httpx.ASGITransport`` speaks to
+        an app object directly — so this takes a fully built
+        ``httpx.AsyncClient`` and, as there, does not close what it did not
+        open.
+        """
         super().__init__(config, agent_id=agent_id, key=key)
-        self._http = httpx.AsyncClient(
+        self._owns_http = http is None
+        self._http = http if http is not None else httpx.AsyncClient(
             base_url=self.config.url,
             headers=_headers(self.config.effective_token()),
             timeout=timeout,
@@ -812,7 +832,8 @@ class AsyncClient(_Base):
         await self.aclose()
 
     async def aclose(self) -> None:
-        await self._http.aclose()
+        if self._owns_http:
+            await self._http.aclose()
 
     async def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
                     ) -> dict[str, Any]:

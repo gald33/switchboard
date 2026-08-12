@@ -8,56 +8,39 @@ ever mentioning registration. On the CLI that advice used to fail outright,
 which a real agent hit while coordinating: "checkin failed first with 'unknown
 or expired agent' because I hadn't announced yet".
 
-These bind the CLI to an in-process hub, the same swap `test_cli_board.py`
-uses, so the 404 being recovered from is the real one the server raises rather
-than a mock's idea of it.
+These bind the CLI to an in-process hub (`switchboard.testing`), so the 404
+being recovered from is the real one the server raises rather than a mock's
+idea of it.
 """
 
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from switchboard.cli import main
-from switchboard.client import Client, SwitchboardError
-from switchboard.config import ServerConfig
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.client import SwitchboardError
+from switchboard.testing import BASE_URL, hub
 
 WS = "checkin-cli-ws"
 
 
 @pytest.fixture
-def cli_bound_to_a_real_hub(tmp_path, monkeypatch):
-    store = Store(str(tmp_path / "checkin.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "checkin.db")), store=store)
-    with TestClient(app) as http:
+def cli_bound_to_a_real_hub(monkeypatch):
+    import switchboard.cli as cli_module
 
-        class _Bound(Client):
-            def __init__(self, config=None, *, agent_id=None, timeout=40.0, key=None):
-                super().__init__(config, agent_id=agent_id, timeout=timeout, key=key)
-                self._http.close()
-                self._http = http
-
-            def close(self) -> None:
-                pass
-
-        import switchboard.cli as cli_module
-
-        monkeypatch.setattr(cli_module, "Client", _Bound)
-        yield
-    store.close()
+    with hub(workspace=WS) as handle:
+        monkeypatch.setattr(cli_module, "Client", handle.client_class())
+        yield handle
 
 
 def _prefix(agent_id: str) -> list[str]:
-    return ["--url", "http://testserver", "-w", WS, "--agent-id", agent_id, "--json"]
+    return ["--url", BASE_URL, "-w", WS, "--agent-id", agent_id, "--json"]
 
 
 def _roster(capsys) -> list[dict]:
-    code = main(["--url", "http://testserver", "-w", WS, "--json", "agents"])
+    code = main(["--url", BASE_URL, "-w", WS, "--json", "agents"])
     assert code == 0
     return json.loads(capsys.readouterr().out)
 
@@ -82,7 +65,7 @@ def test_checkin_recovers_after_presence_expires(
     assert code == 0
     capsys.readouterr()
 
-    time.sleep(1.2)  # outlive the TTL just announced
+    cli_bound_to_a_real_hub.advance(2)  # outlive the TTL just announced
     assert not any(a["agent_id"] == "goes-quiet" for a in _roster(capsys))
 
     code = main([*_prefix("goes-quiet"), "checkin"])

@@ -12,21 +12,15 @@ import time
 from contextlib import contextmanager
 
 import pytest
-from fastapi.testclient import TestClient
 
-from switchboard.config import ServerConfig
 from switchboard.load import LoadMeter
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.testing import hub as make_hub
 
 
 @pytest.fixture
-def hub(tmp_path):
-    db = str(tmp_path / "l.db")
-    store = Store(db)
-    with TestClient(create_app(ServerConfig(db_path=db), store=store)) as c:
-        yield c
-    store.close()
+def hub():
+    with make_hub() as handle:
+        yield handle.http
 
 
 def test_a_parked_long_poll_is_not_load():
@@ -240,10 +234,8 @@ def test_a_refusal_says_which_class_and_when_to_return(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Admission, "admit", always_busy)
 
-    db = str(tmp_path / "shed.db")
-    store = Store(db)
-    with TestClient(create_app(ServerConfig(db_path=db, load_target_ms=50.0),
-                               store=store)) as c:
+    with make_hub(load_target_ms=50.0) as handle:
+        c = handle.http
         r = c.post("/messages", json={"workspace": "w", "channel": "x",
                                       "agent_id": "a", "body": "flood"})
         assert r.status_code == 429
@@ -253,15 +245,12 @@ def test_a_refusal_says_which_class_and_when_to_return(tmp_path, monkeypatch):
         # and a new room draws on its own reservation, not the flooded one
         r = c.post("/agents/register", json={"workspace": "w", "name": "a"})
         assert r.json()["work_class"] == "admit"
-    store.close()
 
 
-def test_nothing_is_shed_without_a_target(tmp_path):
-    db = str(tmp_path / "open.db")
-    store = Store(db)
-    with TestClient(create_app(ServerConfig(db_path=db), store=store)) as c:
+def test_nothing_is_shed_without_a_target():
+    with make_hub() as handle:
+        c = handle.http
         codes = {c.post("/messages", json={"workspace": "w", "channel": "x",
                                           "agent_id": "a", "body": "n"}).status_code
                  for _ in range(120)}
         assert 429 not in codes
-    store.close()

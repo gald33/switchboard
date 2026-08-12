@@ -15,18 +15,14 @@ import io
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
-from switchboard.client import Client
-from switchboard.config import ClientConfig, ServerConfig
 from switchboard.crypto import (
     DecryptionError,
     WorkspaceCipher,
     generate_key,
     is_sealed,
 )
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.testing import hub as make_hub
 
 WS = "crypto-ws"
 SECRET = "the orders migration is 0142 and the api key rotates friday"
@@ -38,23 +34,14 @@ def key():
 
 
 @pytest.fixture
-def hub(tmp_path):
-    """A real hub plus the path to its database, so we can read the bytes."""
-    db = str(tmp_path / "e2e.db")
-    store = Store(db)
-    app = create_app(ServerConfig(db_path=db), store=store)
-    with TestClient(app) as http:
-        yield http, db, store
-    store.close()
+def hub(tmp_path, key):
+    """A real hub on a real file, so the no-plaintext test can read the bytes.
 
-
-def bound(http, key, agent_id):
-    """A Client whose transport is the in-process hub."""
-    config = ClientConfig(url="http://testserver", workspace=WS, key=key)
-    client = Client(config, agent_id=agent_id, key=key)
-    client._http.close()
-    client._http = http
-    return client
+    Every client it hands out holds `key`, which is what makes them able to
+    read each other while the hub cannot read any of them.
+    """
+    with make_hub(workspace=WS, key=key, db=str(tmp_path / "e2e.db")) as handle:
+        yield handle
 
 
 def hub_bytes(db_path: str) -> bytes:
@@ -227,8 +214,7 @@ def test_hex_keys_are_accepted():
 
 
 def test_agents_read_each_other_transparently(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha", branch="feat/billing", channels=["build"])
     a2.register(name="beta", channels=["build"])
 
@@ -238,8 +224,7 @@ def test_agents_read_each_other_transparently(hub, key):
 
 
 def test_direct_messages_work_encrypted(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha")
     a2.register(name="beta")
     # Address by the id the roster reports — already in hub (blinded) form.
@@ -249,8 +234,7 @@ def test_direct_messages_work_encrypted(hub, key):
 
 
 def test_leases_still_work_encrypted(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha")
     a2.register(name="beta")
     lease = a1.acquire("backend/alembic", note=SECRET)
@@ -263,23 +247,20 @@ def test_leases_still_work_encrypted(hub, key):
 
 
 def test_blackboard_round_trips_encrypted(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.board_set("migration/plan", {"taken": ["0142"], "note": SECRET})
     assert a2.board_get("migration/plan") == {"taken": ["0142"], "note": SECRET}
 
 
 def test_channel_history_decrypts(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha", channels=["build"])
     a2.post("build", SECRET)
     assert [m["body"] for m in a1.history("build")] == [SECRET]
 
 
 def test_roster_decrypts_names_and_branches(hub, key):
-    http, _, _ = hub
-    a1 = bound(http, key, "a1")
+    a1 = hub.client("a1")
     a1.register(name="alpha", branch="feat/acme-billing", task="migrating orders")
     entry = a1.agents()[0]
     assert entry["name"] == "alpha"
@@ -288,9 +269,8 @@ def test_roster_decrypts_names_and_branches(hub, key):
 
 
 def test_an_agent_with_the_wrong_key_cannot_read(hub, key):
-    http, _, _ = hub
-    insider = bound(http, key, "a1")
-    outsider = bound(http, generate_key(), "a2")
+    insider = hub.client("a1")
+    outsider = hub.client("a2", key=generate_key())
     insider.register(name="alpha", channels=["build"])
     insider.post("build", SECRET)
     # The outsider blinds "build" differently, so it does not even see the
@@ -307,14 +287,14 @@ def test_the_hub_database_contains_no_plaintext(hub, key):
     This is the property the whole feature exists for, so it is asserted
     against the bytes on disk rather than against any code path.
     """
-    http, db_path, store = hub
+    db_path = hub.config.db_path
     # Long, distinctive identifiers throughout. Short needles ("a1", "0142")
     # match base64url ciphertext by CHANCE — a 2-character needle has a ~1/4096
     # hit rate per position, which across a few KB of database is a coin flip.
     # An earlier version of this test used them and failed ~40% of the time,
     # which reads as a leak and is not one.
-    a1 = bound(http, key, "agent-alpha-billing-laptop")
-    a2 = bound(http, key, "agent-beta-orders-cloudbox")
+    a1 = hub.client("agent-alpha-billing-laptop")
+    a2 = hub.client("agent-beta-orders-cloudbox")
 
     a1.register(name="alpha-billing-laptop", branch="feat/acme-billing-rework",
                 task="migrating-orders-table", channels=["deployment-secrets"])
@@ -344,12 +324,11 @@ def test_the_hub_database_contains_no_plaintext(hub, key):
 
 def test_the_hub_sees_only_opaque_identifiers(hub, key):
     """What the hub *does* see, asserted so the metadata claim stays honest."""
-    http, _, store = hub
-    a1 = bound(http, key, "a1")
+    a1 = hub.client("a1")
     a1.register(name="alpha", channels=["build"])
     a1.post("build", SECRET)
 
-    channels = store.list_channels(workspace=WS)
+    channels = hub.store.list_channels(workspace=WS, now=hub.now)
     assert channels, "the hub still routes, so it still sees *a* channel"
     assert all(c["channel"] != "build" for c in channels)
     # It knows how many messages and when — that is the documented leakage.
@@ -358,8 +337,8 @@ def test_the_hub_sees_only_opaque_identifiers(hub, key):
 
 def test_encryption_is_off_unless_a_key_is_given(hub):
     """Self-hosted hubs that do not want this must be unaffected."""
-    http, db_path, _ = hub
-    plain = bound(http, None, "a1")
+    db_path = hub.config.db_path
+    plain = hub.client("a1", key="")
     assert plain.cipher is None
     plain.register(name="alpha", channels=["build"])
     plain.post("build", "readable")
@@ -376,8 +355,7 @@ def test_channel_names_stay_readable_for_key_holders(hub, key):
     characters and cannot tell which channel it came from — which would make
     the encrypted mode noticeably worse to use than the plaintext one.
     """
-    http, _, store = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha", channels=["deployment-secrets"])
     a2.register(name="beta", channels=["deployment-secrets"])
     a2.post("deployment-secrets", "ready")
@@ -387,14 +365,13 @@ def test_channel_names_stay_readable_for_key_holders(hub, key):
     assert message["body"] == "ready"
 
     # ...while the hub's own row still carries only the blinded token.
-    stored = store.list_channels(workspace=WS)
+    stored = hub.store.list_channels(workspace=WS, now=hub.now)
     assert all(c["channel"] != "deployment-secrets" for c in stored)
 
 
 def test_a_dict_body_is_not_mistaken_for_a_label_wrapper(hub, key):
     """The label check is structural, so ordinary dict bodies survive intact."""
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha", channels=["build"])
     tricky = {"b": "looks like a wrapper", "ch": "but is not one"}
     a2.post("build", tricky)
@@ -556,8 +533,7 @@ def test_a_mismatched_key_is_visible_in_the_roster(hub, key):
     plaintext workspace — so failing to open a peer's name is what makes the
     partition visible.
     """
-    http, _, _ = hub
-    current, stale = bound(http, key, "a1"), bound(http, generate_key(), "a2")
+    current, stale = hub.client("a1"), hub.client("a2", key=generate_key())
     current.register(name="alpha", channels=["build"])
     stale.register(name="beta", channels=["build"])
 
@@ -575,8 +551,7 @@ def test_an_unencrypted_agent_in_an_encrypted_workspace_is_flagged(hub, key):
     open this peer's fields" catches it, because its name arrives as plaintext
     where an envelope was expected.
     """
-    http, _, _ = hub
-    encrypted, plain = bound(http, key, "a1"), bound(http, None, "a2")
+    encrypted, plain = hub.client("a1"), hub.client("a2", key="")
     encrypted.register(name="alpha")
     plain.register(name="beta")
 
@@ -586,8 +561,7 @@ def test_an_unencrypted_agent_in_an_encrypted_workspace_is_flagged(hub, key):
 
 def test_the_unencrypted_side_is_told_too(hub, key):
     """Seen from the side more likely to BE the misconfigured one."""
-    http, _, _ = hub
-    encrypted, plain = bound(http, key, "a1"), bound(http, None, "a2")
+    encrypted, plain = hub.client("a1"), hub.client("a2", key="")
     encrypted.register(name="alpha")
     plain.register(name="beta")
 
@@ -596,8 +570,7 @@ def test_the_unencrypted_side_is_told_too(hub, key):
 
 
 def test_matching_keys_raise_no_false_alarm(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     a1.register(name="alpha")
     a2.register(name="beta")
     assert a1.key_mismatches(a1.agents()) == []
@@ -605,8 +578,7 @@ def test_matching_keys_raise_no_false_alarm(hub, key):
 
 def test_an_all_plaintext_workspace_raises_no_alarm(hub):
     """Nobody encrypts; nothing to warn about."""
-    http, _, _ = hub
-    a1, a2 = bound(http, None, "a1"), bound(http, None, "a2")
+    a1, a2 = hub.client("a1", key=""), hub.client("a2", key="")
     a1.register(name="alpha")
     a2.register(name="beta")
     assert a1.key_mismatches(a1.agents()) == []
@@ -614,9 +586,8 @@ def test_an_all_plaintext_workspace_raises_no_alarm(hub):
 
 def test_the_roster_still_lists_peers_it_cannot_read(hub, key):
     """Raising here would block the diagnostic AND break correctly-keyed peers."""
-    http, _, _ = hub
-    a1, a2, a3 = (bound(http, key, "a1"), bound(http, key, "a2"),
-                  bound(http, generate_key(), "a3"))
+    a1, a2, a3 = (hub.client("a1"), hub.client("a2"),
+                  hub.client("a3", key=generate_key()))
     a1.register(name="alpha")
     a2.register(name="beta")
     a3.register(name="gamma")
@@ -635,10 +606,9 @@ def test_nothing_extra_is_published_to_detect_a_mismatch(hub, key):
     rather than a demonstration of key possession, and it told the hub which
     agents share a key and when a key changed.
     """
-    http, _, store = hub
-    a1 = bound(http, key, "a1")
+    a1 = hub.client("a1")
     a1.register(name="alpha", meta={"host": "laptop"})
-    stored = store.list_agents(workspace=WS)[0]
+    stored = hub.store.list_agents(workspace=WS, now=hub.now)[0]
     assert "key_fp" not in stored.meta
 
 
@@ -656,8 +626,7 @@ def side_scope(ws_suffix: str = "") -> dict[str, str]:
 
 
 def test_custom_scope_round_trips_and_is_invisible_on_the_default_scope(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     scope = side_scope()
 
     a1.post("plan", "private plan", custom_scope=scope)
@@ -670,8 +639,7 @@ def test_custom_scope_round_trips_and_is_invisible_on_the_default_scope(hub, key
 
 
 def test_custom_scope_without_a_key_is_plaintext_but_still_workspace_isolated(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     scope = {"workspace": f"w_plain_{generate_key()[:8]}"}  # no key: unencrypted
 
     a1.post("plan", "not encrypted here", custom_scope=scope)
@@ -680,15 +648,13 @@ def test_custom_scope_without_a_key_is_plaintext_but_still_workspace_isolated(hu
 
 
 def test_custom_scope_requires_a_workspace(hub, key):
-    http, _, _ = hub
-    a1 = bound(http, key, "a1")
+    a1 = hub.client("a1")
     with pytest.raises(TypeError):
         a1.post("plan", "x", custom_scope={"key": generate_key()})
 
 
 def test_custom_scope_leases_exclude_independently_of_the_default_scope(hub, key):
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     scope = side_scope()
 
     a1.acquire("shared/plan", custom_scope=scope)
@@ -709,8 +675,7 @@ def test_custom_scope_dm_after_discovering_a_peer_through_say(hub, key):
     recipient's blinded id is learned from a message's `from` field instead —
     the same bootstrap `dm()`'s own docs already rely on for the default
     scope, where the roster happens to be the usual source of that id."""
-    http, _, _ = hub
-    a1, a2 = bound(http, key, "a1"), bound(http, key, "a2")
+    a1, a2 = hub.client("a1"), hub.client("a2")
     scope = side_scope()
 
     a2.post("hello", "a2 here", custom_scope=scope)
@@ -721,8 +686,7 @@ def test_custom_scope_dm_after_discovering_a_peer_through_say(hub, key):
 
 
 def test_custom_scope_does_not_change_the_agents_default_identity(hub, key):
-    http, _, _ = hub
-    a1 = bound(http, key, "a1")
+    a1 = hub.client("a1")
     default_id = a1.agent_id
     a1.post("plan", "x", custom_scope=side_scope())
     assert a1.agent_id == default_id
@@ -737,9 +701,9 @@ def test_custom_scope_does_not_change_the_agents_default_identity(hub, key):
 
 
 def test_a_peer_reads_the_public_key_and_the_hub_never_does(hub, key):
-    http, db, store = hub
-    alice = bound(http, key, "alice")
-    bob = bound(http, key, "bob")
+    db = hub.config.db_path
+    alice = hub.client("alice")
+    bob = hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
 
@@ -754,8 +718,7 @@ def test_a_peer_reads_the_public_key_and_the_hub_never_does(hub, key):
 def test_two_agents_in_one_process_are_two_identities(hub, key):
     # A Client is an agent. Sharing a signing key between two would make the
     # scheme claim something it cannot back.
-    http, _, _ = hub
-    assert bound(http, key, "a").public_key != bound(http, key, "b").public_key
+    assert hub.client("a").public_key != hub.client("b").public_key
 
 
 def test_the_private_half_never_reaches_a_repr(key):
@@ -771,8 +734,7 @@ def test_the_private_half_never_reaches_a_repr(key):
 
 
 def test_a_peer_verifies_a_message_it_can_attribute(hub, key):
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     bob.agents()  # learn alice's key
@@ -787,9 +749,8 @@ def test_an_impersonator_is_caught(hub, key):
     """The attack the whole scheme exists for: everyone in a room holds the
     same workspace key, so `mallory` can post *as* alice and the hub cannot
     tell. A signature can."""
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
-    mallory = bound(http, key, "mallory")
+    alice, bob = hub.client("alice"), hub.client("bob")
+    mallory = hub.client("mallory")
     alice.register(name="alice")
     bob.register(name="bob")
     mallory.register(name="mallory")
@@ -806,8 +767,7 @@ def test_an_impersonator_is_caught(hub, key):
 def test_an_unknown_sender_is_not_called_a_forgery(hub, key):
     # No key for a sender usually means a roster we have not read. Reporting
     # that as a bad signature would train people to ignore the warning.
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     alice.post("build", "hello")
@@ -818,14 +778,13 @@ def test_an_unknown_sender_is_not_called_a_forgery(hub, key):
 def test_a_restart_does_not_turn_history_into_forgeries(hub, key):
     # Identity is per process by design, so a restarted agent publishes a new
     # key. Its earlier messages are still legitimately signed by the old one.
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     bob.agents()
     alice.post("build", "before the restart")
 
-    restarted = bound(http, key, "alice")
+    restarted = hub.client("alice")
     restarted.register(name="alice")
     bob.agents()
     restarted.post("build", "after the restart")
@@ -838,8 +797,8 @@ def test_a_restart_does_not_turn_history_into_forgeries(hub, key):
 def test_the_signature_is_inside_the_ciphertext(hub, key):
     # A signature the transport can strip proves nothing. It travels sealed,
     # so removing it breaks the AEAD tag rather than silently downgrading.
-    http, db, _ = hub
-    alice = bound(http, key, "alice")
+    db = hub.config.db_path
+    alice = hub.client("alice")
     alice.register(name="alice")
     alice.post("build", "sealed and signed")
 
@@ -851,8 +810,7 @@ def test_the_signature_is_inside_the_ciphertext(hub, key):
 def test_a_gap_in_one_sender_is_visible(hub, key):
     """Signatures give authenticity; only the counter gives any grip on a hub
     that selectively withholds one agent's messages."""
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     bob.agents()
@@ -865,7 +823,7 @@ def test_a_gap_in_one_sender_is_visible(hub, key):
     assert all("missing" not in m["signature"] for m in read)
 
     # a reader that saw only the first now meets the third
-    carol = bound(http, key, "carol")
+    carol = hub.client("carol")
     carol.note_peer_keys([{"agent_id": alice.agent_id, "pubkey": alice.public_key}])
     first, _, third = ({**m} for m in read)
     carol._verify_message(first, {"by": alice.agent_id, "n": 1,
@@ -978,9 +936,8 @@ def test_a_key_swap_under_a_live_identity_is_noticed(hub, key):
     announce as anyone and replace the published key. The hub cannot be asked
     to arbitrate — a first-writer-wins column there would be the registry that
     was deliberately removed — so the peer notices instead."""
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
-    mallory = bound(http, key, "mallory")
+    alice, bob = hub.client("alice"), hub.client("bob")
+    mallory = hub.client("mallory")
     alice.register(name="alice")
     bob.register(name="bob")
     bob.agents()  # witness alice, alive, under her own key
@@ -996,8 +953,7 @@ def test_a_key_swap_under_a_live_identity_is_noticed(hub, key):
 def test_a_restart_is_not_reported_as_a_swap(hub, key):
     # The distinction that makes the signal worth reading: a restart goes quiet
     # first, so the previous entry is stale by the time the new key appears.
-    http, _, _ = hub
-    alice, bob = bound(http, key, "alice"), bound(http, key, "bob")
+    alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     for entry in bob.agents():
@@ -1005,7 +961,7 @@ def test_a_restart_is_not_reported_as_a_swap(hub, key):
             entry["stale"] = True
             bob.note_peer_keys([entry])
 
-    restarted = bound(http, key, "alice")
+    restarted = hub.client("alice")
     restarted.register(name="alice")
     roster = {a["name"]: a for a in bob.agents()}
     assert "key_changed_while_live" not in roster["alice"]
@@ -1023,16 +979,15 @@ def test_a_restart_is_not_reported_as_a_swap(hub, key):
 def test_a_second_process_signs_as_the_same_agent(hub, key):
     from switchboard.signing import SigningServer
 
-    http, _, _ = hub
-    session = bound(http, key, "alice")
+    session = hub.client("alice")
     server = SigningServer(session.signing, "alice")
     if not server.start():
         pytest.skip("no unix sockets here")
     try:
-        hook = bound(http, key, "alice")
+        hook = hub.client("alice")
         assert hook.public_key == session.public_key
         # and a peer verifies what the hook wrote against the session's key
-        bob = bound(http, key, "bob")
+        bob = hub.client("bob")
         session.register(name="alice")
         bob.register(name="bob")
         bob.agents()
@@ -1046,13 +1001,12 @@ def test_a_second_process_signs_as_the_same_agent(hub, key):
 def test_a_different_agent_gets_its_own_identity(hub, key):
     from switchboard.signing import SigningServer
 
-    http, _, _ = hub
-    session = bound(http, key, "alice")
+    session = hub.client("alice")
     server = SigningServer(session.signing, "alice")
     if not server.start():
         pytest.skip("no unix sockets here")
     try:
-        assert bound(http, key, "mallory").public_key != session.public_key
+        assert hub.client("mallory").public_key != session.public_key
     finally:
         server.close()
 
@@ -1061,15 +1015,13 @@ def test_no_session_means_sign_as_yourself(hub, key):
     # A CLI command must not fail or hang because no MCP server is running.
     from switchboard.signing import SigningIdentity
 
-    http, _, _ = hub
-    assert isinstance(bound(http, key, "nobody-listening").signing, SigningIdentity)
+    assert isinstance(hub.client("nobody-listening").signing, SigningIdentity)
 
 
 def test_the_key_itself_never_crosses_the_socket(hub, key):
     from switchboard.signing import SigningServer, _ask, socket_path
 
-    http, _, _ = hub
-    session = bound(http, key, "alice")
+    session = hub.client("alice")
     server = SigningServer(session.signing, "alice")
     if not server.start():
         pytest.skip("no unix sockets here")

@@ -13,13 +13,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 from switchboard.cli import build_parser, main
-from switchboard.client import Client
-from switchboard.config import ServerConfig
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.testing import BASE_URL, hub
 
 WS = "board-cli-ws"
 
@@ -44,28 +40,14 @@ def test_key_and_board_key_are_independent_in_parsed_args():
 
 
 @pytest.fixture
-def cli_bound_to_a_real_hub(tmp_path, monkeypatch):
-    """Route `switchboard.cli.Client` through an in-process TestClient, the
-    same swap `test_mcp.py` uses, so `main()` exercises the real HTTP round
-    trip without a subprocess."""
-    store = Store(str(tmp_path / "board.db"))
-    app = create_app(ServerConfig(db_path=str(tmp_path / "board.db")), store=store)
-    with TestClient(app) as http:
+def cli_bound_to_a_real_hub(monkeypatch):
+    """Route `switchboard.cli.Client` at an in-process hub, so `main()`
+    exercises the real HTTP round trip without a subprocess."""
+    import switchboard.cli as cli_module
 
-        class _Bound(Client):
-            def __init__(self, config=None, *, agent_id=None, timeout=40.0, key=None):
-                super().__init__(config, agent_id=agent_id, timeout=timeout, key=key)
-                self._http.close()
-                self._http = http
-
-            def close(self) -> None:
-                pass  # shared across calls in a test; the fixture closes it once
-
-        import switchboard.cli as cli_module
-
-        monkeypatch.setattr(cli_module, "Client", _Bound)
-        yield
-    store.close()
+    with hub(workspace=WS) as handle:
+        monkeypatch.setattr(cli_module, "Client", handle.client_class())
+        yield handle
 
 
 def test_board_set_get_delete_with_a_short_key_name(
@@ -74,7 +56,7 @@ def test_board_set_get_delete_with_a_short_key_name(
     """The exact repro from #16: a board key far under 32 bytes, no
     encryption configured, must round-trip cleanly through the CLI."""
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
-    prefix = ["--url", "http://testserver", "-w", WS, "--json"]
+    prefix = ["--url", BASE_URL, "-w", WS, "--json"]
 
     code = main([*prefix, "board", "set", "my-board-key", "hello"])
     assert code == 0
@@ -87,7 +69,7 @@ def test_board_set_get_delete_with_a_short_key_name(
     assert get_payload["key"] == "my-board-key"
     assert get_payload["value"] == "hello"
 
-    code = main(["--url", "http://testserver", "-w", WS, "-q", "board", "delete", "my-board-key"])
+    code = main(["--url", BASE_URL, "-w", WS, "-q", "board", "delete", "my-board-key"])
     assert code == 0
 
 
@@ -99,7 +81,7 @@ def test_board_key_does_not_leak_into_the_encryption_config(
     """
     monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
     code = main([
-        "--url", "http://testserver", "-w", WS, "-q",
+        "--url", BASE_URL, "-w", WS, "-q",
         "board", "set", "definitely-not-32-bytes", "x",
     ])
     assert code == 0

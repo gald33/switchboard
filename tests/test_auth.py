@@ -12,30 +12,23 @@ about being one: every admitted caller can reach every room it can name.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from switchboard.auth import Perimeter, hash_token
-from switchboard.config import ServerConfig
-from switchboard.server import create_app
-from switchboard.store import Store
+from switchboard.testing import hub
 
 
 @pytest.fixture
-def closed(tmp_path):
-    db = str(tmp_path / "c.db")
-    store = Store(db)
-    with TestClient(create_app(ServerConfig(db_path=db, token="tok"), store=store)) as c:
-        yield c
-    store.close()
+def closed():
+    """Bearer token required. Handed out with no token of its own, so a
+    request that sends none is the default rather than the special case."""
+    with hub(token="tok") as h:
+        yield h.raw(token=None)
 
 
 @pytest.fixture
-def open_hub(tmp_path):
-    db = str(tmp_path / "o.db")
-    store = Store(db)
-    with TestClient(create_app(ServerConfig(db_path=db), store=store)) as c:
-        yield c
-    store.close()
+def open_hub():
+    with hub() as h:
+        yield h.raw(token=None)
 
 
 def h(token):
