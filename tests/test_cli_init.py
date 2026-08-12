@@ -1440,11 +1440,57 @@ def test_the_explainer_stays_short(monkeypatch, capsys, tmp_path):
     # It earns its place by being read. The first version ran to ~25 lines,
     # which is long enough that skimming past it is the likely outcome — the
     # same as not printing it at all.
+    #
+    # The budget grew by exactly one destination, the cloud environment. Three
+    # lines rather than one because its two fields are filled in two separate
+    # boxes, and collapsing them into a single shell block gives the reader
+    # something that cannot be pasted anywhere as-is.
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     explainer = out[out.index("Two halves"):]
-    assert len(explainer.strip().splitlines()) <= 8, explainer
+    assert len(explainer.strip().splitlines()) <= 9, explainer
     assert max(len(ln) for ln in explainer.splitlines()) <= 100, "must not wrap in a terminal"
+
+
+def test_the_explainer_names_the_cloud_environment_init_cannot_reach(
+    monkeypatch, capsys, tmp_path
+):
+    # The one destination `init` can do nothing about: a cloud environment is
+    # configured outside every repo, so nothing written into a checkout gets
+    # there. An environment missing the *package* is the quietest way to end
+    # up alone — no tools, no hooks, and nothing that resembles a failure.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    explainer = out[out.index("Two halves"):]
+    assert "a cloud env" in explainer
+
+
+def test_the_cloud_steps_are_split_the_way_the_settings_are(monkeypatch, capsys, tmp_path):
+    # A setup script and a list of environment variables are two different
+    # fields, filled in separately. Emitting `pip install` and the secrets as
+    # one block of shell produces something that cannot be pasted into either
+    # box as-is, and the reader has to take it apart before using it.
+    fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
+    _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
+    lines = out.splitlines()
+    script = [ln for ln in lines if "setup script" in ln][0]
+    env = [ln for ln in lines if "env vars" in ln][0]
+
+    assert "pip install" in script
+    # A container image is where a system `cryptography` lives, and pip cannot
+    # replace a package it did not install — so the plain command exits 1, the
+    # setup script fails, and the environment comes up with no switchboard and
+    # nothing saying why. Reported from a real cloud environment.
+    assert "--ignore-installed cryptography" in script
+    # Not [all]: FastAPI and uvloop are for a machine running a hub, and every
+    # extra wheel is another chance to collide with what the image ships.
+    assert "[all]" not in script
+    assert "SWITCHBOARD_" not in script, "the secrets do not belong in the setup script"
+    assert "SWITCHBOARD_KEY" in env and "SWITCHBOARD_TOKEN" in env
+    assert "pip install" not in env, "the install does not belong in the variables box"
+    # Named, not printed: a key in scrollback or a screen share is what
+    # `whoami --show-key` makes you ask for on purpose.
+    assert "whoami --env" in env
 
 
 def test_the_explainer_does_not_claim_a_token_it_did_not_store(monkeypatch, capsys, tmp_path):
