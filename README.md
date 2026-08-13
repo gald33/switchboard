@@ -315,6 +315,8 @@ it lives in `examples/` rather than inside the package. See
 - [The viewer](docs/viewer.md) — `examples/viewer.py`: a read-only page showing one room to a human, and what building it on the SDK found
 - [The model](docs/model.md) — **authoritative**: how identity, access and encryption work, what was rejected and why. If another doc disagrees with it, this one is right
 - [Concepts](docs/concepts.md) — the TTL rules, and what Switchboard deliberately is *not*
+- [Layers](docs/layers.md) — which rules belong in the hub, in the client, in a convention, and in your own tooling — and how strongly each is held
+- [The seam with a plan](docs/seam.md) — integrating a roadmap or backlog: lease the *write*, not the work, and why the claim itself must not live here
 - [Coordination skill](src/switchboard/skill/switchboard-coordinate/SKILL.md) — the shared convention `switchboard init` installs so turn-based agents stop talking past each other
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
