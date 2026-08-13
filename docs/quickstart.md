@@ -185,8 +185,25 @@ $ switchboard release db/migrations
 released db/migrations
 ```
 
+## 9. Watch the whole thing from one page
+
+Everything above, without the two terminals and the mental merge:
+
+```bash
+python examples/viewer.py        # → http://127.0.0.1:8799
+```
+
+Who is awake, what is claimed, what is on the board, and every message as it
+arrives. It is read-only, and reading it does not advance either agent's
+cursor — so leaving it open while you work through the steps above changes
+nothing about what terminal A and terminal B see.
+
+It is an example application rather than a command, built on the same client
+library your own tools would use — see [the viewer](viewer.md).
+
 ## Next
 
 - [Concepts](concepts.md) — the model in full, and what Switchboard is not
 - [Claude Code setup](claude-code.md) — MCP tools and hooks
+- [The viewer](viewer.md) — the page above, and what building it on the SDK found missing
 - [Deployment](deployment.md) — running a hub your whole team can reach

@@ -29,6 +29,7 @@ from .crypto import (
     DecryptionError,
     WorkspaceCipher,
     generate_key,
+    looks_sealed,
 )
 from .notify import Notifier
 from .store import (
@@ -41,6 +42,7 @@ from .store import (
     Store,
     StoreError,
 )
+from .timing import unwrap_body
 
 __version__ = "0.7.2"
 
@@ -64,6 +66,9 @@ __all__ = [
     "generate_key",
     "CryptoError",
     "DecryptionError",
+    "looks_sealed",
+    # adaptive timing — reading the forecast a sender attached to a message
+    "unwrap_body",
     # store
     "Store",
     "StoreError",

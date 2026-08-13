@@ -27,6 +27,13 @@ The dependency direction is one-way: `store` knows nothing about HTTP,
 `server` knows nothing about the CLI, and `cli`/`mcp_server` both go through
 `client`. Keep it that way.
 
+`examples/` is downstream of all of it. Those files import only what the
+package exports, which is the point: `examples/viewer.py` is a whole
+application built on the published surface, and its tests
+(`tests/test_example_viewer.py`) fail if that surface stops being enough to
+build it. When an example needs a private name, export the name — do not
+reach for the underscore.
+
 ## Things to preserve
 
 **The client, CLI and MCP bridge must depend only on `httpx`.** An agent
