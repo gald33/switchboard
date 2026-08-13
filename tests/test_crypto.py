@@ -1034,3 +1034,127 @@ def test_the_key_itself_never_crosses_the_socket(hub, key):
             assert set(reply) <= {"pubkey", "sig"}
     finally:
         server.close()
+
+
+# --- a peer on another key must not take out a whole listing ----------------
+
+
+def test_a_foreign_key_entry_does_not_break_the_board_listing(hub, key):
+    """One unreadable entry used to abort `board_list` for everybody.
+
+    Workspace routing is plaintext, so an agent on a different key writes into
+    the same board we read. Raising on its value took the whole listing with
+    it — including our own entries — and the coordination convention opens with
+    `board_list prefix="coord/"`, so a single mismatched newcomer disabled
+    handoff discovery for the agents whose key was right.
+    """
+    mine = hub.client("mine")
+    theirs = hub.client("theirs", key=generate_key())
+
+    mine.board_set("coord/reports/ours", {"plan": SECRET})
+    theirs.board_set("coord/reports/theirs", {"plan": "not for us"})
+
+    entries = mine.board_list()
+
+    readable = [e for e in entries if not e.get("unreadable")]
+    hidden = [e for e in entries if e.get("unreadable")]
+    assert len(entries) == 2, "the listing must still return every row"
+    assert len(readable) == 1 and len(hidden) == 1
+    assert readable[0]["value"] == {"plan": SECRET}
+    assert hidden[0]["value"] is None, "an unopenable value is dropped, not guessed"
+
+
+def test_a_foreign_key_lease_does_not_break_the_claims_listing(hub, key):
+    mine = hub.client("mine")
+    theirs = hub.client("theirs", key=generate_key())
+
+    mine.acquire("db/migrations", note=SECRET)
+    theirs.acquire("db/migrations", note="also mine, on another key")
+
+    leases = mine.leases()
+
+    assert len(leases) == 2, (
+        "two keys blind one resource name to two tokens, so both leases exist "
+        "and neither excludes the other — which is exactly what the roster "
+        "warning is for"
+    )
+    readable = [le for le in leases if not le.get("unreadable")]
+    assert [le["note"] for le in readable] == [SECRET]
+
+
+def test_our_own_entry_still_reads_back_exactly(hub, key):
+    """Tolerating a neighbour must not soften our own reads."""
+    mine = hub.client("mine")
+    hub.client("theirs", key=generate_key()).board_set("theirs", {"x": 1})
+
+    mine.board_set("coord/reports/ours", {"plan": SECRET})
+    assert mine.board_get("coord/reports/ours") == {"plan": SECRET}
+
+
+# --- witnessing that outlives the process doing the witnessing ---------------
+
+
+def test_a_swap_is_noticed_by_a_later_process(tmp_path, key):
+    """The CLI is a whole process per command, so in-process memory never fires.
+
+    This is why the detector stayed silent through this project's own
+    dogfooding: a spawned agent inherited its parent's session id, derived the
+    same agent id, and announced over the parent's roster row. Every witness
+    was a fresh `switchboard agents` process with nothing to compare against.
+    """
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace=WS, key=key, peer_log=log) as h:
+        alice, mallory = h.client("alice"), h.client("mallory")
+        alice.register(name="alice")
+
+        # One process witnesses alice alive under her own key, and ends.
+        h.client("bob-first-run").agents()
+
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice")
+
+        # A different process entirely, with no memory of its own.
+        roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
+        assert roster["alice"].get("key_changed_while_live") is True
+
+
+def test_without_a_log_a_later_process_still_cannot_notice(tmp_path, key):
+    """The behaviour being fixed, kept explicit so the fix cannot silently lapse."""
+    with make_hub(workspace=WS, key=key) as h:  # peer_log off, as tests default
+        alice, mallory = h.client("alice"), h.client("mallory")
+        alice.register(name="alice")
+        h.client("bob-first-run").agents()
+
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice")
+
+        roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
+        assert "key_changed_while_live" not in roster["alice"]
+
+
+def test_the_witness_log_keeps_workspaces_apart(tmp_path, key):
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace="ws-one", key=key, peer_log=log) as h:
+        alice = h.client("alice", workspace="ws-one")
+        alice.register(name="alice")
+        h.client("bob", workspace="ws-one").agents()
+
+        mallory = h.client("mallory", workspace="ws-two")
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice", workspace="ws-two")
+
+        roster = {a["name"]: a for a in h.client("carol", workspace="ws-two").agents()}
+        assert "key_changed_while_live" not in roster["alice"], (
+            "same id in a different workspace is a different agent, not a swap"
+        )
+
+
+def test_a_broken_witness_log_costs_only_the_warning(tmp_path, key):
+    """Fail soft: a read-only home must not take out the command."""
+    from switchboard.peers import PeerKeyLog
+
+    log = PeerKeyLog(str(tmp_path / "nope" / "deep" / "peers.db"))
+    log._broken = True
+    assert log.known_keys(WS, "alice") == set()
+    assert log.state(WS, "alice") == (None, False)
+    log.record(WS, "alice", "k", live=True)  # must not raise

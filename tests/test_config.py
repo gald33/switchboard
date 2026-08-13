@@ -355,3 +355,88 @@ def test_an_explicit_agent_id_still_wins(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "chosen")
     assert detect_identity().agent_id == "chosen"
+
+
+def test_identity_reports_where_its_id_came_from(monkeypatch, tmp_path):
+    """A pin that worked and a pin that was dropped must be tellable apart.
+
+    Under a workspace key the id is blinded before anyone sees it, so both
+    render as an opaque token. A peer agent read that as "the override was
+    ignored", concluded a working feature was broken, and nearly shipped a
+    remediation for a bug that did not exist.
+    """
+    from switchboard.client import detect_identity
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_AGENT_ID", raising=False)
+    assert detect_identity().id_source == "derived"
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "chosen")
+    assert detect_identity().id_source == "SWITCHBOARD_AGENT_ID"
+
+    assert detect_identity(agent_id="explicit").id_source == "argument"
+
+
+def test_a_pinned_id_is_identical_from_any_directory(monkeypatch, tmp_path):
+    """The whole point of pinning: cwd stops being part of who you are."""
+    from switchboard.client import detect_identity
+
+    project = tmp_path / "p"
+    project.mkdir()
+    _git(project, "init")
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "pinned-one")
+
+    monkeypatch.chdir(project)
+    inside = detect_identity()
+    monkeypatch.chdir(elsewhere)
+    outside = detect_identity()
+
+    assert inside.agent_id == outside.agent_id == "pinned-one"
+
+
+def test_an_unpinned_id_changes_with_the_directory(monkeypatch, tmp_path):
+    """The defect itself, pinned down so it cannot come back silently."""
+    from switchboard.client import detect_identity
+
+    project = tmp_path / "p"
+    project.mkdir()
+    _git(project, "init")
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    for var in ("SWITCHBOARD_AGENT_ID", "SWITCHBOARD_AGENT_NAME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "one-session")
+
+    monkeypatch.chdir(project)
+    inside = detect_identity()
+    monkeypatch.chdir(elsewhere)
+    outside = detect_identity()
+
+    assert inside.agent_id != outside.agent_id, (
+        "one session, two identities — a separate roster row, inbox and lease set"
+    )
+    assert inside.in_repo and not outside.in_repo
+
+
+def test_the_drift_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
+    from switchboard.client import detect_identity, identity_drift_warning
+
+    project = tmp_path / "p"
+    project.mkdir()
+    _git(project, "init")
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    monkeypatch.delenv("SWITCHBOARD_AGENT_ID", raising=False)
+
+    monkeypatch.chdir(project)
+    assert identity_drift_warning(detect_identity()) is None, "inside a checkout"
+
+    monkeypatch.chdir(elsewhere)
+    note = identity_drift_warning(detect_identity())
+    assert note is not None and "SWITCHBOARD_AGENT_ID" in note
+
+    # Pinned: the directory no longer decides who you are, so silent again.
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "pinned-one")
+    assert identity_drift_warning(detect_identity()) is None

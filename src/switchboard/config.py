@@ -413,6 +413,11 @@ class ClientConfig:
     #: Path to this agent's local timing-observations database (see timing.py).
     #: Purely local — never sent to the hub, never shared with other agents.
     timing_db: str = "~/.switchboard/timing.db"
+    #: Path to the log of signing keys this machine has seen peers announce
+    #: under (see peers.py). Also purely local. Empty disables it, which costs
+    #: only the ability to notice a key swap that happened in an earlier
+    #: process — every other behaviour is unchanged.
+    peer_log: str = "~/.switchboard/peers.db"
 
     def effective_token(self) -> str | None:
         """The token to actually send, once the URL is finally known.
@@ -474,6 +479,7 @@ class ClientConfig:
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
             key=key,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
+            peer_log=os.environ.get("SWITCHBOARD_PEER_DB", "~/.switchboard/peers.db"),
         )
 
 

@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import httpx
 
-from . import signing
+from . import peers, signing
 from .config import ClientConfig
 from .crypto import DecryptionError, WorkspaceCipher, looks_sealed
 from .signing import SigningIdentity
@@ -68,6 +68,16 @@ class Identity:
     kind: str
     branch: str | None
     meta: dict[str, Any]
+    #: Where `agent_id` came from: `"argument"`, `"SWITCHBOARD_AGENT_ID"`, or
+    #: `"derived"`. Reported rather than inferred by callers because under a
+    #: workspace key the id is blinded before anyone sees it, so a pin that
+    #: worked and a pin that was ignored produce two opaque tokens that look
+    #: equally unlike the string you set.
+    id_source: str = "derived"
+    #: Whether the directory this identity was derived from was inside a git
+    #: checkout. False means the repo and branch components are absent, so the
+    #: derived id is not the one the same agent gets from its own repo root.
+    in_repo: bool = True
 
 
 def _git(*args: str, cwd: str | None = None) -> str | None:
@@ -156,8 +166,11 @@ def detect_identity(
         else:
             kind = "local"
 
+    id_source = "argument" if agent_id is not None else "derived"
     if agent_id is None:
         agent_id = os.environ.get("SWITCHBOARD_AGENT_ID")
+        if agent_id is not None:
+            id_source = "SWITCHBOARD_AGENT_ID"
     if agent_id is None:
         slug = (branch or "detached").replace("/", "-")
         # Truncate the descriptive part, never the suffix: it is what makes
@@ -178,7 +191,40 @@ def detect_identity(
     }
     if os.environ.get("GITHUB_RUN_ID"):
         meta["github_run_id"] = os.environ["GITHUB_RUN_ID"]
-    return Identity(agent_id=agent_id, name=name, kind=kind, branch=branch, meta=meta)
+    return Identity(agent_id=agent_id, name=name, kind=kind, branch=branch, meta=meta,
+                    id_source=id_source, in_repo=repo is not None)
+
+
+def identity_drift_warning(identity: Identity) -> str | None:
+    """Text warning that this agent's id was derived outside a git checkout.
+
+    An unpinned id is built from repo + branch + session, so the directory a
+    command runs in is part of who you are. Run one command from the checkout
+    and the next from a temp directory and you have published under two
+    identities — two roster rows, two inboxes, two sets of leases that do not
+    exclude each other — while believing you are one agent. Nothing raises,
+    because both ids are perfectly valid; they are just not each other.
+
+    This is not hypothetical. It bit both agents in this project's own
+    cross-session dogfooding: one wrote its handoff from a scratch directory
+    and its status from the repo root, and told a peer to reply to an id that
+    was not the one signing the message.
+
+    Silent when the id is pinned, because then the directory does not matter —
+    which is also the fix. Silent inside a checkout, because that is the case
+    the derivation is designed for.
+    """
+    if identity.id_source != "derived" or identity.in_repo:
+        return None
+    return (
+        f"warning: agent id {identity.agent_id} was derived outside a git "
+        "checkout, so it is not the id this session gets from its repo root.\n"
+        "Anything said under it lands in a second identity: a separate roster "
+        "row, a separate inbox, and leases that do not exclude the ones your "
+        "other id holds.\n"
+        "Set SWITCHBOARD_AGENT_ID (or pass --agent-id) to pin one id across "
+        "every directory this session runs in."
+    )
 
 
 def _raise_for(response: httpx.Response) -> None:
@@ -248,10 +294,23 @@ _JSON_VALUED = {"message.body", "board.value"}
 #: there defeats the purpose twice over: it blocks the diagnostic, and it makes
 #: the roster unusable for the peers whose key *is* correct.
 #:
+#: The board and the lease table are the other two. Both are per-workspace and
+#: workspace routing is plaintext, so a peer on a different key writes into the
+#: same listing we read — its board keys and lease resources blind to tokens we
+#: do not recognise and its values do not open. Raising there took out the whole
+#: listing *including our own entries*, which is worse than it sounds: the
+#: coordination convention opens with `board_list prefix="coord/"`, so one
+#: mismatched newcomer disabled handoff discovery for the agents whose key was
+#: right. Plural only — see below.
+#:
 #: Everywhere else stays strict. A message body we cannot open never reaches us
 #: in the first place (a mismatched sender blinds to a different channel), so
-#: an unopenable one is genuinely suspicious and should still raise.
-_TOLERATE_UNREADABLE = {"agents", "agent"}
+#: an unopenable one is genuinely suspicious and should still raise. The
+#: singular forms stay strict for the same reason in a different shape: a
+#: `board_get`/`claims` lookup blinds the key with *our* key, so a peer's entry
+#: answers 404 rather than arriving unopenable. One that does arrive unopenable
+#: is not a key mismatch, and silently returning None for it would hide that.
+_TOLERATE_UNREADABLE = {"agents", "agent", "entries", "leases"}
 
 
 #: One definition, in crypto.py, where the envelope is. This name stays
@@ -319,6 +378,14 @@ class _Base:
         #: identities themselves.
         self._peer_live: dict[str, bool] = {}
         self._peer_key_swaps: set[str] = set()
+        #: The same witnessing, persisted across processes (see peers.py). What
+        #: a peer's key *was* is an observation about somebody else, not this
+        #: agent's identity, so unlike the two dicts above it may outlive the
+        #: process — and has to, or a turn-based CLI agent can never notice a
+        #: swap at all. None disables it entirely, which is what tests and any
+        #: caller who wants no on-disk footprint pass.
+        peer_db = getattr(config, "peer_log", peers.DEFAULT_PATH)
+        self._peer_log = peers.PeerKeyLog(peer_db) if peer_db else None
 
     @property
     def encrypted(self) -> bool:
@@ -443,6 +510,8 @@ class _Base:
         is the distinction worth surfacing — one an authority is not needed to
         draw.
         """
+        log = self._peer_log
+        workspace = self.workspace
         for agent in agents:
             key = agent.get("pubkey")
             if not isinstance(key, str) or not key:
@@ -450,17 +519,32 @@ class _Base:
             agent_id = agent.get("agent_id", "")
             known = self._peer_keys.setdefault(agent_id, set())
             was_live = self._peer_live.get(agent_id)
+            swapped = agent_id in self._peer_key_swaps
+            if log is not None:
+                # Everything this machine witnessed before this process
+                # existed. Without it the test below can only ever be true for
+                # a client that sees the same peer twice in one run — which the
+                # bridge does and a CLI command, being a whole process per
+                # command, never does.
+                known |= log.known_keys(workspace, agent_id)
+                stored_live, stored_swap = log.state(workspace, agent_id)
+                if was_live is None:
+                    was_live = stored_live
+                swapped = swapped or stored_swap
             if known and key not in known and was_live:
                 # Seen alive under a different key, and now a different one.
+                swapped = True
+            if swapped:
                 self._peer_key_swaps.add(agent_id)
-                agent["key_changed_while_live"] = True
-            elif agent_id in self._peer_key_swaps:
                 agent["key_changed_while_live"] = True
             known.add(key)
             # "Live" as the roster itself reports it, rather than a clock this
             # process keeps: `stale` is the hub's own 60-second judgement and
             # is what a reader would go by.
-            self._peer_live[agent_id] = not agent.get("stale", False)
+            live = not agent.get("stale", False)
+            self._peer_live[agent_id] = live
+            if log is not None:
+                log.record(workspace, agent_id, key, live=live, swapped=swapped)
 
     def _verify_message(self, item: dict[str, Any], block: Any) -> None:
         """Attach a verdict to one message. Never raises: an unverifiable
