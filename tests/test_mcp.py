@@ -651,6 +651,19 @@ def test_whoami_reports_the_id_peers_address(hub):
     assert payload["agent_id"] == a1.client.agent_id != "a1"
 
 
+def test_whoami_says_whether_this_workspace_is_sealed(hub):
+    """The CLI's `whoami` has reported `encrypted` since it existed; the
+    bridge did not, leaving the one surface whose caller cannot inspect its
+    own environment unable to find out. An agent that believes it is sealed
+    when it is not will say things here it would not say in the clear."""
+    plain = make_bridge(hub, "plain")
+    assert call(plain, "whoami")[0]["encrypted"] is False
+
+    sealed = make_bridge(hub, "sealed")
+    sealed.client.cipher = WorkspaceCipher.from_key("K" * 43, WS)
+    assert call(sealed, "whoami")[0]["encrypted"] is True
+
+
 def test_whoami_stays_quiet_until_there_is_enough_history(hub):
     a1 = make_bridge(hub, "a1")
     assert "forecast_calibration" not in call(a1, "whoami")[0]

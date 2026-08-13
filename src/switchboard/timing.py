@@ -216,19 +216,21 @@ def sender_forecast(forecast: Forecast) -> dict[str, Any]:
     return out
 
 
-def wrap_body(text: Any, forecast: Forecast | None) -> Any:
+def wrap_forecast(text: Any, forecast: Forecast | None) -> Any:
     """Fold a forecast into an outgoing message body.
 
-    No forecast means the body goes out untouched — a bare string stays a bare
-    string, so agents that ignore the feature see nothing new.
+    Named for the forecast rather than the body because the body is the part
+    that does not change: without a forecast it goes out untouched — a bare
+    string stays a bare string, so agents that ignore the feature see nothing
+    new — and the forecast is the only thing this adds or removes.
     """
     if forecast is None:
         return text
     return {"text": text, "timing_forecast": forecast.as_message_meta()}
 
 
-def unwrap_body(body: Any) -> tuple[Any, dict[str, Any] | None]:
-    """Inverse of `wrap_body`.
+def unwrap_forecast(body: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Inverse of `wrap_forecast`: the body, and the forecast riding with it.
 
     The key check is deliberately conservative: an ordinary dict body that
     happens to carry a `text` key is a message, not an envelope, and must come

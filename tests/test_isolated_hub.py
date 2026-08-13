@@ -312,7 +312,7 @@ def test_mcp_whoami_carries_the_warning(isolated_cloud_repo):
         branch = None
 
     bridge.identity = _Identity()
-    bridge.client = type("_C", (), {"agent_id": "a"})()
+    bridge.client = type("_C", (), {"agent_id": "a", "encrypted": False})()
     bridge._touch = lambda: 0
     bridge._calibration = lambda: None
     out = Bridge.whoami(bridge)
@@ -333,7 +333,7 @@ def test_mcp_whoami_is_silent_when_the_hub_is_shared():
         branch = None
 
     bridge.identity = _Identity()
-    bridge.client = type("_C", (), {"agent_id": "a"})()
+    bridge.client = type("_C", (), {"agent_id": "a", "encrypted": False})()
     bridge._touch = lambda: 0
     bridge._calibration = lambda: None
     assert "WARNING" not in Bridge.whoami(bridge)

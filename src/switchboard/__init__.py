@@ -41,7 +41,7 @@ from .store import (
     Store,
     StoreError,
 )
-from .timing import unwrap_body
+from .timing import unwrap_forecast, wrap_forecast
 
 __version__ = "0.7.2"
 
@@ -65,8 +65,10 @@ __all__ = [
     "generate_key",
     "CryptoError",
     "DecryptionError",
-    # adaptive timing — reading the forecast a sender attached to a message
-    "unwrap_body",
+    # adaptive timing — the envelope a forecast rides in, both directions.
+    # Exporting only the reading half is what made it undiscoverable before.
+    "wrap_forecast",
+    "unwrap_forecast",
     # store
     "Store",
     "StoreError",

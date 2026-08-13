@@ -62,8 +62,8 @@ from .timing import (
     note_look_safely,
     note_speak_safely,
     sender_forecast,
-    unwrap_body,
-    wrap_body,
+    unwrap_forecast,
+    wrap_forecast,
 )
 
 EXIT_OK = 0
@@ -227,7 +227,7 @@ def _dur(seconds: float | None) -> str:
 
 
 def _body_text(body: Any) -> str:
-    body, _ = _split_forecast(body)
+    body, _ = unwrap_forecast(body)
     if isinstance(body, str):
         return body
     return json.dumps(body, ensure_ascii=False)
@@ -467,10 +467,9 @@ class _Timing:
 
 # The envelope and the sender's view of a forecast are one implementation in
 # timing.py, shared with the MCP bridge — see the wire-contract section there
-# for why these stopped being two.
-_sender_forecast = sender_forecast
-_body_with_forecast = wrap_body
-_split_forecast = unwrap_body
+# for why these stopped being two. This file used to alias all three to
+# private names that said what they did; timing.py now says it itself, and a
+# local synonym for a shared contract is one more name to keep in step.
 
 
 def _forecast_line(fmt: Fmt, forecast: dict[str, Any], subject: str) -> str:
@@ -943,7 +942,13 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     # into the agents it spawns, but a plain shell has nothing exported and
     # will send in the clear. Claiming otherwise is the overclaim that gets
     # someone to trust a channel that isn't sealed.
-    encrypted = bool(args.key or config.key)
+    #
+    # Asked of the client that would do the sealing rather than recomputed
+    # from the same inputs, for the reason `addressed_as` is taken from it
+    # below: two implementations of "will this be sealed?" can disagree, and
+    # the one that reports is not the one that acts.
+    hub = _make_client(args)
+    encrypted = hub.encrypted
     key = args.key or config.key or _saved_key(directory)
     # `config.workspace` falls back to the literal "default", so it can never
     # be None and would mask the repo's real workspace. Read the environment
@@ -1027,7 +1032,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     # from the client rather than blinded again here, so there is one
     # implementation of that mapping. Identical to the local id when there is
     # no key, which is why this went unnoticed.
-    addressed_as = _make_client(args).agent_id
+    addressed_as = hub.agent_id
     payload = {
         "agent_id": addressed_as,
         "local_agent_id": identity.agent_id,
@@ -1265,10 +1270,10 @@ def cmd_say(args: argparse.Namespace) -> int:
     forecast = timing.declare()
     timing.close()
     with _make_client(args) as hub:
-        msg = hub.post(args.channel, _body_with_forecast(body, forecast),
+        msg = hub.post(args.channel, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
     if args.json:
-        _print_json({**msg, **({"timing_forecast": _sender_forecast(forecast)}
+        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
                                if forecast else {})})
     elif not args.quiet:
         print(f"posted #{msg['seq']} to {msg['channel']}")
@@ -1285,10 +1290,10 @@ def cmd_dm(args: argparse.Namespace) -> int:
     forecast = timing.declare()
     timing.close()
     with _make_client(args) as hub:
-        msg = hub.send(args.to, _body_with_forecast(body, forecast),
+        msg = hub.send(args.to, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
     if args.json:
-        _print_json({**msg, **({"timing_forecast": _sender_forecast(forecast)}
+        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
                                if forecast else {})})
     elif not args.quiet:
         print(f"sent #{msg['seq']} to {args.to}")
@@ -1330,7 +1335,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     if args.json:
         _print_json({
             "messages": messages,
-            **({"timing_forecast": _sender_forecast(forecast)} if forecast else {}),
+            **({"timing_forecast": sender_forecast(forecast)} if forecast else {}),
         })
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
@@ -1343,7 +1348,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
             head += f" {fmt.dim('[' + m['type'] + ']')}"
         print(head)
         print(f"  {_body_text(m['body'])}")
-        _, incoming = _split_forecast(m["body"])
+        _, incoming = unwrap_forecast(m["body"])
         if incoming:
             print(_forecast_line(fmt, incoming, "they expect to be"))
     if forecast and not args.quiet:
@@ -1381,7 +1386,7 @@ def cmd_timing(args: argparse.Namespace) -> int:
         _print_json({
             "agent_id": timing.agent_id, "workspace": timing.workspace,
             "calibration": report, "classes": classes,
-            **({"forecast": {**_sender_forecast(preview),
+            **({"forecast": {**sender_forecast(preview),
                              "source": preview.source,
                              "samples": preview.samples}} if preview else {}),
         })
@@ -1543,7 +1548,7 @@ def cmd_checkin(args: argparse.Namespace) -> int:
     }
     if args.json:
         if forecast:
-            payload["timing_forecast"] = _sender_forecast(forecast)
+            payload["timing_forecast"] = sender_forecast(forecast)
         _print_json(payload)
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
@@ -1553,7 +1558,7 @@ def cmd_checkin(args: argparse.Namespace) -> int:
         print(f"{fmt.dim('new')}      {len(messages)} message(s)")
         for m in messages:
             print(f"  {fmt.cyan(m['channel'])} {fmt.bold(m['from'])}: {_body_text(m['body'])}")
-            _, incoming = _split_forecast(m["body"])
+            _, incoming = unwrap_forecast(m["body"])
             if incoming:
                 print(_forecast_line(fmt, incoming, "they expect to be"))
     if forecast:

@@ -40,8 +40,8 @@ from .timing import (
     note_look_safely,
     note_speak_safely,
     sender_forecast,
-    unwrap_body,
-    wrap_body,
+    unwrap_forecast,
+    wrap_forecast,
 )
 
 # Versions of the MCP spec this server knows how to speak. If a client asks
@@ -203,9 +203,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "whoami",
         "description": (
-            "Your identity on the Switchboard hub: agent id, workspace, branch, and which "
-            "hub you are connected to. Call this once at the start of a session so you know "
-            "how other agents will refer to you."
+            "Your identity on the Switchboard hub: agent id, workspace, branch, which "
+            "hub you are connected to, and whether this workspace is encrypted — if "
+            "`encrypted` is false, everything you say here is readable by whoever runs "
+            "the hub. Call this once at the start of a session so you know how other "
+            "agents will refer to you."
         ),
         "inputSchema": _schema({}),
     },
@@ -523,6 +525,12 @@ class Bridge:
             "unread_dms": unread_dms,
             "workspace": self.config.workspace,
             "hub": self.config.url,
+            # The CLI's `whoami` has always reported this and the bridge
+            # never did, so the one surface whose caller cannot check its own
+            # environment was the one that could not find out. An agent that
+            # believes it is sealed when it is not will say things here it
+            # would not say in the clear.
+            "encrypted": self.client.encrypted,
         }
         # An agent driving the bridge never runs the CLI, so a CLI-only
         # warning would miss the audience this failure hits hardest: a cloud
@@ -741,7 +749,7 @@ class Bridge:
         # window before the next declaration opens a fresh one.
         self._note_speak()
         forecast = self._declare(execution_class, effort)
-        return wrap_body(message, forecast), forecast
+        return wrap_forecast(message, forecast), forecast
 
     def _declare(self, execution_class: str | None,
                  effort: str | None) -> Forecast | None:
@@ -860,7 +868,7 @@ class Bridge:
 
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
-        body, timing_forecast = unwrap_body(m["body"])
+        body, timing_forecast = unwrap_forecast(m["body"])
         out = {
             "seq": m["seq"],
             "from": m["from"],
