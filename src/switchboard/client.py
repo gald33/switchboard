@@ -20,7 +20,7 @@ from typing import Any, Sequence
 
 import httpx
 
-from . import signing
+from . import peers, signing
 from .config import ClientConfig
 from .crypto import DecryptionError, WorkspaceCipher, is_sealed
 from .signing import SigningIdentity
@@ -393,6 +393,14 @@ class _Base:
         #: identities themselves.
         self._peer_live: dict[str, bool] = {}
         self._peer_key_swaps: set[str] = set()
+        #: The same witnessing, persisted across processes (see peers.py). What
+        #: a peer's key *was* is an observation about somebody else, not this
+        #: agent's identity, so unlike the two dicts above it may outlive the
+        #: process — and has to, or a turn-based CLI agent can never notice a
+        #: swap at all. None disables it entirely, which is what tests and any
+        #: caller who wants no on-disk footprint pass.
+        peer_db = getattr(config, "peer_log", peers.DEFAULT_PATH)
+        self._peer_log = peers.PeerKeyLog(peer_db) if peer_db else None
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
@@ -509,6 +517,8 @@ class _Base:
         is the distinction worth surfacing — one an authority is not needed to
         draw.
         """
+        log = self._peer_log
+        workspace = self.workspace
         for agent in agents:
             key = agent.get("pubkey")
             if not isinstance(key, str) or not key:
@@ -516,17 +526,32 @@ class _Base:
             agent_id = agent.get("agent_id", "")
             known = self._peer_keys.setdefault(agent_id, set())
             was_live = self._peer_live.get(agent_id)
+            swapped = agent_id in self._peer_key_swaps
+            if log is not None:
+                # Everything this machine witnessed before this process
+                # existed. Without it the test below can only ever be true for
+                # a client that sees the same peer twice in one run — which the
+                # bridge does and a CLI command, being a whole process per
+                # command, never does.
+                known |= log.known_keys(workspace, agent_id)
+                stored_live, stored_swap = log.state(workspace, agent_id)
+                if was_live is None:
+                    was_live = stored_live
+                swapped = swapped or stored_swap
             if known and key not in known and was_live:
                 # Seen alive under a different key, and now a different one.
+                swapped = True
+            if swapped:
                 self._peer_key_swaps.add(agent_id)
-                agent["key_changed_while_live"] = True
-            elif agent_id in self._peer_key_swaps:
                 agent["key_changed_while_live"] = True
             known.add(key)
             # "Live" as the roster itself reports it, rather than a clock this
             # process keeps: `stale` is the hub's own 60-second judgement and
             # is what a reader would go by.
-            self._peer_live[agent_id] = not agent.get("stale", False)
+            live = not agent.get("stale", False)
+            self._peer_live[agent_id] = live
+            if log is not None:
+                log.record(workspace, agent_id, key, live=live, swapped=swapped)
 
     def _verify_message(self, item: dict[str, Any], block: Any) -> None:
         """Attach a verdict to one message. Never raises: an unverifiable

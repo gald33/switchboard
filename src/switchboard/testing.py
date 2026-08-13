@@ -105,7 +105,7 @@ class Hub:
 
     def __init__(self, *, app: Any, store: Store, clock: Clock, http: Any,
                  config: ServerConfig, workspace: str, token: str | None,
-                 key: str | None) -> None:
+                 key: str | None, peer_log: str = "") -> None:
         #: The FastAPI application, for anything that wants the app object.
         self.app = app
         #: The store behind it. Read it to assert on what was *recorded*, as
@@ -122,6 +122,10 @@ class Hub:
         #: The workspace encryption key, if this hub was built with one. Every
         #: client it hands out uses it by default, so they can read each other.
         self.key = key
+        #: Where clients of this hub keep their peer-key witness log. Empty by
+        #: default so tests do not write to the real one in ``~/.switchboard``
+        #: or inherit each other's witnessing; pass a tmp path to exercise it.
+        self.peer_log = peer_log
         self.url = BASE_URL
         self._clients: list[Client] = []
 
@@ -160,6 +164,11 @@ class Hub:
             workspace=workspace or self.workspace,
             agent_id=agent_id,
             key=self.key if key is None else key,
+            # Off by default in tests. The peer-key log is per *machine* and
+            # deliberately outlives a process, so a shared one would carry
+            # witnessing between test cases and make a swap assertion depend on
+            # what ran before it. Tests that want it point it at a tmp path.
+            peer_log=self.peer_log,
         )
 
     def client(self, name: str | None = None, *, agent_id: str | None = None,
@@ -335,7 +344,7 @@ def _auth_headers(token: str | None) -> dict[str, str]:
 def hub(*, workspace: str = "test-workspace", token: str | None = None,
         key: str | None = None, db: str | None = None, start: float = EPOCH,
         store: Store | None = None, server_config: ServerConfig | None = None,
-        **config_kwargs: Any) -> Iterator[Hub]:
+        peer_log: str = "", **config_kwargs: Any) -> Iterator[Hub]:
     """Run a hub for the duration of the block.
 
     ``db`` defaults to an in-memory database, which is both faster and safer
@@ -376,7 +385,7 @@ def hub(*, workspace: str = "test-workspace", token: str | None = None,
         http.timeout = TIMEOUT
         handle = Hub(
             app=app, store=store, clock=clock, http=http, config=config,
-            workspace=workspace, token=token, key=key,
+            workspace=workspace, token=token, key=key, peer_log=peer_log,
         )
         try:
             yield handle

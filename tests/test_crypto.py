@@ -1089,3 +1089,72 @@ def test_our_own_entry_still_reads_back_exactly(hub, key):
 
     mine.board_set("coord/reports/ours", {"plan": SECRET})
     assert mine.board_get("coord/reports/ours") == {"plan": SECRET}
+
+
+# --- witnessing that outlives the process doing the witnessing ---------------
+
+
+def test_a_swap_is_noticed_by_a_later_process(tmp_path, key):
+    """The CLI is a whole process per command, so in-process memory never fires.
+
+    This is why the detector stayed silent through this project's own
+    dogfooding: a spawned agent inherited its parent's session id, derived the
+    same agent id, and announced over the parent's roster row. Every witness
+    was a fresh `switchboard agents` process with nothing to compare against.
+    """
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace=WS, key=key, peer_log=log) as h:
+        alice, mallory = h.client("alice"), h.client("mallory")
+        alice.register(name="alice")
+
+        # One process witnesses alice alive under her own key, and ends.
+        h.client("bob-first-run").agents()
+
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice")
+
+        # A different process entirely, with no memory of its own.
+        roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
+        assert roster["alice"].get("key_changed_while_live") is True
+
+
+def test_without_a_log_a_later_process_still_cannot_notice(tmp_path, key):
+    """The behaviour being fixed, kept explicit so the fix cannot silently lapse."""
+    with make_hub(workspace=WS, key=key) as h:  # peer_log off, as tests default
+        alice, mallory = h.client("alice"), h.client("mallory")
+        alice.register(name="alice")
+        h.client("bob-first-run").agents()
+
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice")
+
+        roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
+        assert "key_changed_while_live" not in roster["alice"]
+
+
+def test_the_witness_log_keeps_workspaces_apart(tmp_path, key):
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace="ws-one", key=key, peer_log=log) as h:
+        alice = h.client("alice", workspace="ws-one")
+        alice.register(name="alice")
+        h.client("bob", workspace="ws-one").agents()
+
+        mallory = h.client("mallory", workspace="ws-two")
+        mallory.agent_id = alice.agent_id
+        mallory.register(name="alice", workspace="ws-two")
+
+        roster = {a["name"]: a for a in h.client("carol", workspace="ws-two").agents()}
+        assert "key_changed_while_live" not in roster["alice"], (
+            "same id in a different workspace is a different agent, not a swap"
+        )
+
+
+def test_a_broken_witness_log_costs_only_the_warning(tmp_path, key):
+    """Fail soft: a read-only home must not take out the command."""
+    from switchboard.peers import PeerKeyLog
+
+    log = PeerKeyLog(str(tmp_path / "nope" / "deep" / "peers.db"))
+    log._broken = True
+    assert log.known_keys(WS, "alice") == set()
+    assert log.state(WS, "alice") == (None, False)
+    log.record(WS, "alice", "k", live=True)  # must not raise

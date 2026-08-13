@@ -996,12 +996,35 @@ def cmd_agents(args: argparse.Namespace) -> int:
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
     print(fmt.bold(f"{'AGENT':<34} {'KIND':<7} {'BRANCH':<24} {'SEEN':<10} TASK"))
+    swapped = []
     for a in agents:
         seen = _ago(a["last_seen_at"])
         seen_txt = fmt.yellow(seen) if a.get("stale") else seen
+        marker = fmt.red(" !") if a.get("key_changed_while_live") else ""
+        if marker:
+            swapped.append(a["agent_id"])
         print(
             f"{a['agent_id'][:33]:<34} {a['kind'][:6]:<7} "
-            f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} {a.get('task') or ''}"
+            f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} "
+            f"{a.get('task') or ''}{marker}"
+        )
+    if swapped:
+        # The client sets this flag and, until now, nothing ever displayed it.
+        # Registration upserts on (workspace, agent_id) and nothing validates
+        # it, so this is what a second agent announcing over a live one looks
+        # like from outside — which is the shape of a plain id collision as
+        # much as of impersonation, and the two are worth the same look.
+        print(
+            "\n" + fmt.red(
+                f"warning: {len(swapped)} agent(s) announced under an id that "
+                f"was already live here, with a different signing key:"
+            )
+            + "\n  " + "\n  ".join(swapped)
+            + "\nEither two agents derived the same id — sessions sharing a "
+              "host, repo and\nbranch do, and a spawned agent inherits its "
+              "parent's session — or something\nis announcing as somebody "
+              "else. Pin SWITCHBOARD_AGENT_ID to rule out the first.",
+            file=sys.stderr,
         )
     if mismatched:
         # A key mismatch is otherwise completely silent: their messages never
