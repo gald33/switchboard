@@ -288,19 +288,6 @@ switchboard board set coord/reports/migration-0142 '{...}' --json-body
 switchboard say backend "posted migration plan — see coord/reports/migration-0142"
 ```
 
-**Pipe anything long rather than passing it as an argument.** `say`, `dm` and
-`board set` all take `-` in place of the body and read it from stdin, and for
-a payload of any size that is the form to use — a value on the command line
-is interpreted by your shell before Switchboard ever sees it. A backtick in a
-message body was silently substituted away mid-sentence during this project's
-own dogfooding, and the same character in a JSON payload takes the structure
-with it. Nothing errors; the message simply says something slightly different
-from what you wrote.
-
-```
-switchboard board set coord/reports/migration-0142 - --json-body < plan.json
-```
-
 Reversed — payload in the message, nothing on the blackboard — and the
 payload is gone once the message expires (an hour) or once whoever needed it
 already read their inbox and moved on. A blackboard entry survives up to 24

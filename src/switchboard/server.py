@@ -594,6 +594,26 @@ def create_app(
         if wait <= 0:
             messages = await run_in_threadpool(drain)
         else:
+            if agent_id:
+                # Waiting is not absence. Presence lapses after
+                # DEFAULT_AGENT_TTL, and a long poll is the one call an agent
+                # makes while deliberately doing nothing else — so an agent
+                # that sat in a wait loop for a peer dropped off the roster
+                # *while waiting for them*. The protocol then tells the peer,
+                # correctly, not to wait on somebody who is not listed. Both
+                # sides follow the convention into mutual invisibility, and
+                # this is the only place that can tell the difference.
+                #
+                # Once per request, not per loop turn: the loop already runs
+                # inside a bounded MAX_WAIT_SECONDS, and repeating it would
+                # trade a real fix for load. Leases are left alone — renewing
+                # what you hold is a claim to be working, and waiting is not.
+                await run_in_threadpool(
+                    lambda: store.heartbeat(
+                        workspace=workspace, agent_id=agent_id,
+                        ttl=DEFAULT_AGENT_TTL, renew_leases=False, now=now_fn(),
+                    )
+                )
             # Register interest BEFORE the first read. A write landing between
             # the read and the sleep resolves this future, so the sleep returns
             # at once and we re-drain — rather than sleeping through a message

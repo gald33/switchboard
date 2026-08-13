@@ -232,3 +232,46 @@ async def test_waiters_are_released_after_every_poll(hub):
                     "workspace": WS, "agent_id": "a1", "wait": 1}, timeout=30)
             assert app.state.notifier.waiting == 0
             assert not app.state.notifier._waiters
+
+
+async def test_a_long_poll_keeps_the_waiter_on_the_roster(hub):
+    """Waiting is not absence.
+
+    An agent that sat in a wait loop for a peer used to drop off the roster
+    while waiting for them — and the convention tells the peer not to wait on
+    an agent that is not listed, so both sides followed it into mutual
+    invisibility. Reproduced in this project's own cross-session dogfooding.
+    """
+    app, _, store = hub
+    async with await _client(app) as c:
+        async with app.router.lifespan_context(app):
+            await c.post("/agents/register", json={
+                "workspace": WS, "agent_id": "waiter", "name": "waiter",
+                "channels": ["build"]})
+            before = store.get_agent(workspace=WS, agent_id="waiter").last_seen_at
+
+            await c.get("/inbox", params={
+                "workspace": WS, "agent_id": "waiter", "wait": 1}, timeout=30)
+
+            after = store.get_agent(workspace=WS, agent_id="waiter").last_seen_at
+    assert after > before, "the wait itself must count as a sign of life"
+
+
+async def test_a_long_poll_does_not_renew_what_the_waiter_holds(hub):
+    """Presence, not leases. Renewing a claim is asserting you are working it."""
+    app, _, store = hub
+    async with await _client(app) as c:
+        async with app.router.lifespan_context(app):
+            await c.post("/agents/register", json={
+                "workspace": WS, "agent_id": "waiter", "name": "waiter",
+                "channels": ["build"]})
+            await c.post("/leases/acquire", json={
+                "workspace": WS, "agent_id": "waiter", "resource": "db/migrations",
+                "ttl": 900})
+            held = store.list_leases(workspace=WS)[0].expires_at
+
+            await c.get("/inbox", params={
+                "workspace": WS, "agent_id": "waiter", "wait": 1}, timeout=30)
+
+            still = store.list_leases(workspace=WS)[0].expires_at
+    assert still == held, "a wait must not extend a claim"

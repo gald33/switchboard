@@ -1289,9 +1289,24 @@ def _ago_epoch(ts: float | None) -> str:
 def cmd_board(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         if args.board_action == "set":
-            value: Any = args.value
+            # `-` reads the value from stdin, as `say` and `dm` already do.
+            # Board values are the largest thing anyone puts through this CLI —
+            # a handoff payload is the whole point of the blackboard — and
+            # passing one as an argument means a shell gets to interpret it
+            # first. A backtick in a message body was silently substituted away
+            # mid-sentence during this project's own dogfooding; the same
+            # character in a JSON payload takes the structure with it.
+            raw: str = args.value
+            if raw == "-":
+                raw = sys.stdin.read().strip()
+            value: Any = raw
             if args.json_body:
-                value = json.loads(args.value)
+                try:
+                    value = json.loads(raw)
+                except ValueError as exc:
+                    raise SystemExit(
+                        f"--json-body given but the value is not valid JSON: {exc}"
+                    ) from exc
             entry = hub.board_set(
                 args.board_key, value, ttl=args.ttl, if_revision=args.if_revision
             )

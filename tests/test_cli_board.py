@@ -10,6 +10,7 @@ even with no encryption configured at all.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -85,3 +86,34 @@ def test_board_key_does_not_leak_into_the_encryption_config(
         "board", "set", "definitely-not-32-bytes", "x",
     ])
     assert code == 0
+
+
+def test_board_set_reads_the_value_from_stdin(
+    cli_bound_to_a_real_hub, capsys, monkeypatch
+):
+    """`-` keeps a payload away from the shell that would otherwise expand it.
+
+    A backtick in a message body was silently substituted away mid-sentence
+    during this project's own dogfooding. The same character in a JSON payload
+    takes the structure with it, and nothing errors either way — the value
+    simply arrives saying something other than what was written.
+    """
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    prefix = ["--url", BASE_URL, "-w", WS, "--json"]
+    payload = {"note": "a `backtick`, a $VAR and a $(command) walk into a bar"}
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main([*prefix, "board", "set", "piped", "-", "--json-body"]) == 0
+    capsys.readouterr()
+
+    assert main([*prefix, "board", "get", "piped"]) == 0
+    assert json.loads(capsys.readouterr().out)["value"] == payload
+
+
+def test_board_set_rejects_stdin_that_is_not_json_when_asked_for_json(
+    cli_bound_to_a_real_hub, monkeypatch
+):
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json at all"))
+    with pytest.raises(SystemExit, match="not valid JSON"):
+        main(["--url", BASE_URL, "-w", WS, "board", "set", "k", "-", "--json-body"])
