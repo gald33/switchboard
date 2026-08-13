@@ -17,8 +17,9 @@ room, and this shows a program *reading* one — the other half of the surface,
 and the half nothing else exercised. It imports only what `switchboard`
 exports, so if it needs something the package does not export, that is a hole
 in the package rather than a licence to reach inside it. Three such holes
-turned up while writing it and were closed: `Client.encrypted`,
-`looks_sealed()`, and `history(blinded=True)`. See `docs/viewer.md`.
+turned up while writing it and were closed: `read_channels()`,
+`Client.encrypted`, and messages marked `unreadable` rather than arriving as
+raw envelopes. See `docs/viewer.md`.
 
 Three things about the shape of it, because they are not arbitrary.
 
@@ -32,8 +33,8 @@ plaintext, and the hub's own perimeter protects nothing here.
 
 **It reads without disturbing.** Every call it makes is a read that leaves no
 trace an agent could trip over: `agents()`, `leases()`, `board_list()`,
-`channels()`, and `history()` — the catch-up read that does *not* move
-anyone's cursor. The viewer never registers, never heartbeats, and never
+`channels()`, and `read_channels()` — which reads from the beginning with
+every cursor left where it was. The viewer never registers, never heartbeats, and never
 posts, so it does not appear in the roster it is displaying and cannot make an
 agent's next `inbox` come back empty.
 
@@ -66,7 +67,6 @@ from switchboard import (
     CryptoError,
     SwitchboardError,
     __version__,
-    looks_sealed,
     unwrap_body,
 )
 
@@ -88,9 +88,10 @@ DEFAULT_LIMIT = 50
 #: How often the page asks for a fresh snapshot.
 DEFAULT_REFRESH = 3.0
 
-#: Channels read per snapshot. One HTTP call each, so an unbounded room would
-#: turn one page refresh into hundreds of requests. Truncation is reported in
-#: the payload rather than passed off as the whole room.
+#: Channels read per snapshot. They come back in one request, but `limit`
+#: applies per channel, so an unbounded room would still pull an unbounded
+#: number of messages. Truncation is reported in the payload rather than
+#: passed off as the whole room.
 MAX_CHANNELS = 60
 
 
@@ -235,24 +236,27 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
         channels = sorted(channels, key=lambda c: c.get("messages", 0),
                           reverse=True)[:MAX_CHANNELS]
 
-    messages: list[dict[str, Any]] = []
+    # The whole conversation in one request, whatever it is spread across.
+    # `channels()` names these the way the hub does — blinded tokens in an
+    # encrypted room — and `read_channels` is the reader that takes them in
+    # that form, leaves every cursor where it found it, and marks what this
+    # key cannot open rather than failing the lot.
+    tokens = [entry.get("channel", "") for entry in channels]
+    opened = section("the conversation", lambda: hub.read_channels(tokens, limit=limit)) or []
+
     #: Set when this viewer holds no key but the room is plainly encrypted —
     #: the tier gap `whoami` warns about, met from the reading side.
     keyless = False
+    by_token: dict[str, list[dict[str, Any]]] = {token: [] for token in tokens}
+    for m in opened:
+        by_token.setdefault(m.get("hub_channel", ""), []).append(m)
+
+    messages: list[dict[str, Any]] = []
     for entry in channels:
         token = entry.get("channel", "")
-        try:
-            opened = hub.history(token, limit=limit, blinded=True)
-            unreadable = False
-        except CryptoError:
-            # Sealed under a key this viewer does not hold. Expected in a room
-            # where someone is misconfigured, and not a reason to lose the
-            # rest of the page — say which channel, and carry on.
-            opened, unreadable = [], True
-        except (SwitchboardError, OSError, httpx.HTTPError) as exc:
-            opened, unreadable = [], True
-            notes.append(f"could not read a channel: {exc}")
-        label = _channel_label(token, opened)
+        here = by_token.get(token, [])
+        label = _channel_label(token, here)
+        unreadable = bool(here) and all(m.get("unreadable") for m in here)
         view["channels"].append({
             "token": token,
             "name": label,
@@ -262,15 +266,14 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
             "latest_at": _iso(entry.get("latest_at")),
             "unreadable": unreadable,
         })
-        for m in opened:
+        for m in here:
             body, forecast = unwrap_body(m.get("body"))
-            # A keyless viewer in an encrypted room gets envelopes back rather
-            # than an error, because nothing tried to open them. Rendering the
-            # envelope as if it were the message is the one dishonest thing
-            # this page could do, so it does not.
-            sealed_body = not sealed_ids and looks_sealed(body)
-            if sealed_body:
-                keyless = True
+            if m.get("unreadable"):
+                # Sealed under a key this viewer does not hold — either a peer
+                # who disagrees with us, or us holding no key at all. Rendering
+                # it as an empty message is the one dishonest thing this page
+                # could do, so it does not.
+                keyless = keyless or not sealed_ids
                 body, forecast = None, None
             messages.append({
                 "seq": m.get("seq", 0),
@@ -280,7 +283,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
                 "from": _who(m.get("from"), names),
                 "type": m.get("type") or "note",
                 "body": body,
-                "sealed_body": sealed_body,
+                "sealed_body": bool(m.get("unreadable")),
                 "forecast": forecast,
                 "thread": m.get("thread"),
                 "created_at": m.get("created_at"),
@@ -295,7 +298,9 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     for agent in view["agents"]:
         agent["channels"] = [named.get(c, c) for c in agent["channels"]]
 
-    if keyless or any(looks_sealed(a.get("name")) for a in agents):
+    # Both halves of "no key here": messages that came back sealed, and a
+    # roster the client could not open either. The client marks both.
+    if keyless or (not sealed_ids and any(a.get("unreadable") for a in agents)):
         notes.append(
             "this room is encrypted and this viewer holds no key: export "
             "SWITCHBOARD_KEY (the same one your agents use) and restart it"

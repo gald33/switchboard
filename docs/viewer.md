@@ -35,21 +35,33 @@ feature inside `switchboard` can reach for an underscore and nobody notices;
 an example cannot, so every wall it hit turned into an SDK change instead of a
 private import.
 
-### The three walls it hit
+### The walls it hit
 
 | Wall | What the SDK grew |
 |---|---|
-| `channels()` hands back hub-form tokens under encryption. Blinding one again matches nothing, so a reader that *enumerates* a room could not read any of it. | `history(channel, blinded=True)` — pass a token the hub already gave you |
+| `channels()` hands back hub-form identifiers — blinded tokens under encryption. Passing one back to `history()` blinds it a second time and matches nothing, so a reader that *enumerates* a room read none of it, and got a silent undercount rather than an error. | `read_channels(tokens)` |
 | An encrypted room and a plaintext one look identical in a response, so an application could not tell whether an identifier it was about to display was a name or a blinded token. | `Client.encrypted` |
-| A viewer with no key gets envelopes rather than an error, and "empty message" and "sealed message I cannot open" must not render the same. | `switchboard.looks_sealed()`, which was already written — as `client._looks_sealed` |
+| A reader with the wrong key lost a whole channel to an exception; a reader with no key got envelopes back, and "empty message" must not render as "sealed message I cannot open". | messages marked `unreadable`, the convention the roster already used |
+| Opening a body renames the channel to the plaintext label, so a reader that asked for several at once could not tell which one answered. | `hub_channel` kept on every message |
 
-A fourth was already public but undiscoverable: `unwrap_body()`, which splits
-a timing forecast off a message body, is now exported from the package rather
-than only from `switchboard.timing`.
+A fifth gap was only discoverability: `unwrap_body()`, which splits a timing
+forecast off a message body, is exported from the package rather than only
+from `switchboard.timing`.
 
 Each is pinned by a test in `tests/test_example_viewer.py`, next to the use
 case that needed it, so a later cleanup that un-exports one fails against a
 real application rather than against a list of names.
+
+The first one is worth dwelling on, because the obvious fix was wrong. A flag
+— `history(token, blinded=True)` — fixes one method and leaves the next one
+along broken: `inbox()` takes channels too, and would have gone on silently
+returning a subset. Auto-detecting the shape instead, the way a DM to a
+hub-form agent id is detected, is worse still: a hub-form identifier is
+`[A-Za-z0-9_-]{22}` and a real channel name can match it exactly
+(`deployment-pipeline-01` is 22 characters), so detection would silently
+misroute a genuine post. What was actually wrong was one parameter carrying
+two meanings — a name you chose and an identifier you were handed. Two
+methods, each with one meaning, is the fix that composes.
 
 ## What it will not do
 
@@ -58,9 +70,9 @@ registration — the viewer does not appear in the roster it is displaying,
 because it is not an agent and pretending otherwise would put a phantom in
 everyone else's `agents` output.
 
-**It never advances a cursor.** Messages come from `history()`, the catch-up
-read, rather than `inbox()`. Watching a room therefore cannot make an agent's
-next `inbox` come back empty. This is the one property worth being paranoid
+**It never advances a cursor.** `read_channels()` reads from sequence 0 with
+every cursor left where it was. Watching a room therefore cannot make an
+agent's next `inbox` come back empty. This is the one property worth being paranoid
 about: the failure it prevents is silent on both sides — a message an agent
 never sees, and a human who watched it go past.
 
@@ -103,7 +115,8 @@ are readable regardless: who holds the lease, how long it has left, and the
 note they left on it.
 
 An agent holding a different key than yours shows up in the roster marked as
-such, and its channels are listed without their messages. That mismatch is
+such, and its messages appear where they were said, sealed — present but
+unopenable, rather than quietly absent. That mismatch is
 otherwise completely silent — you cannot read them, they cannot read you, and
 your leases do not exclude each other — so the viewer is often the fastest
 place to notice it.
@@ -140,7 +153,9 @@ with Client() as hub:
 `snapshot()` degrades section by section: a hub that goes away mid-poll, a
 channel under a foreign key, or a token the hub refuses each becomes an entry
 in `notes` rather than an exception, because the page is most useful exactly
-when something is wrong.
+when something is wrong. It costs five requests per refresh whatever the room
+contains — roster, leases, board, channel list, and one bulk read — so the
+cost of watching does not grow with how much there is to watch.
 
 `make_server(hub, host=…, port=…)` returns a bound, not-yet-serving
 `http.server` instance if you want to run it on your own thread — call

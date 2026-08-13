@@ -389,22 +389,18 @@ class _Base:
         A mismatch is a partition: their messages never reach our inbox, ours
         never reach theirs, and neither side's leases exclude the other. None
         of that raises, so somebody has to look.
+
+        One flag, both directions. We encrypt and cannot open this peer's
+        fields; or we do not encrypt and this peer's fields arrived sealed —
+        the same partition seen from its two sides, and the second side is the
+        one more likely to be misconfigured. Both are marked `unreadable` as
+        the response is opened, so this no longer asks the question twice in
+        two different ways.
         """
-        out = []
-        for a in agents:
-            if a.get("agent_id") == self.agent_id:
-                continue
-            if self.cipher:
-                # We encrypt; a peer whose fields we cannot open does not
-                # share our key — or holds none at all.
-                if a.get("unreadable"):
-                    out.append(a)
-            elif _looks_sealed(a.get("name")) or _looks_sealed(a.get("branch")):
-                # We do NOT encrypt but this peer does. Same partition, seen
-                # from the other side — and the side more likely to be the
-                # one that is misconfigured.
-                out.append(a)
-        return out
+        return [
+            a for a in agents
+            if a.get("agent_id") != self.agent_id and a.get("unreadable")
+        ]
 
     def _blind_channel(self, channel: str, cipher: Any = _UNSET) -> str:
         if cipher is _UNSET:
@@ -512,7 +508,15 @@ class _Base:
 
     def _seal_request(
         self, path: str, kwargs: dict[str, Any], cipher: WorkspaceCipher | None,
+        *, blind_params: bool = True,
     ) -> dict[str, Any]:
+        """Seal and blind an outgoing request.
+
+        `blind_params` is off for the one caller that already holds hub-form
+        channel identifiers — `read_channels`. Blinding those again produces
+        `blind(blind(c))`, which matches nothing, and the failure is a silent
+        undercount rather than an error: the hub simply has no such channel.
+        """
         if cipher is None:
             return kwargs
         body = kwargs.get("json")
@@ -554,7 +558,7 @@ class _Base:
             kwargs["json"] = body
 
         params = kwargs.get("params")
-        if isinstance(params, dict) and params.get("channel"):
+        if blind_params and isinstance(params, dict) and params.get("channel"):
             params = dict(params)
             channels = params["channel"]
             params["channel"] = (
@@ -564,9 +568,67 @@ class _Base:
             kwargs["params"] = params
         return kwargs
 
-    def _open_response(self, payload: Any, cipher: WorkspaceCipher | None) -> Any:
-        if cipher is None or not isinstance(payload, dict):
+    @staticmethod
+    def _keep_hub_channel(payload: dict[str, Any]) -> None:
+        """Record what the hub calls each channel, before we rename it.
+
+        Opening a body restores the plaintext channel name over the top of the
+        identifier the hub routed on, which is the right thing to show and the
+        wrong thing to *lose*: a reader that asked for several channels at once
+        can no longer tell which one a message came back from, and neither can
+        anything correlating messages with `channels()`. Both names, always —
+        in a plaintext room they are simply equal.
+        """
+        for key in ("messages", "message"):
+            target = payload.get(key)
+            if not target:
+                continue
+            for item in (target if isinstance(target, list) else [target]):
+                if isinstance(item, dict) and "channel" in item:
+                    item.setdefault("hub_channel", item["channel"])
+
+    def _mark_unopened(self, payload: dict[str, Any],
+                       tolerate: frozenset[str]) -> dict[str, Any]:
+        """Flag values this client has no key for, in the places it may.
+
+        A client with no key does not attempt decryption, so nothing raises
+        and the envelope arrives intact — which reads, to anything rendering
+        it, as an ordinary dict body. Marking it is what lets a caller tell
+        "this message is empty" from "this message is sealed and I hold no
+        key", and those two must never be shown the same way.
+        """
+        for key, fields in _OPEN_RESPONSE.items():
+            if key not in tolerate or not payload.get(key):
+                continue
+            target = payload[key]
+            for item in (target if isinstance(target, list) else [target]):
+                if not isinstance(item, dict):
+                    continue
+                for field in fields:
+                    if looks_sealed(item.get(field)):
+                        item[field] = None
+                        item["unreadable"] = True
+        return payload
+
+    def _open_response(self, payload: Any, cipher: WorkspaceCipher | None,
+                       tolerate: frozenset[str] = frozenset()) -> Any:
+        """Open what this key can open, and decide what to do about the rest.
+
+        `tolerate` names response keys where a value we cannot open is the
+        caller's problem to display rather than an error — the roster always,
+        because that is where agents on different keys legitimately meet, plus
+        whatever the calling method adds. `read_channels` adds messages: it
+        reads channels nobody subscribed it to, so meeting a foreign one is
+        expected there in a way it never is in an inbox.
+        """
+        tolerate = tolerate | _TOLERATE_UNREADABLE
+        if not isinstance(payload, dict):
             return payload
+        self._keep_hub_channel(payload)
+        if cipher is None:
+            # Nothing to open, but a keyless reader in an encrypted room still
+            # gets envelopes back, and "empty" must not look like "sealed".
+            return self._mark_unopened(payload, tolerate)
         for key, fields in _OPEN_RESPONSE.items():
             if key not in payload or payload[key] is None:
                 continue
@@ -585,7 +647,7 @@ class _Base:
                             else cipher.unseal_text(item[field], context)
                         )
                     except DecryptionError:
-                        if key not in _TOLERATE_UNREADABLE:
+                        if key not in tolerate:
                             raise
                         # A peer on a different key. Mark it and keep going, so
                         # the roster still lists everyone and the mismatch can
@@ -649,14 +711,15 @@ class Client(_Base):
         if self._owns_http:
             self._http.close()
 
-    def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
-              ) -> dict[str, Any]:
+    def _call(self, method: str, path: str, *, cipher: Any = _UNSET,
+              blind_params: bool = True, tolerate: frozenset[str] = frozenset(),
+              **kwargs: Any) -> dict[str, Any]:
         if cipher is _UNSET:
             cipher = self.cipher
-        kwargs = self._seal_request(path, kwargs, cipher)
+        kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
         response = self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json(), cipher)
+        return self._open_response(response.json(), cipher, tolerate)
 
     # --- meta ---
     def health(self) -> dict[str, Any]:
@@ -750,22 +813,53 @@ class Client(_Base):
             params["channel"] = list(channels)
         return self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
 
-    def history(self, channel: str, *, limit: int = 50, blinded: bool = False,
+    def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
-        """Recent messages on a channel, cursor untouched.
+        """Recent messages on a channel you can name. Cursor untouched.
 
-        `blinded` says the name is already in hub form — a token straight out
-        of `channels()` rather than a name a human typed. Blinding it again
-        would produce `blind(blind(c))`, which matches nothing, so a reader
-        that enumerates the room instead of naming one channel needs the raw
-        token to pass through. Bodies still open normally, and an opened one
-        carries the plaintext channel label the hub never saw, which is how
-        such a reader recovers a name it could not have derived.
+        For channels you *cannot* name — the identifiers `channels()` hands
+        back in an encrypted room — use `read_channels`.
         """
-        token = channel if blinded else self._blind_channel(channel)
-        return self._call("GET", f"/channels/{token}",
+        return self._call("GET", f"/channels/{self._blind_channel(channel)}",
                           params={"workspace": self._ws(workspace),
                                   "limit": limit})["messages"]
+
+    def read_channels(self, channels: Sequence[str], *, limit: int = 50,
+                      workspace: str | None = None) -> list[dict[str, Any]]:
+        """Every live message across `channels`, in one request.
+
+        The channels are named the way the *hub* names them — the identifiers
+        `channels()` returns, which in an encrypted room are blinded tokens
+        nobody can turn back into names. That is the whole reason this exists
+        alongside `history`: the argument there is a name you chose, the
+        argument here is an identifier you were handed, and one method taking
+        both is a method that silently reads the wrong thing when a caller
+        confuses them. Nothing is blinded on the way out.
+
+        For reading a room you are not part of — a viewer, an audit, a
+        dashboard. Three properties follow from that:
+
+        - **Nothing is disturbed.** It reads from sequence 0 with the cursor
+          untouched, so no agent's `inbox` loses a message to it, and
+          `include_own` is on because an observer wants everything.
+        - **`limit` is per channel**, as it is on the hub. Messages come back
+          merged and in hub order regardless.
+        - **A channel you cannot open does not fail the call.** Reading a room
+          means reading channels nobody subscribed you to, so meeting one
+          under a different key is expected: those messages come back with
+          `body: None` and `unreadable: True` rather than raising, which is
+          what `inbox` still does and should.
+        """
+        if not channels:
+            return []
+        return self._call(
+            "GET", "/inbox", blind_params=False, tolerate=frozenset({"messages"}),
+            params={
+                "workspace": self._ws(workspace), "agent_id": self.agent_id,
+                "channel": list(channels), "since": 0, "peek": True,
+                "include_own": True, "limit": limit,
+            },
+        )["messages"]
 
     def channels(self, workspace: str | None = None) -> list[dict[str, Any]]:
         return self._call("GET", "/channels",
@@ -843,14 +937,15 @@ class AsyncClient(_Base):
         if self._owns_http:
             await self._http.aclose()
 
-    async def _call(self, method: str, path: str, *, cipher: Any = _UNSET, **kwargs: Any
-                    ) -> dict[str, Any]:
+    async def _call(self, method: str, path: str, *, cipher: Any = _UNSET,
+                    blind_params: bool = True, tolerate: frozenset[str] = frozenset(),
+                    **kwargs: Any) -> dict[str, Any]:
         if cipher is _UNSET:
             cipher = self.cipher
-        kwargs = self._seal_request(path, kwargs, cipher)
+        kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
         response = await self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json(), cipher)
+        return self._open_response(response.json(), cipher, tolerate)
 
     async def health(self) -> dict[str, Any]:
         return await self._call("GET", "/health")
@@ -950,14 +1045,30 @@ class AsyncClient(_Base):
         result = await self._call("GET", "/inbox", cipher=cipher, params=params)
         return result["messages"]
 
-    async def history(self, channel: str, *, limit: int = 50, blinded: bool = False,
+    async def history(self, channel: str, *, limit: int = 50,
                       workspace: str | None = None) -> list[dict[str, Any]]:
-        """Recent messages on a channel, cursor untouched. See `Client.history`
-        for what `blinded` is for — the two clients must not drift, because an
-        async application meets that wall in exactly the same place."""
-        token = channel if blinded else self._blind_channel(channel)
-        result = await self._call("GET", f"/channels/{token}",
+        """Recent messages on a channel you can name. Cursor untouched."""
+        result = await self._call("GET", f"/channels/{self._blind_channel(channel)}",
                                   params={"workspace": self._ws(workspace), "limit": limit})
+        return result["messages"]
+
+    async def read_channels(self, channels: Sequence[str], *, limit: int = 50,
+                            workspace: str | None = None) -> list[dict[str, Any]]:
+        """Every live message across `channels`, in one request.
+
+        See `Client.read_channels`. The two clients must not drift: an async
+        application reads a room it is not part of for the same reasons and
+        meets the same wall in the same place."""
+        if not channels:
+            return []
+        result = await self._call(
+            "GET", "/inbox", blind_params=False, tolerate=frozenset({"messages"}),
+            params={
+                "workspace": self._ws(workspace), "agent_id": self.agent_id,
+                "channel": list(channels), "since": 0, "peek": True,
+                "include_own": True, "limit": limit,
+            },
+        )
         return result["messages"]
 
     async def channels(self, workspace: str | None = None) -> list[dict[str, Any]]:
