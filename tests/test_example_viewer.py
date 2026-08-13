@@ -184,7 +184,11 @@ def test_a_blinded_resource_is_marked_sealed_rather_than_shown_as_a_name():
         assert view["leases"][0]["note"] == "adding 0142"
 
 
-def test_a_channel_under_another_key_is_reported_not_fatal():
+def test_a_channel_under_another_key_is_shown_sealed_not_dropped():
+    """Someone is talking in this room on another key. Losing their traffic
+    silently is what the roster warning exists to prevent, so the page shows
+    the messages exist and cannot be opened — and reading them does not take
+    the readable half down with it."""
     key = generate_key()
     with hub(key=key) as h:
         h.client("mine", register=True).post("build", "readable")
@@ -192,7 +196,9 @@ def test_a_channel_under_another_key_is_reported_not_fatal():
 
         view = snapshot(viewer(h))
 
-        assert [m["body"] for m in view["messages"]] == ["readable"]
+        assert [(m["body"], m["sealed_body"]) for m in view["messages"]] == [
+            ("readable", False), (None, True),
+        ]
         assert sum(1 for c in view["channels"] if c["unreadable"]) == 1
         assert any("different key" in n for n in view["notes"])
 
@@ -290,22 +296,42 @@ def test_a_genuinely_empty_message_is_not_mistaken_for_a_sealed_one(h):
 # un-exports one fails against the use case rather than against a list.
 
 
-def test_a_reader_can_open_a_channel_it_was_handed_rather_than_named():
-    """`channels()` returns hub-form tokens. An application enumerating a room
-    has no plaintext name to pass back, and blinding a token again matches
-    nothing — so `history()` takes it as-is."""
+def test_a_reader_takes_the_identifiers_the_hub_gave_it():
+    """`channels()` returns hub-form identifiers — blinded tokens in an
+    encrypted room, which no application can turn back into names. Passing one
+    to `history()` would blind it a second time and quietly match nothing, so
+    reading a room you cannot name is its own method."""
     key = generate_key()
     with hub(key=key) as h:
-        h.client("a", register=True).post("deploys", "shipping")
+        a = h.client("a", register=True)
+        a.post("deploys", "shipping")
+        a.post("build", "green")
         reader = h.client("reader")
 
-        token = reader.channels()[0]["channel"]
+        tokens = [c["channel"] for c in reader.channels()]
+        messages = reader.read_channels(tokens)
 
-        assert token != "deploys"
-        assert [m["body"] for m in reader.history(token, blinded=True)] == ["shipping"]
-        # And the plaintext name rides back inside the body it could not have
-        # derived from the token.
-        assert reader.history(token, blinded=True)[0]["channel"] == "deploys"
+        assert "deploys" not in tokens
+        # Every channel, one request, in hub order.
+        assert [m["body"] for m in messages] == ["shipping", "green"]
+        # The plaintext name rides back inside the body it could not have been
+        # derived from — and the identifier it arrived under is kept, so a
+        # reader can still tell which channel answered.
+        assert {m["channel"] for m in messages} == {"deploys", "build"}
+        assert {m["hub_channel"] for m in messages} == set(tokens)
+
+
+def test_reading_a_room_leaves_every_cursor_where_it_was():
+    """The property the whole method exists for: an observer must not be able
+    to make a participant's next `inbox` come back empty."""
+    with hub() as h:
+        subscriber = h.client("sub", register=True, channels=["build"])
+        h.client("a", register=True).post("build", "for the subscriber")
+        reader = h.client("reader")
+
+        reader.read_channels([c["channel"] for c in reader.channels()])
+
+        assert [m["body"] for m in subscriber.inbox()] == ["for the subscriber"]
 
 
 def test_a_client_says_whether_it_encrypts():
@@ -318,14 +344,15 @@ def test_a_client_says_whether_it_encrypts():
         assert plain.client("a").encrypted is False
 
 
-async def test_the_async_client_reads_a_token_the_same_way():
-    """The two clients must not drift: an async application enumerating a room
-    hits the same wall in the same place."""
+async def test_the_async_client_reads_a_room_the_same_way():
+    """The two clients must not drift: an async application reads a room it is
+    not part of for the same reasons and meets the same wall in the same
+    place."""
     key = generate_key()
     with hub(key=key) as h:
         h.client("a", register=True).post("deploys", "shipping")
         reader = h.async_client("reader")
 
-        token = (await reader.channels())[0]["channel"]
+        tokens = [c["channel"] for c in await reader.channels()]
 
-        assert [m["body"] for m in await reader.history(token, blinded=True)] == ["shipping"]
+        assert [m["body"] for m in await reader.read_channels(tokens)] == ["shipping"]

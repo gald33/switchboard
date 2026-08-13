@@ -298,10 +298,12 @@ everything worth reading is sealed, and this is the side that can open it.
 That is also why it binds to loopback — the page *is* the plaintext, and it
 has no login.
 
-Writing it against the published surface is also how three holes in that
-surface were found and closed — `history(blinded=)`, `Client.encrypted`, and
-`looks_sealed()` — which is the other reason it lives in `examples/` rather
-than inside the package. See [the viewer](docs/viewer.md).
+Writing it against the published surface is also how four holes in that
+surface were found and closed — `read_channels()`, `Client.encrypted`,
+messages marked `unreadable` instead of arriving as raw envelopes, and the
+hub's own channel identifier kept on each message — which is the other reason
+it lives in `examples/` rather than inside the package. See
+[the viewer](docs/viewer.md).
 
 ---
 
