@@ -67,7 +67,7 @@ from switchboard import (
     CryptoError,
     SwitchboardError,
     __version__,
-    unwrap_body,
+    unwrap_forecast,
 )
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
@@ -267,7 +267,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
             "unreadable": unreadable,
         })
         for m in here:
-            body, forecast = unwrap_body(m.get("body"))
+            body, forecast = unwrap_forecast(m.get("body"))
             if m.get("unreadable"):
                 # Sealed under a key this viewer does not hold — either a peer
                 # who disagrees with us, or us holding no key at all. Rendering

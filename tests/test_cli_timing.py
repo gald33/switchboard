@@ -11,12 +11,8 @@ from __future__ import annotations
 
 import json
 
-from switchboard.cli import (
-    _body_with_forecast,
-    _runtime_id,
-    _split_forecast,
-    build_parser,
-)
+from switchboard import unwrap_forecast, wrap_forecast
+from switchboard.cli import _runtime_id, build_parser
 from switchboard.timing import TimingModel
 
 
@@ -66,8 +62,8 @@ def test_effort_is_constrained_but_execution_class_is_free_form():
 def test_the_body_shape_matches_what_the_mcp_bridge_reads_back():
     """A CLI agent and an MCP agent must be able to hold one conversation.
 
-    Wrap and unwrap are now one implementation (`timing.wrap_body` /
-    `unwrap_body`), so this no longer asserts that two copies agree — it
+    Wrap and unwrap are now one implementation (`timing.wrap_forecast` /
+    `unwrap_forecast`), so this no longer asserts that two copies agree — it
     asserts the bridge still reads a CLI-produced body correctly through
     everything `_msg` does around the unwrap: field renaming, the expiry
     flag, the type field.
@@ -75,7 +71,7 @@ def test_the_body_shape_matches_what_the_mcp_bridge_reads_back():
     from switchboard.mcp_server import Bridge
 
     forecast = _forecast()
-    body = _body_with_forecast("taking the migration", forecast)
+    body = wrap_forecast("taking the migration", forecast)
     assert set(body) == {"text", "timing_forecast"}
 
     unwrapped = Bridge._msg({
@@ -90,20 +86,20 @@ def test_a_message_without_a_forecast_is_left_as_a_bare_string():
     """No declaration means no envelope. Wrapping unconditionally would put
     every plain CLI message into a dict body that older clients render as
     JSON noise."""
-    assert _body_with_forecast("plain", None) == "plain"
-    assert _split_forecast("plain") == ("plain", None)
+    assert wrap_forecast("plain", None) == "plain"
+    assert unwrap_forecast("plain") == ("plain", None)
 
 
 def test_an_ordinary_dict_body_is_not_mistaken_for_an_envelope():
     """Someone posting structured JSON that happens to have a `text` key
     must get it back untouched."""
     body = {"text": "hi", "severity": "high"}
-    assert _split_forecast(body) == (body, None)
+    assert unwrap_forecast(body) == (body, None)
 
 
 def test_round_trip_through_the_envelope_recovers_the_text():
     forecast = _forecast()
-    text, carried = _split_forecast(_body_with_forecast("hello", forecast))
+    text, carried = unwrap_forecast(wrap_forecast("hello", forecast))
     assert text == "hello"
     assert set(carried) == {"p50", "p95", "speak_p50", "speak_p95"}
 
@@ -118,7 +114,7 @@ def test_only_timestamps_travel():
     wire is a timestamp, and nothing describes the history behind it.
     """
     forecast = _forecast()
-    body = _body_with_forecast("hello", forecast)
+    body = wrap_forecast("hello", forecast)
     assert set(body["timing_forecast"]) == {"p50", "p95", "speak_p50", "speak_p95"}
     wire = json.dumps(body)
     for internal in ("source", "samples", "correction", "raw_p50", "raw_p95", "kind"):

@@ -44,9 +44,14 @@ private import.
 | A reader with the wrong key lost a whole channel to an exception; a reader with no key got envelopes back, and "empty message" must not render as "sealed message I cannot open". | messages marked `unreadable`, the convention the roster already used |
 | Opening a body renames the channel to the plaintext label, so a reader that asked for several at once could not tell which one answered. | `hub_channel` kept on every message |
 
-A fifth gap was only discoverability: `unwrap_body()`, which splits a timing
-forecast off a message body, is exported from the package rather than only
-from `switchboard.timing`.
+A fifth gap was only discoverability: the pair that folds a timing forecast
+into a message body and takes it back out is exported from the package rather
+than only from `switchboard.timing`, and is named `wrap_forecast` /
+`unwrap_forecast` — after the thing it adds and removes. As `wrap_body` /
+`unwrap_body` every caller had privately renamed it, which is how you know a
+name is not carrying its weight: the CLI aliased both to `_body_with_forecast`
+and `_split_forecast` at the top of the file, and those aliases are gone now
+that the shared names say it.
 
 Each is pinned by a test in `tests/test_example_viewer.py`, next to the use
 case that needed it, so a later cleanup that un-exports one fails against a
