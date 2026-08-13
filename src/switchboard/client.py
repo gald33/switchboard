@@ -69,6 +69,16 @@ class Identity:
     kind: str
     branch: str | None
     meta: dict[str, Any]
+    #: Where `agent_id` came from: `"argument"`, `"SWITCHBOARD_AGENT_ID"`, or
+    #: `"derived"`. Reported rather than inferred by callers because under a
+    #: workspace key the id is blinded before anyone sees it, so a pin that
+    #: worked and a pin that was ignored produce two opaque tokens that look
+    #: equally unlike the string you set.
+    id_source: str = "derived"
+    #: Whether the directory this identity was derived from was inside a git
+    #: checkout. False means the repo and branch components are absent, so the
+    #: derived id is not the one the same agent gets from its own repo root.
+    in_repo: bool = True
 
 
 def _git(*args: str, cwd: str | None = None) -> str | None:
@@ -157,8 +167,11 @@ def detect_identity(
         else:
             kind = "local"
 
+    id_source = "argument" if agent_id is not None else "derived"
     if agent_id is None:
         agent_id = os.environ.get("SWITCHBOARD_AGENT_ID")
+        if agent_id is not None:
+            id_source = "SWITCHBOARD_AGENT_ID"
     if agent_id is None:
         slug = (branch or "detached").replace("/", "-")
         # Truncate the descriptive part, never the suffix: it is what makes
@@ -179,7 +192,40 @@ def detect_identity(
     }
     if os.environ.get("GITHUB_RUN_ID"):
         meta["github_run_id"] = os.environ["GITHUB_RUN_ID"]
-    return Identity(agent_id=agent_id, name=name, kind=kind, branch=branch, meta=meta)
+    return Identity(agent_id=agent_id, name=name, kind=kind, branch=branch, meta=meta,
+                    id_source=id_source, in_repo=repo is not None)
+
+
+def identity_drift_warning(identity: Identity) -> str | None:
+    """Text warning that this agent's id was derived outside a git checkout.
+
+    An unpinned id is built from repo + branch + session, so the directory a
+    command runs in is part of who you are. Run one command from the checkout
+    and the next from a temp directory and you have published under two
+    identities — two roster rows, two inboxes, two sets of leases that do not
+    exclude each other — while believing you are one agent. Nothing raises,
+    because both ids are perfectly valid; they are just not each other.
+
+    This is not hypothetical. It bit both agents in this project's own
+    cross-session dogfooding: one wrote its handoff from a scratch directory
+    and its status from the repo root, and told a peer to reply to an id that
+    was not the one signing the message.
+
+    Silent when the id is pinned, because then the directory does not matter —
+    which is also the fix. Silent inside a checkout, because that is the case
+    the derivation is designed for.
+    """
+    if identity.id_source != "derived" or identity.in_repo:
+        return None
+    return (
+        f"warning: agent id {identity.agent_id} was derived outside a git "
+        "checkout, so it is not the id this session gets from its repo root.\n"
+        "Anything said under it lands in a second identity: a separate roster "
+        "row, a separate inbox, and leases that do not exclude the ones your "
+        "other id holds.\n"
+        "Set SWITCHBOARD_AGENT_ID (or pass --agent-id) to pin one id across "
+        "every directory this session runs in."
+    )
 
 
 def _raise_for(response: httpx.Response) -> None:

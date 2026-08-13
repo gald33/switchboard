@@ -23,7 +23,14 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 from . import __version__, drill, rooms
-from .client import Client, LeaseHeld, SwitchboardError, detect_identity
+from .client import (
+    Client,
+    Identity,
+    LeaseHeld,
+    SwitchboardError,
+    detect_identity,
+    identity_drift_warning,
+)
 from .config import (
     MANAGED_HUB_TOKEN,
     MANAGED_HUB_URL,
@@ -301,9 +308,20 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     return config
 
 
+#: Set once the drift warning has been printed, so a command that builds two
+#: clients (`whoami` does) says it once rather than twice.
+_DRIFT_WARNED = False
+
+
 def _make_client(args: argparse.Namespace) -> Client:
     config = _make_config(args)
     identity = detect_identity(agent_id=args.agent_id)
+    # Here rather than per-command: every command that reaches the hub comes
+    # through this function, and the warning is about the identity it is about
+    # to speak under. Wiring it into the handful of commands that publish would
+    # leave the ones that only read — `agents`, `inbox` — silently reading a
+    # second identity's cursor.
+    _warn_identity_drift(args, identity)
     return Client(config, agent_id=identity.agent_id)
 
 
@@ -330,6 +348,26 @@ def _warn_isolated(
         kind = detect_identity(agent_id=getattr(args, "agent_id", None)).kind
     note = isolation_warning(config, kind)
     if note:
+        print(note, file=sys.stderr)
+
+
+def _warn_identity_drift(args: argparse.Namespace, identity: Identity | None = None) -> None:
+    """Say, on stderr, that this command is publishing under a second identity.
+
+    Rides alongside `_warn_isolated` because it is the same class of failure:
+    every call succeeds, and the damage is that you are not who you think you
+    are to everybody else. Stderr and exit 0 for the same reason — running a
+    command from outside a checkout is legitimate, it just should not be
+    silent when it changes who you are.
+    """
+    global _DRIFT_WARNED
+    if getattr(args, "quiet", False) or _DRIFT_WARNED:
+        return
+    if identity is None:
+        identity = detect_identity(agent_id=getattr(args, "agent_id", None))
+    note = identity_drift_warning(identity)
+    if note:
+        _DRIFT_WARNED = True
         print(note, file=sys.stderr)
 
 
@@ -838,6 +876,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "workspace": workspace,
         "hub": url,
         "encrypted": encrypted,
+        "id_source": identity.id_source,
+        "in_repo": identity.in_repo,
         "meta": identity.meta,
     }
     if args.json:
@@ -865,9 +905,28 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         print(f"{fmt.dim(field.rjust(10))}  {value}")
     if addressed_as != identity.agent_id:
         # Only worth a line when they differ, which is exactly when someone
-        # would otherwise hand out the wrong one.
-        print(f"{fmt.dim('local'.rjust(10))}  {identity.agent_id} "
-              f"{fmt.dim('(this machine only — peers use agent_id above)')}")
+        # would otherwise hand out the wrong one. The annotation says what the
+        # local id *is* as well as what it is not: it used to read only "this
+        # machine only — peers use agent_id above", which is true and steered
+        # readers off the one field that can confirm an identity pin. Blinding
+        # means a pin that worked and a pin that was dropped both render as an
+        # opaque token up there, so "did my --agent-id take?" is unanswerable
+        # from the addressed id alone. It is answerable from this one.
+        blinded_note = fmt.dim(
+            "(what agent_id above is the blinded form of; peers cannot route to it)"
+        )
+        print(f"{fmt.dim('local'.rjust(10))}  {identity.agent_id} {blinded_note}")
+    # Where the id came from. A wrong answer here is the difference between one
+    # agent and two: an unpinned id is derived from repo + branch + session, so
+    # the same session speaking from a different directory publishes under a
+    # second identity, and two sessions sharing a branch publish under one.
+    source = {
+        "argument": "pinned (--agent-id)",
+        "SWITCHBOARD_AGENT_ID": "pinned (SWITCHBOARD_AGENT_ID)",
+    }.get(identity.id_source, "derived from repo + branch + session")
+    if identity.id_source == "derived" and not identity.in_repo:
+        source += fmt.yellow("  ← no git checkout here; see warning on stderr")
+    print(f"{fmt.dim('identity'.rjust(10))}  {source}")
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
