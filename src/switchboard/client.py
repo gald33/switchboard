@@ -249,10 +249,23 @@ _JSON_VALUED = {"message.body", "board.value"}
 #: there defeats the purpose twice over: it blocks the diagnostic, and it makes
 #: the roster unusable for the peers whose key *is* correct.
 #:
+#: The board and the lease table are the other two. Both are per-workspace and
+#: workspace routing is plaintext, so a peer on a different key writes into the
+#: same listing we read — its board keys and lease resources blind to tokens we
+#: do not recognise and its values do not open. Raising there took out the whole
+#: listing *including our own entries*, which is worse than it sounds: the
+#: coordination convention opens with `board_list prefix="coord/"`, so one
+#: mismatched newcomer disabled handoff discovery for the agents whose key was
+#: right. Plural only — see below.
+#:
 #: Everywhere else stays strict. A message body we cannot open never reaches us
 #: in the first place (a mismatched sender blinds to a different channel), so
-#: an unopenable one is genuinely suspicious and should still raise.
-_TOLERATE_UNREADABLE = {"agents", "agent"}
+#: an unopenable one is genuinely suspicious and should still raise. The
+#: singular forms stay strict for the same reason in a different shape: a
+#: `board_get`/`claims` lookup blinds the key with *our* key, so a peer's entry
+#: answers 404 rather than arriving unopenable. One that does arrive unopenable
+#: is not a key mismatch, and silently returning None for it would hide that.
+_TOLERATE_UNREADABLE = {"agents", "agent", "entries", "leases"}
 
 
 def _looks_sealed(value: Any) -> bool:

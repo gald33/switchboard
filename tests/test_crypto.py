@@ -1034,3 +1034,58 @@ def test_the_key_itself_never_crosses_the_socket(hub, key):
             assert set(reply) <= {"pubkey", "sig"}
     finally:
         server.close()
+
+
+# --- a peer on another key must not take out a whole listing ----------------
+
+
+def test_a_foreign_key_entry_does_not_break_the_board_listing(hub, key):
+    """One unreadable entry used to abort `board_list` for everybody.
+
+    Workspace routing is plaintext, so an agent on a different key writes into
+    the same board we read. Raising on its value took the whole listing with
+    it — including our own entries — and the coordination convention opens with
+    `board_list prefix="coord/"`, so a single mismatched newcomer disabled
+    handoff discovery for the agents whose key was right.
+    """
+    mine = hub.client("mine")
+    theirs = hub.client("theirs", key=generate_key())
+
+    mine.board_set("coord/reports/ours", {"plan": SECRET})
+    theirs.board_set("coord/reports/theirs", {"plan": "not for us"})
+
+    entries = mine.board_list()
+
+    readable = [e for e in entries if not e.get("unreadable")]
+    hidden = [e for e in entries if e.get("unreadable")]
+    assert len(entries) == 2, "the listing must still return every row"
+    assert len(readable) == 1 and len(hidden) == 1
+    assert readable[0]["value"] == {"plan": SECRET}
+    assert hidden[0]["value"] is None, "an unopenable value is dropped, not guessed"
+
+
+def test_a_foreign_key_lease_does_not_break_the_claims_listing(hub, key):
+    mine = hub.client("mine")
+    theirs = hub.client("theirs", key=generate_key())
+
+    mine.acquire("db/migrations", note=SECRET)
+    theirs.acquire("db/migrations", note="also mine, on another key")
+
+    leases = mine.leases()
+
+    assert len(leases) == 2, (
+        "two keys blind one resource name to two tokens, so both leases exist "
+        "and neither excludes the other — which is exactly what the roster "
+        "warning is for"
+    )
+    readable = [le for le in leases if not le.get("unreadable")]
+    assert [le["note"] for le in readable] == [SECRET]
+
+
+def test_our_own_entry_still_reads_back_exactly(hub, key):
+    """Tolerating a neighbour must not soften our own reads."""
+    mine = hub.client("mine")
+    hub.client("theirs", key=generate_key()).board_set("theirs", {"x": 1})
+
+    mine.board_set("coord/reports/ours", {"plan": SECRET})
+    assert mine.board_get("coord/reports/ours") == {"plan": SECRET}

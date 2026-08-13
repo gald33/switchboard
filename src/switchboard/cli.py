@@ -904,6 +904,27 @@ def cmd_register(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _warn_unreadable(items: list[dict[str, Any]], noun: str, fmt: Fmt) -> None:
+    """Say how many entries in a listing were sealed to a key we do not hold.
+
+    The client keeps these rather than failing the call, so the listing is now
+    honest but incomplete — and incomplete is the half that has to be said out
+    loud. A silently short list reads as "nothing else is here", which is the
+    same wrong conclusion the empty-roster trap produces, one layer down.
+    """
+    hidden = sum(1 for item in items if item.get("unreadable"))
+    if not hidden:
+        return
+    print(
+        fmt.yellow(
+            f"note: {hidden} {noun} sealed to a different workspace key and "
+            f"could not be read."
+        )
+        + "\nRun `switchboard agents` to see who is on another key.",
+        file=sys.stderr,
+    )
+
+
 def cmd_agents(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         agents = hub.agents()
@@ -988,6 +1009,7 @@ def cmd_claims(args: argparse.Namespace) -> int:
             f"{le['resource'][:37]:<38} {le['holder'][:29]:<30} "
             f"{_dur(le['expires_in']):<8} {le.get('note') or ''}"
         )
+    _warn_unreadable(leases, "lease note(s)", fmt)
     return EXIT_OK
 
 
@@ -1214,6 +1236,7 @@ def cmd_board(args: argparse.Namespace) -> int:
                         f"{e['key']:<34} rev {e['revision']:<4} "
                         f"{e['updated_by'][:24]:<26} {_dur(e['expires_in'])}"
                     )
+                _warn_unreadable(entries, "entry/entries", Fmt(_use_color(sys.stdout)))
         elif args.board_action == "delete":
             deleted = hub.board_delete(args.board_key)
             if not args.quiet:
