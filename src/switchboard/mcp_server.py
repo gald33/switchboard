@@ -21,6 +21,7 @@ import json
 import sys
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
@@ -29,6 +30,7 @@ from .config import ClientConfig, isolation_warning
 from .crypto import generate_key
 from .guidance import skill_text
 from .signing import SigningServer
+from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
     EFFORT_LEVELS,
     MIN_SAMPLES,
@@ -185,9 +187,18 @@ TOOLS: list[dict[str, Any]] = [
             "alongside other agents. Call it if your harness has not loaded the "
             "switchboard-coordinate skill, or when coordination is behaving in a way you "
             "did not expect. Local and free: it reads the copy packaged with this install "
-            "and never touches the hub, so it answers even when the hub does not."
+            "and never touches the hub, so it answers even when the hub does not. "
+            "Pass `role` to also get this repo's overlay for a named role — what that "
+            "role owes the others and when it should block. Switchboard defines no "
+            "roles; they come from .switchboard/spec.json, so an unknown one is an "
+            "error rather than a silent fall back to the shared protocol."
         ),
-        "inputSchema": _schema({}),
+        "inputSchema": _schema({
+            "role": {
+                "type": "string",
+                "description": "A role this repo declares. Omit for the shared protocol.",
+            },
+        }),
     },
     {
         "name": "whoami",
@@ -471,7 +482,7 @@ class Bridge:
 
     # --- individual tools ---
 
-    def help(self) -> str:
+    def help(self, role: str | None = None) -> str:
         """The coordination protocol, served from the packaged skill.
 
         Alone among the tools this touches neither the hub nor `_touch()`,
@@ -480,8 +491,23 @@ class Bridge:
         working, and requiring a reachable hub to read the instructions would
         withhold them exactly then. It also means no `unread_dms` here — a
         count is only honest if something asked the hub for it.
+
+        A role overlay is read from the repo, never from this package. What an
+        orchestrator *is* belongs to whatever system decomposes the work; the
+        hub cannot read a payload and so could never check a claim about it.
         """
-        return skill_text()
+        text = skill_text()
+        if not role:
+            return text
+        roles = roles_for(Path.cwd())
+        if role not in roles:
+            known = ", ".join(sorted(roles)) or "none recorded"
+            raise SpecError(
+                f"this repo declares no role {role!r} (known: {known}). Roles come "
+                f"from {SPEC_FILE}; `switchboard refresh set` records them."
+            )
+        overlay = str(roles[role] or "").strip()
+        return f"{text}\n\n---\n\n## Your role here: {role}\n\n{overlay}"
 
     def whoami(self) -> dict[str, Any]:
         unread_dms = self._touch()
@@ -961,6 +987,14 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         except TypeError as exc:
             return _response(request_id, _tool_result(
                 {"error": "bad_arguments", "detail": str(exc)}, is_error=True
+            ))
+        except SpecError as exc:
+            # Before the ValueError branch below, which reports `unknown_tool`
+            # — accurate for a name this bridge does not serve, and actively
+            # misleading for a role this *repo* does not declare. An agent told
+            # the tool does not exist looks in a different place entirely.
+            return _response(request_id, _tool_result(
+                {"error": "unknown_role", "detail": str(exc)}, is_error=True
             ))
         except ValueError as exc:
             return _response(request_id, _tool_result(
