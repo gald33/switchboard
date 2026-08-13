@@ -400,6 +400,30 @@ def is_sealed(value: Any) -> bool:
     return isinstance(value, dict) and ENVELOPE_KEY in value
 
 
+def looks_sealed(value: Any) -> bool:
+    """Is this value an envelope, in either form it travels in?
+
+    Payload fields carry an envelope dict; text fields (an agent's name, a
+    lease note) carry the envelope *serialized to a string*, because the wire
+    schema types them as strings. A check that only knew about the dict form
+    silently returned False for every text field — which is exactly the form
+    an unencrypted client meets when it looks at an encrypted peer.
+
+    Public because that meeting is not only the client's business. Anything
+    reading a room it might not hold the key to — the viewer in
+    `examples/viewer.py` is the first — has to tell "this is empty" from "this
+    is sealed and I cannot open it", and those two must never render the same.
+    """
+    if is_sealed(value):
+        return True
+    if isinstance(value, str) and value.startswith("{"):
+        try:
+            return is_sealed(json.loads(value))
+        except ValueError:
+            return False
+    return False
+
+
 def _decode_key(key: str) -> bytes:
     """Accept the shapes people actually paste: base64url, base64, or hex."""
     key = key.strip()

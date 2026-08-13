@@ -1,17 +1,26 @@
-"""The viewer: what a human is shown, and what it promises not to do.
+"""`examples/viewer.py`: what a human is shown, and what it promises not to do.
 
-Two properties carry most of the weight here. The page must not disturb the
-room it is displaying — a viewer that drained an inbox would make an agent
-miss a message, and the human watching would never know. And it must be
-honest under encryption: name what it can name, mark what it cannot as sealed,
-and keep going when a channel belongs to someone holding another key.
+The example is here to prove the SDK is enough to build a real application on,
+so these tests are as much about the package as about the page. They import it
+the way anyone else would — by path, from `examples/`, with no help from the
+package — and everything it touches is public API. If a change to `switchboard`
+breaks this file, it has broken somebody's application, which is exactly what
+we want to hear about here rather than in an issue.
+
+Two properties carry most of the weight. The page must not disturb the room it
+is displaying — a viewer that drained an inbox would make an agent miss a
+message, and the human watching would never know. And it must be honest under
+encryption: name what it can name, mark what it cannot as sealed, and keep
+going when a channel belongs to someone holding another key.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import threading
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +28,16 @@ from switchboard.client import Client
 from switchboard.config import ClientConfig
 from switchboard.crypto import generate_key
 from switchboard.testing import hub
-from switchboard.web import make_server, snapshot
+
+#: Loaded from `examples/` rather than imported from the package, because that
+#: is where it lives and how a reader of the repo would run it.
+_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "viewer.py"
+_spec = importlib.util.spec_from_file_location("example_viewer", _EXAMPLE)
+viewer_app = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(viewer_app)
+
+make_server = viewer_app.make_server
+snapshot = viewer_app.snapshot
 
 
 @pytest.fixture
@@ -104,7 +122,7 @@ def test_an_expired_message_is_not_shown(h):
 
 
 def test_the_channel_cap_is_reported_rather_than_silently_applied(h, monkeypatch):
-    monkeypatch.setattr("switchboard.web.MAX_CHANNELS", 2)
+    monkeypatch.setattr(viewer_app, "MAX_CHANNELS", 2)
     a = h.client("a", register=True)
     for i in range(4):
         a.post(f"chan-{i}", "x")
@@ -237,68 +255,11 @@ def test_the_page_and_its_state_are_served(h):
     assert missing.value.code == 404
 
 
-# --- the command ------------------------------------------------------------
-
-
-def test_the_command_serves_the_room_the_rest_of_the_cli_would_talk_to(h, monkeypatch):
-    """`switchboard web` must resolve its hub exactly like `switchboard say`
-    does, or it shows a different room than the one the agents are in."""
-    import switchboard.cli as cli
-
-    monkeypatch.setattr(cli, "Client", h.client_class())
-    monkeypatch.setenv("SWITCHBOARD_URL", h.url)
-    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", h.workspace)
-    served = {}
-
-    def fake_serve(hub, **kwargs):
-        served["workspace"] = hub.workspace
-        served.update(kwargs)
-        kwargs["announce"]("http://127.0.0.1:8799")
-
-    monkeypatch.setattr(cli.web, "serve", fake_serve)
-
-    assert cli.main(["web", "--port", "9100", "--limit", "7"]) == 0
-
-    assert served["workspace"] == h.workspace
-    assert (served["host"], served["port"], served["limit"]) == ("127.0.0.1", 9100, 7)
-
-
-def test_binding_off_loopback_says_what_that_publishes(h, monkeypatch, capsys):
-    import switchboard.cli as cli
-
-    monkeypatch.setattr(cli, "Client", h.client_class())
-    monkeypatch.setenv("SWITCHBOARD_URL", h.url)
-    monkeypatch.setattr(cli.web, "serve", lambda hub, **kwargs: None)
-
-    cli.main(["web", "--host", "0.0.0.0"])
-    loud = capsys.readouterr().err
-    cli.main(["web", "--host", "127.0.0.1"])
-    quiet = capsys.readouterr().err
-
-    assert "no authentication" in loud
-    assert "no authentication" not in quiet
-
-
-def test_a_port_already_in_use_is_not_reported_as_an_unreachable_hub(h, monkeypatch, capsys):
-    """Both surface as OSError, and `main` blames the hub for all of them."""
-    import switchboard.cli as cli
-
-    monkeypatch.setattr(cli, "Client", h.client_class())
-    monkeypatch.setenv("SWITCHBOARD_URL", h.url)
-
-    def refuse(hub, **kwargs):
-        raise OSError("[Errno 98] Address already in use")
-
-    monkeypatch.setattr(cli.web, "serve", refuse)
-
-    assert cli.main(["web", "--port", "9100"]) == 1
-    assert "cannot serve on 127.0.0.1:9100" in capsys.readouterr().err
-
-
 def test_a_viewer_with_no_key_says_so_instead_of_printing_envelopes():
     """The tier gap `whoami` warns about, met from the reading side: the room
     is encrypted, this process was started without the key, and nothing raises
-    — the bodies just arrive sealed."""
+    — the bodies just arrive sealed. Distinguishing that from an empty message
+    is what `switchboard.looks_sealed` was made public for."""
     key = generate_key()
     with hub(key=key) as h:
         h.client("a", register=True).post("build", "you cannot read this")
@@ -320,3 +281,51 @@ def test_a_genuinely_empty_message_is_not_mistaken_for_a_sealed_one(h):
     assert view["messages"][0]["body"] is None
     assert view["messages"][0]["sealed_body"] is False
     assert view["notes"] == []
+
+
+# --- the SDK surface the example needed -------------------------------------
+#
+# Each of these exists because writing the application above hit a wall. They
+# are pinned here, next to the app that needs them, so a later cleanup that
+# un-exports one fails against the use case rather than against a list.
+
+
+def test_a_reader_can_open_a_channel_it_was_handed_rather_than_named():
+    """`channels()` returns hub-form tokens. An application enumerating a room
+    has no plaintext name to pass back, and blinding a token again matches
+    nothing — so `history()` takes it as-is."""
+    key = generate_key()
+    with hub(key=key) as h:
+        h.client("a", register=True).post("deploys", "shipping")
+        reader = h.client("reader")
+
+        token = reader.channels()[0]["channel"]
+
+        assert token != "deploys"
+        assert [m["body"] for m in reader.history(token, blinded=True)] == ["shipping"]
+        # And the plaintext name rides back inside the body it could not have
+        # derived from the token.
+        assert reader.history(token, blinded=True)[0]["channel"] == "deploys"
+
+
+def test_a_client_says_whether_it_encrypts():
+    """An encrypted room and a plaintext one look identical in a response, so
+    an application cannot infer this — and it decides whether an identifier it
+    displays is a name or a blinded token."""
+    key = generate_key()
+    with hub(key=key) as sealed, hub() as plain:
+        assert sealed.client("a").encrypted is True
+        assert plain.client("a").encrypted is False
+
+
+async def test_the_async_client_reads_a_token_the_same_way():
+    """The two clients must not drift: an async application enumerating a room
+    hits the same wall in the same place."""
+    key = generate_key()
+    with hub(key=key) as h:
+        h.client("a", register=True).post("deploys", "shipping")
+        reader = h.async_client("reader")
+
+        token = (await reader.channels())[0]["channel"]
+
+        assert [m["body"] for m in await reader.history(token, blinded=True)] == ["shipping"]

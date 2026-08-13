@@ -8,7 +8,6 @@ one, the MCP bridge uses the async one.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import platform
 import secrets
@@ -22,7 +21,7 @@ import httpx
 
 from . import signing
 from .config import ClientConfig
-from .crypto import DecryptionError, WorkspaceCipher, is_sealed
+from .crypto import DecryptionError, WorkspaceCipher, looks_sealed
 from .signing import SigningIdentity
 
 __all__ = [
@@ -255,23 +254,9 @@ _JSON_VALUED = {"message.body", "board.value"}
 _TOLERATE_UNREADABLE = {"agents", "agent"}
 
 
-def _looks_sealed(value: Any) -> bool:
-    """Is this value an envelope, in either form it travels in?
-
-    Payload fields carry an envelope dict; text fields (an agent's name, a
-    lease note) carry the envelope *serialized to a string*, because the wire
-    schema types them as strings. A check that only knew about the dict form
-    silently returned False for every text field — which is exactly the form
-    an unencrypted client meets when it looks at an encrypted peer.
-    """
-    if is_sealed(value):
-        return True
-    if isinstance(value, str) and value.startswith("{"):
-        try:
-            return is_sealed(json.loads(value))
-        except ValueError:
-            return False
-    return False
+#: One definition, in crypto.py, where the envelope is. This name stays
+#: because it is used throughout this module.
+_looks_sealed = looks_sealed
 
 
 def _is_labelled(opened: Any) -> bool:
@@ -334,6 +319,18 @@ class _Base:
         #: identities themselves.
         self._peer_live: dict[str, bool] = {}
         self._peer_key_swaps: set[str] = set()
+
+    @property
+    def encrypted(self) -> bool:
+        """Whether this client seals what it sends and opens what it reads.
+
+        The one thing an application cannot infer from a response: an
+        encrypted room and a plaintext one look identical on the wire, by
+        design. A reader needs it to know whether an identifier it was handed
+        — a lease resource, a board key — is a name or a blinded token, and
+        those must not be presented the same way.
+        """
+        return self.cipher is not None
 
     def _ws(self, workspace: str | None) -> str:
         return workspace or self.workspace
@@ -953,9 +950,13 @@ class AsyncClient(_Base):
         result = await self._call("GET", "/inbox", cipher=cipher, params=params)
         return result["messages"]
 
-    async def history(self, channel: str, *, limit: int = 50,
+    async def history(self, channel: str, *, limit: int = 50, blinded: bool = False,
                       workspace: str | None = None) -> list[dict[str, Any]]:
-        result = await self._call("GET", f"/channels/{self._blind_channel(channel)}",
+        """Recent messages on a channel, cursor untouched. See `Client.history`
+        for what `blinded` is for — the two clients must not drift, because an
+        async application meets that wall in exactly the same place."""
+        token = channel if blinded else self._blind_channel(channel)
+        result = await self._call("GET", f"/channels/{token}",
                                   params={"workspace": self._ws(workspace), "limit": limit})
         return result["messages"]
 

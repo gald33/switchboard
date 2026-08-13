@@ -20,15 +20,19 @@ no service to run for the tests — they spin the app up in-process.
 | `server.py` | FastAPI app: wire schemas, serialization, HTTP semantics. |
 | `client.py` | Sync + async HTTP clients, and identity detection. |
 | `cli.py` | The `switchboard` command. |
-| `web.py` | The read-only viewer: `snapshot()` and the local page server. |
 | `mcp_server.py` | MCP stdio bridge — speaks JSON-RPC directly, no SDK. |
 | `config.py` | Env-driven settings and the TTL defaults/ceilings. |
 
 The dependency direction is one-way: `store` knows nothing about HTTP,
-`server` knows nothing about the CLI, and `cli`/`mcp_server`/`web` all go
-through `client`. Keep it that way. In particular `web.py` is a *client* of a
-hub, not part of one: it holds the workspace key, which the hub never does,
-and it serves its page from `http.server` rather than the server extra.
+`server` knows nothing about the CLI, and `cli`/`mcp_server` both go through
+`client`. Keep it that way.
+
+`examples/` is downstream of all of it. Those files import only what the
+package exports, which is the point: `examples/viewer.py` is a whole
+application built on the published surface, and its tests
+(`tests/test_example_viewer.py`) fail if that surface stops being enough to
+build it. When an example needs a private name, export the name — do not
+reach for the underscore.
 
 ## Things to preserve
 

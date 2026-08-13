@@ -1,28 +1,41 @@
+#!/usr/bin/env python3
 """A read-only window on a room, for the human the agents are working for.
 
-Everything else in this package is built for an agent to read. This is the
-other audience: the person who wants to know what their agents are saying to
-each other *right now*, without tailing four terminals or learning which
-subcommand answers which question.
+    export SWITCHBOARD_URL=http://127.0.0.1:8787
+    export SWITCHBOARD_TOKEN=dev-token
+    export SWITCHBOARD_WORKSPACE=demo
+    export SWITCHBOARD_KEY=...          # if the room is encrypted
 
-    switchboard web        # http://127.0.0.1:8799
+    python examples/viewer.py           # → http://127.0.0.1:8799
+
+Who is awake and on what, what is claimed and for how long, what is on the
+blackboard, and the conversation as it happens.
+
+**This is an application built on the SDK, not part of it.** That is the
+point: `coordinated_worker.py` next door shows an agent *taking part* in a
+room, and this shows a program *reading* one — the other half of the surface,
+and the half nothing else exercised. It imports only what `switchboard`
+exports, so if it needs something the package does not export, that is a hole
+in the package rather than a licence to reach inside it. Three such holes
+turned up while writing it and were closed: `Client.encrypted`,
+`looks_sealed()`, and `history(blinded=True)`. See `docs/viewer.md`.
 
 Three things about the shape of it, because they are not arbitrary.
 
 **It runs beside the human, not on the hub.** A hub cannot serve this page.
 Message bodies, agent names, lease notes and board values are sealed with a
 key the hub never receives, so a page it rendered would be a wall of
-ciphertext. The viewer is a local process holding the same client credentials
-as the agents in this repo, doing the decryption in the one place it can
-happen. That is also why the page is bound to loopback by default: it shows
+ciphertext. The viewer is an ordinary client, configured exactly like the
+agents it is watching, doing the decryption in the one place it can happen.
+That is also why the page is bound to loopback by default: it shows
 plaintext, and the hub's own perimeter protects nothing here.
 
 **It reads without disturbing.** Every call it makes is a read that leaves no
-trace an agent could trip over: the roster, live leases, the board, and
-`GET /channels/{c}`, which is the catch-up read that does *not* move anyone's
-cursor. The viewer never registers, never heartbeats, and never posts, so it
-does not appear in the roster it is displaying and cannot make an agent's next
-`inbox` come back empty.
+trace an agent could trip over: `agents()`, `leases()`, `board_list()`,
+`channels()`, and `history()` — the catch-up read that does *not* move
+anyone's cursor. The viewer never registers, never heartbeats, and never
+posts, so it does not appear in the roster it is displaying and cannot make an
+agent's next `inbox` come back empty.
 
 **It shows what the key it holds can open, and says so when it can't.** An
 encrypted room hides channel names, lease resources and board keys from the
@@ -36,26 +49,32 @@ reported as unreadable, in place, instead of failing the whole page.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 import threading
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib import resources
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 
-from . import __version__
-from .client import Client, SwitchboardError, _looks_sealed
-from .crypto import CryptoError
-from .timing import unwrap_body
+from switchboard import (
+    Client,
+    CryptoError,
+    SwitchboardError,
+    __version__,
+    looks_sealed,
+    unwrap_body,
+)
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
 
-#: The page itself, packaged beside this module rather than embedded in it —
-#: HTML and CSS in a Python string literal is where the formatting goes to die.
-_PAGE_FILE = "viewer.html"
+#: The page itself, beside this file rather than embedded in it — HTML and CSS
+#: in a Python string literal is where the formatting goes to die.
+_PAGE_FILE = Path(__file__).with_name("viewer.html")
 
 DEFAULT_HOST = "127.0.0.1"
 
@@ -114,7 +133,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     channels this key cannot open — degrades to a page with a note on it
     rather than a stack trace and a blank screen.
     """
-    sealed_ids = hub.cipher is not None
+    sealed_ids = hub.encrypted
     view: dict[str, Any] = {
         "generated_at": _iso(datetime.now(tz=timezone.utc).timestamp()),
         "version": __version__,
@@ -249,7 +268,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
             # than an error, because nothing tried to open them. Rendering the
             # envelope as if it were the message is the one dishonest thing
             # this page could do, so it does not.
-            sealed_body = not sealed_ids and _looks_sealed(body)
+            sealed_body = not sealed_ids and looks_sealed(body)
             if sealed_body:
                 keyless = True
                 body, forecast = None, None
@@ -276,7 +295,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     for agent in view["agents"]:
         agent["channels"] = [named.get(c, c) for c in agent["channels"]]
 
-    if keyless or any(_looks_sealed(a.get("name")) for a in agents):
+    if keyless or any(looks_sealed(a.get("name")) for a in agents):
         notes.append(
             "this room is encrypted and this viewer holds no key: export "
             "SWITCHBOARD_KEY (the same one your agents use) and restart it"
@@ -406,5 +425,69 @@ def page() -> str:
     read on page load and makes editing it a browser refresh instead of a
     restart.
     """
-    return resources.files("switchboard").joinpath(_PAGE_FILE).read_text(encoding="utf-8")
+    return _PAGE_FILE.read_text(encoding="utf-8")
 
+
+
+# --- running it -------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Serve a read-only page showing one Switchboard room. "
+                    "Connection settings come from the environment, exactly "
+                    "as they do for every agent: SWITCHBOARD_URL, _TOKEN, "
+                    "_WORKSPACE and _KEY.",
+    )
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help=f"interface to bind (default {DEFAULT_HOST}; the page "
+                             "has no authentication, so anything else is a decision)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"default {DEFAULT_PORT}; 0 picks a free one")
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
+                        help=f"messages read per channel (default {DEFAULT_LIMIT})")
+    parser.add_argument("--refresh", type=float, default=DEFAULT_REFRESH,
+                        help=f"seconds between refreshes (default {DEFAULT_REFRESH:.0f})")
+    parser.add_argument("--open", action="store_true", help="open a browser at it")
+    parser.add_argument("--verbose", action="store_true", help="log every request")
+    args = parser.parse_args(argv)
+
+    if not _is_loopback(args.host):
+        # The page is the plaintext of a room whose whole security model is
+        # that the plaintext never leaves the machines holding the key. There
+        # is no login on it, and there is not going to be one.
+        print(
+            f"warning: binding to {args.host} publishes this room's decrypted "
+            "contents to anyone who can reach that address. This page has no "
+            "authentication — use an SSH tunnel instead.",
+            file=sys.stderr,
+        )
+
+    # Everything about who we are and where we are talking comes from the
+    # environment, so the viewer lands in the same room as the agents without
+    # being told anything twice.
+    with Client() as hub:
+        try:
+            serve(
+                hub, host=args.host, port=args.port, limit=args.limit,
+                refresh=args.refresh, verbose=args.verbose, open_browser=args.open,
+                announce=lambda url: print(
+                    f"switchboard viewer → {url}\n"
+                    f"  room {hub.workspace} on {hub.config.url}", flush=True),
+            )
+        except OSError as exc:
+            print(f"cannot serve on {args.host}:{args.port}: {exc}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            pass
+    return 0
+
+
+def _is_loopback(host: str) -> bool:
+    """`0.0.0.0` is deliberately not local: it is every interface, which is
+    the case the warning above exists for."""
+    return host.lower() in ("127.0.0.1", "localhost", "::1", "[::1]") or host.startswith("127.")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
