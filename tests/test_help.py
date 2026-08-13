@@ -12,6 +12,8 @@ of a convention is how the convention stops being one.
 
 from __future__ import annotations
 
+import pytest
+
 from switchboard.cli import build_parser, main
 from switchboard.guidance import skill_text
 from switchboard.mcp_server import TOOLS, Bridge, handle_request
@@ -40,8 +42,25 @@ def _hubless_bridge() -> Bridge:
 
 def test_help_is_offered_as_a_tool() -> None:
     tool = next(t for t in TOOLS if t["name"] == "help")
-    assert tool["inputSchema"]["properties"] == {}
+    # `role` is the only thing it accepts, and it is optional. The property
+    # that matters is that nothing is *required*: an agent reaching for the
+    # convention is usually one for whom something has already gone wrong, and
+    # a mandatory argument would be one more thing to get right first.
+    assert set(tool["inputSchema"]["properties"]) == {"role"}
     assert not tool["inputSchema"].get("required")
+
+
+def test_an_unknown_role_is_refused_rather_than_answered_generically(
+    tmp_path, monkeypatch
+) -> None:
+    """An agent that believes it got role guidance and got boilerplate is the
+    confidently-wrong case — the same reason `drill --worker claude` refuses
+    rather than downgrading when the binary is missing."""
+    from switchboard.spec import SpecError
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SpecError, match="declares no role"):
+        _hubless_bridge().help(role="orchestrator")
 
 
 def test_help_answers_with_no_hub_and_no_registration() -> None:

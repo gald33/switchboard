@@ -42,6 +42,17 @@ from .config import (
 )
 from .crypto import CryptoError, generate_key
 from .guidance import SKILL_NAME, skill_history, skill_text
+from .spec import (
+    OUTCOMES,
+    PROVENANCES,
+    SPEC_FILE,
+    Refresh,
+    Spec,
+    SpecError,
+    cadence,
+    roles_for,
+)
+from .spec import Field as SpecField
 from .timing import (
     EFFORT_LEVELS,
     MIN_SAMPLES,
@@ -766,10 +777,160 @@ def cmd_help(args: argparse.Namespace) -> int:
     working connection to read the instructions.
     """
     text = skill_text()
+    overlay = ""
+    role = getattr(args, "role", None)
+    if role:
+        roles = roles_for(Path(".").resolve())
+        if role not in roles:
+            # An error, not a quiet fall back to the shared protocol. An agent
+            # that believes it received role guidance and got boilerplate is
+            # the confidently-wrong case, and it is the same reasoning that
+            # makes `drill --worker claude` refuse rather than downgrade when
+            # the binary is missing.
+            known = ", ".join(sorted(roles)) or "none recorded"
+            print(
+                f"error: this repo declares no role {role!r} (known: {known}).\n"
+                "Roles come from .switchboard/spec.json — Switchboard defines "
+                "none of its own. `switchboard refresh set` records them.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        overlay = str(roles[role] or "").strip()
     if args.json:
-        print(json.dumps({"skill": _SKILL_NAME, "text": text}, indent=2))
+        payload = {"skill": _SKILL_NAME, "text": text}
+        if role:
+            payload["role"] = role
+            payload["overlay"] = overlay
+        print(json.dumps(payload, indent=2))
     else:
         print(text, end="" if text.endswith("\n") else "\n")
+        if overlay:
+            print(f"\n---\n\n## Your role here: {role}\n\n{overlay}")
+    return EXIT_OK
+
+
+def _dur_ago(seconds: float) -> str:
+    return _dur(max(0.0, seconds)) + " ago"
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    """Read or update what this repo declares about how its agents work.
+
+    `init` is the human-invoked half — it wires a repo up once. This is the
+    agent-invoked half, for the answers that are discovered rather than
+    configured and that go stale as the repo moves. Same output medium on
+    purpose: a committed file, versioned with the code that made it true and
+    present in a fresh clone, rather than a blackboard entry that expires in a
+    day and is unreadable to anyone on another key.
+    """
+    root = Path(getattr(args, "dir", None) or ".").resolve()
+    try:
+        spec = Spec.load(root)
+    except SpecError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.refresh_action == "status":
+        stale = spec.is_stale(root)
+        gap = cadence(spec.history)
+        last = spec.last
+        if args.json:
+            _print_json({
+                "path": str(root / SPEC_FILE),
+                "fields": {n: f.as_json() for n, f in spec.fields.items()},
+                "inputs": spec.inputs,
+                "stale": stale,
+                "fingerprint": spec.fingerprint(root),
+                "mean_seconds_between_changes": gap,
+                "history": [r.as_json() for r in spec.history],
+            })
+            return EXIT_OK
+        fmt = Fmt(_use_color(sys.stdout))
+        if not spec.fields and not spec.history:
+            print(f"no spec recorded in this repo ({SPEC_FILE} is absent).")
+            print("`switchboard refresh set` writes one; Switchboard supplies "
+                  "no fields of its own.")
+            return EXIT_OK
+        for name, f in sorted(spec.fields.items()):
+            mark = fmt.dim(f"[{f.provenance}]")
+            print(f"{name:<20} {mark} {json.dumps(f.value)[:80]}")
+        print()
+        if last:
+            print(f"last refresh  {last.outcome} {_dur_ago(time.time() - last.at)}"
+                  + (f" — {last.note}" if last.note else ""))
+        # Three answers, and the third is not a failure: with nothing declared
+        # to compare against, saying so beats a confident "fresh" that would
+        # stop anyone ever looking again.
+        verdict = {
+            True: fmt.yellow("inputs have changed since that refresh"),
+            False: fmt.green("inputs unchanged since that refresh"),
+            None: fmt.dim("no inputs declared — cannot tell from here; "
+                          "judge by the cadence below"),
+        }[stale]
+        print(f"staleness     {verdict}")
+        if gap is not None:
+            print(f"cadence       something changed every {_dur(gap)} on average")
+        return EXIT_OK
+
+    # --- set ---
+    raw = args.spec_json
+    if raw == "-" or raw is None:
+        raw = sys.stdin.read().strip()
+    if not raw:
+        print("error: no spec given; pass JSON as an argument or `-` for stdin",
+              file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        incoming = json.loads(raw)
+    except ValueError as exc:
+        print(f"error: spec is not valid JSON: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if not isinstance(incoming, dict):
+        print("error: spec must be a JSON object of field name -> value",
+              file=sys.stderr)
+        return EXIT_ERROR
+
+    updates = {
+        name: SpecField(value=value, provenance=args.provenance,
+                        evidence=args.evidence or "")
+        for name, value in incoming.items()
+    }
+    try:
+        changed = spec.apply(updates, force=args.force)
+    except SpecError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.input:
+        spec.inputs = sorted(set(spec.inputs) | set(args.input))
+
+    refused = sorted(set(updates) - set(changed))
+    outcome = args.outcome or ("updated" if changed else "unchanged")
+    try:
+        spec.record(Refresh(
+            at=time.time(), outcome=outcome, note=args.note or "",
+            fingerprint=spec.fingerprint(root),
+            by=detect_identity(agent_id=args.agent_id).agent_id,
+        ))
+    except SpecError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    path = spec.save(root)
+
+    if args.json:
+        _print_json({"path": str(path), "changed": changed, "unchanged": refused,
+                     "outcome": outcome, "fingerprint": spec.fingerprint(root)})
+        return EXIT_OK
+    print(f"{path}: {len(changed)} field(s) written, outcome {outcome}")
+    for name in changed:
+        print(f"  + {name}")
+    for name in refused:
+        # Silence here would be the bug: an agent that inferred a value, was
+        # correctly refused, and heard nothing would report having recorded it.
+        existing = spec.fields.get(name)
+        why = ("already asserted — pass --force to overwrite"
+               if existing and existing.provenance == "asserted"
+               else "unchanged")
+        print(f"  = {name} ({why})")
     return EXIT_OK
 
 
@@ -3159,7 +3320,62 @@ def build_parser() -> argparse.ArgumentParser:
                     "install and never touches the hub, so it works before setup and "
                     "when the hub is unreachable.",
     )
+    p.add_argument(
+        "--role",
+        help="also print this repo's overlay for a role, from .switchboard/spec.json. "
+             "Switchboard defines no roles of its own; an unknown one is an error "
+             "rather than a silent fall back to the shared protocol.",
+    )
     p.set_defaults(func=cmd_help)
+
+    p = sub.add_parser(
+        "refresh",
+        help="what this repo declares about how its agents work together",
+        description="The agent-invoked counterpart to `init`. `init` wires a repo up "
+                    "once; this records the answers that are discovered rather than "
+                    "configured — which roles exist here, what a claim is named, where "
+                    "the plan lives — and tracks whether they have gone stale. "
+                    "Switchboard supplies no fields of its own and never interprets "
+                    "one: the repo says, this writes it down.",
+    )
+    rsub = p.add_subparsers(dest="refresh_action", required=True)
+    r = rsub.add_parser("status", help="what is recorded, and whether it is stale")
+    r.add_argument("--dir", help="repo root (default: cwd)")
+    r.set_defaults(func=cmd_refresh)
+    r = rsub.add_parser("set", help="record fields discovered this session")
+    r.add_argument(
+        "spec_json", nargs="?",
+        help="JSON object of field name -> value, or `-` to read it from stdin. "
+             "Pipe it: a payload passed as an argument is interpreted by your shell "
+             "before Switchboard sees it.",
+    )
+    r.add_argument("--dir", help="repo root (default: cwd)")
+    r.add_argument(
+        "--provenance", choices=list(PROVENANCES), default="inferred",
+        help="`inferred` (default) is something this agent worked out; `asserted` is "
+             "something a human decided. An inferred value never silently replaces an "
+             "asserted one — pass --force when you really mean to.",
+    )
+    r.add_argument(
+        "--outcome", choices=list(OUTCOMES),
+        help="what this refresh concluded. Defaults to `updated` when anything "
+             "changed and `unchanged` otherwise. Say `failed` or `partial` explicitly "
+             "when a field could not be determined — the next agent needs to know it "
+             "is a known unknown rather than untried.",
+    )
+    r.add_argument("--note", help="one line on what happened, for the next agent")
+    r.add_argument("--evidence", help="where these values came from")
+    r.add_argument(
+        "--input", action="append",
+        help="repo-relative path this spec was derived from. Fingerprinted, so the "
+             "next agent decides whether to refresh by comparing rather than judging. "
+             "Repeatable.",
+    )
+    r.add_argument(
+        "--force", action="store_true",
+        help="overwrite asserted values with inferred ones",
+    )
+    r.set_defaults(func=cmd_refresh)
 
     p = sub.add_parser("whoami", help="show this agent's inferred identity")
     p.add_argument(
