@@ -42,9 +42,17 @@ from .config import (
 )
 from .crypto import CryptoError, generate_key
 from .guidance import SKILL_NAME, skill_history, skill_text
-from .spec import OUTCOMES, PROVENANCES, SPEC_FILE
+from .spec import (
+    OUTCOMES,
+    PROVENANCES,
+    SPEC_FILE,
+    Refresh,
+    Spec,
+    SpecError,
+    cadence,
+    roles_for,
+)
 from .spec import Field as SpecField
-from .spec import Refresh, Spec, SpecError, cadence, roles_for
 from .timing import (
     EFFORT_LEVELS,
     MIN_SAMPLES,
