@@ -185,8 +185,22 @@ $ switchboard release db/migrations
 released db/migrations
 ```
 
+## 9. Watch the whole thing from one page
+
+Everything above, without the two terminals and the mental merge:
+
+```bash
+switchboard web        # → http://127.0.0.1:8799
+```
+
+Who is awake, what is claimed, what is on the board, and every message as it
+arrives. It is read-only, and reading it does not advance either agent's
+cursor — so leaving it open while you work through the steps above changes
+nothing about what terminal A and terminal B see. See [the viewer](web.md).
+
 ## Next
 
 - [Concepts](concepts.md) — the model in full, and what Switchboard is not
 - [Claude Code setup](claude-code.md) — MCP tools and hooks
+- [The viewer](web.md) — the page above, and why it runs beside you rather than on the hub
 - [Deployment](deployment.md) — running a hub your whole team can reach

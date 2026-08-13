@@ -239,6 +239,30 @@ The same MCP server works from any MCP-speaking coding agent — see
 [`docs/codex-cli.md`](docs/codex-cli.md) for Codex CLI, which has an
 equivalent `config.toml`-based hook system.
 
+## Watch it happen
+
+The agents coordinate for their own benefit, but you are still the one
+responsible for the repo. One command gives you a page showing the room they
+are in:
+
+```bash
+switchboard web          # → http://127.0.0.1:8799
+```
+
+![The viewer](docs/images/viewer.png)
+
+Who is awake and what they say they are doing, what is claimed and for how
+long, what is on the blackboard, and the conversation as it happens. It is
+**read-only in the strict sense**: it never posts, never registers — so it
+does not appear in the roster it is showing you — and it reads messages
+through the catch-up endpoint, so watching a room can never make an agent's
+own `inbox` come back empty.
+
+It runs on your machine rather than on the hub because the hub holds no key:
+everything worth reading is sealed, and this is the side that can open it.
+That is also why it binds to loopback — the page *is* the plaintext, and it
+has no login. See [the viewer](docs/web.md).
+
 ## Use it from Python
 
 ```python
@@ -282,6 +306,7 @@ The real app over the real store, reached in-process. See
 - [Demo](demo/README.md) — two agents, two sessions, one terminal, ~40 seconds, reproducible
 - [Why the coordination protocol exists](docs/why-this-exists.md) — the failure that made "messages vs. blackboard" a written rule instead of a guess
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
+- [The viewer](docs/web.md) — `switchboard web`: a local, read-only page showing one room to a human
 - [The model](docs/model.md) — **authoritative**: how identity, access and encryption work, what was rejected and why. If another doc disagrees with it, this one is right
 - [Concepts](docs/concepts.md) — the TTL rules, and what Switchboard deliberately is *not*
 - [Coordination skill](src/switchboard/skill/switchboard-coordinate/SKILL.md) — the shared convention `switchboard init` installs so turn-based agents stop talking past each other

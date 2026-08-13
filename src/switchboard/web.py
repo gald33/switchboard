@@ -1,0 +1,410 @@
+"""A read-only window on a room, for the human the agents are working for.
+
+Everything else in this package is built for an agent to read. This is the
+other audience: the person who wants to know what their agents are saying to
+each other *right now*, without tailing four terminals or learning which
+subcommand answers which question.
+
+    switchboard web        # http://127.0.0.1:8799
+
+Three things about the shape of it, because they are not arbitrary.
+
+**It runs beside the human, not on the hub.** A hub cannot serve this page.
+Message bodies, agent names, lease notes and board values are sealed with a
+key the hub never receives, so a page it rendered would be a wall of
+ciphertext. The viewer is a local process holding the same client credentials
+as the agents in this repo, doing the decryption in the one place it can
+happen. That is also why the page is bound to loopback by default: it shows
+plaintext, and the hub's own perimeter protects nothing here.
+
+**It reads without disturbing.** Every call it makes is a read that leaves no
+trace an agent could trip over: the roster, live leases, the board, and
+`GET /channels/{c}`, which is the catch-up read that does *not* move anyone's
+cursor. The viewer never registers, never heartbeats, and never posts, so it
+does not appear in the roster it is displaying and cannot make an agent's next
+`inbox` come back empty.
+
+**It shows what the key it holds can open, and says so when it can't.** An
+encrypted room hides channel names, lease resources and board keys from the
+hub by blinding them, and blinding is one-way — nobody can reverse it, this
+viewer included. Channel names come back anyway, because a sealed body
+carries its own channel label. Lease resources and board keys have no such
+carrier, so they are shown as the tokens they are, marked sealed rather than
+dressed up as names. A room using a different key than this viewer holds is
+reported as unreadable, in place, instead of failing the whole page.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import webbrowser
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
+from typing import Any, Callable
+
+import httpx
+
+from . import __version__
+from .client import Client, SwitchboardError, _looks_sealed
+from .crypto import CryptoError
+from .timing import unwrap_body
+
+__all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
+
+#: The page itself, packaged beside this module rather than embedded in it —
+#: HTML and CSS in a Python string literal is where the formatting goes to die.
+_PAGE_FILE = "viewer.html"
+
+DEFAULT_HOST = "127.0.0.1"
+
+#: Deliberately not 8787 (the hub's default). Both run on a laptop at once and
+#: the viewer is the one that should move.
+DEFAULT_PORT = 8799
+
+#: Messages fetched per channel. The hub caps `limit` at 500.
+DEFAULT_LIMIT = 50
+
+#: How often the page asks for a fresh snapshot.
+DEFAULT_REFRESH = 3.0
+
+#: Channels read per snapshot. One HTTP call each, so an unbounded room would
+#: turn one page refresh into hundreds of requests. Truncation is reported in
+#: the payload rather than passed off as the whole room.
+MAX_CHANNELS = 60
+
+
+def _iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _channel_label(token: str, opened: list[dict[str, Any]]) -> str:
+    """The readable name for a channel, or the token if nothing recovered one.
+
+    A sealed message body carries `ch`, the plaintext channel name, which the
+    client restores while opening it. So a channel with any readable message
+    in it names itself. An empty-but-listed channel, or one sealed under
+    another key, has nothing to name it with.
+    """
+    for m in opened:
+        name = m.get("channel")
+        if isinstance(name, str) and name and name != token:
+            return name
+    return token
+
+
+def _who(agent_id: str | None, names: dict[str, str]) -> dict[str, Any]:
+    """A sender or holder as the page wants it: id, plus a name if we know one.
+
+    Under encryption an agent id is blinded and unreadable, while the name it
+    registered is sealed and therefore *is* readable — so the roster is the
+    only thing that turns `Yk3n…` back into `my-repo:feat/x`.
+    """
+    return {"id": agent_id or "", "name": names.get(agent_id or "")}
+
+
+def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
+             refresh: float = DEFAULT_REFRESH) -> dict[str, Any]:
+    """One complete view of the room, as JSON the page can render.
+
+    Section by section, so a hub that has gone away mid-poll — or a room whose
+    channels this key cannot open — degrades to a page with a note on it
+    rather than a stack trace and a blank screen.
+    """
+    sealed_ids = hub.cipher is not None
+    view: dict[str, Any] = {
+        "generated_at": _iso(datetime.now(tz=timezone.utc).timestamp()),
+        "version": __version__,
+        "refresh_ms": int(max(0.5, refresh) * 1000),
+        "hub": {
+            "url": hub.config.url,
+            "workspace": hub.workspace,
+            "encrypted": sealed_ids,
+            "reachable": True,
+        },
+        "agents": [],
+        "leases": [],
+        "board": [],
+        "channels": [],
+        "messages": [],
+        "notes": [],
+    }
+    notes: list[str] = view["notes"]
+
+    def section(name: str, read: Callable[[], Any]) -> Any:
+        """Run one read, or turn its failure into something the page can say.
+
+        The three failures are genuinely different and a human needs to be
+        told which one happened: the hub answered "no" (a token problem), the
+        hub did not answer at all (a network problem), or it answered fine and
+        this key could not open the reply (a key problem). Only the middle one
+        means the room is dark.
+        """
+        try:
+            return read()
+        except CryptoError as exc:
+            notes.append(f"cannot open {name} with this key: {exc}")
+        except SwitchboardError as exc:
+            notes.append(f"the hub refused {name}: {exc}")
+            if exc.status is None:
+                view["hub"]["reachable"] = False
+        except (OSError, httpx.HTTPError) as exc:
+            notes.append(f"cannot reach the hub: {exc}")
+            view["hub"]["reachable"] = False
+        return None
+
+    agents = section("the roster", hub.agents) or []
+    names = {a.get("agent_id", ""): a.get("name") or "" for a in agents if a.get("name")}
+    view["agents"] = [
+        {
+            "id": a.get("agent_id", ""),
+            "name": a.get("name"),
+            "kind": a.get("kind"),
+            "branch": a.get("branch"),
+            "task": a.get("task"),
+            "channels": a.get("channels") or [],
+            "last_seen_at": a.get("last_seen_at"),
+            "expires_in": a.get("expires_in"),
+            "stale": bool(a.get("stale")),
+            "unreadable": bool(a.get("unreadable")),
+        }
+        for a in agents
+    ]
+    mismatched = [a.get("agent_id", "") for a in agents if a.get("unreadable")]
+    if mismatched:
+        notes.append(
+            f"{len(mismatched)} agent(s) here hold a different workspace key — "
+            "you cannot read their messages and they cannot read yours"
+        )
+
+    leases = section("leases", hub.leases) or []
+    view["leases"] = [
+        {
+            "resource": le.get("resource", ""),
+            "sealed": sealed_ids,
+            "holder": _who(le.get("holder"), names),
+            "note": le.get("note"),
+            "expires_in": le.get("expires_in"),
+            "acquired_at": le.get("acquired_at"),
+        }
+        for le in leases
+    ]
+
+    board = section("the blackboard", hub.board_list) or []
+    view["board"] = [
+        {
+            "key": e.get("key", ""),
+            "sealed": sealed_ids,
+            "value": e.get("value"),
+            "revision": e.get("revision"),
+            "updated_by": _who(e.get("updated_by"), names),
+            "updated_at": e.get("updated_at"),
+            "expires_in": e.get("expires_in"),
+        }
+        for e in board
+    ]
+
+    channels = section("the channel list", hub.channels) or []
+    if len(channels) > MAX_CHANNELS:
+        notes.append(
+            f"showing {MAX_CHANNELS} of {len(channels)} channels — "
+            "the busiest by message count"
+        )
+        channels = sorted(channels, key=lambda c: c.get("messages", 0),
+                          reverse=True)[:MAX_CHANNELS]
+
+    messages: list[dict[str, Any]] = []
+    #: Set when this viewer holds no key but the room is plainly encrypted —
+    #: the tier gap `whoami` warns about, met from the reading side.
+    keyless = False
+    for entry in channels:
+        token = entry.get("channel", "")
+        try:
+            opened = hub.history(token, limit=limit, blinded=True)
+            unreadable = False
+        except CryptoError:
+            # Sealed under a key this viewer does not hold. Expected in a room
+            # where someone is misconfigured, and not a reason to lose the
+            # rest of the page — say which channel, and carry on.
+            opened, unreadable = [], True
+        except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+            opened, unreadable = [], True
+            notes.append(f"could not read a channel: {exc}")
+        label = _channel_label(token, opened)
+        view["channels"].append({
+            "token": token,
+            "name": label,
+            "named": label != token,
+            "dm": label.startswith("@"),
+            "count": entry.get("messages", 0),
+            "latest_at": _iso(entry.get("latest_at")),
+            "unreadable": unreadable,
+        })
+        for m in opened:
+            body, forecast = unwrap_body(m.get("body"))
+            # A keyless viewer in an encrypted room gets envelopes back rather
+            # than an error, because nothing tried to open them. Rendering the
+            # envelope as if it were the message is the one dishonest thing
+            # this page could do, so it does not.
+            sealed_body = not sealed_ids and _looks_sealed(body)
+            if sealed_body:
+                keyless = True
+                body, forecast = None, None
+            messages.append({
+                "seq": m.get("seq", 0),
+                "channel": label,
+                "token": token,
+                "dm": label.startswith("@"),
+                "from": _who(m.get("from"), names),
+                "type": m.get("type") or "note",
+                "body": body,
+                "sealed_body": sealed_body,
+                "forecast": forecast,
+                "thread": m.get("thread"),
+                "created_at": m.get("created_at"),
+            })
+
+    # An agent registers its subscriptions, and the roster hands them back
+    # blinded — the one place a channel name is *not* carried in the clear
+    # inside a body. The channels above recovered those names, so a token seen
+    # there can be swapped back in here; one nobody has spoken on yet cannot,
+    # and stays a token rather than being dropped.
+    named = {c["token"]: c["name"] for c in view["channels"] if c["named"]}
+    for agent in view["agents"]:
+        agent["channels"] = [named.get(c, c) for c in agent["channels"]]
+
+    if keyless or any(_looks_sealed(a.get("name")) for a in agents):
+        notes.append(
+            "this room is encrypted and this viewer holds no key: export "
+            "SWITCHBOARD_KEY (the same one your agents use) and restart it"
+        )
+
+    if any(c["unreadable"] for c in view["channels"]):
+        notes.append(
+            "some channels are sealed under a different key and are listed "
+            "without their messages"
+        )
+
+    # Sequence, not timestamp: seq is the hub's own total order over the
+    # workspace, so a message from an agent whose clock is off still lands
+    # where the hub put it.
+    messages.sort(key=lambda m: m["seq"])
+    view["messages"] = messages
+    # A hub that has gone away fails every section with the same sentence.
+    # Saying it four times reads like four problems.
+    view["notes"] = list(dict.fromkeys(notes))
+    return view
+
+
+# --- the server -------------------------------------------------------------
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server_version = f"switchboard-viewer/{__version__}"
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if path == "/":
+            self._send(200, "text/html; charset=utf-8", page().encode())
+        elif path == "/api/state":
+            with self.server.lock:  # type: ignore[attr-defined]
+                payload = snapshot(
+                    self.server.hub,  # type: ignore[attr-defined]
+                    limit=self.server.limit,  # type: ignore[attr-defined]
+                    refresh=self.server.refresh,  # type: ignore[attr-defined]
+                )
+            body = json.dumps(payload, default=str).encode()
+            self._send(200, "application/json; charset=utf-8", body)
+        else:
+            self._send(404, "text/plain; charset=utf-8", b"not found\n")
+
+    def _send(self, status: int, content_type: str, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        # This page is a live view of a room; a cached one is a lie with a
+        # timestamp on it.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        """Quiet by default: one line per poll, three polls a second, is noise
+        that would bury the one message worth printing — the URL to open."""
+        if getattr(self.server, "verbose", False):
+            super().log_message(fmt, *args)
+
+
+class _Viewer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: tuple[str, int], hub: Client, *,
+                 limit: int, refresh: float, verbose: bool) -> None:
+        super().__init__(address, _Handler)
+        self.hub = hub
+        self.limit = limit
+        self.refresh = refresh
+        self.verbose = verbose
+        #: One snapshot at a time. The handler is threaded so a slow hub does
+        #: not wedge the page load, but a `Client` is one connection pool and
+        #: one cipher — serialising the reads is cheaper than a second client.
+        self.lock = threading.Lock()
+
+
+def make_server(hub: Client, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+                limit: int = DEFAULT_LIMIT, refresh: float = DEFAULT_REFRESH,
+                verbose: bool = False) -> ThreadingHTTPServer:
+    """A viewer bound and ready, not yet serving.
+
+    Separate from `serve` so a caller — a test, or anything embedding this —
+    can read back the port it actually got when it asked for 0.
+    """
+    return _Viewer((host, port), hub, limit=limit, refresh=refresh, verbose=verbose)
+
+
+def serve(hub: Client, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+          limit: int = DEFAULT_LIMIT, refresh: float = DEFAULT_REFRESH,
+          verbose: bool = False, open_browser: bool = False,
+          announce: Callable[[str], None] | None = None) -> None:
+    """Serve until interrupted."""
+    server = make_server(hub, host=host, port=port, limit=limit,
+                         refresh=refresh, verbose=verbose)
+    shown = host if ":" not in host else f"[{host}]"
+    if shown in ("0.0.0.0", "[::]", ""):  # noqa: S104 - matching, not binding
+        shown = "127.0.0.1"
+    url = f"http://{shown}:{server.server_address[1]}"
+    if announce:
+        announce(url)
+    if open_browser:
+        # Never fatal: a headless box has no browser, and the URL was printed.
+        try:
+            webbrowser.open(url)
+        except Exception:  # pragma: no cover - platform dependent
+            pass
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+# --- the page ---------------------------------------------------------------
+
+
+def page() -> str:
+    """The viewer page: one packaged file, no build step, no CDN.
+
+    Everything it needs is inline, because the machine running it may have no
+    network beyond the hub — and because a coordination tool that phones a
+    third party to render a page it claims cannot be read is not one.
+
+    Read per request rather than cached at import, which costs one small file
+    read on page load and makes editing it a browser refresh instead of a
+    restart.
+    """
+    return resources.files("switchboard").joinpath(_PAGE_FILE).read_text(encoding="utf-8")
+

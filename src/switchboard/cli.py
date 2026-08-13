@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, rooms
+from . import __version__, drill, rooms, web
 from .client import Client, LeaseHeld, SwitchboardError, detect_identity
 from .config import (
     MANAGED_HUB_TOKEN,
@@ -1407,6 +1407,52 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     )
         except KeyboardInterrupt:
             return EXIT_OK
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the read-only viewer until interrupted.
+
+    Runs here rather than on the hub because only here is there a key. See
+    `web.py` for the rest of that argument.
+    """
+    config = _make_config(args)
+    _warn_isolated(args, config)
+    # `0.0.0.0` is deliberately not treated as local: it is every interface,
+    # which is the case this warning exists for.
+    host = f"[{args.host}]" if ":" in args.host else args.host
+    if not is_loopback(f"http://{host}"):
+        # The page is the plaintext of a room whose whole security model is
+        # that the plaintext never leaves the machines holding the key. There
+        # is no login on it, and there is not going to be one.
+        print(
+            f"warning: binding to {args.host} publishes this room's decrypted "
+            "contents to anyone who can reach that address. The viewer has no "
+            "authentication — use an SSH tunnel instead.",
+            file=sys.stderr,
+        )
+    identity = detect_identity(agent_id=args.agent_id)
+    hub = Client(config, agent_id=identity.agent_id)
+
+    def announce(url: str) -> None:
+        if not args.quiet:
+            print(f"switchboard viewer → {url}\n  room {config.workspace} on {config.url}",
+                  flush=True)
+
+    try:
+        with hub:
+            web.serve(
+                hub, host=args.host, port=args.port, limit=args.limit,
+                refresh=args.refresh, verbose=args.verbose,
+                open_browser=args.open, announce=announce,
+            )
+    except OSError as exc:
+        # Distinguished from the hub being unreachable, which `main` reports
+        # for the same exception type and would be the wrong diagnosis here.
+        print(f"cannot serve on {args.host}:{args.port}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        pass
+    return EXIT_OK
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
@@ -3154,6 +3200,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=100)
     _add_timing_args(p)
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser(
+        "web",
+        help="serve a read-only page showing what the agents are saying",
+        description="Open a local page presenting this room to a human: who "
+                    "is awake, what is claimed, what is on the board, and the "
+                    "conversation as it happens. Read-only — it never posts, "
+                    "never registers, and never advances an agent's cursor. "
+                    "Runs beside you rather than on the hub because the hub "
+                    "holds no key and would have nothing but ciphertext to "
+                    "show.",
+    )
+    p.add_argument("--host", default=web.DEFAULT_HOST,
+                   help=f"interface to bind (default {web.DEFAULT_HOST}; the page "
+                        "has no authentication, so anything else is a decision)")
+    p.add_argument("--port", type=int, default=web.DEFAULT_PORT,
+                   help=f"default {web.DEFAULT_PORT}; 0 picks a free one")
+    p.add_argument("--limit", type=int, default=web.DEFAULT_LIMIT,
+                   help=f"messages read per channel (default {web.DEFAULT_LIMIT})")
+    p.add_argument("--refresh", type=float, default=web.DEFAULT_REFRESH,
+                   help=f"seconds between page refreshes (default {web.DEFAULT_REFRESH:.0f})")
+    p.add_argument("--open", action="store_true", help="open a browser at it")
+    p.add_argument("--verbose", action="store_true", help="log every request")
+    p.set_defaults(func=cmd_web)
 
     p = sub.add_parser("history", help="recent messages on a channel (cursor untouched)")
     p.add_argument("channel")

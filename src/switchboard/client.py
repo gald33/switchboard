@@ -753,9 +753,20 @@ class Client(_Base):
             params["channel"] = list(channels)
         return self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
 
-    def history(self, channel: str, *, limit: int = 50,
+    def history(self, channel: str, *, limit: int = 50, blinded: bool = False,
                 workspace: str | None = None) -> list[dict[str, Any]]:
-        return self._call("GET", f"/channels/{self._blind_channel(channel)}",
+        """Recent messages on a channel, cursor untouched.
+
+        `blinded` says the name is already in hub form — a token straight out
+        of `channels()` rather than a name a human typed. Blinding it again
+        would produce `blind(blind(c))`, which matches nothing, so a reader
+        that enumerates the room instead of naming one channel needs the raw
+        token to pass through. Bodies still open normally, and an opened one
+        carries the plaintext channel label the hub never saw, which is how
+        such a reader recovers a name it could not have derived.
+        """
+        token = channel if blinded else self._blind_channel(channel)
+        return self._call("GET", f"/channels/{token}",
                           params={"workspace": self._ws(workspace),
                                   "limit": limit})["messages"]
 

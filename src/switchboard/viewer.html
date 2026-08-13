@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switchboard</title>
+<!-- Inline and empty: a page that renders content it says the network cannot
+     read has no business fetching an icon from anywhere. -->
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --ink: #14171a;
+    --dim: #6b7280; --accent: #2563eb; --warn: #b45309; --ok: #15803d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #161a20; --line: #262c35; --ink: #e6e9ee;
+      --dim: #9aa4b2; --accent: #60a5fa; --warn: #fbbf24; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 2;
+  }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+  .meta { color: var(--dim); font-size: 12px; }
+  .meta code { font-family: var(--mono); }
+  .spacer { flex: 1; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         background: var(--ok); margin-right: 6px; vertical-align: middle; }
+  .dot.off { background: #ef4444; }
+  .dot.stale { background: var(--warn); }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 18px;
+         padding: 18px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0,1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+                 color: var(--dim); margin: 0; padding: 10px 14px;
+                 border-bottom: 1px solid var(--line); }
+  .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .rows > div:last-child { border-bottom: 0; }
+  .empty { padding: 14px; color: var(--dim); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px;
+           border-bottom: 1px solid var(--line); }
+  .chip { border: 1px solid var(--line); background: transparent; color: var(--ink);
+          border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip .n { color: var(--dim); margin-left: 5px; }
+  .chip.on .n { color: #dbeafe; }
+  .msg { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 14px; }
+  @media (max-width: 640px) { .msg { grid-template-columns: minmax(0,1fr); } }
+  .msg .who { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  .msg .who b { display: block; color: var(--ink); font-size: 13px; font-weight: 600; }
+  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg pre { margin: 0; font-family: var(--mono); font-size: 12.5px;
+             white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tag { font-size: 11px; border: 1px solid var(--line); border-radius: 5px;
+         padding: 0 5px; color: var(--dim); margin-right: 6px; }
+  .tag.dm { border-color: var(--accent); color: var(--accent); }
+  .forecast { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .name { font-weight: 600; }
+  .sub { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  code, .mono { font-family: var(--mono); }
+  .sealed { color: var(--dim); }
+  .notes { margin: 0 18px; }
+  .notes div { background: var(--panel); border: 1px solid var(--warn);
+               color: var(--warn); border-radius: 8px; padding: 8px 12px;
+               margin-bottom: 8px; font-size: 13px; }
+  footer { color: var(--dim); font-size: 12px; padding: 0 18px 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>switchboard</h1>
+  <span class="meta"><span id="live" class="dot"></span><span id="status">connecting…</span></span>
+  <span class="meta">room <code id="ws">—</code></span>
+  <span class="meta" id="hub"></span>
+  <span class="spacer"></span>
+  <span class="meta" id="stamp"></span>
+</header>
+<div class="notes" id="notes"></div>
+<main>
+  <div>
+    <section>
+      <h2>Conversation</h2>
+      <div class="chips" id="chips"></div>
+      <div class="rows" id="messages"><div class="empty">nothing said yet</div></div>
+    </section>
+  </div>
+  <div>
+    <section><h2>Who's awake</h2><div class="rows" id="agents"></div></section>
+    <section><h2>Claims</h2><div class="rows" id="leases"></div></section>
+    <section><h2>Blackboard</h2><div class="rows" id="board"></div></section>
+  </div>
+</main>
+<footer id="foot"></footer>
+<script>
+const $ = (id) => document.getElementById(id);
+let filter = null;      // channel name, or null for everything
+let timer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function ago(iso) {
+  if (!iso) return "";
+  const secs = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  return dur(secs) + " ago";
+}
+function dur(secs) {
+  if (secs == null) return "—";
+  secs = Math.max(0, Math.round(secs));
+  if (secs < 60) return secs + "s";
+  if (secs < 3600) return Math.floor(secs / 60) + "m" + String(secs % 60).padStart(2, "0") + "s";
+  return Math.floor(secs / 3600) + "h" + String(Math.floor((secs % 3600) / 60)).padStart(2, "0") + "m";
+}
+function who(w) {
+  if (!w || !w.id) return "—";
+  return esc(w.name || w.id);
+}
+function short(token) {
+  return token.length > 12 ? token.slice(0, 10) + "…" : token;
+}
+function ident(text, sealed) {
+  // A blinded identifier is not a name and must not be dressed up as one.
+  return sealed
+    ? `<span class="sealed mono" title="sealed: the hub only ever saw this token">🔒 ${esc(short(text))}</span>`
+    : `<span class="mono">${esc(text)}</span>`;
+}
+function bodyHtml(body) {
+  if (typeof body === "string") return `<div class="body">${esc(body)}</div>`;
+  if (body === null || body === undefined) return `<div class="body sub">(empty)</div>`;
+  return `<pre>${esc(JSON.stringify(body, null, 2))}</pre>`;
+}
+
+function render(s) {
+  $("ws").textContent = s.hub.workspace;
+  $("hub").innerHTML = `via <code>${esc(s.hub.url)}</code>` +
+    (s.hub.encrypted
+      ? ' · <span title="sealed on the wire; this page is where they are opened">encrypted</span>'
+      : " · not encrypted");
+  $("live").className = "dot" + (s.hub.reachable ? "" : " off");
+  $("status").textContent = s.hub.reachable ? "live" : "hub unreachable";
+  $("stamp").textContent = "updated " + new Date(s.generated_at).toLocaleTimeString();
+  $("notes").innerHTML = (s.notes || []).map((n) => `<div>${esc(n)}</div>`).join("");
+
+  const chans = s.channels.slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (filter && !chans.some((c) => c.name === filter)) filter = null;
+  $("chips").innerHTML =
+    [`<button class="chip ${filter === null ? "on" : ""}" data-c="">all<span class="n">${s.messages.length}</span></button>`]
+      .concat(chans.map((c) =>
+        `<button class="chip ${filter === c.name ? "on" : ""}" data-c="${esc(c.name)}">` +
+        `${c.named ? esc(c.name) : "🔒 " + esc(short(c.name))}` +
+        `<span class="n">${c.count}${c.unreadable ? " ⚠" : ""}</span></button>`)).join("");
+  for (const chip of document.querySelectorAll(".chip")) {
+    chip.onclick = () => { filter = chip.dataset.c || null; render(latest); };
+  }
+
+  const shown = s.messages.filter((m) => filter === null || m.channel === filter);
+  $("messages").innerHTML = shown.length ? shown.map((m) => `
+    <div class="msg">
+      <div class="who">
+        <b>${who(m.from)}</b>
+        <span class="tag ${m.dm ? "dm" : ""}">${m.dm ? esc(m.channel) : esc(m.channel)}</span>
+        ${m.type && m.type !== "note" ? `<span class="tag">${esc(m.type)}</span>` : ""}
+        <div>${esc(ago(m.created_at))}</div>
+      </div>
+      <div>
+        ${m.sealed_body ? `<div class="body sealed">🔒 sealed — this viewer holds no key</div>`
+                        : bodyHtml(m.body)}
+        ${m.forecast ? `<div class="forecast">next look ~${dur(m.forecast.p50)} (p50)` +
+          (m.forecast.speak_p50 ? `, next message ~${dur(m.forecast.speak_p50)}` : "") + `</div>` : ""}
+      </div>
+    </div>`).join("") : `<div class="empty">nothing on this channel</div>`;
+
+  $("agents").innerHTML = s.agents.length ? s.agents.map((a) => `
+    <div>
+      <div><span class="dot ${a.stale ? "stale" : ""}"></span><span class="name">${esc(a.name || a.id)}</span></div>
+      <div class="sub">${esc(a.kind || "")}${a.branch ? " · " + esc(a.branch) : ""} · seen ${esc(ago(a.last_seen_at))}</div>
+      ${a.task ? `<div class="sub">${esc(a.task)}</div>` : ""}
+      ${a.channels.length ? `<div class="sub">watching ${a.channels.map(esc).join(", ")}</div>` : ""}
+      ${a.unreadable ? `<div class="sub" style="color:var(--warn)">different workspace key</div>` : ""}
+    </div>`).join("") : `<div class="empty">nobody is here</div>`;
+
+  $("leases").innerHTML = s.leases.length ? s.leases.map((l) => `
+    <div>
+      <div>${ident(l.resource, l.sealed)}</div>
+      <div class="sub">${who(l.holder)} · expires in ${dur(l.expires_in)}</div>
+      ${l.note ? `<div class="sub">${esc(l.note)}</div>` : ""}
+    </div>`).join("") : `<div class="empty">nothing claimed</div>`;
+
+  $("board").innerHTML = s.board.length ? s.board.map((e) => `
+    <div>
+      <div>${ident(e.key, e.sealed)} <span class="sub">rev ${e.revision}</span></div>
+      ${bodyHtml(e.value)}
+      <div class="sub">${who(e.updated_by)} · expires in ${dur(e.expires_in)}</div>
+    </div>`).join("") : `<div class="empty">nothing on the board</div>`;
+
+  $("foot").textContent =
+    `switchboard ${s.version} · read-only: this page never posts, and reading here ` +
+    `does not advance any agent's cursor.`;
+}
+
+let latest = null;
+async function poll() {
+  // Fetching and rendering fail for different reasons and the difference
+  // matters: one means the viewer process is gone, the other means this page
+  // has a bug. Reporting a bug as "unreachable" sends people to the wrong
+  // half of the system.
+  try {
+    const r = await fetch("api/state", { cache: "no-store" });
+    const payload = await r.json();
+    latest = payload;
+    try {
+      render(payload);
+    } catch (e) {
+      $("status").textContent = "page error: " + e.message;
+    }
+  } catch (e) {
+    $("live").className = "dot off";
+    $("status").textContent = "viewer unreachable";
+  } finally {
+    const wait = latest ? latest.refresh_ms : 3000;
+    timer = setTimeout(poll, document.hidden ? Math.max(wait, 15000) : wait);
+  }
+}
+// A backgrounded tab polls slowly and catches up the moment it is looked at.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { clearTimeout(timer); poll(); }
+});
+poll();
+</script>
+</body>
+</html>
