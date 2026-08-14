@@ -1251,12 +1251,27 @@ def cmd_claims(args: argparse.Namespace) -> int:
         print("nothing claimed")
         return EXIT_OK
     fmt = Fmt(_use_color(sys.stdout))
+    # Say which column is blinded. A lease resource is an identifier, so under
+    # a workspace key it leaves as an opaque token and comes back as one — the
+    # hub compares it, it never reads it. Nothing said so, and an agent
+    # verifying its own write lock grepped this output for the resource string
+    # it had just passed, found nothing, and reported the lock as not held
+    # while it was plainly listed in the same output. Same trap as the agent_id
+    # blinding one surface over, and the note column was the only tell.
+    blinded = bool(_make_config(args).key) and not args.json
     print(fmt.bold(f"{'RESOURCE':<38} {'HOLDER':<30} {'EXPIRES':<8} NOTE"))
     for le in leases:
         print(
             f"{le['resource'][:37]:<38} {le['holder'][:29]:<30} "
             f"{_dur(le['expires_in']):<8} {le.get('note') or ''}"
         )
+    if blinded:
+        print(fmt.dim(
+            "\nRESOURCE and HOLDER are blinded: this workspace is encrypted, so "
+            "identifiers\nleave as opaque tokens. They will not match the strings "
+            "you passed — compare\nthe NOTE, or run `switchboard claims --json` "
+            "and match on your own records."
+        ), file=sys.stderr)
     _warn_unreadable(leases, "lease note(s)", fmt)
     return EXIT_OK
 

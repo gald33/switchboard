@@ -1091,45 +1091,82 @@ def test_our_own_entry_still_reads_back_exactly(hub, key):
     assert mine.board_get("coord/reports/ours") == {"plan": SECRET}
 
 
-# --- witnessing that outlives the process doing the witnessing ---------------
+# --- what the persisted witness log may and may not conclude -----------------
 
 
-def test_a_swap_is_noticed_by_a_later_process(tmp_path, key):
-    """The CLI is a whole process per command, so in-process memory never fires.
+def test_a_key_change_between_processes_is_not_reported_as_a_swap(tmp_path, key):
+    """The correction to a detector that shipped and immediately misfired.
 
-    This is why the detector stayed silent through this project's own
-    dogfooding: a spawned agent inherited its parent's session id, derived the
-    same agent id, and announced over the parent's roster row. Every witness
-    was a fresh `switchboard agents` process with nothing to compare against.
+    An agent with no long-lived signer mints a fresh keypair per process, so
+    between processes a key change is the ordinary case rather than evidence of
+    anything. Comparing against the persisted log flagged every CLI peer as
+    impersonated the moment it was observed twice.
     """
     log = str(tmp_path / "peers.db")
     with make_hub(workspace=WS, key=key, peer_log=log) as h:
-        alice, mallory = h.client("alice"), h.client("mallory")
+        alice = h.client("alice")
         alice.register(name="alice")
+        h.client("bob-first-run").agents()          # one process witnesses alice
 
-        # One process witnesses alice alive under her own key, and ends.
-        h.client("bob-first-run").agents()
-
-        mallory.agent_id = alice.agent_id
-        mallory.register(name="alice")
-
-        # A different process entirely, with no memory of its own.
-        roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
-        assert roster["alice"].get("key_changed_while_live") is True
-
-
-def test_without_a_log_a_later_process_still_cannot_notice(tmp_path, key):
-    """The behaviour being fixed, kept explicit so the fix cannot silently lapse."""
-    with make_hub(workspace=WS, key=key) as h:  # peer_log off, as tests default
-        alice, mallory = h.client("alice"), h.client("mallory")
-        alice.register(name="alice")
-        h.client("bob-first-run").agents()
-
-        mallory.agent_id = alice.agent_id
-        mallory.register(name="alice")
+        # Alice's next command is a new process, so a new keypair - and nothing
+        # else about her has changed.
+        h.client("alice").register(name="alice")
 
         roster = {a["name"]: a for a in h.client("bob-second-run").agents()}
         assert "key_changed_while_live" not in roster["alice"]
+
+
+def test_a_swap_within_one_process_is_still_noticed(hub, key):
+    """The sound half, unchanged: witnessed alive under one key, now another."""
+    alice, bob = hub.client("alice"), hub.client("bob")
+    mallory = hub.client("mallory")
+    alice.register(name="alice")
+    bob.register(name="bob")
+    bob.agents()                                    # bob witnesses alice, alive
+
+    mallory.agent_id = alice.agent_id
+    mallory.register(name="alice")
+
+    roster = {a["name"]: a for a in bob.agents()}
+    assert roster["alice"].get("key_changed_while_live") is True
+
+
+def test_an_agent_never_reports_itself(tmp_path, key):
+    """Observed in dogfooding hours after the persisted log shipped: every CLI
+    agent flagged *itself*, because its own commands are separate processes and
+    `note_peer_keys` did not skip self the way `key_mismatches` does."""
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace=WS, key=key, peer_log=log) as h:
+        first = h.client("solo", agent_id="solo")
+        first.register(name="solo")
+        first.agents()
+
+        second = h.client("solo", agent_id="solo")   # same agent, new process
+        second.register(name="solo")
+        # Keyed by name: under a workspace key the roster's agent_id is the
+        # blinded form, not the string passed in.
+        roster = {a["name"]: a for a in second.agents()}
+        assert "key_changed_while_live" not in roster["solo"]
+
+
+def test_persisted_keys_still_serve_signature_verification(tmp_path, key):
+    """What the log is actually for, and why it is not simply deleted: a
+    turn-based agent can verify a signature using a key an earlier process
+    learned, which it would otherwise have no key for at all."""
+    log = str(tmp_path / "peers.db")
+    with make_hub(workspace=WS, key=key, peer_log=log) as h:
+        alice = h.client("alice")
+        alice.register(name="alice")
+        h.client("bob-first-run").agents()           # learns alice's key, ends
+
+        alice.post("build", "the migration is mine")
+
+        later = h.client("bob-second-run")           # never saw a roster itself
+        later.register(name="bob-second-run")
+        got = later.inbox(channels=["build"])
+        assert got and got[0]["signature"]["status"] == "verified", (
+            "the key came from the log, not from this process's own witnessing"
+        )
 
 
 def test_the_witness_log_keeps_workspaces_apart(tmp_path, key):

@@ -6,14 +6,22 @@ anyone. That is deliberate — a first-writer-wins column on the hub would be
 the registry that was removed on purpose — and it puts the noticing on the
 peer, in :meth:`switchboard.client._Base.note_peer_keys`.
 
-Noticing needs a memory, though, and it needed one that outlives a process.
-The in-process version can only fire for a client that witnesses the same peer
-twice in one run: the MCP bridge does, every CLI command does not. So the
-detector was structurally dead in the surface most agents actually use, and
-the failure it exists to catch went unreported in this project's own
-dogfooding — a spawned agent inherited its parent's session id, derived the
-same agent id, announced over the parent's roster row, and nothing anywhere
-said a word.
+What this log is FOR, after a correction. It was introduced to let swap
+detection survive a process, since a CLI agent is a whole process per command.
+That was wrong, and it shipped: an agent with no long-lived signer mints a
+fresh keypair per process, so between processes a key change is the ordinary
+case and carries no information. Comparing against this log therefore reported
+every CLI peer as impersonated the moment it was observed twice — including
+the reader itself, which `note_peer_keys` did not skip. Swap detection now
+reads only what the current process witnessed, which is where the inference is
+sound.
+
+What survives, and is the real value: these keys let a turn-based agent VERIFY
+a signature it would otherwise have no key for. Keys accumulate, more is
+strictly better, and nothing about accumulation depends on the peer keeping one
+key. The genuine gap this leaves — noticing an id announced out from under a
+turn-based agent — needs a signal that a peer holds a stable key, which does
+not exist today and cannot be self-asserted (see `key_mismatches`).
 
 This is a *witness log*, not an identity. Identity still does not outlive a
 process; what outlives it is "this machine once saw that id alive under that
@@ -62,10 +70,10 @@ class PeerKeyLog:
                         PRIMARY KEY (workspace, agent_id, pubkey)
                     );
 
-                    -- `swapped` is sticky. A swap is worth reporting after the
-                    -- fact as well as at the moment it happens: the agent that
-                    -- would have seen it live is usually not the one that goes
-                    -- looking afterwards.
+                    -- `swapped` is retained for schema compatibility and is
+                    -- always 0. It was written when swap detection compared
+                    -- against this log; that inference is only sound within a
+                    -- process, so it lives in memory now. See note_peer_keys.
                     CREATE TABLE IF NOT EXISTS peer_state (
                         workspace TEXT NOT NULL,
                         agent_id  TEXT NOT NULL,
@@ -113,7 +121,7 @@ class PeerKeyLog:
         return (bool(row[0]), bool(row[1]))
 
     def record(self, workspace: str, agent_id: str, pubkey: str, *,
-               live: bool, swapped: bool = False) -> None:
+               live: bool) -> None:
         conn = self._connection()
         if conn is None:
             return
@@ -123,15 +131,12 @@ class PeerKeyLog:
                 "(workspace, agent_id, pubkey, first_seen) VALUES (?, ?, ?, ?)",
                 (workspace, agent_id, pubkey, time.time()),
             )
-            # `swapped` is OR-ed rather than assigned, so a later quiet read
-            # cannot clear a swap an earlier one established.
             conn.execute(
                 "INSERT INTO peer_state (workspace, agent_id, was_live, swapped) "
-                "VALUES (?, ?, ?, ?) "
+                "VALUES (?, ?, ?, 0) "
                 "ON CONFLICT(workspace, agent_id) DO UPDATE SET "
-                "  was_live = excluded.was_live, "
-                "  swapped = MAX(peer_state.swapped, excluded.swapped)",
-                (workspace, agent_id, int(live), int(swapped)),
+                "  was_live = excluded.was_live",
+                (workspace, agent_id, int(live)),
             )
             conn.commit()
         except sqlite3.Error:
