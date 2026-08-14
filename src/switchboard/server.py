@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -308,6 +309,26 @@ def create_app(
         description="An ephemeral orchestration hub for AI coding agents.",
         lifespan=lifespan,
     )
+
+    if config.cors_origins:
+        # Off unless asked for. A browser refuses a cross-origin read before
+        # it is sent, whatever credentials the reader holds, so a page served
+        # from anywhere but the hub needs this — and a hub that serves only
+        # agents should not carry it.
+        #
+        # `allow_credentials` stays False deliberately: this API is
+        # authenticated by an `Authorization` header the page sets itself, not
+        # by a cookie a browser would attach on its own. Leaving credentials
+        # off is what keeps `*` from meaning "any page can act as whoever is
+        # logged in" — there is nothing to be logged in as.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(config.cors_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type"],
+            max_age=600,
+        )
 
     @app.middleware("http")
     async def measure(request: Request, call_next):

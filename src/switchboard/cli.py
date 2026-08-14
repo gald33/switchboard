@@ -574,6 +574,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config.db_path = args.db
     if args.token:
         config.token = args.token
+    if args.cors_origin:
+        config.cors_origins = tuple(args.cors_origin)
 
     if not config.token:
         # The one thing worth saying loudly at startup: with no token this hub
@@ -3187,6 +3189,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("serve", help="run a hub")
+    p.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",
+                   help="allow a browser page on ORIGIN to read this hub; repeatable "
+                        "(env: SWITCHBOARD_CORS_ORIGINS). Off by default — a hub with "
+                        "no browser client should not carry the attack surface of one. "
+                        "`*` is allowed and means it: this API is authenticated by a "
+                        "header, not a cookie, so a page that cannot present a token "
+                        "gains nothing")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
     p.add_argument("--db", help="SQLite path (env: SWITCHBOARD_DB)")

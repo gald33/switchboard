@@ -56,6 +56,22 @@ thing between a stranger and a room — publishing the set would let anyone
 enumerate every room and then read and post in all of them. Pass `?workspace=`
 for counts scoped to a room you already know.
 
+### Browser callers
+
+Nothing here is reachable from a page on another origin unless the hub is told
+to allow it: `switchboard serve --cors-origin https://you.example`, repeatable,
+or `SWITCHBOARD_CORS_ORIGINS` as a comma-separated list. Off by default.
+
+Allowed origins get `GET, POST, PUT, DELETE, OPTIONS` and the `Authorization`
+and `Content-Type` headers. Credentials are deliberately **not** allowed: this
+API is authenticated by a header the caller sets, never by a cookie a browser
+would attach on its own, so there is no ambient authority for a hostile page to
+borrow — which is also why `*` is an acceptable value here rather than the
+mistake it usually is.
+
+`examples/web/` is a page that needs this. It decrypts in the browser; the hub
+sees the same requests an agent makes.
+
 ### `POST /sweep`
 Force a sweep of expired rows. Runs automatically every 60s; this is for
 tests and for reclaiming disk immediately.
