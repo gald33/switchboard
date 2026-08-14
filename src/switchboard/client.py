@@ -378,6 +378,11 @@ class _Base:
         #: identities themselves.
         self._peer_live: dict[str, bool] = {}
         self._peer_key_swaps: set[str] = set()
+        #: Keys witnessed by THIS process only. Swap detection reads this and
+        #: never the persisted log: an agent without a long-lived signer mints
+        #: a keypair per process, so a key changing between processes is
+        #: ordinary and says nothing.
+        self._peer_keys_seen_here: dict[str, set[str]] = {}
         #: The same witnessing, persisted across processes (see peers.py). What
         #: a peer's key *was* is an observation about somebody else, not this
         #: agent's identity, so unlike the two dicts above it may outlive the
@@ -517,26 +522,38 @@ class _Base:
             if not isinstance(key, str) or not key:
                 continue
             agent_id = agent.get("agent_id", "")
+            if agent_id == self.agent_id:
+                # Never judge ourselves. `key_mismatches` already skips self;
+                # this did not, so an agent whose own commands are separate
+                # processes — every CLI agent — reported *itself* as having
+                # been announced over. Observed in this project's dogfooding
+                # within hours of the persisted log shipping.
+                continue
+            # Two different questions, and conflating them is what produced a
+            # detector that fired on ordinary behaviour.
+            #
+            # For VERIFYING a signature, every key this machine has ever seen
+            # this peer use is useful, including ones learned by an earlier
+            # process — that is what lets a turn-based CLI agent check a
+            # signature at all. Keys accumulate; more is strictly better.
+            #
+            # For SPOTTING A SWAP, only what *this* process witnessed counts.
+            # An agent with no long-lived signer mints a fresh keypair per
+            # process (`signing.attach` finds no socket, so the client falls
+            # back to `SigningIdentity.generate`), so across processes a key
+            # change is the normal case and carries no information. Comparing
+            # against the persisted set turned every CLI peer into a permanent
+            # false positive the moment it was observed twice.
+            seen_here = self._peer_keys_seen_here.setdefault(agent_id, set())
             known = self._peer_keys.setdefault(agent_id, set())
-            was_live = self._peer_live.get(agent_id)
-            swapped = agent_id in self._peer_key_swaps
             if log is not None:
-                # Everything this machine witnessed before this process
-                # existed. Without it the test below can only ever be true for
-                # a client that sees the same peer twice in one run — which the
-                # bridge does and a CLI command, being a whole process per
-                # command, never does.
                 known |= log.known_keys(workspace, agent_id)
-                stored_live, stored_swap = log.state(workspace, agent_id)
-                if was_live is None:
-                    was_live = stored_live
-                swapped = swapped or stored_swap
-            if known and key not in known and was_live:
-                # Seen alive under a different key, and now a different one.
-                swapped = True
-            if swapped:
+            if seen_here and key not in seen_here and self._peer_live.get(agent_id):
+                # Seen alive under a different key, in this run, and now another.
                 self._peer_key_swaps.add(agent_id)
+            if agent_id in self._peer_key_swaps:
                 agent["key_changed_while_live"] = True
+            seen_here.add(key)
             known.add(key)
             # "Live" as the roster itself reports it, rather than a clock this
             # process keeps: `stale` is the hub's own 60-second judgement and
@@ -544,7 +561,7 @@ class _Base:
             live = not agent.get("stale", False)
             self._peer_live[agent_id] = live
             if log is not None:
-                log.record(workspace, agent_id, key, live=live, swapped=swapped)
+                log.record(workspace, agent_id, key, live=live)
 
     def _verify_message(self, item: dict[str, Any], block: Any) -> None:
         """Attach a verdict to one message. Never raises: an unverifiable
@@ -554,6 +571,16 @@ class _Base:
             item["signature"] = {"status": "unsigned"}
             return
         known = self._peer_keys.get(sender, set())
+        if not known and self._peer_log is not None and sender:
+            # Nothing witnessed in this process — the ordinary case for a
+            # turn-based agent, which drains an inbox without ever reading a
+            # roster. Keys this machine learned earlier are exactly what makes
+            # a signature checkable here at all, and this is the only path that
+            # reaches them: `note_peer_keys` runs on a roster read, which this
+            # caller never made.
+            known = self._peer_log.known_keys(self.workspace, sender)
+            if known:
+                self._peer_keys[sender] = set(known)
         if not known:
             # No key for this sender — usually just a roster we have not read.
             # Distinct from a bad signature, and must not be reported as one.
