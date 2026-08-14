@@ -78,9 +78,13 @@ from switchboard import (
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
 
-#: The page itself, beside this file rather than embedded in it — HTML and CSS
-#: in a Python string literal is where the formatting goes to die.
-_PAGE_FILE = Path(__file__).with_name("viewer.html")
+#: The page, and the modules it loads. Shared with the static build in
+#: `examples/web/`: one renderer painting one state shape, whether the reading
+#: was done here in Python or in the browser. Two pages would drift, and the
+#: one that drifts is always the one nobody is looking at.
+_WEB = Path(__file__).with_name("web")
+_PAGE_FILE = _WEB / "index.html"
+_MODULES = {"/render.js", "/switchboard-room.js", "/switchboard-open.js"}
 
 DEFAULT_HOST = "127.0.0.1"
 
@@ -387,6 +391,13 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path == "/":
             self._send(200, "text/html; charset=utf-8", page().encode())
+        elif path in _MODULES:
+            # Served rather than inlined so the local page and the static one
+            # are the same bytes. `_MODULES` is a fixed set, not a directory
+            # walk: this process can read the user's whole home directory and
+            # has no business turning that into an HTTP surface.
+            body = (_WEB / path.lstrip("/")).read_bytes()
+            self._send(200, "text/javascript; charset=utf-8", body)
         elif path == "/api/state":
             wanted = parse_qs(urlsplit(self.path).query).get("room", [None])[0]
             server = self.server  # type: ignore[attr-defined]
@@ -507,8 +518,13 @@ def page() -> str:
     Read per request rather than cached at import, which costs one small file
     read on page load and makes editing it a browser refresh instead of a
     restart.
+
+    `data-source="local"` is how the page knows the reading is already done —
+    that it should ask this process for state rather than fetch and decrypt a
+    hub itself. The same file with the attribute absent is the static build.
     """
-    return _PAGE_FILE.read_text(encoding="utf-8")
+    return _PAGE_FILE.read_text(encoding="utf-8").replace(
+        "<html lang=\"en\">", "<html lang=\"en\" data-source=\"local\">", 1)
 
 
 

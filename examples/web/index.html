@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switchboard</title>
+<!-- Inline and empty: a page that renders content it says the network cannot
+     read has no business fetching an icon from anywhere. -->
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --ink: #14171a;
+    --dim: #6b7280; --accent: #2563eb; --warn: #b45309; --ok: #15803d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #161a20; --line: #262c35; --ink: #e6e9ee;
+      --dim: #9aa4b2; --accent: #60a5fa; --warn: #fbbf24; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 2;
+  }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+  .meta { color: var(--dim); font-size: 12px; }
+  .meta code { font-family: var(--mono); }
+  .spacer { flex: 1; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         background: var(--ok); margin-right: 6px; vertical-align: middle; }
+  .dot.off { background: #ef4444; }
+  .dot.stale { background: var(--warn); }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 18px;
+         padding: 18px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0,1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+                 color: var(--dim); margin: 0; padding: 10px 14px;
+                 border-bottom: 1px solid var(--line); }
+  .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .rows > div:last-child { border-bottom: 0; }
+  .empty { padding: 14px; color: var(--dim); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px;
+           border-bottom: 1px solid var(--line); }
+  .rooms { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 18px 0; }
+  .rooms:empty { display: none; }
+  .room { display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+          background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px 10px 0 0; border-bottom: 0; padding: 8px 14px 9px;
+          color: var(--ink); font: inherit; font-size: 13px; }
+  .room.on { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+  .room .where { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+  .room .awake { color: var(--dim); font-size: 12px; }
+  .room .awake.live { color: var(--ok); }
+  .room .awake.bad { color: var(--warn); }
+  .chip { border: 1px solid var(--line); background: transparent; color: var(--ink);
+          border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip .n { color: var(--dim); margin-left: 5px; }
+  .chip.on .n { color: #dbeafe; }
+  .msg { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 14px; }
+  @media (max-width: 640px) { .msg { grid-template-columns: minmax(0,1fr); } }
+  .msg .who { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  .msg .who b { display: block; color: var(--ink); font-size: 13px; font-weight: 600; }
+  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg pre { margin: 0; font-family: var(--mono); font-size: 12.5px;
+             white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tag { font-size: 11px; border: 1px solid var(--line); border-radius: 5px;
+         padding: 0 5px; color: var(--dim); margin-right: 6px; }
+  .tag.dm { border-color: var(--accent); color: var(--accent); }
+  .forecast { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .name { font-weight: 600; }
+  .sub { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  code, .mono { font-family: var(--mono); }
+  .sealed { color: var(--dim); }
+  .notes { margin: 0 18px; }
+  .notes div { background: var(--panel); border: 1px solid var(--warn);
+               color: var(--warn); border-radius: 8px; padding: 8px 12px;
+               margin-bottom: 8px; font-size: 13px; }
+  footer { color: var(--dim); font-size: 12px; padding: 0 18px 24px; }
+  .link { background: none; border: 0; color: var(--accent); cursor: pointer;
+          font: inherit; font-size: 12px; padding: 0; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+           color: var(--ink); padding: 0; max-width: 560px; width: calc(100% - 32px); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .sheet { padding: 18px 20px 20px; }
+  .sheet h2 { margin: 0 0 4px; font-size: 15px; }
+  .sheet p { color: var(--dim); font-size: 12.5px; margin: 0 0 14px; }
+  .sheet label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  .sheet input { width: 100%; padding: 7px 9px; border-radius: 7px; font: inherit;
+                 font-size: 13px; background: var(--bg); color: var(--ink);
+                 border: 1px solid var(--line); }
+  .sheet .row { display: flex; gap: 10px; }
+  .sheet .row > * { flex: 1; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .actions button { font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
+                    border: 1px solid var(--line); background: var(--bg);
+                    color: var(--ink); cursor: pointer; }
+  .actions .go { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .saved { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+  .saved div { display: flex; align-items: baseline; gap: 8px; font-size: 13px;
+               padding: 4px 0; }
+  .saved .where { color: var(--dim); font-size: 11px; font-family: var(--mono);
+                  overflow-wrap: anywhere; }
+  .warn { color: var(--warn); font-size: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>switchboard</h1>
+  <span class="meta"><span id="live" class="dot"></span><span id="status">connecting…</span></span>
+  <span class="meta">room <code id="ws">—</code></span>
+  <span class="meta" id="hub"></span>
+  <span class="spacer"></span>
+  <span class="meta" id="stamp"></span>
+  <button class="link" id="settings-open" hidden>settings</button>
+</header>
+<div class="rooms" id="rooms"></div>
+<div class="notes" id="notes"></div>
+<main>
+  <div>
+    <section>
+      <h2>Conversation</h2>
+      <div class="chips" id="chips"></div>
+      <div class="rows" id="messages"><div class="empty">nothing said yet</div></div>
+    </section>
+  </div>
+  <div>
+    <section><h2>Who's awake</h2><div class="rows" id="agents"></div></section>
+    <section><h2>Claims</h2><div class="rows" id="leases"></div></section>
+    <section><h2>Blackboard</h2><div class="rows" id="board"></div></section>
+  </div>
+</main>
+<footer id="foot"></footer>
+
+<dialog id="settings">
+  <form class="sheet" method="dialog" id="settings-form">
+    <h2>Read a room</h2>
+    <p>Everything here stays in this browser. The key is used to decrypt in the
+       page and is never sent to the hub — the hub could not use it if it
+       arrived.</p>
+    <label for="f-url">Hub</label>
+    <input id="f-url" name="url" placeholder="https://switchboard.lucille-ai.com" required>
+    <div class="row">
+      <div>
+        <label for="f-workspace">Workspace</label>
+        <input id="f-workspace" name="workspace" placeholder="w_…" required>
+      </div>
+      <div>
+        <label for="f-label">Label <span class="sub">(yours, optional)</span></label>
+        <input id="f-label" name="label" placeholder="parser">
+      </div>
+    </div>
+    <label for="f-key">Workspace key <span class="sub">(if the room is encrypted)</span></label>
+    <input id="f-key" name="key" type="password" autocomplete="off" placeholder="SWITCHBOARD_KEY">
+    <label for="f-token">Hub token <span class="sub">(if the hub requires one)</span></label>
+    <input id="f-token" name="token" type="password" autocomplete="off"
+           placeholder="SWITCHBOARD_TOKEN">
+    <div class="warn" id="settings-warn" hidden></div>
+    <div class="actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button class="go" id="settings-save" value="save">Add room</button>
+    </div>
+    <div class="saved" id="settings-saved"></div>
+  </form>
+</dialog>
+<script type="module">
+// Two ways to get a room, one page.
+//
+// Served by `examples/viewer.py`, the reading is already done: the local
+// process holds the keys, resolves the checkout, and answers `api/state`.
+// Served as a static file from anywhere else, this page does the reading
+// itself with WebCrypto and keeps its settings in this browser.
+//
+// The second is the one with the sharper edge, and it is worth stating on the
+// page rather than only in a doc: whoever serves this file could serve a
+// version that steals the key you type into it. That is true of every
+// browser-side crypto tool and it is not fixable from inside the tool — pin a
+// version you have read, or run the local viewer, which asks you to trust
+// only a package you installed.
+
+import { render, setFilter } from "./render.js";
+import { snapshot, summarise } from "./switchboard-room.js";
+
+const LOCAL = document.documentElement.dataset.source === "local";
+const STORE = "switchboard.rooms.v1";
+const $ = (id) => document.getElementById(id);
+
+let rooms = [];          // browser mode only
+let selected = null;     // room id
+let timer = null;
+let latest = null;
+
+function load() {
+  try {
+    return JSON.parse(localStorage.getItem(STORE) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function save(next) {
+  rooms = next;
+  localStorage.setItem(STORE, JSON.stringify(rooms));
+}
+
+function drawSaved() {
+  $("settings-saved").innerHTML = rooms.length === 0 ? "" : rooms.map((r, i) => `
+    <div>
+      <span>${escapeHtml(r.label || r.workspace)}</span>
+      <span class="where">${escapeHtml(r.workspace)} · ${escapeHtml(r.url)}</span>
+      <span class="spacer" style="flex:1"></span>
+      <button class="link" data-forget="${i}" type="button">forget</button>
+    </div>`).join("");
+  for (const button of $("settings-saved").querySelectorAll("[data-forget]")) {
+    button.onclick = () => {
+      const next = rooms.slice();
+      next.splice(Number(button.dataset.forget), 1);
+      save(next);
+      drawSaved();
+      refresh();
+    };
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function readLocal() {
+  const query = selected ? "?room=" + encodeURIComponent(selected) : "";
+  const response = await fetch("api/state" + query, { cache: "no-store" });
+  return response.json();
+}
+
+async function readHere() {
+  if (rooms.length === 0) return null;
+  const current = rooms.find((r) => id(r) === selected) || rooms[0];
+  const state = await snapshot(current, { refresh: 3 });
+  state.rooms = await Promise.all(rooms.map(async (r) =>
+    id(r) === id(current)
+      ? {
+          id: id(r), label: r.label || r.workspace, source: "settings",
+          hub: r.url, workspace: r.workspace, encrypted: Boolean(r.key),
+          selected: true, error: null,
+          awake: state.agents.filter((a) => !a.stale).length,
+        }
+      : { ...(await summarise(r)), selected: false }));
+  return state;
+}
+
+const id = (r) => `${r.url}/${r.workspace}`;
+
+async function refresh() {
+  clearTimeout(timer);
+  try {
+    const state = LOCAL ? await readLocal() : await readHere();
+    if (state) {
+      latest = state;
+      render(state, { onRoom: (which) => { selected = which; refresh(); } });
+    } else {
+      $("status").textContent = "no rooms yet";
+      $("live").className = "dot off";
+      $("settings").showModal();
+    }
+  } catch (e) {
+    $("live").className = "dot off";
+    $("status").textContent = LOCAL ? "viewer unreachable" : "page error: " + e.message;
+  } finally {
+    const wait = latest ? latest.refresh_ms : 3000;
+    timer = setTimeout(refresh, document.hidden ? Math.max(wait, 15000) : wait);
+  }
+}
+
+// A backgrounded tab polls slowly and catches up the moment it is looked at.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh();
+});
+
+if (!LOCAL) {
+  rooms = load();
+  $("settings-open").hidden = false;
+  $("settings-open").onclick = () => { drawSaved(); $("settings").showModal(); };
+  $("settings-form").addEventListener("submit", (event) => {
+    if (event.submitter && event.submitter.value !== "save") return;
+    const data = new FormData($("settings-form"));
+    const entry = Object.fromEntries(
+      [...data.entries()].map(([k, v]) => [k, String(v).trim()]));
+    if (!entry.url || !entry.workspace) return;
+    entry.url = entry.url.replace(/\/$/, "");
+    save([...rooms.filter((r) => id(r) !== id(entry)), entry]);
+    selected = id(entry);
+    $("settings-form").reset();
+    setFilter(null);
+    refresh();
+  });
+  if (location.protocol !== "https:" && location.hostname !== "localhost"
+      && location.hostname !== "127.0.0.1") {
+    // A key typed into a page delivered over plain HTTP is a key handed to
+    // anyone on the path, and WebCrypto is not even available here.
+    $("settings-warn").hidden = false;
+    $("settings-warn").textContent =
+      "This page is not on https, so nothing typed here is protected in transit " +
+      "and the browser will not provide the crypto it needs.";
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>

@@ -64,6 +64,33 @@ everywhere else: the directory declares a room. A checkout that declares
 several rooms and holds keys for two of them contributes those two; the one
 it cannot open is not shown, because it could not be read.
 
+## In a browser, with nothing installed
+
+The same page runs as four static files that read the hub directly, for an
+environment with no checkout and no Python — a shared machine, a tablet, a
+laptop that has never seen the repo. Settings are typed into the page and kept
+in that browser:
+
+```bash
+python -m http.server 8899 --directory examples/web   # or any static host
+switchboard serve --cors-origin http://127.0.0.1:8899 # the hub must allow it
+```
+
+The reading moves into the browser (`switchboard-room.js`) and so does the
+decryption (`switchboard-open.js`, the read half of `crypto.py` on WebCrypto),
+but the *rendering* is the same `render.js` the local viewer serves — one
+renderer painting one state shape, held to it by a test that builds both from
+the same room and compares them field by field.
+
+**The trade is real and is not hidden:** whoever serves those files could serve
+a version that steals the key you type in. The key never leaves the browser
+today — a test asserts no request carries it — but that is a property of the
+code you are being served, not of the protocol. So: do not host it on the hub,
+whose whole promise is that it cannot read your rooms; prefer a host you
+control, pinned to a commit you have read; or run the local viewer, which asks
+you to trust only a package you installed. `examples/web/README.md` says this
+at more length, next to the code it is about.
+
 ## Why it is an example and not a command
 
 Two audiences read this project's docs. Someone deciding whether the SDK is

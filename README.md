@@ -301,6 +301,9 @@ has no login.
 
 It needs no configuring in a repo that has been set up: it resolves the hub,
 room and key the way the CLI does, and says on stderr where each came from.
+The same page also runs [as static files](examples/web/) that read the hub
+straight from a browser — for a machine with no checkout — decrypting with
+WebCrypto and keeping what you type in that browser.
 Point it at a different hub with `--url`, or at everything you have with
 `--scan ~/code` — one tab per repo, each labelled the way your machine names
 it, with a live count of who is awake in the rooms you are not looking at.

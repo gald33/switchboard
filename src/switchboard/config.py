@@ -139,6 +139,18 @@ class ServerConfig:
     #: measured p95 (see /stats "load"), and shipping a number here would be
     #: the invented constant #72 exists to avoid.
     load_target_ms: float = 0.0
+    #: Browser origins allowed to call this hub, or empty for none — which is
+    #: the default, because a hub with no browser client should not grow the
+    #: attack surface of one. A page served from anywhere else cannot read a
+    #: hub without this, whatever credentials its user holds: the browser
+    #: refuses before the request is sent.
+    #:
+    #: `*` is accepted and means what it says. It is defensible here in a way
+    #: it usually is not, because this API authenticates with a bearer token
+    #: rather than a cookie — a hostile page gains nothing from being allowed
+    #: to make a request it cannot authenticate. It is still a decision, so it
+    #: has to be typed.
+    cors_origins: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> ServerConfig:
@@ -147,6 +159,11 @@ class ServerConfig:
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
             sweep_interval=_env_float("SWITCHBOARD_SWEEP_INTERVAL", SWEEP_INTERVAL_SECONDS),
             load_target_ms=_env_float("SWITCHBOARD_LOAD_TARGET_MS", 0.0),
+            cors_origins=tuple(
+                origin.strip()
+                for origin in os.environ.get("SWITCHBOARD_CORS_ORIGINS", "").split(",")
+                if origin.strip()
+            ),
         )
 
 
