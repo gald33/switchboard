@@ -541,3 +541,37 @@ def test_the_cli_and_an_sdk_reader_resolve_the_same_room(bare_env, tmp_path, mon
     assert from_cli.url_source == from_sdk.url_source
     # Differing in exactly one place, on purpose.
     assert from_cli.key is None and from_sdk.key == "K" * 43
+
+
+def test_a_checkout_names_its_rooms_and_a_bare_directory_names_none(bare_env, tmp_path):
+    """`rooms_in` is the test of "has this been set up", so it must not invent
+    a room for a directory that declares none — anything walking a tree of
+    checkouts would otherwise find one everywhere."""
+    from switchboard.config import rooms_in
+
+    assert rooms_in(tmp_path) == []
+    set_up_repo(tmp_path, workspace="w_room")
+    (found,) = rooms_in(tmp_path)
+    assert (found.label, found.source) == (tmp_path.resolve().name, "mcp.json")
+    assert found.config.workspace == "w_room"
+
+
+def test_a_rooms_file_names_each_room_it_holds_a_key_for(bare_env, tmp_path, monkeypatch):
+    from switchboard.config import rooms_in
+
+    (tmp_path / ".switchboard").mkdir()
+    (tmp_path / ".switchboard" / "rooms.json").write_text(json.dumps({"rooms": [
+        {"name": "parser", "key_id": "default", "workspace_token": "tok-parser"},
+        {"name": "ops", "key_id": "ops", "workspace_token": "tok-ops"},
+        {"name": "locked", "key_id": "nobody", "workspace_token": "tok-locked"},
+    ]}))
+    monkeypatch.setenv("SWITCHBOARD_KEY", "K" * 43)
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", "O" * 43)
+
+    found = rooms_in(tmp_path)
+
+    assert [r.label for r in found] == ["parser", "ops"]
+    # Each carries its own key, which is the reason one client cannot serve
+    # two rooms.
+    assert [r.config.key for r in found] == ["K" * 43, "O" * 43]
+    assert len({r.config.workspace for r in found}) == 2

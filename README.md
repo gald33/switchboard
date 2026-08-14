@@ -301,6 +301,9 @@ has no login.
 
 It needs no configuring in a repo that has been set up: it resolves the hub,
 room and key the way the CLI does, and says on stderr where each came from.
+Point it at a different hub with `--url`, or at everything you have with
+`--scan ~/code` — one tab per repo, each labelled the way your machine names
+it, with a live count of who is awake in the rooms you are not looking at.
 
 Writing it against the published surface is also how five holes in that
 surface were found and closed — `read_channels()`, `Client.encrypted`,

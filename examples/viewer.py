@@ -57,10 +57,12 @@ import json
 import sys
 import threading
 import webbrowser
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -70,6 +72,7 @@ from switchboard import (
     CryptoError,
     SwitchboardError,
     __version__,
+    rooms_in,
     unwrap_forecast,
 )
 
@@ -326,6 +329,53 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     return view
 
 
+# --- rooms ------------------------------------------------------------------
+
+
+@dataclass
+class Room:
+    """One room the viewer can show, and the client that reads it.
+
+    A room per checkout, or several per checkout when a repo declares them —
+    `ClientConfig.rooms_in` answers that, including the local label, which is
+    the only name a human recognises. Each carries its own client because each
+    may be on a different hub under a different key: that is the normal case
+    once you have more than one repo, not an exotic one.
+    """
+
+    label: str
+    client: Client
+    source: str = ""
+
+    @property
+    def id(self) -> str:
+        """Stable across refreshes and unique per room, so the page can keep
+        its selection when the list is rebuilt."""
+        return f"{self.client.config.url}/{self.client.workspace}"
+
+
+def summarise(room: Room) -> dict[str, Any]:
+    """The cheap per-room line: enough to see where something is happening.
+
+    One request, against the roster, for every room the viewer is *not*
+    currently showing. The alternative — a full snapshot each — multiplies the
+    cost of watching by the number of rooms, and the question a room switcher
+    has to answer is only "is anyone in there".
+    """
+    out = {
+        "id": room.id, "label": room.label, "source": room.source,
+        "hub": room.client.config.url, "workspace": room.client.workspace,
+        "encrypted": room.client.encrypted, "awake": None, "error": None,
+    }
+    try:
+        agents = room.client.agents()
+    except (SwitchboardError, CryptoError, OSError, httpx.HTTPError) as exc:
+        out["error"] = str(exc)
+        return out
+    out["awake"] = sum(1 for a in agents if not a.get("stale"))
+    return out
+
+
 # --- the server -------------------------------------------------------------
 
 
@@ -338,12 +388,25 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, "text/html; charset=utf-8", page().encode())
         elif path == "/api/state":
-            with self.server.lock:  # type: ignore[attr-defined]
-                payload = snapshot(
-                    self.server.hub,  # type: ignore[attr-defined]
-                    limit=self.server.limit,  # type: ignore[attr-defined]
-                    refresh=self.server.refresh,  # type: ignore[attr-defined]
-                )
+            wanted = parse_qs(urlsplit(self.path).query).get("room", [None])[0]
+            server = self.server  # type: ignore[attr-defined]
+            rooms = server.rooms
+            selected = next((r for r in rooms if r.id == wanted), rooms[0])
+            with server.lock:
+                payload = snapshot(selected.client, limit=server.limit,
+                                   refresh=server.refresh)
+                payload["rooms"] = [
+                    # The selected room is already fully read; asking it for a
+                    # roster a second time would be a request per refresh spent
+                    # on an answer we are holding.
+                    {**summarise(room), "selected": False} if room.id != selected.id
+                    else {"id": room.id, "label": room.label, "source": room.source,
+                          "hub": room.client.config.url, "workspace": room.client.workspace,
+                          "encrypted": room.client.encrypted, "selected": True,
+                          "awake": sum(1 for a in payload["agents"] if not a["stale"]),
+                          "error": None}
+                    for room in rooms
+                ]
             body = json.dumps(payload, default=str).encode()
             self._send(200, "application/json; charset=utf-8", body)
         else:
@@ -370,10 +433,10 @@ class _Viewer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], hub: Client, *,
+    def __init__(self, address: tuple[str, int], rooms: list[Room], *,
                  limit: int, refresh: float, verbose: bool) -> None:
         super().__init__(address, _Handler)
-        self.hub = hub
+        self.rooms = rooms
         self.limit = limit
         self.refresh = refresh
         self.verbose = verbose
@@ -383,18 +446,30 @@ class _Viewer(ThreadingHTTPServer):
         self.lock = threading.Lock()
 
 
-def make_server(hub: Client, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                limit: int = DEFAULT_LIMIT, refresh: float = DEFAULT_REFRESH,
+def as_rooms(hub: Client | Room | Sequence[Room]) -> list[Room]:
+    """One client, one room, or several — all the same to everything below."""
+    if isinstance(hub, Client):
+        return [Room(label=hub.workspace, client=hub)]
+    if isinstance(hub, Room):
+        return [hub]
+    return list(hub)
+
+
+def make_server(hub: Client | Room | Sequence[Room], *, host: str = DEFAULT_HOST,
+                port: int = DEFAULT_PORT, limit: int = DEFAULT_LIMIT,
+                refresh: float = DEFAULT_REFRESH,
                 verbose: bool = False) -> ThreadingHTTPServer:
     """A viewer bound and ready, not yet serving.
 
     Separate from `serve` so a caller — a test, or anything embedding this —
     can read back the port it actually got when it asked for 0.
     """
-    return _Viewer((host, port), hub, limit=limit, refresh=refresh, verbose=verbose)
+    return _Viewer((host, port), as_rooms(hub), limit=limit, refresh=refresh,
+                   verbose=verbose)
 
 
-def serve(hub: Client, *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+def serve(hub: Client | Room | Sequence[Room], *, host: str = DEFAULT_HOST,
+          port: int = DEFAULT_PORT,
           limit: int = DEFAULT_LIMIT, refresh: float = DEFAULT_REFRESH,
           verbose: bool = False, open_browser: bool = False,
           announce: Callable[[str], None] | None = None) -> None:
@@ -440,13 +515,62 @@ def page() -> str:
 # --- running it -------------------------------------------------------------
 
 
+def discover(paths: Sequence[str], scan: Sequence[str]) -> list[Room]:
+    """Every room the checkouts you named can take part in, deduplicated.
+
+    A room is identified by hub and workspace, so the same room reached from
+    two clones appears once — under the first label that named it, which is
+    the one you typed first.
+    """
+    found: dict[tuple[str, str], Room] = {}
+    for directory in [*paths, *(d for root in scan for d in _checkouts(root))]:
+        for repo_room in rooms_in(directory, include_secrets=True):
+            client = Client(repo_room.config)
+            room = Room(label=repo_room.label, client=client, source=repo_room.source)
+            key = (client.config.url, client.workspace)
+            if key in found:
+                client.close()
+                continue
+            found[key] = room
+    return list(found.values())
+
+
+def _checkouts(root: str, depth: int = 3) -> list[str]:
+    """Directories under `root` that have been set up to coordinate.
+
+    Bounded rather than exhaustive: a home directory is not a search space,
+    and a viewer that walks one is a viewer nobody starts twice. What it skips
+    it skips for a reason that holds everywhere — dot directories and package
+    trees are where checkouts are not.
+    """
+    skip = {"node_modules", "venv", ".venv", "__pycache__", "target", "dist", "build"}
+    out, root_path = [], Path(root).expanduser()
+    for candidate in [root_path, *(p for p in root_path.rglob("*") if p.is_dir())]:
+        rel = candidate.relative_to(root_path).parts
+        if len(rel) > depth or any(p in skip or p.startswith(".") for p in rel):
+            continue
+        # "Set up" means the same thing here as everywhere else: the
+        # directory declares a room. No second definition to drift.
+        if rooms_in(candidate):
+            out.append(str(candidate))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Serve a read-only page showing one Switchboard room. "
-                    "Connection settings come from the environment, exactly "
-                    "as they do for every agent: SWITCHBOARD_URL, _TOKEN, "
-                    "_WORKSPACE and _KEY.",
+        description="Serve a read-only page showing your Switchboard rooms. "
+                    "With no arguments: the room this checkout coordinates in, "
+                    "resolved the way the CLI resolves it. Point it elsewhere "
+                    "with --url, or at several checkouts at once with --repo.",
     )
+    parser.add_argument("--url", help="hub to read, overriding whatever the "
+                                      "checkout says (env: SWITCHBOARD_URL)")
+    parser.add_argument("--workspace", "-w", help="room to read, overriding the checkout")
+    parser.add_argument("--repo", action="append", default=[], metavar="PATH",
+                        help="also show the rooms this checkout takes part in; "
+                             "repeatable. Defaults to the current directory")
+    parser.add_argument("--scan", action="append", default=[], metavar="DIR",
+                        help="also show every set-up checkout under DIR (3 levels deep)")
     parser.add_argument("--host", default=DEFAULT_HOST,
                         help=f"interface to bind (default {DEFAULT_HOST}; the page "
                              "has no authentication, so anything else is a decision)")
@@ -465,34 +589,77 @@ def main(argv: list[str] | None = None) -> int:
         # that the plaintext never leaves the machines holding the key. There
         # is no login on it, and there is not going to be one.
         print(
-            f"warning: binding to {args.host} publishes this room's decrypted "
+            f"warning: binding to {args.host} publishes these rooms' decrypted "
             "contents to anyone who can reach that address. This page has no "
             "authentication — use an SSH tunnel instead.",
             file=sys.stderr,
         )
 
-    # Resolved from the directory you are standing in, exactly as the CLI
-    # resolves it, plus the two gitignored files `init` writes on this machine
-    # — so in a repo that has been set up, this is the whole configuration
-    # step. `include_secrets` is the viewer saying what it is: a reader, on
-    # the machine the key is already on, that never sends anything anywhere.
-    config = ClientConfig.from_repo(include_secrets=True)
-    with Client(config) as hub:
-        try:
-            serve(
-                hub, host=args.host, port=args.port, limit=args.limit,
-                refresh=args.refresh, verbose=args.verbose, open_browser=args.open,
-                announce=lambda url: print(
-                    f"switchboard viewer → {url}\n"
-                    f"  room {hub.workspace} on {hub.config.url}\n"
-                    f"  {_provenance(config)}", flush=True),
-            )
-        except OSError as exc:
-            print(f"cannot serve on {args.host}:{args.port}: {exc}", file=sys.stderr)
-            return 1
-        except KeyboardInterrupt:
-            pass
+    # Resolved from the directories you name, exactly as the CLI resolves the
+    # one it is standing in, plus the two gitignored files `init` writes on
+    # this machine — so in repos that have been set up, this is the whole
+    # configuration step. `include_secrets` is the viewer saying what it is: a
+    # reader, on the machine the key is already on, that never sends anything.
+    rooms = discover(args.repo or (["."] if not args.scan else []), args.scan)
+    if not rooms and not args.repo and not args.scan:
+        # Nothing declared here. Fall back to wherever an unconfigured client
+        # would go — which is usually the managed hub, and which the greeting
+        # says plainly rather than letting an empty page imply a quiet room.
+        config = ClientConfig.from_repo(include_secrets=True)
+        rooms = [Room(label=config.workspace, client=Client(config), source="default")]
+    for room in rooms:
+        # Flags last, as everywhere else in this project: the person typing
+        # now outranks anything a file said.
+        if args.url:
+            room.client.config.url = args.url.rstrip("/")
+            room.client.config.url_source = "flag"
+        if args.workspace:
+            room.client.config.workspace = args.workspace
+            room.client.workspace = args.workspace
+    if args.url or args.workspace:
+        # Retargeting collapses distinct rooms onto one, and showing the same
+        # room three times under three labels would be a worse lie than
+        # showing it once under a made-up one.
+        rooms = _dedupe(rooms)
+    if not rooms:
+        print("no rooms found: name a checkout with --repo, or set SWITCHBOARD_URL "
+              "and SWITCHBOARD_WORKSPACE", file=sys.stderr)
+        return 1
+
+    try:
+        serve(
+            rooms, host=args.host, port=args.port, limit=args.limit,
+            refresh=args.refresh, verbose=args.verbose, open_browser=args.open,
+            announce=lambda url: print(_greeting(url, rooms), flush=True),
+        )
+    except OSError as exc:
+        print(f"cannot serve on {args.host}:{args.port}: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for room in rooms:
+            room.client.close()
     return 0
+
+
+def _dedupe(rooms: list[Room]) -> list[Room]:
+    seen: dict[str, Room] = {}
+    for room in rooms:
+        if room.id in seen:
+            room.client.close()
+            continue
+        seen[room.id] = room
+    return list(seen.values())
+
+
+def _greeting(url: str, rooms: list[Room]) -> str:
+    lines = [f"switchboard viewer → {url}"]
+    for room in rooms:
+        lines.append(f"  {room.label}: room {room.client.workspace} "
+                     f"on {room.client.config.url}")
+        lines.append(f"    {_provenance(room.client.config)}")
+    return "\n".join(lines)
 
 
 def _provenance(config: ClientConfig) -> str:

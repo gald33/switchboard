@@ -28,7 +28,7 @@ import os
 import re
 import socket
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -617,6 +617,79 @@ def dotenv_setting(directory: Path, name: str) -> str | None:
             value = value[1:-1]
         return value or None
     return None
+
+
+@dataclass(frozen=True)
+class RepoRoom:
+    """One room a checkout can take part in, ready to connect to.
+
+    `label` is what *this machine* calls it — a rooms file's local name, or
+    the directory the checkout sits in. It never reaches a hub, which is the
+    point: the hub knows a room by an opaque workspace id, and a human knows
+    it as "the parser repo". Anything showing several rooms to a person needs
+    the second name and can only get it here.
+    """
+
+    label: str
+    directory: Path
+    config: ClientConfig
+    #: Which declaration produced this — `"rooms"` or `"mcp.json"`, or
+    #: `"default"` when the directory declares nothing and this is simply
+    #: wherever an unconfigured client would end up.
+    source: str
+
+
+def rooms_in(directory: Path | str | None = None, *,
+             include_secrets: bool = False) -> list[RepoRoom]:
+    """Every room this checkout can take part in.
+
+    A repo that declares rooms (see rooms.py) can name several, and an agent
+    joins the one it can open — `select` refuses ambiguity precisely because
+    *acting* in two rooms by accident is worse than being asked which. Reading
+    is the other case: showing someone all of their rooms at once is the whole
+    point of showing them anything, so this returns the intersection of
+    declared and openable rather than insisting on one.
+
+    A repo with no rooms file has exactly one room, the one `.mcp.json`
+    names, and that is the common case today. Either way the environment still
+    wins over the checkout, as it does everywhere else.
+
+    A directory that declares nothing returns nothing, rather than the room an
+    unconfigured client would land in by default. That makes this the honest
+    test of "has this checkout been set up", which is what anything walking a
+    tree of them needs — and leaves the fallback to the caller, who is the one
+    who knows whether a default is useful or a lie.
+    """
+    where = Path.cwd() if directory is None else Path(directory)
+    base = ClientConfig.from_repo(where, include_secrets=include_secrets)
+
+    try:
+        declared = rooms.joinable(rooms.load(where))
+    except rooms.RoomsError:
+        # Same reasoning as `_selected_room`: a malformed rooms file is
+        # reported by `switchboard rooms`, not by everything that ever asks
+        # a question about a directory.
+        declared = []
+
+    out: list[RepoRoom] = []
+    for room in declared:
+        config = replace(
+            base,
+            url=(base.url if os.environ.get("SWITCHBOARD_URL")
+                 else (room.hub_url or base.url)),
+            url_source=("env" if os.environ.get("SWITCHBOARD_URL")
+                        else ("rooms" if room.hub_url else base.url_source)),
+            workspace=room.workspace,
+            key=rooms.key_for(room.key_id) or base.key,
+        )
+        out.append(RepoRoom(label=room.name, directory=where, config=config, source="rooms"))
+    if out:
+        return out
+
+    if not mcp_env(where, "SWITCHBOARD_WORKSPACE") and not mcp_env(where, "SWITCHBOARD_URL"):
+        return []
+    return [RepoRoom(label=where.resolve().name or base.workspace, directory=where,
+                     config=base, source="mcp.json")]
 
 
 def isolation_warning(config: ClientConfig, kind: str) -> str | None:
