@@ -32,13 +32,16 @@ from .client import (
     identity_drift_warning,
 )
 from .config import (
+    LOCAL_SETTINGS_FILE,
     MANAGED_HUB_TOKEN,
     MANAGED_HUB_URL,
     ClientConfig,
     git_remote_workspace,
     is_loopback,
     isolation_warning,
+    local_setting,
     machine_suffix,
+    mcp_env,
 )
 from .crypto import CryptoError, generate_key
 from .guidance import SKILL_NAME, skill_history, skill_text
@@ -288,25 +291,20 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     nothing else used, which is the worst version of this: the one command
     you would check to find out looked healthy.
 
-    The workspace key is deliberately NOT resolved from the repo. Claude
-    Code injects `settings.local.json` into the agents it spawns, but a
-    plain shell has nothing exported and would send in the clear — so
-    reading it here would make `whoami` claim a channel is sealed when this
-    invocation would not seal it. See `cmd_whoami`.
-    """
-    config = ClientConfig.from_env()
-    directory = Path(".").resolve()
+    The repo tiers now live in `ClientConfig.from_repo`, because the CLI is
+    no longer the only thing standing in a checkout asking this question —
+    `examples/viewer.py` asks it too, and a second implementation of a
+    precedence order is a second answer that can disagree with the first.
 
-    _apply_repo_url(config, directory)
-    if not os.environ.get("SWITCHBOARD_WORKSPACE"):
-        # `config.workspace` falls back to the literal "default", which
-        # would otherwise mask the repo's real workspace.
-        config.workspace = _mcp_workspace(directory) or config.workspace
-    if not config.token:
-        # This machine's token first, then the one the checkout ships with:
-        # a personal token should win over a shared repo default.
-        config.token = (_saved_setting(directory, "SWITCHBOARD_TOKEN")
-                        or _mcp_env(directory, "SWITCHBOARD_TOKEN"))
+    The workspace key is deliberately NOT resolved from the repo here, which
+    is `from_repo`'s `include_secrets=False`. Claude Code injects
+    `settings.local.json` into the agents it spawns, but a plain shell has
+    nothing exported and would send in the clear — so reading it would make
+    `whoami` claim a channel is sealed when this invocation would not seal
+    it. A reader is a different case and says so explicitly. See `cmd_whoami`
+    and `ClientConfig.from_repo`.
+    """
+    config = ClientConfig.from_repo(Path(".").resolve())
 
     if args.url:
         config.url, config.url_source = args.url.rstrip("/"), "flag"
@@ -638,24 +636,10 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _saved_setting(directory: Path, name: str) -> str | None:
-    """A secret `init` wrote for this repo, if it is still there.
-
-    Read straight off disk rather than from the environment: Claude Code
-    injects this file's `env` into the agents it spawns, but a plain shell has
-    nothing exported, and the shell is exactly where someone stands when they
-    need to hand these to a teammate or a second machine.
-    """
-    path = directory / _LOCAL_SETTINGS_REL
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except ValueError:
-        return None
-    env = data.get("env")
-    value = env.get(name) if isinstance(env, dict) else None
-    return value if isinstance(value, str) else None
+#: One implementation of "what did `init` leave in this repo", in config.py,
+#: where `ClientConfig.from_repo` needs it too. These names stay because
+#: `init` reads better with them.
+_saved_setting = local_setting
 
 
 def _saved_key(directory: Path) -> str | None:
@@ -2286,15 +2270,11 @@ def _mcp_entry(directory: Path) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
-def _mcp_env(directory: Path, name: str) -> str | None:
-    entry = _mcp_entry(directory)
-    env = entry.get("env") if entry else None
-    value = env.get(name) if isinstance(env, dict) else None
-    return value if isinstance(value, str) else None
+_mcp_env = mcp_env
 
 
 def _mcp_url(directory: Path) -> str | None:
-    return _mcp_env(directory, "SWITCHBOARD_URL")
+    return mcp_env(directory, "SWITCHBOARD_URL")
 
 
 def _mcp_workspace(directory: Path) -> str | None:
@@ -2304,20 +2284,7 @@ def _mcp_workspace(directory: Path) -> str | None:
     it is the value a key has to be paired with — not whatever `init` would
     have picked had the file not been there.
     """
-    path = directory / ".mcp.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except ValueError:
-        return None
-    servers = data.get("mcpServers")
-    entry = servers.get("switchboard") if isinstance(servers, dict) else None
-    if not isinstance(entry, dict):
-        return None
-    env = entry.get("env")
-    workspace = env.get("SWITCHBOARD_WORKSPACE") if isinstance(env, dict) else None
-    return workspace if isinstance(workspace, str) else None
+    return mcp_env(directory, "SWITCHBOARD_WORKSPACE")
 
 
 def _init_mcp_json(
@@ -2550,7 +2517,8 @@ def _init_claude_settings(
 #: having to `export` it by hand. `.env` would stay out of git just as well
 #: but nothing loads it into that subprocess — it works for the local dev
 #: token only because `docker compose` reads `.env` itself.
-_LOCAL_SETTINGS_REL = ".claude/settings.local.json"
+#: Named in config.py, where `from_repo` reads it too.
+_LOCAL_SETTINGS_REL = LOCAL_SETTINGS_FILE
 _GITIGNORE_PATTERN = "**/.claude/settings.local.json"
 
 

@@ -8,8 +8,11 @@ away.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+
+import pytest
 
 from switchboard.cli import _default_workspace
 from switchboard.config import ClientConfig, default_workspace, machine_suffix
@@ -440,3 +443,101 @@ def test_the_drift_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
     # Pinned: the directory no longer decides who you are, so silent again.
     monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "pinned-one")
     assert identity_drift_warning(detect_identity()) is None
+
+
+# --- what a checkout says, and what only its owner may read -----------------
+#
+# `from_repo` is the tier the CLI has always had and nothing else could reach.
+# It moved into the package when `examples/viewer.py` needed the same answer:
+# a program standing in a set-up repo should land in the same room as the
+# agents that live there, without being told anything twice.
+
+
+def set_up_repo(directory, *, url="http://127.0.0.1:8787", workspace="w_room",
+                key=None, dotenv_token=None, settings_token=None):
+    """A repo as `switchboard init` leaves it."""
+    (directory / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {"switchboard": {"command": "switchboard-mcp", "env": {
+            "SWITCHBOARD_URL": url, "SWITCHBOARD_WORKSPACE": workspace,
+        }}}
+    }))
+    if key or settings_token:
+        env = {}
+        if key:
+            env["SWITCHBOARD_KEY"] = key
+        if settings_token:
+            env["SWITCHBOARD_TOKEN"] = settings_token
+        (directory / ".claude").mkdir(exist_ok=True)
+        (directory / ".claude" / "settings.local.json").write_text(json.dumps({"env": env}))
+    if dotenv_token:
+        (directory / ".env").write_text(f"# written by init\nSWITCHBOARD_TOKEN={dotenv_token}\n")
+    return directory
+
+
+@pytest.fixture
+def bare_env(monkeypatch):
+    for name in ("SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY",
+                 "SWITCHBOARD_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_a_checkout_supplies_the_hub_and_room_it_committed(bare_env, tmp_path):
+    set_up_repo(tmp_path)
+    config = ClientConfig.from_repo(tmp_path)
+    assert (config.url, config.workspace) == ("http://127.0.0.1:8787", "w_room")
+    # And says the checkout chose it, which is what `isolation_warning` reads.
+    assert config.url_source == "mcp.json"
+
+
+def test_the_environment_still_wins_over_the_checkout(bare_env, tmp_path, monkeypatch):
+    set_up_repo(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_URL", "https://hub.example.com")
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "elsewhere")
+    config = ClientConfig.from_repo(tmp_path)
+    assert (config.url, config.url_source) == ("https://hub.example.com", "env")
+    assert config.workspace == "elsewhere"
+
+
+def test_secrets_on_disk_are_left_alone_unless_asked_for(bare_env, tmp_path):
+    """The default is the interesting half: a client that *sends* must not
+    quietly pick up a key from a file, or an identical-looking shell elsewhere
+    seals where this one would not."""
+    set_up_repo(tmp_path, key="K" * 43, dotenv_token="dev-token")
+    assert ClientConfig.from_repo(tmp_path).key is None
+    assert ClientConfig.from_repo(tmp_path).token is None
+
+
+def test_a_reader_may_open_what_its_owner_can_open(bare_env, tmp_path):
+    set_up_repo(tmp_path, key="K" * 43, dotenv_token="dev-token")
+    config = ClientConfig.from_repo(tmp_path, include_secrets=True)
+    assert config.key == "K" * 43
+    # `.env` is where `init --local` puts the dev hub's token, and until now
+    # nothing on the client side read it — so a freshly initialised repo could
+    # not authenticate against its own hub without the human hunting for it.
+    assert config.token == "dev-token"
+
+
+def test_a_personal_token_beats_the_one_the_checkout_ships_with(bare_env, tmp_path):
+    set_up_repo(tmp_path, settings_token="mine", dotenv_token="the-repo-default")
+    assert ClientConfig.from_repo(tmp_path, include_secrets=True).token == "mine"
+
+
+def test_a_directory_with_nothing_in_it_is_not_an_error(bare_env, tmp_path):
+    """Every field falls back to what `from_env` would have said."""
+    assert ClientConfig.from_repo(tmp_path).url_source == "default"
+
+
+def test_the_cli_and_an_sdk_reader_resolve_the_same_room(bare_env, tmp_path, monkeypatch):
+    """The reason this moved out of the CLI: two implementations of one
+    precedence order are two answers that can disagree."""
+    from switchboard.cli import _make_config, build_parser
+
+    set_up_repo(tmp_path, key="K" * 43)
+    monkeypatch.chdir(tmp_path)
+    from_cli = _make_config(build_parser().parse_args(["agents"]))
+    from_sdk = ClientConfig.from_repo(include_secrets=True)
+
+    assert (from_cli.url, from_cli.workspace) == (from_sdk.url, from_sdk.workspace)
+    assert from_cli.url_source == from_sdk.url_source
+    # Differing in exactly one place, on purpose.
+    assert from_cli.key is None and from_sdk.key == "K" * 43

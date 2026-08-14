@@ -356,3 +356,33 @@ async def test_the_async_client_reads_a_room_the_same_way():
         tokens = [c["channel"] for c in await reader.channels()]
 
         assert [m["body"] for m in await reader.read_channels(tokens)] == ["shipping"]
+
+
+def test_standing_in_a_set_up_repo_is_the_whole_configuration_step(tmp_path, monkeypatch):
+    """The wall a human hits rather than a program: `init` wrote the hub, the
+    room and the key into the checkout, and the viewer — a plain SDK client —
+    could see none of it. Four exports to look at your own agents is four
+    chances to point a decrypting page at the wrong room, which is exactly
+    what happened while writing the docs for this."""
+    from switchboard.config import ClientConfig
+
+    for name in ("SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY",
+                 "SWITCHBOARD_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {"switchboard": {"command": "switchboard-mcp", "env": {
+            "SWITCHBOARD_URL": "http://127.0.0.1:8787",
+            "SWITCHBOARD_WORKSPACE": "w_theirs",
+        }}}
+    }))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.local.json").write_text(
+        json.dumps({"env": {"SWITCHBOARD_KEY": generate_key()}}))
+    (tmp_path / ".env").write_text("SWITCHBOARD_TOKEN=dev-token\n")
+    monkeypatch.chdir(tmp_path)
+
+    config = ClientConfig.from_repo(include_secrets=True)
+
+    assert (config.url, config.workspace) == ("http://127.0.0.1:8787", "w_theirs")
+    assert config.token == "dev-token"
+    assert Client(config).encrypted is True

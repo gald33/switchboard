@@ -1,19 +1,37 @@
 # The viewer — an application built on the SDK
 
-```bash
-export SWITCHBOARD_URL=http://127.0.0.1:8787
-export SWITCHBOARD_TOKEN=dev-token
-export SWITCHBOARD_WORKSPACE=demo
-export SWITCHBOARD_KEY=...              # if the room is encrypted
-
-python examples/viewer.py               # → http://127.0.0.1:8799
-```
-
 A local page showing one room to a human: who is awake, what each agent is
 working on, what is claimed and for how long, what is on the blackboard, and
 the conversation as it happens. It refreshes itself every few seconds.
 
 ![The viewer](images/viewer.png)
+
+```bash
+cd your-repo                # one `switchboard init` has been run in
+python examples/viewer.py   # → http://127.0.0.1:8799
+```
+
+That is the whole setup. Standing in a repo that has been set up, the viewer
+reads the same configuration the CLI reads — the hub and room `init`
+committed to `.mcp.json` — plus the two gitignored files it wrote on this
+machine: the workspace key in `.claude/settings.local.json` and the dev hub's
+token in `.env`. It prints where each came from on the way up:
+
+```
+switchboard viewer → http://127.0.0.1:8799
+  room w_95bJ9LUSQGXRatQb on http://127.0.0.1:8787
+  from this repo's .mcp.json, with this repo's key
+```
+
+Anywhere else — no checkout, or a room you reach by exporting things — the
+environment still wins over all of it, at every tier:
+
+```bash
+export SWITCHBOARD_URL=https://hub.example.com
+export SWITCHBOARD_TOKEN=...
+export SWITCHBOARD_WORKSPACE=my-org/my-repo
+export SWITCHBOARD_KEY=...              # if the room is encrypted
+```
 
 ## Why it is an example and not a command
 
@@ -39,6 +57,7 @@ private import.
 
 | Wall | What the SDK grew |
 |---|---|
+| The repo knew the hub, the room and the key — `init` wrote all three — and a plain SDK client could read none of it, so watching your own agents meant exporting four variables correctly. | `ClientConfig.from_repo(directory, include_secrets=…)`, which the CLI now uses too |
 | `channels()` hands back hub-form identifiers — blinded tokens under encryption. Passing one back to `history()` blinds it a second time and matches nothing, so a reader that *enumerates* a room read none of it, and got a silent undercount rather than an error. | `read_channels(tokens)` |
 | An encrypted room and a plaintext one look identical in a response, so an application could not tell whether an identifier it was about to display was a name or a blinded token. | `Client.encrypted` |
 | A reader with the wrong key lost a whole channel to an exception; a reader with no key got envelopes back, and "empty message" must not render as "sealed message I cannot open". | messages marked `unreadable`, the convention the roster already used |
@@ -137,11 +156,16 @@ place to notice it.
 | `--open` | off | open a browser at it |
 | `--verbose` | off | log every request |
 
-Connection settings come from the environment, exactly as they do for an
-agent, so it lands in the same room without being told anything twice. Note
-that unlike the `switchboard` CLI it does *not* read `.mcp.json` or
-`.claude/settings.local.json` — it is a plain SDK client, so a repo whose
-agents are configured through those files needs the same values exported.
+Connection settings come from `ClientConfig.from_repo(include_secrets=True)`
+— the checkout first, the environment over the top of it. That second
+argument is the viewer saying what it is, and the default says why it matters:
+a client that *sends* must not quietly pick up a key from a file, because
+Claude Code injects `.claude/settings.local.json` into the agents it spawns
+and a plain shell has nothing exported, so an identical-looking command would
+seal in one place and not the other. A reader on the machine the key already
+sits on is a different case — declining to open what its owner can open with
+a text editor buys nothing and shows them ciphertext instead. The CLI passes
+`False`; this passes `True`.
 
 ## Reusing the pieces
 

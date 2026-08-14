@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """A read-only window on a room, for the human the agents are working for.
 
-    export SWITCHBOARD_URL=http://127.0.0.1:8787
-    export SWITCHBOARD_TOKEN=dev-token
-    export SWITCHBOARD_WORKSPACE=demo
-    export SWITCHBOARD_KEY=...          # if the room is encrypted
+    cd your-repo                # one `switchboard init` has been run in
+    python examples/viewer.py   # → http://127.0.0.1:8799
 
-    python examples/viewer.py           # → http://127.0.0.1:8799
+Configuration comes from the checkout you are standing in, the way the CLI
+resolves it, with the environment winning over it — see `_provenance` and
+`ClientConfig.from_repo`. Anywhere without a checkout, export
+SWITCHBOARD_URL / _WORKSPACE / _TOKEN / _KEY instead.
 
 Who is awake and on what, what is claimed and for how long, what is on the
 blackboard, and the conversation as it happens.
@@ -16,10 +17,11 @@ point: `coordinated_worker.py` next door shows an agent *taking part* in a
 room, and this shows a program *reading* one — the other half of the surface,
 and the half nothing else exercised. It imports only what `switchboard`
 exports, so if it needs something the package does not export, that is a hole
-in the package rather than a licence to reach inside it. Three such holes
+in the package rather than a licence to reach inside it. Four such holes
 turned up while writing it and were closed: `read_channels()`,
-`Client.encrypted`, and messages marked `unreadable` rather than arriving as
-raw envelopes. See `docs/viewer.md`.
+`Client.encrypted`, messages marked `unreadable` rather than arriving as raw
+envelopes, and `ClientConfig.from_repo` — the resolution that made "stand in
+the repo and run it" the whole setup. See `docs/viewer.md`.
 
 Three things about the shape of it, because they are not arbitrary.
 
@@ -64,6 +66,7 @@ import httpx
 
 from switchboard import (
     Client,
+    ClientConfig,
     CryptoError,
     SwitchboardError,
     __version__,
@@ -468,17 +471,21 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    # Everything about who we are and where we are talking comes from the
-    # environment, so the viewer lands in the same room as the agents without
-    # being told anything twice.
-    with Client() as hub:
+    # Resolved from the directory you are standing in, exactly as the CLI
+    # resolves it, plus the two gitignored files `init` writes on this machine
+    # — so in a repo that has been set up, this is the whole configuration
+    # step. `include_secrets` is the viewer saying what it is: a reader, on
+    # the machine the key is already on, that never sends anything anywhere.
+    config = ClientConfig.from_repo(include_secrets=True)
+    with Client(config) as hub:
         try:
             serve(
                 hub, host=args.host, port=args.port, limit=args.limit,
                 refresh=args.refresh, verbose=args.verbose, open_browser=args.open,
                 announce=lambda url: print(
                     f"switchboard viewer → {url}\n"
-                    f"  room {hub.workspace} on {hub.config.url}", flush=True),
+                    f"  room {hub.workspace} on {hub.config.url}\n"
+                    f"  {_provenance(config)}", flush=True),
             )
         except OSError as exc:
             print(f"cannot serve on {args.host}:{args.port}: {exc}", file=sys.stderr)
@@ -486,6 +493,22 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
     return 0
+
+
+def _provenance(config: ClientConfig) -> str:
+    """One line on where this configuration came from.
+
+    Worth printing because the failure it heads off is silent: a viewer that
+    quietly fell back to the managed hub shows an empty room, which looks
+    exactly like a quiet one. Naming the hub is not enough — `url_source`
+    is what says whether anybody chose it.
+    """
+    origin = {
+        "flag": "chosen here", "env": "from the environment",
+        "mcp.json": "from this repo's .mcp.json", "rooms": "from this repo's rooms file",
+    }.get(config.url_source, "the built-in default — nothing here named a hub")
+    sealed = "with this repo's key" if config.key else "no key: sealed rooms will read as sealed"
+    return f"{origin}, {sealed}"
 
 
 def _is_loopback(host: str) -> bool:

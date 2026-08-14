@@ -193,6 +193,9 @@ Everything above, without the two terminals and the mental merge:
 python examples/viewer.py        # → http://127.0.0.1:8799
 ```
 
+The three exports from step 2 are all it needs; in a repo that has been
+through `switchboard init` it needs none of them.
+
 Who is awake, what is claimed, what is on the board, and every message as it
 arrives. It is read-only, and reading it does not advance either agent's
 cursor — so leaving it open while you work through the steps above changes
