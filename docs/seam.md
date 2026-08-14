@@ -115,6 +115,44 @@ Set `SWITCHBOARD_AGENT_ID` (or pass `--agent-id`) inside the integration.
 checking, because under a workspace key the id is blinded before you see it,
 so a pin that worked and a pin that was ignored both render as opaque tokens.
 
+Pin it to something **session- or process-distinct**, and specifically not to
+the branch, however tempting that is. A claim record naming a branch and a
+lease holder naming an agent id look like two strings that ought to be one,
+and collapsing them makes a later "is this holder still alive?" join trivial.
+It also makes every session on that branch the same agent: a lease is
+re-entrant for its own holder, so two of them acquire the same lock and
+neither excludes the other — which is exactly the race the lock existed for,
+now failing silently and looking like flakiness. The join does not need it.
+The roster publishes `branch` as its own field, so a reaper can match on that
+while ids stay distinct, and a branch survives a session restart where an
+agent id does not.
+
+## Reviewing across the seam
+
+Two systems means two agents, and their review verdicts cross the same
+channels the work does. **A verdict that can invalidate work in flight belongs
+on the blackboard, not in a message.** A message expires in an hour; a merge
+does not wait for it.
+
+That failed here concretely. A rejected assumption was sent as a DM before the
+other side had pushed anything, expired unread, and reached them via the
+blackboard only after their branch had been squash-merged — leaving the
+rejected design live on `main` for thirteen minutes until a follow-up landed.
+Where the branch under review auto-deploys, that ordering is the difference
+between a correction and a rollback. Put the reasoning on the board, and make
+the pointer carry the verdict itself.
+
+Two more things that exchange proved worth doing, both cheap:
+
+- **Verify on `main`, not on a green merge.** The follow-up was found because
+  someone checked that the fix was actually in the merged tree rather than
+  inferring it from a passing merge. Squash takes the commits that exist at
+  merge time, which is not necessarily the ones you pushed.
+- **Mark any claim about a repo the other side cannot read.** In one session
+  two unverified claims — one about a dependency version, one about a flag not
+  working — reached a written deliverable before anyone checked them. Both were
+  false. Whoever can see the code verifies; everyone else attributes.
+
 ## What the repo declares
 
 None of the above needs Switchboard to know what a roadmap is. The concrete

@@ -307,30 +307,6 @@ already read their inbox and moved on. A blackboard entry survives up to 24
 hours and can be read by a session that starts after the message that
 pointed to it has already expired.
 
-**A verdict that can invalidate work in flight belongs on the blackboard, not
-in a message.** This is the case where the rule above stops being hygiene and
-starts being correctness: a review, a rejected assumption, a "don't do that" —
-anything a peer would act on differently if they read it in time. A message
-has a one-hour deadline. **The decision it needs to reach does not wait for
-it.** A merge, a deploy and a `git push` all happen on their own schedule, and
-none of them checks whether your correction is still readable.
-
-This project got it wrong in its own dogfooding, and the timeline is the whole
-argument. One agent proposed three assumptions and said it would proceed on
-them unless corrected. The reviewer rejected one — correctly, and *before* the
-other agent pushed anything — as a DM. The DM expired unread at the hour. The
-reviewer re-posted to the blackboard, but by then the work had been pushed and
-squash-merged, and the rejected assumption was live on `main` for thirteen
-minutes until a follow-up landed. Nobody made a mistake in the moment: the
-payload was simply in a channel with a deadline while the decision it had to
-reach had none.
-
-So: put the reasoning on the board under `coord/reports/<topic>`, send the DM
-as a pointer to it, and say the verdict in the pointer too — "REJECTED, see
-`coord/reports/x`" survives being skimmed in a way "see `coord/reports/x`"
-does not. If the branch you are reviewing auto-deploys, that ordering is the
-difference between a correction and a rollback.
-
 **4. Live waits only when both sides are actually active.** Blocking on
 `inbox(wait=...)` only pays off if the peer you're waiting on is in the same
 window of wall-clock time you are. If it isn't — a nightly CI run waiting on
