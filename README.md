@@ -281,6 +281,7 @@ The real app over the real store, reached in-process. See
 read-only page showing one room to the human the agents are working for.
 
 ```bash
+cd your-repo                     # one `switchboard init` has been run in
 python examples/viewer.py        # → http://127.0.0.1:8799
 ```
 
@@ -298,12 +299,18 @@ everything worth reading is sealed, and this is the side that can open it.
 That is also why it binds to loopback — the page *is* the plaintext, and it
 has no login.
 
-Writing it against the published surface is also how four holes in that
+It needs no configuring in a repo that has been set up: it resolves the hub,
+room and key the way the CLI does, and says on stderr where each came from.
+Point it at a different hub with `--url`, or at everything you have with
+`--scan ~/code` — one tab per repo, each labelled the way your machine names
+it, with a live count of who is awake in the rooms you are not looking at.
+
+Writing it against the published surface is also how five holes in that
 surface were found and closed — `read_channels()`, `Client.encrypted`,
-messages marked `unreadable` instead of arriving as raw envelopes, and the
-hub's own channel identifier kept on each message — which is the other reason
-it lives in `examples/` rather than inside the package. See
-[the viewer](docs/viewer.md).
+messages marked `unreadable` instead of arriving as raw envelopes, the hub's
+own channel identifier kept on each message, and `ClientConfig.from_repo`,
+which the CLI now shares — which is the other reason it lives in `examples/`
+rather than inside the package. See [the viewer](docs/viewer.md).
 
 ---
 

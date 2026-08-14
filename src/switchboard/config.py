@@ -23,11 +23,12 @@ from __future__ import annotations
 import functools
 import getpass
 import hashlib
+import json
 import os
 import re
 import socket
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -481,6 +482,214 @@ class ClientConfig:
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
             peer_log=os.environ.get("SWITCHBOARD_PEER_DB", "~/.switchboard/peers.db"),
         )
+
+    @classmethod
+    def from_repo(cls, directory: Path | str | None = None, *,
+                  include_secrets: bool = False) -> ClientConfig:
+        """Everything a checkout can say about where its agents coordinate.
+
+        `from_env` covers what this *environment* was told. This adds what the
+        *repo* was told — the hub and workspace `init` committed to
+        `.mcp.json` — so a program standing in the directory lands in the same
+        room as the agents that live there, with nothing exported. The
+        environment still wins at every tier: an exported value is somebody
+        overriding the checkout on purpose.
+
+        `include_secrets` also reads the two gitignored files `init` writes on
+        this machine: the workspace key in `.claude/settings.local.json` and
+        the dev hub's token in `.env`. Off by default, and the default is the
+        interesting half.
+
+        A client that *sends* must not quietly pick up a key from a file. The
+        CLI has always refused to, and the reason is worth keeping: Claude
+        Code injects that file into the agents it spawns, so a plain shell
+        that read it would seal where an identical-looking shell elsewhere
+        would not, and `whoami` would report a sealed channel that this
+        invocation is not going to seal.
+
+        None of that applies to a reader. A tool that only ever reads, on the
+        machine the file is already on, gains nothing by declining to open
+        what its owner can open with a text editor — it just shows them
+        ciphertext instead. So the caller says which of the two it is, rather
+        than the resolver guessing: `examples/viewer.py` passes True, the CLI
+        does not.
+        """
+        where = Path.cwd() if directory is None else Path(directory)
+        config = cls.from_env(where)
+
+        # Only below the environment, at every tier: an exported value is a
+        # deliberate override of whatever the checkout says. `url_source` is
+        # kept in step with the value rather than inferred afterwards — by the
+        # time anything reads it, `url` is a plain string and every tier that
+        # could have set it looks identical.
+        if not os.environ.get("SWITCHBOARD_URL"):
+            from_mcp = mcp_env(where, "SWITCHBOARD_URL")
+            if from_mcp:
+                config.url, config.url_source = from_mcp.rstrip("/"), "mcp.json"
+        if not os.environ.get("SWITCHBOARD_WORKSPACE"):
+            # `workspace` falls back to a derived default that can never be
+            # None, so it would otherwise mask the repo's real room.
+            config.workspace = mcp_env(where, "SWITCHBOARD_WORKSPACE") or config.workspace
+        if not config.token:
+            # This machine's token before the one the checkout ships with: a
+            # personal token should win over a shared repo default.
+            config.token = (local_setting(where, "SWITCHBOARD_TOKEN")
+                            or mcp_env(where, "SWITCHBOARD_TOKEN"))
+        if include_secrets:
+            config.key = config.key or local_setting(where, "SWITCHBOARD_KEY")
+            config.token = config.token or dotenv_setting(where, "SWITCHBOARD_TOKEN")
+        return config
+
+
+#: Where `switchboard init` leaves the parts of a repo's configuration, and
+#: which of them are secret. Named here rather than in the CLI because these
+#: files describe the repo, not the command: anything standing in the
+#: directory — the CLI, a hook, an application built on the SDK — is answering
+#: the same question about the same files, and a second copy of these paths is
+#: a second answer that can disagree.
+MCP_FILE = ".mcp.json"
+LOCAL_SETTINGS_FILE = ".claude/settings.local.json"
+DOTENV_FILE = ".env"
+
+
+def _json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def mcp_env(directory: Path, name: str) -> str | None:
+    """One environment value the repo's registered MCP server carries.
+
+    This is what actually decides which hub and room this repo's agents land
+    in, which is why it beats anything `init` would have inferred.
+    """
+    servers = _json_file(directory / MCP_FILE).get("mcpServers")
+    entry = servers.get("switchboard") if isinstance(servers, dict) else None
+    env = entry.get("env") if isinstance(entry, dict) else None
+    value = env.get(name) if isinstance(env, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def local_setting(directory: Path, name: str) -> str | None:
+    """A secret `init` wrote for this repo and this machine, if still there.
+
+    Read straight off disk rather than from the environment: Claude Code
+    injects this file's `env` into the agents it spawns, but a plain shell has
+    nothing exported — and the shell is where a human stands when they want to
+    look at what their agents are doing.
+    """
+    env = _json_file(directory / LOCAL_SETTINGS_FILE).get("env")
+    value = env.get(name) if isinstance(env, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def dotenv_setting(directory: Path, name: str) -> str | None:
+    """A value from the repo's gitignored `.env`.
+
+    `init --local` writes the dev hub's token here so `docker compose up`
+    works, which makes it the only place that token exists — and the reason a
+    human standing in a freshly initialised repo otherwise has to hunt for it
+    before anything can authenticate.
+    """
+    path = directory / DOTENV_FILE
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        found, _, value = line.partition("=")
+        if found.strip() != name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value or None
+    return None
+
+
+@dataclass(frozen=True)
+class RepoRoom:
+    """One room a checkout can take part in, ready to connect to.
+
+    `label` is what *this machine* calls it — a rooms file's local name, or
+    the directory the checkout sits in. It never reaches a hub, which is the
+    point: the hub knows a room by an opaque workspace id, and a human knows
+    it as "the parser repo". Anything showing several rooms to a person needs
+    the second name and can only get it here.
+    """
+
+    label: str
+    directory: Path
+    config: ClientConfig
+    #: Which declaration produced this — `"rooms"` or `"mcp.json"`, or
+    #: `"default"` when the directory declares nothing and this is simply
+    #: wherever an unconfigured client would end up.
+    source: str
+
+
+def rooms_in(directory: Path | str | None = None, *,
+             include_secrets: bool = False) -> list[RepoRoom]:
+    """Every room this checkout can take part in.
+
+    A repo that declares rooms (see rooms.py) can name several, and an agent
+    joins the one it can open — `select` refuses ambiguity precisely because
+    *acting* in two rooms by accident is worse than being asked which. Reading
+    is the other case: showing someone all of their rooms at once is the whole
+    point of showing them anything, so this returns the intersection of
+    declared and openable rather than insisting on one.
+
+    A repo with no rooms file has exactly one room, the one `.mcp.json`
+    names, and that is the common case today. Either way the environment still
+    wins over the checkout, as it does everywhere else.
+
+    A directory that declares nothing returns nothing, rather than the room an
+    unconfigured client would land in by default. That makes this the honest
+    test of "has this checkout been set up", which is what anything walking a
+    tree of them needs — and leaves the fallback to the caller, who is the one
+    who knows whether a default is useful or a lie.
+    """
+    where = Path.cwd() if directory is None else Path(directory)
+    base = ClientConfig.from_repo(where, include_secrets=include_secrets)
+
+    try:
+        declared = rooms.joinable(rooms.load(where))
+    except rooms.RoomsError:
+        # Same reasoning as `_selected_room`: a malformed rooms file is
+        # reported by `switchboard rooms`, not by everything that ever asks
+        # a question about a directory.
+        declared = []
+
+    out: list[RepoRoom] = []
+    for room in declared:
+        config = replace(
+            base,
+            url=(base.url if os.environ.get("SWITCHBOARD_URL")
+                 else (room.hub_url or base.url)),
+            url_source=("env" if os.environ.get("SWITCHBOARD_URL")
+                        else ("rooms" if room.hub_url else base.url_source)),
+            workspace=room.workspace,
+            key=rooms.key_for(room.key_id) or base.key,
+        )
+        out.append(RepoRoom(label=room.name, directory=where, config=config, source="rooms"))
+    if out:
+        return out
+
+    if not mcp_env(where, "SWITCHBOARD_WORKSPACE") and not mcp_env(where, "SWITCHBOARD_URL"):
+        return []
+    return [RepoRoom(label=where.resolve().name or base.workspace, directory=where,
+                     config=base, source="mcp.json")]
 
 
 def isolation_warning(config: ClientConfig, kind: str) -> str | None:

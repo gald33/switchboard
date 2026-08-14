@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import threading
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -34,6 +36,10 @@ from switchboard.testing import hub
 _EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "viewer.py"
 _spec = importlib.util.spec_from_file_location("example_viewer", _EXAMPLE)
 viewer_app = importlib.util.module_from_spec(_spec)
+# Registered before executing, which anything loading a module by path has to
+# do: `@dataclass` resolves its own module out of `sys.modules`, and a module
+# that is not there yet fails at class-definition time.
+sys.modules[_spec.name] = viewer_app
 _spec.loader.exec_module(viewer_app)
 
 make_server = viewer_app.make_server
@@ -356,3 +362,178 @@ async def test_the_async_client_reads_a_room_the_same_way():
         tokens = [c["channel"] for c in await reader.channels()]
 
         assert [m["body"] for m in await reader.read_channels(tokens)] == ["shipping"]
+
+
+def test_standing_in_a_set_up_repo_is_the_whole_configuration_step(tmp_path, monkeypatch):
+    """The wall a human hits rather than a program: `init` wrote the hub, the
+    room and the key into the checkout, and the viewer — a plain SDK client —
+    could see none of it. Four exports to look at your own agents is four
+    chances to point a decrypting page at the wrong room, which is exactly
+    what happened while writing the docs for this."""
+    from switchboard.config import ClientConfig
+
+    for name in ("SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY",
+                 "SWITCHBOARD_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {"switchboard": {"command": "switchboard-mcp", "env": {
+            "SWITCHBOARD_URL": "http://127.0.0.1:8787",
+            "SWITCHBOARD_WORKSPACE": "w_theirs",
+        }}}
+    }))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.local.json").write_text(
+        json.dumps({"env": {"SWITCHBOARD_KEY": generate_key()}}))
+    (tmp_path / ".env").write_text("SWITCHBOARD_TOKEN=dev-token\n")
+    monkeypatch.chdir(tmp_path)
+
+    config = ClientConfig.from_repo(include_secrets=True)
+
+    assert (config.url, config.workspace) == ("http://127.0.0.1:8787", "w_theirs")
+    assert config.token == "dev-token"
+    assert Client(config).encrypted is True
+
+
+# --- several rooms at once ---------------------------------------------------
+
+
+def test_the_switcher_lists_every_room_and_says_where_people_are(h):
+    """The question a room switcher exists to answer is "is anyone in there",
+    so the rooms you are *not* looking at still report their roster — one
+    request each, rather than a full snapshot each."""
+    quiet = h.client("quiet-reader", workspace="w_quiet")
+    busy = h.client("busy-reader", workspace="w_busy")
+    h.client("someone", workspace="w_busy", register=True)
+
+    server = make_server([
+        viewer_app.Room(label="quiet repo", client=quiet, source="mcp.json"),
+        viewer_app.Room(label="busy repo", client=busy, source="rooms"),
+    ], host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with urllib.request.urlopen(base + "/api/state") as r:
+            first = json.loads(r.read())
+        second_id = first["rooms"][1]["id"]
+        with urllib.request.urlopen(
+            base + "/api/state?room=" + urllib.parse.quote(second_id)
+        ) as r:
+            second = json.loads(r.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert [r["label"] for r in first["rooms"]] == ["quiet repo", "busy repo"]
+    # The first room is the one shown until asked otherwise...
+    assert [r["selected"] for r in first["rooms"]] == [True, False]
+    assert first["hub"]["workspace"] == "w_quiet"
+    # ...and the others still say whether anyone is in them.
+    assert [r["awake"] for r in first["rooms"]] == [0, 1]
+    # Asking for one by id switches which room is read in full.
+    assert second["hub"]["workspace"] == "w_busy"
+    assert [r["selected"] for r in second["rooms"]] == [False, True]
+
+
+def test_a_room_that_cannot_be_reached_does_not_take_the_others_down(h):
+    """One dead hub among several is the normal state of a laptop with three
+    checkouts on it — a viewer that fails whole is useless there."""
+    from switchboard.client import Client
+    from switchboard.config import ClientConfig
+
+    dead = Client(ClientConfig(url="http://127.0.0.1:9", url_source="explicit",
+                               workspace="w_gone"), agent_id="reader")
+    live = h.client("live-reader")
+
+    server = make_server([
+        viewer_app.Room(label="live", client=live),
+        viewer_app.Room(label="gone", client=dead),
+    ], host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/state"
+        ) as r:
+            payload = json.loads(r.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        dead.close()
+
+    assert payload["hub"]["reachable"] is True
+    assert payload["rooms"][1]["error"] is not None
+    assert payload["rooms"][1]["awake"] is None
+
+
+def test_a_checkout_that_declares_several_rooms_shows_all_of_them(tmp_path, monkeypatch):
+    """`select()` refuses ambiguity because *acting* in two rooms by accident
+    is worse than being asked which. Reading is the opposite: showing someone
+    every room they hold a key for is the point."""
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    (tmp_path / ".switchboard").mkdir()
+    (tmp_path / ".switchboard" / "rooms.json").write_text(json.dumps({"rooms": [
+        {"name": "parser", "key_id": "default", "workspace_token": "tok-parser"},
+        {"name": "ops", "key_id": "ops", "workspace_token": "tok-ops"},
+        {"name": "locked", "key_id": "nobody", "workspace_token": "tok-locked"},
+    ]}))
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", generate_key())
+
+    rooms = viewer_app.discover([str(tmp_path)], [])
+    try:
+        # The room whose key this machine does not hold is not shown, because
+        # it could not be read — that is `joinable`, not a filter of our own.
+        assert [r.label for r in rooms] == ["parser", "ops"]
+        assert len({r.client.workspace for r in rooms}) == 2
+        assert all(r.client.encrypted for r in rooms)
+    finally:
+        for room in rooms:
+            room.client.close()
+
+
+def test_one_room_reached_from_two_clones_is_shown_once(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    for name in ("clone-a", "clone-b"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / ".mcp.json").write_text(json.dumps({
+            "mcpServers": {"switchboard": {"command": "switchboard-mcp", "env": {
+                "SWITCHBOARD_URL": "https://hub.example.com",
+                "SWITCHBOARD_WORKSPACE": "w_same",
+            }}}
+        }))
+
+    rooms = viewer_app.discover([str(tmp_path / "clone-a"), str(tmp_path / "clone-b")], [])
+    try:
+        assert [r.label for r in rooms] == ["clone-a"]
+    finally:
+        for room in rooms:
+            room.client.close()
+
+
+def test_scanning_finds_the_checkouts_that_have_been_set_up(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    for name, workspace in (("alpha", "w_alpha"), ("nested/beta", "w_beta")):
+        directory = tmp_path / name
+        directory.mkdir(parents=True)
+        (directory / ".mcp.json").write_text(json.dumps({
+            "mcpServers": {"switchboard": {"command": "switchboard-mcp", "env": {
+                "SWITCHBOARD_URL": "https://hub.example.com",
+                "SWITCHBOARD_WORKSPACE": workspace,
+            }}}
+        }))
+    (tmp_path / "not-a-checkout").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / ".mcp.json").write_text("{}")
+
+    rooms = viewer_app.discover([], [str(tmp_path)])
+    try:
+        assert sorted(r.label for r in rooms) == ["alpha", "beta"]
+    finally:
+        for room in rooms:
+            room.client.close()

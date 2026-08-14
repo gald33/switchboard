@@ -50,6 +50,17 @@
   .empty { padding: 14px; color: var(--dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px;
            border-bottom: 1px solid var(--line); }
+  .rooms { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 18px 0; }
+  .rooms:empty { display: none; }
+  .room { display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+          background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px 10px 0 0; border-bottom: 0; padding: 8px 14px 9px;
+          color: var(--ink); font: inherit; font-size: 13px; }
+  .room.on { border-color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+  .room .where { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+  .room .awake { color: var(--dim); font-size: 12px; }
+  .room .awake.live { color: var(--ok); }
+  .room .awake.bad { color: var(--warn); }
   .chip { border: 1px solid var(--line); background: transparent; color: var(--ink);
           border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -86,6 +97,7 @@
   <span class="spacer"></span>
   <span class="meta" id="stamp"></span>
 </header>
+<div class="rooms" id="rooms"></div>
 <div class="notes" id="notes"></div>
 <main>
   <div>
@@ -105,6 +117,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let filter = null;      // channel name, or null for everything
+let room = null;        // room id, or null for whichever the viewer picks
 let timer = null;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
@@ -151,6 +164,33 @@ function render(s) {
   $("status").textContent = s.hub.reachable ? "live" : "hub unreachable";
   $("stamp").textContent = "updated " + new Date(s.generated_at).toLocaleTimeString();
   $("notes").innerHTML = (s.notes || []).map((n) => `<div>${esc(n)}</div>`).join("");
+
+  // One room needs no switcher; several need to say where activity is, or
+  // you are picking blind.
+  const rooms = s.rooms || [];
+  // Where a room came from is worth a glance only when they differ — three
+  // tabs all saying "mcp.json" is furniture.
+  const mixed = new Set(rooms.map((r) => r.source)).size > 1;
+  $("rooms").innerHTML = rooms.length < 2 ? "" : rooms.map((r) => {
+    const state = r.error ? "bad" : (r.awake ? "live" : "");
+    const count = r.error ? "unreachable"
+      : (r.awake === null ? "—" : `${r.awake} awake`);
+    return `<button class="room ${r.selected ? "on" : ""}" data-room="${esc(r.id)}"
+              title="${esc(r.workspace)} on ${esc(r.hub)}">
+        <span>${esc(r.label)}</span>
+        <span class="awake ${state}">${esc(count)}</span>
+        ${mixed ? `<span class="where">${esc(r.source)}</span>` : ""}
+      </button>`;
+  }).join("");
+  for (const tab of document.querySelectorAll(".room")) {
+    tab.onclick = () => {
+      if (tab.dataset.room === room) return;
+      room = tab.dataset.room;
+      filter = null;               // channels belong to the room you left
+      clearTimeout(timer);
+      poll();
+    };
+  }
 
   const chans = s.channels.slice().sort((a, b) => a.name.localeCompare(b.name));
   if (filter && !chans.some((c) => c.name === filter)) filter = null;
@@ -216,7 +256,8 @@ async function poll() {
   // has a bug. Reporting a bug as "unreachable" sends people to the wrong
   // half of the system.
   try {
-    const r = await fetch("api/state", { cache: "no-store" });
+    const r = await fetch("api/state" + (room ? "?room=" + encodeURIComponent(room) : ""),
+                          { cache: "no-store" });
     const payload = await r.json();
     latest = payload;
     try {

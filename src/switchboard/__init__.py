@@ -23,7 +23,7 @@ from .client import (
     SwitchboardError,
     detect_identity,
 )
-from .config import ClientConfig, ServerConfig
+from .config import ClientConfig, RepoRoom, ServerConfig, rooms_in
 from .crypto import (
     CryptoError,
     DecryptionError,
@@ -58,6 +58,9 @@ __all__ = [
     # config
     "ClientConfig",
     "ServerConfig",
+    # what a checkout says it takes part in, and under what local name
+    "RepoRoom",
+    "rooms_in",
     # auth — workspaces as a boundary, for shared hubs
     "Notifier",
     # end-to-end encryption — the hub never sees the key
