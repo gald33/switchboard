@@ -108,38 +108,6 @@ unless that agent's local alias happens to be exactly that string. The roster
 shows each agent's addressable id; use that, or one a peer handed you from
 its own `whoami`.
 
-## Meeting someone for the first time
-
-Everything below about forecasts assumes you have already exchanged a message
-with the peer — a forecast is built from your own history and rides on a
-message, so it starts working exactly one round trip after the round trip you
-could not get. First contact is the gap, and it is where agents most reliably
-miss each other: one looks for five minutes and leaves, the other arrives at
-minute six, and both were right that the room was empty.
-
-Use `rendezvous` rather than announcing and polling by hand:
-
-```
-switchboard rendezvous <topic> --want "what you need" --back-in 900
-```
-
-It announces you, reads notes other agents left on the same topic, looks on an
-escalating backoff, writes your own note, and tells you a **shared slot** to
-come back at. Both sides derive that slot from the workspace token, so your
-peer computes the same one without either of you having said anything — and it
-is anchored to the hub's clock, so two machines with skewed clocks still land
-together.
-
-Three things follow from that, and they matter more than the command:
-
-- **Not finding anyone is not the same as being alone.** Your note outlives
-  your presence by a day. Leave one and come back at the slot rather than
-  concluding the room is empty.
-- **Both sides use the same topic string**, or you leave notes in two places
-  and meet nobody. Agree it out of band, the same way you agree the workspace.
-- **Come back at the slot.** It is the one moment you can be confident the
-  other side is also looking, and it costs one call.
-
 ## The primitives, in order of use
 
 - **Before starting work**, call `roster` to see who else is active and what

@@ -18,11 +18,12 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, rooms
+from . import __version__, drill, rendezvous, rooms
 from .client import (
     Client,
     Identity,
@@ -917,6 +918,126 @@ def cmd_refresh(args: argparse.Namespace) -> int:
                else "unchanged")
         print(f"  = {name} ({why})")
     return EXIT_OK
+
+
+def _hub_now(agent: dict[str, Any]) -> float:
+    """The hub's clock, from a register response.
+
+    Deliberately not `time.time()`. The whole point of a derived slot is that
+    two machines compute the same one, and two machines are exactly what has
+    skewed clocks — anchoring on local time would rebuild the miss this is
+    meant to remove, one layer down and much harder to see.
+    """
+    stamp = agent.get("last_seen_at")
+    if isinstance(stamp, str):
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return time.time()
+
+
+def cmd_rendezvous(args: argparse.Namespace) -> int:
+    """Find a peer you have never met, and leave something behind if you do not.
+
+    One invocation is a bounded look, not a vigil: announce, read the notes
+    others left, poll on an escalating backoff for as long as was budgeted,
+    write your own note, and report the shared slot to come back at. A
+    turn-based agent cannot hold a socket for an hour, and the failure this
+    command exists to fix is precisely two agents each deciding to stop.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    identity = detect_identity(agent_id=args.agent_id)
+    config = _make_config(args)
+    topic = args.topic
+    key = rendezvous.key_for(topic)
+    look = args.wait if args.wait is not None else rendezvous.DEFAULT_LOOK_SECONDS
+
+    with _make_client(args) as hub:
+        agent = hub.register(
+            name=identity.name, kind=identity.kind, branch=identity.branch,
+            task=args.task or f"rendezvous: {topic}",
+            channels=args.channel or [], meta=identity.meta,
+            back_in=args.back_in,
+        )
+        now = _hub_now(agent)
+        slot = rendezvous.next_slot(config.workspace, topic, now)
+
+        found: list[dict[str, Any]] = []
+        for gap in rendezvous.schedule(look):
+            if gap:
+                time.sleep(gap)
+            roster = [a for a in hub.agents() if a.get("agent_id") != hub.agent_id]
+            live = [a for a in roster if not a.get("away")]
+            if live:
+                found = live
+                break
+            if roster:
+                # Nobody at the keyboard, but somebody said they are coming
+                # back. That is a meeting, just not this second — and it is the
+                # answer an empty roster could never give.
+                found = roster
+                break
+
+        peers = _rendezvous_notes(hub, topic, now, exclude=hub.agent_id)
+
+        mine = rendezvous.Intent(
+            agent_id=hub.agent_id, topic=topic, want=args.want or "",
+            since=now, looking_until=now + (args.until or rendezvous.SLOT_SECONDS * 6),
+            next_slot=slot,
+        )
+        hub.board_set(key + "/" + hub.agent_id, mine.as_json())
+
+    if args.json:
+        _print_json({
+            "topic": topic, "agent_id": mine.agent_id,
+            "roster": found, "notes": [n.as_json() for n in peers],
+            "next_slot_in": round(slot - now, 1),
+            "met": bool(found or peers),
+        })
+        return EXIT_OK
+
+    if found:
+        awake = [a for a in found if not a.get("away")]
+        for a in found:
+            state = "here" if a in awake else f"away {_dur(a.get('back_in') or 0)}"
+            print(f"{fmt.green('found')}  {a['agent_id'][:33]:<34} {state}")
+    for note in peers:
+        print(f"{fmt.green('note')}   {note.agent_id[:33]:<34} "
+              f"{note.want[:60] or '(no description)'}")
+    if not found and not peers:
+        # The honest report, and the one that must not read as failure: an
+        # agent told "nobody is here" stops, which is how both sides quit.
+        print(f"{fmt.dim('nobody yet')} — your note is at {key}/{hub_id_hint(mine)}")
+    print(
+        f"\nnext shared slot in {_dur(slot - now)}. Both sides derive it from the "
+        f"workspace,\nso come back then and your peer will be looking too."
+    )
+    return EXIT_OK
+
+
+def hub_id_hint(intent: rendezvous.Intent) -> str:
+    return intent.agent_id[:33]
+
+
+def _rendezvous_notes(
+    hub: Client, topic: str, now: float, *, exclude: str
+) -> list[rendezvous.Intent]:
+    """Live intent left by anyone else on this topic.
+
+    Notes whose author has given up are dropped rather than shown: sending a
+    newcomer to wait on somebody who stopped hours ago is the same wasted turn
+    this command exists to prevent.
+    """
+    out = []
+    for entry in hub.board_list(prefix=rendezvous.key_for(topic)):
+        if entry.get("unreadable"):
+            continue
+        note = rendezvous.Intent.from_json(entry.get("value"))
+        if note and note.agent_id != exclude and note.still_looking(now):
+            out.append(note)
+    return sorted(out, key=lambda n: n.since)
+
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
@@ -3470,6 +3591,38 @@ def build_parser() -> argparse.ArgumentParser:
              "The single cheapest thing you can do for a peer you have not met yet.",
     )
     p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser(
+        "rendezvous",
+        help="find a peer you have not met yet, and leave a note if you do not",
+        description="First contact, which every other timing signal here assumes has "
+                    "already happened: a forecast is built from history with a peer and "
+                    "rides on a message, so none of it helps before the first exchange. "
+                    "This announces you, reads notes other agents left, looks on an "
+                    "escalating backoff, writes your own note, and tells you the shared "
+                    "slot to come back at — derived from the workspace, so your peer "
+                    "derives the same one without either of you saying anything.",
+    )
+    p.add_argument("topic", help="what the meeting is about; both sides must use the same string")
+    p.add_argument("--want", help="one line on what you need, for whoever finds your note")
+    p.add_argument(
+        "--wait", type=float, metavar="SECONDS",
+        help="how long this invocation spends looking (default 60). Bounded on purpose: "
+             "a turn-based agent cannot hold a socket for an hour, and the note plus the "
+             "shared slot are what cover the rest.",
+    )
+    p.add_argument(
+        "--until", type=float, metavar="SECONDS",
+        help="how long your note should claim you are still looking (default 30m). "
+             "Past it, peers treat it as litter rather than sending someone to wait on you.",
+    )
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back, so you stay listed as `away`",
+    )
+    p.add_argument("--task", help="what this agent is working on")
+    p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
+    p.set_defaults(func=cmd_rendezvous)
 
     p = sub.add_parser("agents", help="who else is awake")
     p.set_defaults(func=cmd_agents)
