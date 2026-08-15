@@ -18,12 +18,13 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, rendezvous, rooms
+from . import __version__, drill, invite, rendezvous, rooms
 from .client import (
     Client,
     Identity,
@@ -1852,6 +1853,132 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_invite(args: argparse.Namespace) -> int:
+    """Emit one string carrying everything a peer needs to join this room.
+
+    Joining takes five facts and every one must match independently — and
+    getting any wrong fails SILENTLY, which is what makes it expensive. Two
+    agents in this project's own dogfooding spent forty minutes waiting for
+    each other on the same hub and workspace with two different keys, both
+    watching a roster that listed them both. One string is five chances to
+    differ collapsed into one.
+    """
+    config = _make_config(args)
+    key = args.key or config.key or _saved_key(Path(".").resolve())
+    token = args.token or config.token or _saved_setting(
+        Path(".").resolve(), "SWITCHBOARD_TOKEN"
+    )
+    # Seal a value the joiner can try to open. This is the only thing that
+    # distinguishes "reached the same hub" from "in the same room": a joiner's
+    # own round trip is self-consistent under any key, including the wrong one.
+    probe = f"coord/join-probe/{secrets.token_urlsafe(8)}"
+    try:
+        with _make_client(args) as hub:
+            hub.board_set(probe, invite.PROBE_SENTINEL, ttl=86400)
+    except (SwitchboardError, OSError, CryptoError) as exc:
+        print(f"error: could not leave a proof-of-room on the hub ({exc})",
+              file=sys.stderr)
+        return EXIT_ERROR
+    blob = invite.Invite(
+        url=config.url, workspace=config.workspace,
+        token=None if args.no_token else token,
+        key=None if args.no_key else key,
+        note=args.note or "", probe=probe,
+    )
+    if args.json:
+        _print_json({"invite": blob.encode(), "describes": blob.redacted()})
+        return EXIT_OK
+    print(blob.encode())
+    if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
+        fmt = Fmt(_use_color(sys.stdout))
+        print(
+            f"\n{blob.redacted()}\n\n"
+            + fmt.yellow("This is a credential.")
+            + " It carries the token and the workspace key, so it\ngrants "
+              "everything you have. Hand it over the way you would a password.\n\n"
+              "The other side runs:  switchboard join <the string above>",
+            file=sys.stderr,
+        )
+        _offer_clipboard(blob.encode(), "the invite", args)
+    return EXIT_OK
+
+
+def cmd_join(args: argparse.Namespace) -> int:
+    """Consume an invite, and prove the room rather than assuming it.
+
+    Printing the settings is not the point — being in the same room is, and
+    those are different claims. A roster listing both of you proves nothing:
+    that is exactly what the forty-minute failure looked like. So this writes a
+    probe and reads it back, which only succeeds if the key matches, and says
+    plainly which of the two it confirmed.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    try:
+        blob = invite.Invite.decode(args.invite)
+    except invite.InviteError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(blob.env_block())
+    if args.json:
+        _print_json({
+            "url": blob.url, "workspace": blob.workspace,
+            "encrypted": bool(blob.key), "note": blob.note,
+        })
+
+    if args.no_verify:
+        return EXIT_OK
+
+    # Verify by round-tripping a sealed value through the hub. A peer on a
+    # different key cannot produce one we can open, which is the only check
+    # that distinguishes "same room" from "same roster".
+    config = _make_config(args)
+    config = replace(
+        config, url=blob.url, url_source="flag",
+        workspace=blob.workspace, token=blob.token, key=blob.key,
+    )
+    if not blob.probe:
+        print(
+            f"\n{fmt.yellow('cannot verify')} — this invite carries no proof-of-room. "
+            "The settings\nabove are what it said; nothing checked them.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+    try:
+        with Client(config, agent_id=f"join-probe-{secrets.token_hex(4)}") as hub:
+            back = hub.board_get(blob.probe)
+    except (SwitchboardError, OSError, CryptoError) as exc:
+        print(
+            f"\n{fmt.red('could not reach that room')}: {exc}\n"
+            "The settings above are what the invite said; something between "
+            "here and the hub\ndisagrees. Nothing has been changed locally.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if back != invite.PROBE_SENTINEL:
+        # Reached the hub, could not open what the inviter left. Same hub, same
+        # workspace, different key — two agents listed on one roster, able to
+        # exchange nothing. Exactly the forty minutes this exists to save.
+        print(
+            f"\n{fmt.red('WRONG ROOM')} — reached that hub and workspace, but could not "
+            f"read\nthe proof the inviter left. Your key does not match theirs.\n\n"
+            f"You would have appeared on each other's roster and been unable to\n"
+            f"exchange anything. Ask for a fresh invite rather than editing settings.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    print(
+        f"\n{fmt.green('verified')} — opened a sealed value the inviter left in that "
+        f"room.\nThat proves the hub, the workspace AND the key all match, which a "
+        f"roster\nlisting you both does not."
+        + (f"\n\n{blob.note}" if blob.note else ""),
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+
 def cmd_health(args: argparse.Namespace) -> int:
     config = _make_config(args)
     try:
@@ -3562,6 +3689,35 @@ def build_parser() -> argparse.ArgumentParser:
                     "on every request and is what grants access to a workspace.",
     )
     p.set_defaults(func=cmd_keygen)
+
+    p = sub.add_parser(
+        "invite",
+        help="one string carrying everything a peer needs to join this room",
+        description="Joining takes five facts — hub, token, workspace, key, identity — "
+                    "and each must match a peer's independently. Getting any wrong fails "
+                    "SILENTLY: every call succeeds and you are simply somewhere else, "
+                    "alone, with an inbox that looks exactly like a quiet one. This "
+                    "collapses five chances to differ into one.",
+    )
+    p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
+    p.add_argument("--no-key", action="store_true",
+                   help="omit the workspace key (the peer must already hold it)")
+    p.add_argument("--no-token", action="store_true", help="omit the hub token")
+    p.add_argument("--no-input", action="store_true", help="never stop to ask")
+    p.set_defaults(func=cmd_invite)
+
+    p = sub.add_parser(
+        "join",
+        help="consume an invite, and prove the room rather than assuming it",
+        description="Prints what to export, then writes a sealed value to that room and "
+                    "reads it back. That round trip is the only check that distinguishes "
+                    "'same room' from 'same roster' — two agents listed together on one "
+                    "hub, on different keys, see each other and can exchange nothing.",
+    )
+    p.add_argument("invite", help="the string from `switchboard invite`")
+    p.add_argument("--no-verify", action="store_true",
+                   help="print the settings without touching the hub")
+    p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)
