@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS agents (
     pubkey        TEXT,
     registered_at REAL NOT NULL,
     last_seen_at  REAL NOT NULL,
+    -- When presence lapses: "is this agent at the keyboard right now".
+    present_until REAL NOT NULL DEFAULT 0,
+    -- When the agent said it expects to be back, or NULL if it said nothing.
+    -- Only this keeps a row listed past `present_until`, which is what lets
+    -- absence carry information instead of being a blank.
+    expected_back REAL,
+    -- When the row goes away entirely: max(present_until, expected_back).
     expires_at    REAL NOT NULL,
     PRIMARY KEY (workspace, id)
 );
@@ -158,6 +165,12 @@ class Agent:
     pubkey: str | None
     registered_at: float
     last_seen_at: float
+    #: When presence lapses. Equal to `expires_at` unless the agent promised a
+    #: return, which is the only thing that separates them.
+    present_until: float
+    #: When the agent said it would be back, or None. Absent means the roster
+    #: can say nothing about it, which is the pre-existing behaviour.
+    expected_back: float | None
     expires_at: float
 
 
@@ -220,6 +233,12 @@ def _agent(row: sqlite3.Row) -> Agent:
         pubkey=row["pubkey"] if "pubkey" in row.keys() else None,
         registered_at=row["registered_at"],
         last_seen_at=row["last_seen_at"],
+        # Same defensive read as `pubkey` above, for the same reason.
+        present_until=(
+            row["present_until"] if "present_until" in row.keys() and row["present_until"]
+            else row["expires_at"]
+        ),
+        expected_back=row["expected_back"] if "expected_back" in row.keys() else None,
         expires_at=row["expires_at"],
     )
 
@@ -303,6 +322,15 @@ class Store:
         agent_cols = {row["name"] for row in conn.execute("PRAGMA table_info(agents)")}
         if "pubkey" not in agent_cols:
             conn.execute("ALTER TABLE agents ADD COLUMN pubkey TEXT")
+        if "present_until" not in agent_cols:
+            # Backfilled from expires_at, which is exactly what it meant before
+            # the two were separated — an existing row has no away promise.
+            conn.execute(
+                "ALTER TABLE agents ADD COLUMN present_until REAL NOT NULL DEFAULT 0"
+            )
+            conn.execute("UPDATE agents SET present_until = expires_at")
+        if "expected_back" not in agent_cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN expected_back REAL")
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(cursors)")}
         if "expires_at" not in cols:
             conn.execute("ALTER TABLE cursors ADD COLUMN expires_at REAL NOT NULL DEFAULT 0")
@@ -381,6 +409,7 @@ class Store:
         meta: dict[str, Any] | None = None,
         pubkey: str | None = None,
         ttl: float,
+        expected_back: float | None = None,
         now: float | None = None,
     ) -> Agent:
         now = time.time() if now is None else now
@@ -391,8 +420,9 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO agents (workspace, id, name, kind, branch, task, channels, meta,
-                                    pubkey, registered_at, last_seen_at, expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                    pubkey, registered_at, last_seen_at, present_until,
+                                    expected_back, expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(workspace, id) DO UPDATE SET
                     name=excluded.name,
                     kind=excluded.kind,
@@ -402,11 +432,16 @@ class Store:
                     meta=excluded.meta,
                     pubkey=excluded.pubkey,
                     last_seen_at=excluded.last_seen_at,
+                    present_until=excluded.present_until,
+                    expected_back=excluded.expected_back,
                     expires_at=excluded.expires_at
                 """,
                 (
                     workspace, agent_id, name, kind, branch, task, chan_json, meta_json,
-                    pubkey, now, now, now + ttl,
+                    pubkey, now, now, now + ttl, expected_back,
+                    # The row outlives presence only as far as the promise. A
+                    # promise already in the past keeps nothing alive.
+                    max(now + ttl, expected_back or 0.0),
                 ),
             )
             row = conn.execute(
@@ -423,6 +458,7 @@ class Store:
         task: str | None = None,
         renew_leases: bool = True,
         lease_ttl: float | None = None,
+        expected_back: float | None = None,
         now: float | None = None,
     ) -> tuple[Agent | None, list[Lease]]:
         """Refresh an agent's presence and, by default, every lease it holds.
@@ -433,13 +469,25 @@ class Store:
         """
         now = time.time() if now is None else now
         with self._tx() as conn:
+            # `expected_back` is only written when supplied: a heartbeat that
+            # says nothing about coming back must not silently retract a
+            # promise the agent made when it announced.
+            sets = ["last_seen_at=?", "present_until=?"]
+            args: list[Any] = [now, now + ttl]
+            if expected_back is not None:
+                sets.append("expected_back=?")
+                args.append(expected_back)
+                sets.append("expires_at=?")
+                args.append(max(now + ttl, expected_back))
+            else:
+                sets.append("expires_at=MAX(?, COALESCE(expected_back, 0))")
+                args.append(now + ttl)
+            if task is not None:
+                sets.append("task=?")
+                args.append(task)
             cur = conn.execute(
-                "UPDATE agents SET last_seen_at=?, expires_at=?"
-                + (", task=?" if task is not None else "")
-                + " WHERE workspace=? AND id=?",
-                ((now, now + ttl, task, workspace, agent_id)
-                 if task is not None
-                 else (now, now + ttl, workspace, agent_id)),
+                f"UPDATE agents SET {', '.join(sets)} WHERE workspace=? AND id=?",
+                (*args, workspace, agent_id),
             )
             if cur.rowcount == 0:
                 return None, []

@@ -331,24 +331,6 @@ as a pointer to it, and say the verdict in the pointer too — "REJECTED, see
 does not. If the branch you are reviewing auto-deploys, that ordering is the
 difference between a correction and a rollback.
 
-**3b. Say when you will be back, every time you announce.** `announce` and
-`checkin` take `--back-in SECONDS` (`back_in` on MCP). Presence still lapses
-on its own two-minute TTL — this does not extend it — but it keeps you listed
-afterwards as `away`, with roughly when you expect to return.
-
-That one flag is the cheapest thing you can do for a peer you have not met
-yet, because of what an empty roster otherwise means. `roster` had two states,
-*here* and *nothing*, and a turn-based agent is almost always in neither: it is
-between turns and coming back. So "nobody is coming", "someone was here ninety
-seconds ago", and "we are in different rooms" all rendered as the same blank,
-and two agents looking for each other both correctly concluded the other was
-absent. That happened in this project's own dogfooding, in both directions, on
-the same day.
-
-An arriving agent should read the roster accordingly: `away` is not a weaker
-form of gone. It is the only positive evidence you will get that a meeting is
-still possible, and it is the difference between leaving a note and giving up.
-
 **4. Live waits only when both sides are actually active.** Blocking on
 `inbox(wait=...)` only pays off if the peer you're waiting on is in the same
 window of wall-clock time you are. If it isn't — a nightly CI run waiting on

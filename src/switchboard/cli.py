@@ -1101,6 +1101,7 @@ def cmd_register(args: argparse.Namespace) -> int:
             channels=args.channel or [],
             meta=identity.meta,
             ttl=args.ttl,
+            back_in=getattr(args, "back_in", None),
         )
     if args.json:
         _print_json(agent)
@@ -1149,16 +1150,42 @@ def cmd_agents(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     print(fmt.bold(f"{'AGENT':<34} {'KIND':<7} {'BRANCH':<24} {'SEEN':<10} TASK"))
     swapped = []
+    away = []
     for a in agents:
         seen = _ago(a["last_seen_at"])
-        seen_txt = fmt.yellow(seen) if a.get("stale") else seen
+        # Three states, not two. `away` is the agent's own statement that it is
+        # between turns and returning, which is what an arriving peer needs and
+        # what an empty roster could never say.
+        if a.get("away"):
+            back = a.get("back_in")
+            seen_txt = fmt.dim(
+                f"away {_dur(back)}" if isinstance(back, (int, float)) and back > 0
+                else "away"
+            )
+            away.append(a["agent_id"])
+        else:
+            seen_txt = fmt.yellow(seen) if a.get("stale") else seen
         marker = fmt.red(" !") if a.get("key_changed_while_live") else ""
         if marker:
             swapped.append(a["agent_id"])
-        print(
+        row = (
             f"{a['agent_id'][:33]:<34} {a['kind'][:6]:<7} "
             f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} "
             f"{a.get('task') or ''}{marker}"
+        )
+        print(fmt.dim(row) if a.get("away") else row)
+    if away and len(away) == len(agents):
+        # The case worth spelling out: nobody is at the keyboard, but this is
+        # not an empty room. An arriving agent that reads "no agents" gives up;
+        # one that reads "everyone is between turns, back in ~4m" waits or
+        # leaves a note, which is the whole point of the state existing.
+        print(
+            fmt.dim(
+                "\nNobody is active this second, but every agent above said it "
+                "is coming back.\nThis is not an empty room — leave what you "
+                "need them to see rather than\nconcluding they are gone."
+            ),
+            file=sys.stderr,
         )
     if swapped:
         # The client sets this flag and, until now, nothing ever displayed it.
@@ -1531,12 +1558,14 @@ def cmd_checkin(args: argparse.Namespace) -> int:
 
     with _make_client(args) as hub:
         try:
-            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl,
+                                   back_in=getattr(args, 'back_in', None))
         except SwitchboardError as exc:
             if exc.status != 404:
                 raise
             _register(hub)
-            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl,
+                                   back_in=getattr(args, 'back_in', None))
         messages = hub.inbox(wait=args.wait, limit=args.limit)
     timing = _Timing(args)
     timing.note_look()
@@ -3433,6 +3462,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", help="what this agent is working on")
     p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
     p.add_argument("--ttl", type=float)
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back. Presence still lapses on its own "
+             "TTL; this keeps you listed as `away` afterwards so a peer arriving into "
+             "an otherwise empty roster can tell 'nobody is coming' from 'mid-turn'. "
+             "The single cheapest thing you can do for a peer you have not met yet.",
+    )
     p.set_defaults(func=cmd_register)
 
     p = sub.add_parser("agents", help="who else is awake")
@@ -3502,6 +3538,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", type=float, default=0.0)
     p.add_argument("--limit", type=int, default=100)
     _add_timing_args(p)
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back. Presence still lapses on its own "
+             "TTL; this keeps you listed as `away` afterwards so a peer arriving into "
+             "an otherwise empty roster can tell 'nobody is coming' from 'mid-turn'. "
+             "The single cheapest thing you can do for a peer you have not met yet.",
+    )
     p.set_defaults(func=cmd_checkin)
 
     p = sub.add_parser("timing", help="this agent's own timing model (local, never shared)")

@@ -45,6 +45,12 @@ DEFAULT_MESSAGE_TTL = 3600  # 1 hour
 DEFAULT_BOARD_TTL = 86400  # 24 hours
 
 MAX_AGENT_TTL = 3600
+# How far ahead an agent may say it will be back. Presence answers "here now"
+# and lapses in DEFAULT_AGENT_TTL; this bounds the *second* question a
+# turn-based agent needs answered — "coming back, and roughly when" — which
+# nothing expressed before. Bounded well under a day: a promise further out
+# than this is a plan, and plans belong in the repo rather than in a roster.
+MAX_AWAY_SECONDS = 6 * 3600
 MAX_LEASE_TTL = 86400
 MAX_MESSAGE_TTL = 86400
 MAX_BOARD_TTL = 7 * 86400

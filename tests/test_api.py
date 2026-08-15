@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from switchboard.config import MAX_AWAY_SECONDS
 from switchboard.store import Store
 from switchboard.testing import hub
 
@@ -470,3 +471,86 @@ def test_stats_still_answers_for_a_workspace_you_already_know(client):
     # Naming a room you already have the identifier for is not enumeration.
     client.post("/agents/register", json={"workspace": "w_known", "name": "a"})
     assert client.get("/stats", params={"workspace": "w_known"}).json()["agents"] == 1
+
+
+# --- away: the third presence value -----------------------------------------
+#
+# Presence answered "here now" or nothing at all, and a turn-based agent is
+# almost always in neither state. An arriving peer could not tell "nobody is
+# coming" from "someone is mid-turn", so both sides of a first meeting give up
+# while the other is still returning. `away` is the agent's own statement that
+# it is between turns, which is the only thing that can distinguish them.
+
+
+def test_an_agent_that_promised_a_return_stays_listed_after_presence_lapses():
+    with hub(workspace="away-ws") as h:
+        a = h.client("wanderer")
+        a.register(name="wanderer", ttl=60, back_in=1800)
+
+        h.advance(120)  # presence has lapsed
+        roster = {r["name"]: r for r in h.client("arriving").agents()}
+        assert "wanderer" in roster, "the row must outlive presence, or absence says nothing"
+        assert roster["wanderer"]["away"] is True
+        assert roster["wanderer"]["back_in"] > 0
+
+
+def test_an_agent_that_promised_nothing_still_disappears():
+    """The pre-existing behaviour, unchanged: silence means gone."""
+    with hub(workspace="away-ws") as h:
+        h.client("quiet").register(name="quiet", ttl=60)
+        h.advance(120)
+        assert h.client("arriving").agents() == []
+
+
+def test_away_is_not_the_same_claim_as_stale():
+    """`stale` is a guess from elapsed time; `away` is the agent's own word."""
+    with hub(workspace="away-ws") as h:
+        h.client("wanderer").register(name="wanderer", ttl=60, back_in=1800)
+        roster = {r["name"]: r for r in h.client("arriving").agents()}
+        assert roster["wanderer"]["away"] is False, "still present, so not away yet"
+
+        h.advance(120)
+        roster = {r["name"]: r for r in h.client("arriving").agents()}
+        assert roster["wanderer"]["away"] is True
+
+
+def test_the_row_goes_when_the_promise_runs_out():
+    """A promise keeps a row alive exactly as far as it reaches, not forever."""
+    with hub(workspace="away-ws") as h:
+        h.client("wanderer").register(name="wanderer", ttl=60, back_in=300)
+        h.advance(120)
+        assert h.client("arriving").agents(), "still within the promise"
+        h.advance(400)
+        assert h.client("arriving").agents() == [], "promise elapsed; now genuinely gone"
+
+
+def test_a_heartbeat_that_says_nothing_does_not_retract_the_promise():
+    """Otherwise every ordinary checkin silently cancels the one signal an
+    arriving peer depends on."""
+    with hub(workspace="away-ws") as h:
+        a = h.client("wanderer")
+        a.register(name="wanderer", ttl=60, back_in=1800)
+        h.advance(30)
+        a.heartbeat(ttl=60)
+
+        h.advance(120)
+        roster = {r["name"]: r for r in h.client("arriving").agents()}
+        assert roster["wanderer"]["away"] is True
+
+
+def test_a_heartbeat_may_revise_the_promise():
+    with hub(workspace="away-ws") as h:
+        a = h.client("wanderer")
+        a.register(name="wanderer", ttl=60, back_in=120)
+        a.heartbeat(ttl=60, back_in=3600)
+        h.advance(200)
+        roster = {r["name"]: r for r in h.client("arriving").agents()}
+        assert roster["wanderer"]["away"] is True, "the longer promise now governs"
+
+
+def test_a_promise_further_out_than_the_ceiling_is_clamped_not_refused():
+    """An agent guessing badly about its own next turn should not fail to
+    register; a promise past the ceiling is a plan, and plans live in a repo."""
+    with hub(workspace="away-ws") as h:
+        agent = h.client("optimist").register(name="optimist", ttl=60, back_in=99_999_999)
+        assert agent["back_in"] <= MAX_AWAY_SECONDS + 1
