@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
 from barter.llm import TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
+from barter.run import score  # noqa: E402
 
 from switchboard.testing import hub  # noqa: E402
 
@@ -170,24 +171,30 @@ async def run_llm_island(
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
 
-    utils = manager.utilities()
+    # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
+    # directly comparable rather than merely similar-looking.
+    outcome = score(island, manager, arm=arm, seed=seed, messages=len(floor))
     _, autarky_utils = autarky(island)
-    plan = [list(manager.agents[a].shares or island.alpha[manager.agents[a].index])
-            for a in sorted(manager.agents, key=lambda a: manager.agents[a].index)]
-    score = efficiency(island, utils)
     return {
         "arm": arm, "seed": seed, "model": model, "cost_usd": round(cost, 4),
-        "efficiency": [score.lower, score.upper],
-        "ruined": list(score.ruined),
-        "own_plan": list(efficiency(island, utils, fixed_shares=plan)[:2]),
+        "efficiency": [outcome.efficiency.lower, outcome.efficiency.upper],
+        "ruined": list(outcome.efficiency.ruined),
+        "own_plan": [outcome.exchange_efficiency.lower, outcome.exchange_efficiency.upper],
+        "own_plan_ruined": list(outcome.exchange_efficiency.ruined),
         "autarky_floor": efficiency(island, autarky_utils).lower,
         "exchange_ceiling": exchange_ceiling(island).lower,
-        "worst_ratio": min(utils[i] / autarky_utils[i] for i in range(island.n_agents)),
+        "worst_ratio": outcome.worst_ratio,
         "summary": manager.summary(),
         "rejections": manager.rejections[-40:],
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
         "transcript": transcript,
     }
+
+
+def _plan_note(result: dict) -> str:
+    if result["own_plan_ruined"]:
+        return f"ruined {len(result['own_plan_ruined'])} agent(s)"
+    return f"{result['own_plan'][0]:.3f}"
 
 
 def render(result: dict) -> str:
@@ -202,7 +209,7 @@ def render(result: dict) -> str:
         f"  autarky floor    {result['autarky_floor']:.3f}",
         f"  exchange ceiling {result['exchange_ceiling']:.3f}",
         f"  EFFICIENCY       {verdict}",
-        f"  of its own plan  {result['own_plan'][0]:.3f}",
+        f"  of its own plan  {_plan_note(result)}",
         f"  worst agent      {result['worst_ratio']:.2f}x autarky",
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",

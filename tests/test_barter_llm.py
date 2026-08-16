@@ -129,6 +129,52 @@ def test_the_floor_carries_messages_between_agents(island):
         assert wires["a2"].read() == []
 
 
+def test_a_finished_island_can_be_scored(island):
+    """The scoring path, exercised without a model.
+
+    A Tier 2 island costs real money to produce, so a run that completes and
+    *then* falls over on the way to a number throws away the whole thing. That
+    is not hypothetical — it happened, because this logic was written twice.
+    There is now one scorer and this is its gate.
+    """
+    from barter.run import score
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "B")
+        for agent_id, state in manager.agents.items():
+            wires[agent_id].manager_call(
+                "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
+        manager.open_trading()
+        offered = wires["a1"].manager_call(
+            "propose", seller="a2", give={"fish": 0.02}, want={"grain": 0.005})
+        wires["a2"].manager_call("approve", trade_id=offered["trade_id"])
+        manager.close()
+
+    outcome = score(island, manager, arm="B", seed=4, messages=3)
+    assert 0.0 < outcome.efficiency.lower <= outcome.efficiency.upper <= 1.0
+    assert outcome.executed == 1
+    assert outcome.messages == 3
+    # Every field the Tier 2 report reads must survive being formatted.
+    assert f"{outcome.worst_ratio:.2f}" and f"{outcome.exchange_efficiency.lower:.3f}"
+
+
+def test_a_ruined_island_still_scores_rather_than_raising(island):
+    """An island where somebody holds nothing is the outcome most worth seeing,
+    so it has to survive scoring instead of blowing up the report."""
+    from barter.run import score
+
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 1.0})  # everyone makes only fish
+    manager.open_trading()
+    manager.close()
+
+    outcome = score(island, manager, arm="A", seed=4)
+    assert outcome.efficiency.ruined == tuple(range(island.n_agents))
+    assert outcome.efficiency.lower == 0.0
+
+
 def test_the_silent_arm_has_no_channel_tool_at_all(island):
     """Arm A's silence is the absence of a tool, not an instruction. A prompt
     that merely asked for silence would make this an obedience experiment."""

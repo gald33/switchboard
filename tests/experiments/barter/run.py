@@ -183,20 +183,34 @@ def run_island(
     if service is not None:
         service.publish()
 
+    return score(island, manager, arm=arm, seed=seed, messages=floor.sent)
+
+
+def score(island: Island, manager: Manager, *, arm: str, seed: int,
+          messages: int = 0) -> Outcome:
+    """Turn a finished manager into an Outcome.
+
+    Shared by both tiers rather than written twice. A Tier 2 island costs real
+    money to produce, so the one thing that must not happen is a run completing
+    and then falling over on the way to a number — which is exactly what
+    happened when this logic was duplicated, and is why it now has a gate that
+    needs no model to exercise (``test_barter_llm.py``).
+    """
     utils = manager.utilities()
     _, autarky_utils = autarky(island)
-    eff = efficiency(island, utils)
+    realised = efficiency(island, utils)
+    # The frontier of the production plan they actually chose. High here beside
+    # a low overall score means they swapped well and made the wrong things.
     plan = [list(manager.agents[a].shares or island.alpha[manager.agents[a].index])
             for a in sorted(manager.agents, key=lambda a: manager.agents[a].index)]
-    autarky_eff = efficiency(island, autarky_utils)
-    lo, hi = capture(eff, autarky_eff)
+    lo, hi = capture(realised, efficiency(island, autarky_utils))
     summary = manager.summary()
     return Outcome(
-        arm=arm, seed=seed, utilities=tuple(utils), efficiency=eff,
+        arm=arm, seed=seed, utilities=tuple(utils), efficiency=realised,
         exchange_efficiency=efficiency(island, utils, fixed_shares=plan),
         capture_lo=lo, capture_hi=hi,
         worst_ratio=min(utils[i] / autarky_utils[i] for i in range(island.n_agents)),
-        messages=floor.sent, proposed=summary["proposed"],
+        messages=messages, proposed=summary["proposed"],
         executed=summary["executed"],
         rejected=summary["rejected"] + summary["expired"],
     )
