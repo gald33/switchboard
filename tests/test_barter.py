@@ -301,6 +301,36 @@ def test_the_manager_serves_requests_over_the_hub():
         assert set(reply["capacity"]) == set(manager.goods)
 
 
+def test_rpc_picks_out_its_own_reply_from_interleaved_traffic():
+    """Replies are matched on a request id, and anything else in the inbox is
+    kept rather than dropped.
+
+    ``inbox`` advances a cursor, so a message read and discarded is gone. An
+    agent on a shared hub is receiving peer chatter and manager replies on the
+    same channel, so a naive "the next message is my answer" would lose real
+    replies as soon as anybody else spoke.
+    """
+    island = draw_island(3, 5, seed=9)
+    manager = Manager(island=island)
+    with hub() as handle:
+        service = ManagerService(handle.client("manager"), manager, run="r7")
+        service.claim()
+        client = handle.client("a1")
+        rpc = ManagerRPC(client, pump=service.drain)
+
+        # A peer DMs a1 before the reply lands, so the inbox holds both.
+        handle.client("a2").send("a1", {"text": "want to swap?"})
+        reply = rpc.call("state")
+        assert reply["ok"] and reply["you"] == "a1"
+
+        # The peer's message was not consumed by the correlation.
+        leftover = [m for m in rpc._spare if m["body"].get("text")]
+        assert leftover and leftover[0]["from"] == "a2"
+
+        # ...and a second call still works after the buffering.
+        assert rpc.call("pending")["ok"]
+
+
 def test_state_is_mirrored_to_the_blackboard():
     """A peer that never spoke to the manager can still read where the run got
     to — which is the argument for putting it on the board at all."""

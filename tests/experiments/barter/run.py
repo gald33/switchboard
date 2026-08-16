@@ -85,9 +85,14 @@ def _hub_ports(hub: Any, manager: Manager, run: str) -> tuple[Any, dict[str, Any
     """Same market, over real Switchboard messages."""
     service = ManagerService(hub.client("manager"), manager, run=run)
     service.claim()
-    ports: dict[str, Any] = {}
-    for agent_id in manager.agents:
-        ports[agent_id] = ManagerRPC(hub.client(agent_id))
+    # `pump=service.drain` is what makes a single-threaded run work: the agent
+    # sends, the manager serves its inbox, the agent collects -- all inside one
+    # `call`. A manager in its own process would need no pump and the agent code
+    # would be unchanged.
+    ports: dict[str, Any] = {
+        agent_id: ManagerRPC(hub.client(agent_id), pump=service.drain)
+        for agent_id in manager.agents
+    }
     return service, ports
 
 
@@ -114,6 +119,10 @@ def run_island(
     for trader in traders.values():
         trader.goods = goods
 
+    # Both ports expose the same `call(op, **kwargs)`, so everything below this
+    # point is written once and does not know which transport it is on. That is
+    # what makes the two comparable: it is the same run, not two runs that
+    # resemble each other.
     service = None
     if hub is None:
         ports: dict[str, Any] = {a: _DirectPort(manager, a) for a in manager.agents}
@@ -121,27 +130,7 @@ def run_island(
         service, ports = _hub_ports(hub, manager, run)
 
     def call(agent_id: str, op: str, **kwargs: Any) -> dict[str, Any]:
-        reply = ports[agent_id].call(op, **kwargs)
-        if service is not None:
-            service.drain()
-            reply = ports[agent_id].call(op, **kwargs) if reply is None else reply
-        return reply
-
-    if service is not None:
-        # Over the hub, requests and replies cross: send, then let the manager
-        # work the inbox, then collect. The RPC helper correlates on a request
-        # id precisely so this interleaving is safe.
-        def call(agent_id: str, op: str, **kwargs: Any) -> dict[str, Any]:  # noqa: F811
-            rpc = ports[agent_id]
-            rpc._seq += 1
-            req = f"{agent_id}-{rpc._seq}"
-            rpc.client.send("manager", {"op": op, "req": req, **kwargs})
-            service.drain()
-            for message in rpc.client.inbox(channels=[f"@{agent_id}"]):
-                body = message.get("body")
-                if isinstance(body, dict) and body.get("req") == req:
-                    return body
-            return {"ok": False, "op": op, "error": "no reply"}
+        return ports[agent_id].call(op, **kwargs)
 
     # --- talk, then produce -------------------------------------------------
     for round_no in range(DISCOVERY_ROUNDS):

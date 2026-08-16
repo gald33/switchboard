@@ -575,27 +575,43 @@ class ManagerRPC:
     """The agent side of the same conversation. One call, one reply.
 
     Correlates on a ``req`` id rather than assuming the next message in the
-    inbox is the answer — on a shared hub it very often is not, because peers
-    are talking on the floor channel at the same time.
+    inbox is the answer. On a shared hub it very often is not — the manager may
+    be answering several agents at once, and ``inbox`` advances a cursor, so a
+    reply skipped is a reply lost. Anything read but not matched is kept in
+    ``_spare`` and re-examined on the next call.
+
+    ``pump`` is how a single-threaded caller lets the manager work. In a live
+    deployment the manager is its own process and there is nothing to pump; in
+    the experiment it is a ``ManagerService`` in the same thread, so the caller
+    passes ``service.drain`` and the request is served between send and receive.
     """
 
-    def __init__(self, client: Any, *, manager_id: str = "manager") -> None:
+    #: Polls before giving up. With a pump the answer arrives on the first one;
+    #: without one this is how long an agent waits on a manager that may be busy.
+    _MAX_POLLS = 40
+
+    def __init__(self, client: Any, *, manager_id: str = "manager",
+                 pump: Any = None) -> None:
         self.client = client
         self.manager_id = manager_id
+        self.pump = pump
         self._seq = 0
         self._spare: list[dict[str, Any]] = []
 
-    def call(self, op: str, *, wait: float = 5.0, **kwargs: Any) -> dict[str, Any]:
+    def call(self, op: str, *, wait: float = 0.0, **kwargs: Any) -> dict[str, Any]:
         self._seq += 1
         req = f"{self.client.agent_id}-{self._seq}"
         self.client.send(self.manager_id, {"op": op, "req": req, **kwargs})
-        deadline_polls = 40
-        for _ in range(deadline_polls):
-            mine = self.client.inbox(wait=wait, channels=[f"@{self.client.agent_id}"])
-            for message in self._spare + mine:
+        for _ in range(self._MAX_POLLS):
+            if self.pump is not None:
+                self.pump()
+            waiting = self._spare + self.client.inbox(
+                wait=wait, channels=[f"@{self.client.agent_id}"])
+            self._spare = []
+            for message in waiting:
                 body = message.get("body")
                 if isinstance(body, dict) and body.get("req") == req:
-                    self._spare = [m for m in self._spare if m is not message]
+                    self._spare = [m for m in waiting if m is not message]
                     return body
-            self._spare = []
+            self._spare = waiting
         return {"ok": False, "op": op, "error": "manager did not reply"}
