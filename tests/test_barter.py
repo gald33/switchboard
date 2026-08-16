@@ -227,6 +227,15 @@ def test_the_planner_traces_the_frontier_not_one_point(island):
     assert efficiency(island, even.utilities).lower > 0.99
 
 
+def test_an_island_cannot_have_goods_nobody_can_name():
+    """Goods are named because the names end up in prompts and on a ledger.
+    Running out of names would hand agents an island they cannot discuss."""
+    with pytest.raises(ValueError, match="n_goods must be"):
+        draw_island(4, 9, seed=1)
+    with pytest.raises(ValueError, match="at least two agents"):
+        draw_island(1, 5, seed=1)
+
+
 def test_utility_is_homogeneous_of_degree_one(island):
     """Doubling a bundle doubles utility. Every metric here is a ratio, which
     only means anything because of this."""

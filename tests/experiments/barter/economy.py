@@ -119,6 +119,16 @@ def draw_island(
     they can make, so there are gains from trade even between two agents with
     identical capacities.
     """
+    if not 1 <= n_goods <= len(GOOD_NAMES):
+        # Goods are named, not numbered, because these end up in prompts and on
+        # a public ledger. Silently running out of names would hand agents an
+        # island they cannot talk about.
+        raise ValueError(
+            f"n_goods must be 1..{len(GOOD_NAMES)}; the named goods are "
+            f"{', '.join(GOOD_NAMES)}"
+        )
+    if n_agents < 2:
+        raise ValueError("an island needs at least two agents to have a market")
     rng = random.Random(seed)
     alpha = []
     capacity = []
