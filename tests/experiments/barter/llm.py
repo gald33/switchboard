@@ -141,15 +141,49 @@ This is only a way of speaking. The manager knows nothing about prices, enforces
 none of this, and will settle any trade the two of you agree to.
 """
 
+#: The money clause, added to ``spend`` and ``paid`` on top of the numeraire
+#: convention. Two sentences, and the second is the load-bearing one.
+#:
+#: "Settle in fish" is only the visible consequence. What makes money money is
+#: accepting it *past your own appetite* — if a trader takes fish only up to the
+#: fish it wants to eat, it stops selling once it is full and the market is back
+#: to barter. So the clause asks an agent to hold a bundle that is worse by its
+#: own utility function right now, on a belief about what everyone else will do
+#: later. That is self-fulfilling and unavailable to an agent reasoning alone,
+#: which is exactly what makes it a convention rather than a preference.
+#:
+#: It costs something real here: fish is a consumption good with a Cobb-Douglas
+#: weight, so excess fish is genuinely suboptimal rather than a free token.
+MONEY_BRIEF = """
+Fish is also the medium of exchange. Trades are settled in fish rather than by
+swapping goods directly.
+
+Accept fish past the point of wanting it for itself. It can be spent again.
+"""
+
 #: Arms, in order of how much is handed over. Named rather than lettered because
 #: the Tier 1 arms are lettered and mean different things — Tier 1's D is money,
-#: which is not on this ladder at all.
-ARMS = ("silent", "free", "told", "built", "bound")
+#: which is a different ladder.
+#:
+#: The design rule every one of these obeys: **a tool may calculate or report,
+#: and may never commit anybody.** The quote board is a noticeboard; `pay` is a
+#: calculator that builds a trade at the going rate. Neither binds a
+#: counterparty — the manager is the only thing in the experiment that moves a
+#: quantity, and it still knows nothing about prices. That is what keeps all of
+#: this a *convention with a calculator* rather than an exchange with rules, and
+#: it is why a standing-offer book is deliberately absent: a pre-committed offer
+#: would settle without its owner acting, which is a commitment mechanism and a
+#: different experiment.
+ARMS = ("silent", "free", "told", "built", "bound", "spend", "paid")
 
 #: How many manager ticks a quote stays on the board under ``bound``. Two means
 #: a quote survives the round it was posted and one more, so an agent that never
 #: comes back drops off rather than sitting there being read as current.
 QUOTE_TTL_TICKS = 2
+
+#: Index of the numeraire in the goods tuple. Which good is arbitrary; that
+#: everyone uses the *same* one is the entire convention.
+NUMERAIRE_INDEX = 0
 
 
 def speaks(arm: str) -> bool:
@@ -157,7 +191,23 @@ def speaks(arm: str) -> bool:
 
 
 def has_quote_board(arm: str) -> bool:
-    return arm in ("built", "bound")
+    return arm in ("built", "bound", "spend", "paid")
+
+
+def uses_money(arm: str) -> bool:
+    """``spend`` and ``paid``: the numeraire is a medium of exchange too."""
+    return arm in ("spend", "paid")
+
+
+def has_pay_tool(arm: str) -> bool:
+    """``paid``: a calculator for money trades, not a commitment mechanism.
+
+    It looks up the going rate, does the arithmetic and constructs the offer.
+    The seller still has to approve it, exactly as for any other trade — an
+    affordance that settled by itself would destroy the voluntariness every
+    "nobody was made worse off" claim in this experiment rests on.
+    """
+    return arm == "paid"
 
 
 def obliges_revision(arm: str) -> bool:
@@ -177,7 +227,7 @@ def obliges_revision(arm: str) -> bool:
     Both are still only about quoting. Nothing obliges an agent to trade at any
     price, and the manager remains ignorant of prices entirely.
     """
-    return arm == "bound"
+    return arm in ("bound", "spend", "paid")
 
 TURN = """\
 Round {round_no} of {rounds}. {phase_note}
@@ -231,6 +281,39 @@ class Wire:
         fresh = history[self._cursor:]
         self._cursor = len(history)
         return [m["body"] for m in fresh if isinstance(m.get("body"), dict)]
+
+    def pay(self, seller: Any, good: Any, qty: Any) -> dict[str, Any]:
+        """Buy ``qty`` of ``good`` from ``seller``, paying fish at the going rate.
+
+        A calculator, and deliberately nothing more. It reads the board's median,
+        multiplies, and hands the result to ``propose_trade`` — the arithmetic an
+        agent would otherwise do by hand, which under ``spend`` it has to. The
+        seller still has to approve, so this changes how easy a money trade is to
+        *express* and not whether anyone is bound by it.
+
+        That line is the whole design rule of this experiment. A tool may
+        calculate or report; only the manager moves a quantity.
+        """
+        board = self.read_quotes()
+        medians = board.get("median_price") or {}
+        name = str(good)
+        if name not in medians:
+            return {"error": f"no median price for {name!r} yet; nobody has quoted it"}
+        try:
+            amount = float(qty)
+        except (TypeError, ValueError):
+            return {"error": "qty is not a number"}
+        if amount != amount or amount <= 0:
+            return {"error": "qty must be a positive number"}
+
+        numeraire = self.goods[NUMERAIRE_INDEX]
+        fish = amount * medians[name] / max(medians.get(numeraire, 1.0), 1e-12)
+        reply = self.manager_call("propose", seller=str(seller),
+                                  give={numeraire: round(fish, 6)},
+                                  want={name: round(amount, 6)},
+                                  note=f"at the board median, {medians[name]:g} {numeraire}/{name}")
+        return {"offered": {"pay": round(fish, 6), "for": round(amount, 6), "of": name},
+                "median_used": medians[name], "result": reply}
 
     # --- the `built` arm's machinery ---------------------------------------
 
@@ -423,6 +506,18 @@ def build_tools(wire: Wire) -> Any:
 
         tools += [post_quote, read_quotes]
 
+    if has_pay_tool(wire.arm):
+        @tool("pay",
+              "Offer to buy `qty` of `good` from one named trader, paying in "
+              "fish at the quote board's median price. Works out the fish amount "
+              "for you and proposes the trade. The seller still has to approve "
+              "it, exactly as with any other offer.",
+              {"seller": str, "good": str, "qty": float})
+        async def pay(args: Any) -> dict[str, Any]:
+            return _text(wire.pay(args.get("seller"), args.get("good"), args.get("qty")))
+
+        tools += [pay]
+
     return create_sdk_mcp_server(name=f"island-{wire.agent_id}", tools=tools)
 
 
@@ -437,6 +532,8 @@ def tool_names(arm: str, agent_id: str) -> list[str]:
         names += ["say", "listen"]
     if has_quote_board(arm):
         names += ["post_quote", "read_quotes"]
+    if has_pay_tool(arm):
+        names += ["pay"]
     return [f"mcp__island-{agent_id}__{name}" for name in names]
 
 
@@ -457,6 +554,8 @@ def brief_for(island: Island, manager: Manager, agent_id: str, arm: str) -> str:
     )
     if speaks(arm):
         text += CHANNEL_BRIEF
-    if arm in ("told", "built", "bound"):
+    if arm in ("told", "built", "bound", "spend", "paid"):
         text += NUMERAIRE_BRIEF
+    if uses_money(arm):
+        text += MONEY_BRIEF
     return text
