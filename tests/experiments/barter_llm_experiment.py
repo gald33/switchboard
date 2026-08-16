@@ -59,6 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from barter.analysis import render as render_comparison  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
 from barter.llm import ARMS, TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
@@ -177,10 +178,11 @@ async def run_llm_island(
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
-        board = {
-            str(e["key"]).rsplit("/", 1)[-1]: e["value"]
-            for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/")
-        }
+        board = {}
+        for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
+            value = e.get("value")
+            if isinstance(value, dict) and isinstance(value.get("prices"), dict):
+                board[str(e["key"]).rsplit("/", 1)[-1]] = value["prices"]
 
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.
@@ -256,7 +258,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-turns", type=int, default=18)
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--compare", nargs="+", type=Path, default=None,
+                        help="compare finished run records instead of running anything")
     args = parser.parse_args(argv)
+
+    if args.compare:
+        records = []
+        for path in args.compare:
+            records.extend(json.loads(path.read_text()))
+        print(render_comparison(records))
+        return 0
 
     results = []
     for arm in args.arms:
