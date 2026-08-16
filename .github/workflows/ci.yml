@@ -70,6 +70,45 @@ jobs:
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             | switchboard-mcp | grep -q '"serverInfo"'
 
+  # The page, in a real browser. Separate from `test` on purpose: nothing here
+  # varies by Python version, so putting Chromium in that 4-way matrix would
+  # download it four times to learn one thing.
+  #
+  # This job exists because the tests it runs were passing without running.
+  # `test_web_page.py` guards `examples/web` behind `importorskip("playwright")`,
+  # which is not installed by the `test` job — so every browser assertion
+  # skipped in CI while reporting green, including the ones that check the
+  # published page dials the right hub with the right token. The board-key
+  # change in #119 edited `switchboard-room.js` and was verified only because
+  # playwright happened to be installed by hand on one machine.
+  #
+  # The cheap half of that coverage now runs in the `test` job without a
+  # browser — `test_web_snapshot.py` drives the same `snapshot()` under node.
+  # What is left here is what genuinely needs one: rendering, the settings
+  # sheet, localStorage, and the cross-origin request a browser refuses to
+  # send. `continue-on-error` is deliberately NOT set: a skip that reports
+  # success is the failure being fixed.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]' playwright
+      - run: playwright install --with-deps chromium
+      - name: the page, in a browser — and nothing may skip
+        # `-p no:randomly` keeps the summary line stable to grep. The skip
+        # check is the whole point of the job: if the browser fixture ever
+        # opts out again, this must go red rather than green-with-nothing-run.
+        run: |
+          set -o pipefail
+          pytest -q -rs tests/test_web_page.py tests/test_web_reader.py | tee out.txt
+          if grep -qE '[0-9]+ skipped' out.txt; then
+            echo "::error title=browser tests::something skipped — reasons above"
+            exit 1
+          fi
+
   docker:
     runs-on: ubuntu-latest
     steps:
