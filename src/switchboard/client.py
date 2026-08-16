@@ -948,18 +948,21 @@ class Client(_Base):
     def register(self, *, name: str, kind: str = "unknown", branch: str | None = None,
                  task: str | None = None, channels: Sequence[str] = (),
                  meta: dict[str, Any] | None = None, ttl: float | None = None,
+                 back_in: float | None = None,
                  workspace: str | None = None) -> dict[str, Any]:
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
             "meta": meta or {}, "pubkey": self.public_key, "ttl": ttl,
+            "back_in": back_in,
         })["agent"]
 
     def heartbeat(self, *, task: str | None = None, ttl: float | None = None,
-                  renew_leases: bool = True, workspace: str | None = None) -> dict[str, Any]:
+                  renew_leases: bool = True, back_in: float | None = None,
+                  workspace: str | None = None) -> dict[str, Any]:
         return self._call("POST", "/agents/heartbeat", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "task": task,
-            "ttl": ttl, "renew_leases": renew_leases,
+            "ttl": ttl, "renew_leases": renew_leases, "back_in": back_in,
         })
 
     def agents(self, workspace: str | None = None) -> list[dict[str, Any]]:
@@ -1171,20 +1174,21 @@ class AsyncClient(_Base):
     async def register(self, *, name: str, kind: str = "unknown", branch: str | None = None,
                        task: str | None = None, channels: Sequence[str] = (),
                        meta: dict[str, Any] | None = None, ttl: float | None = None,
+                       back_in: float | None = None,
                        workspace: str | None = None) -> dict[str, Any]:
         result = await self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "ttl": ttl,
+            "meta": meta or {}, "ttl": ttl, "back_in": back_in,
         })
         return result["agent"]
 
     async def heartbeat(self, *, task: str | None = None, ttl: float | None = None,
-                        renew_leases: bool = True,
+                        renew_leases: bool = True, back_in: float | None = None,
                         workspace: str | None = None) -> dict[str, Any]:
         return await self._call("POST", "/agents/heartbeat", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "task": task,
-            "ttl": ttl, "renew_leases": renew_leases,
+            "ttl": ttl, "renew_leases": renew_leases, "back_in": back_in,
         })
 
     async def agents(self, workspace: str | None = None) -> list[dict[str, Any]]:

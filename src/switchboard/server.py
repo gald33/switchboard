@@ -36,6 +36,7 @@ from .config import (
     DEFAULT_LEASE_TTL,
     DEFAULT_MESSAGE_TTL,
     MAX_AGENT_TTL,
+    MAX_AWAY_SECONDS,
     MAX_BOARD_TTL,
     MAX_LEASE_TTL,
     MAX_MESSAGE_TTL,
@@ -87,6 +88,11 @@ class RegisterIn(BaseModel):
     channels: list[str] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
     ttl: float | None = Field(default=None, gt=0)
+    #: Seconds from now until this agent expects to be back, or None if it is
+    #: making no promise. Presence still lapses on `ttl`; this only keeps the
+    #: row listed afterwards, as `away`, so a peer arriving into an otherwise
+    #: empty roster can tell "nobody is coming" from "someone is mid-turn".
+    back_in: float | None = Field(default=None, gt=0)
 
 
 class HeartbeatIn(BaseModel):
@@ -96,6 +102,11 @@ class HeartbeatIn(BaseModel):
     ttl: float | None = Field(default=None, gt=0)
     renew_leases: bool = True
     lease_ttl: float | None = Field(default=None, gt=0)
+    #: Seconds from now until this agent expects to be back, or None if it is
+    #: making no promise. Presence still lapses on `ttl`; this only keeps the
+    #: row listed afterwards, as `away`, so a peer arriving into an otherwise
+    #: empty roster can tell "nobody is coming" from "someone is mid-turn".
+    back_in: float | None = Field(default=None, gt=0)
 
 
 class LeaseIn(BaseModel):
@@ -149,9 +160,19 @@ def dump_agent(a: Agent, now: float) -> dict[str, Any]:
         "pubkey": a.pubkey,
         "registered_at": iso(a.registered_at),
         "last_seen_at": iso(a.last_seen_at),
+        "present_until": iso(a.present_until),
+        "expected_back": iso(a.expected_back),
         "expires_at": iso(a.expires_at),
         "expires_in": round(a.expires_at - now, 1),
         "stale": a.last_seen_at < now - 60,
+        # The third value presence never had. `away` is not a weaker `stale`:
+        # stale is a guess from how long ago someone was last seen, while this
+        # is the agent's own statement that it is between turns and returning.
+        # A row can only be away because it said so — otherwise it is gone.
+        "away": now > a.present_until,
+        "back_in": (
+            round(a.expected_back - now, 1) if a.expected_back is not None else None
+        ),
     }
 
 
@@ -195,6 +216,19 @@ def dump_board(e: BoardEntry, now: float) -> dict[str, Any]:
         "expires_at": iso(e.expires_at),
         "expires_in": round(e.expires_at - now, 1),
     }
+
+
+def _expected_back(back_in: float | None, now: float) -> float | None:
+    """Absolute return time from a relative promise, bounded.
+
+    Clamped rather than rejected: an agent guessing badly about its own next
+    turn should not have its registration fail, and a promise further out than
+    MAX_AWAY_SECONDS is a plan rather than a rendezvous.
+    """
+    if back_in is None:
+        return None
+    return now + min(back_in, MAX_AWAY_SECONDS)
+
 
 
 # --- app --------------------------------------------------------------------
@@ -442,6 +476,7 @@ def create_app(
             meta=payload.meta,
             pubkey=payload.pubkey,
             ttl=clamp_ttl(payload.ttl, DEFAULT_AGENT_TTL, MAX_AGENT_TTL),
+            expected_back=_expected_back(payload.back_in, now),
             now=now,
         )
         return {"agent": dump_agent(agent, now)}
@@ -460,6 +495,7 @@ def create_app(
                 if payload.lease_ttl is not None
                 else None
             ),
+            expected_back=_expected_back(payload.back_in, now),
             now=now,
         )
         if agent is None:

@@ -18,11 +18,13 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, rooms
+from . import __version__, drill, invite, rendezvous, rooms
 from .client import (
     Client,
     Identity,
@@ -919,6 +921,126 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _hub_now(agent: dict[str, Any]) -> float:
+    """The hub's clock, from a register response.
+
+    Deliberately not `time.time()`. The whole point of a derived slot is that
+    two machines compute the same one, and two machines are exactly what has
+    skewed clocks — anchoring on local time would rebuild the miss this is
+    meant to remove, one layer down and much harder to see.
+    """
+    stamp = agent.get("last_seen_at")
+    if isinstance(stamp, str):
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return time.time()
+
+
+def cmd_rendezvous(args: argparse.Namespace) -> int:
+    """Find a peer you have never met, and leave something behind if you do not.
+
+    One invocation is a bounded look, not a vigil: announce, read the notes
+    others left, poll on an escalating backoff for as long as was budgeted,
+    write your own note, and report the shared slot to come back at. A
+    turn-based agent cannot hold a socket for an hour, and the failure this
+    command exists to fix is precisely two agents each deciding to stop.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    identity = detect_identity(agent_id=args.agent_id)
+    config = _make_config(args)
+    topic = args.topic
+    key = rendezvous.key_for(topic)
+    look = args.wait if args.wait is not None else rendezvous.DEFAULT_LOOK_SECONDS
+
+    with _make_client(args) as hub:
+        agent = hub.register(
+            name=identity.name, kind=identity.kind, branch=identity.branch,
+            task=args.task or f"rendezvous: {topic}",
+            channels=args.channel or [], meta=identity.meta,
+            back_in=args.back_in,
+        )
+        now = _hub_now(agent)
+        slot = rendezvous.next_slot(config.workspace, topic, now)
+
+        found: list[dict[str, Any]] = []
+        for gap in rendezvous.schedule(look):
+            if gap:
+                time.sleep(gap)
+            roster = [a for a in hub.agents() if a.get("agent_id") != hub.agent_id]
+            live = [a for a in roster if not a.get("away")]
+            if live:
+                found = live
+                break
+            if roster:
+                # Nobody at the keyboard, but somebody said they are coming
+                # back. That is a meeting, just not this second — and it is the
+                # answer an empty roster could never give.
+                found = roster
+                break
+
+        peers = _rendezvous_notes(hub, topic, now, exclude=hub.agent_id)
+
+        mine = rendezvous.Intent(
+            agent_id=hub.agent_id, topic=topic, want=args.want or "",
+            since=now, looking_until=now + (args.until or rendezvous.SLOT_SECONDS * 6),
+            next_slot=slot,
+        )
+        hub.board_set(key + "/" + hub.agent_id, mine.as_json())
+
+    if args.json:
+        _print_json({
+            "topic": topic, "agent_id": mine.agent_id,
+            "roster": found, "notes": [n.as_json() for n in peers],
+            "next_slot_in": round(slot - now, 1),
+            "met": bool(found or peers),
+        })
+        return EXIT_OK
+
+    if found:
+        awake = [a for a in found if not a.get("away")]
+        for a in found:
+            state = "here" if a in awake else f"away {_dur(a.get('back_in') or 0)}"
+            print(f"{fmt.green('found')}  {a['agent_id'][:33]:<34} {state}")
+    for note in peers:
+        print(f"{fmt.green('note')}   {note.agent_id[:33]:<34} "
+              f"{note.want[:60] or '(no description)'}")
+    if not found and not peers:
+        # The honest report, and the one that must not read as failure: an
+        # agent told "nobody is here" stops, which is how both sides quit.
+        print(f"{fmt.dim('nobody yet')} — your note is at {key}/{hub_id_hint(mine)}")
+    print(
+        f"\nnext shared slot in {_dur(slot - now)}. Both sides derive it from the "
+        f"workspace,\nso come back then and your peer will be looking too."
+    )
+    return EXIT_OK
+
+
+def hub_id_hint(intent: rendezvous.Intent) -> str:
+    return intent.agent_id[:33]
+
+
+def _rendezvous_notes(
+    hub: Client, topic: str, now: float, *, exclude: str
+) -> list[rendezvous.Intent]:
+    """Live intent left by anyone else on this topic.
+
+    Notes whose author has given up are dropped rather than shown: sending a
+    newcomer to wait on somebody who stopped hours ago is the same wasted turn
+    this command exists to prevent.
+    """
+    out = []
+    for entry in hub.board_list(prefix=rendezvous.key_for(topic)):
+        if entry.get("unreadable"):
+            continue
+        note = rendezvous.Intent.from_json(entry.get("value"))
+        if note and note.agent_id != exclude and note.still_looking(now):
+            out.append(note)
+    return sorted(out, key=lambda n: n.since)
+
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
@@ -1101,6 +1223,7 @@ def cmd_register(args: argparse.Namespace) -> int:
             channels=args.channel or [],
             meta=identity.meta,
             ttl=args.ttl,
+            back_in=getattr(args, "back_in", None),
         )
     if args.json:
         _print_json(agent)
@@ -1149,16 +1272,42 @@ def cmd_agents(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     print(fmt.bold(f"{'AGENT':<34} {'KIND':<7} {'BRANCH':<24} {'SEEN':<10} TASK"))
     swapped = []
+    away = []
     for a in agents:
         seen = _ago(a["last_seen_at"])
-        seen_txt = fmt.yellow(seen) if a.get("stale") else seen
+        # Three states, not two. `away` is the agent's own statement that it is
+        # between turns and returning, which is what an arriving peer needs and
+        # what an empty roster could never say.
+        if a.get("away"):
+            back = a.get("back_in")
+            seen_txt = fmt.dim(
+                f"away {_dur(back)}" if isinstance(back, (int, float)) and back > 0
+                else "away"
+            )
+            away.append(a["agent_id"])
+        else:
+            seen_txt = fmt.yellow(seen) if a.get("stale") else seen
         marker = fmt.red(" !") if a.get("key_changed_while_live") else ""
         if marker:
             swapped.append(a["agent_id"])
-        print(
+        row = (
             f"{a['agent_id'][:33]:<34} {a['kind'][:6]:<7} "
             f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} "
             f"{a.get('task') or ''}{marker}"
+        )
+        print(fmt.dim(row) if a.get("away") else row)
+    if away and len(away) == len(agents):
+        # The case worth spelling out: nobody is at the keyboard, but this is
+        # not an empty room. An arriving agent that reads "no agents" gives up;
+        # one that reads "everyone is between turns, back in ~4m" waits or
+        # leaves a note, which is the whole point of the state existing.
+        print(
+            fmt.dim(
+                "\nNobody is active this second, but every agent above said it "
+                "is coming back.\nThis is not an empty room — leave what you "
+                "need them to see rather than\nconcluding they are gone."
+            ),
+            file=sys.stderr,
         )
     if swapped:
         # The client sets this flag and, until now, nothing ever displayed it.
@@ -1531,12 +1680,14 @@ def cmd_checkin(args: argparse.Namespace) -> int:
 
     with _make_client(args) as hub:
         try:
-            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl,
+                                   back_in=getattr(args, 'back_in', None))
         except SwitchboardError as exc:
             if exc.status != 404:
                 raise
             _register(hub)
-            result = hub.heartbeat(task=args.task, ttl=args.ttl)
+            result = hub.heartbeat(task=args.task, ttl=args.ttl,
+                                   back_in=getattr(args, 'back_in', None))
         messages = hub.inbox(wait=args.wait, limit=args.limit)
     timing = _Timing(args)
     timing.note_look()
@@ -1700,6 +1851,132 @@ def cmd_stats(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         _print_json(hub.stats())
     return EXIT_OK
+
+
+def cmd_invite(args: argparse.Namespace) -> int:
+    """Emit one string carrying everything a peer needs to join this room.
+
+    Joining takes five facts and every one must match independently — and
+    getting any wrong fails SILENTLY, which is what makes it expensive. Two
+    agents in this project's own dogfooding spent forty minutes waiting for
+    each other on the same hub and workspace with two different keys, both
+    watching a roster that listed them both. One string is five chances to
+    differ collapsed into one.
+    """
+    config = _make_config(args)
+    key = args.key or config.key or _saved_key(Path(".").resolve())
+    token = args.token or config.token or _saved_setting(
+        Path(".").resolve(), "SWITCHBOARD_TOKEN"
+    )
+    # Seal a value the joiner can try to open. This is the only thing that
+    # distinguishes "reached the same hub" from "in the same room": a joiner's
+    # own round trip is self-consistent under any key, including the wrong one.
+    probe = f"coord/join-probe/{secrets.token_urlsafe(8)}"
+    try:
+        with _make_client(args) as hub:
+            hub.board_set(probe, invite.PROBE_SENTINEL, ttl=86400)
+    except (SwitchboardError, OSError, CryptoError) as exc:
+        print(f"error: could not leave a proof-of-room on the hub ({exc})",
+              file=sys.stderr)
+        return EXIT_ERROR
+    blob = invite.Invite(
+        url=config.url, workspace=config.workspace,
+        token=None if args.no_token else token,
+        key=None if args.no_key else key,
+        note=args.note or "", probe=probe,
+    )
+    if args.json:
+        _print_json({"invite": blob.encode(), "describes": blob.redacted()})
+        return EXIT_OK
+    print(blob.encode())
+    if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
+        fmt = Fmt(_use_color(sys.stdout))
+        print(
+            f"\n{blob.redacted()}\n\n"
+            + fmt.yellow("This is a credential.")
+            + " It carries the token and the workspace key, so it\ngrants "
+              "everything you have. Hand it over the way you would a password.\n\n"
+              "The other side runs:  switchboard join <the string above>",
+            file=sys.stderr,
+        )
+        _offer_clipboard(blob.encode(), "the invite", args)
+    return EXIT_OK
+
+
+def cmd_join(args: argparse.Namespace) -> int:
+    """Consume an invite, and prove the room rather than assuming it.
+
+    Printing the settings is not the point — being in the same room is, and
+    those are different claims. A roster listing both of you proves nothing:
+    that is exactly what the forty-minute failure looked like. So this writes a
+    probe and reads it back, which only succeeds if the key matches, and says
+    plainly which of the two it confirmed.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    try:
+        blob = invite.Invite.decode(args.invite)
+    except invite.InviteError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(blob.env_block())
+    if args.json:
+        _print_json({
+            "url": blob.url, "workspace": blob.workspace,
+            "encrypted": bool(blob.key), "note": blob.note,
+        })
+
+    if args.no_verify:
+        return EXIT_OK
+
+    # Verify by round-tripping a sealed value through the hub. A peer on a
+    # different key cannot produce one we can open, which is the only check
+    # that distinguishes "same room" from "same roster".
+    config = _make_config(args)
+    config = replace(
+        config, url=blob.url, url_source="flag",
+        workspace=blob.workspace, token=blob.token, key=blob.key,
+    )
+    if not blob.probe:
+        print(
+            f"\n{fmt.yellow('cannot verify')} — this invite carries no proof-of-room. "
+            "The settings\nabove are what it said; nothing checked them.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+    try:
+        with Client(config, agent_id=f"join-probe-{secrets.token_hex(4)}") as hub:
+            back = hub.board_get(blob.probe)
+    except (SwitchboardError, OSError, CryptoError) as exc:
+        print(
+            f"\n{fmt.red('could not reach that room')}: {exc}\n"
+            "The settings above are what the invite said; something between "
+            "here and the hub\ndisagrees. Nothing has been changed locally.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if back != invite.PROBE_SENTINEL:
+        # Reached the hub, could not open what the inviter left. Same hub, same
+        # workspace, different key — two agents listed on one roster, able to
+        # exchange nothing. Exactly the forty minutes this exists to save.
+        print(
+            f"\n{fmt.red('WRONG ROOM')} — reached that hub and workspace, but could not "
+            f"read\nthe proof the inviter left. Your key does not match theirs.\n\n"
+            f"You would have appeared on each other's roster and been unable to\n"
+            f"exchange anything. Ask for a fresh invite rather than editing settings.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    print(
+        f"\n{fmt.green('verified')} — opened a sealed value the inviter left in that "
+        f"room.\nThat proves the hub, the workspace AND the key all match, which a "
+        f"roster\nlisting you both does not."
+        + (f"\n\n{blob.note}" if blob.note else ""),
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -3413,6 +3690,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_keygen)
 
+    p = sub.add_parser(
+        "invite",
+        help="one string carrying everything a peer needs to join this room",
+        description="Joining takes five facts — hub, token, workspace, key, identity — "
+                    "and each must match a peer's independently. Getting any wrong fails "
+                    "SILENTLY: every call succeeds and you are simply somewhere else, "
+                    "alone, with an inbox that looks exactly like a quiet one. This "
+                    "collapses five chances to differ into one.",
+    )
+    p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
+    p.add_argument("--no-key", action="store_true",
+                   help="omit the workspace key (the peer must already hold it)")
+    p.add_argument("--no-token", action="store_true", help="omit the hub token")
+    p.add_argument("--no-input", action="store_true", help="never stop to ask")
+    p.set_defaults(func=cmd_invite)
+
+    p = sub.add_parser(
+        "join",
+        help="consume an invite, and prove the room rather than assuming it",
+        description="Prints what to export, then writes a sealed value to that room and "
+                    "reads it back. That round trip is the only check that distinguishes "
+                    "'same room' from 'same roster' — two agents listed together on one "
+                    "hub, on different keys, see each other and can exchange nothing.",
+    )
+    p.add_argument("invite", help="the string from `switchboard invite`")
+    p.add_argument("--no-verify", action="store_true",
+                   help="print the settings without touching the hub")
+    p.set_defaults(func=cmd_join)
+
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)
 
@@ -3433,7 +3739,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", help="what this agent is working on")
     p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
     p.add_argument("--ttl", type=float)
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back. Presence still lapses on its own "
+             "TTL; this keeps you listed as `away` afterwards so a peer arriving into "
+             "an otherwise empty roster can tell 'nobody is coming' from 'mid-turn'. "
+             "The single cheapest thing you can do for a peer you have not met yet.",
+    )
     p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser(
+        "rendezvous",
+        help="find a peer you have not met yet, and leave a note if you do not",
+        description="First contact, which every other timing signal here assumes has "
+                    "already happened: a forecast is built from history with a peer and "
+                    "rides on a message, so none of it helps before the first exchange. "
+                    "This announces you, reads notes other agents left, looks on an "
+                    "escalating backoff, writes your own note, and tells you the shared "
+                    "slot to come back at — derived from the workspace, so your peer "
+                    "derives the same one without either of you saying anything.",
+    )
+    p.add_argument("topic", help="what the meeting is about; both sides must use the same string")
+    p.add_argument("--want", help="one line on what you need, for whoever finds your note")
+    p.add_argument(
+        "--wait", type=float, metavar="SECONDS",
+        help="how long this invocation spends looking (default 60). Bounded on purpose: "
+             "a turn-based agent cannot hold a socket for an hour, and the note plus the "
+             "shared slot are what cover the rest.",
+    )
+    p.add_argument(
+        "--until", type=float, metavar="SECONDS",
+        help="how long your note should claim you are still looking (default 30m). "
+             "Past it, peers treat it as litter rather than sending someone to wait on you.",
+    )
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back, so you stay listed as `away`",
+    )
+    p.add_argument("--task", help="what this agent is working on")
+    p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
+    p.set_defaults(func=cmd_rendezvous)
 
     p = sub.add_parser("agents", help="who else is awake")
     p.set_defaults(func=cmd_agents)
@@ -3502,6 +3847,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", type=float, default=0.0)
     p.add_argument("--limit", type=int, default=100)
     _add_timing_args(p)
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back. Presence still lapses on its own "
+             "TTL; this keeps you listed as `away` afterwards so a peer arriving into "
+             "an otherwise empty roster can tell 'nobody is coming' from 'mid-turn'. "
+             "The single cheapest thing you can do for a peer you have not met yet.",
+    )
     p.set_defaults(func=cmd_checkin)
 
     p = sub.add_parser("timing", help="this agent's own timing model (local, never shared)")
