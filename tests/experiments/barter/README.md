@@ -6,8 +6,8 @@ that owns all the state.
 
 ```bash
 python tests/experiments/barter_experiment.py --islands 12 --rounds-sweep
-python tests/experiments/barter_llm_experiment.py --arms A B   # costs money
-pytest tests/test_barter.py -q                                 # the gates
+python tests/experiments/barter_llm_experiment.py --arms told built  # costs money
+pytest tests/test_barter.py tests/test_barter_llm.py -q            # the gates
 ```
 
 ## The island
@@ -73,9 +73,10 @@ about: **swapping perfectly recovers about a seventh of what is on the table.**
 The rest requires having produced different things. Trading skill is not the
 binding constraint; knowing what to make is.
 
-## The arms
+## Tier 1 arms (scripted)
 
-An information ladder, removing one thing at a time.
+An information ladder, removing one thing at a time. The Tier 2 arms further
+down are named rather than lettered, and are a different ladder.
 
 | | |
 |---|---|
