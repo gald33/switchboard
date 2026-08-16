@@ -197,6 +197,10 @@ models traded but never coordinated production; well above it means they found
 something, and the kept transcript says what. The content of what agents invent
 is the finding — no aggregate can carry it.
 
+The short version of what came back: **models adopt a convention's vocabulary
+instantly and its substance not at all**, and being handed the vocabulary without
+the substance is worse than being handed nothing.
+
 ### One island each arm, Haiku 4.5, 4 agents, 5 rounds
 
 #### `silent` vs `free` — is the convention something models invent?
@@ -250,16 +254,95 @@ never settled. Without agreed terms an agent cannot tell whether an offer is fai
 before committing, and cannot tell what a counterparty can actually cover —
 "I cannot approve t5 and t10 due to insufficient holdings."
 
-One island per arm, one model, one seed. This is an anecdote and is reported
-because it is what was actually run; the seed sweep that would make it evidence
-is the expensive part. What it is good for is showing the harness works
-end to end and that the interesting question — *do models invent the missing
-rung?* — is live rather than foregone.
+#### `told` vs `built` — instruction, then machinery
+
+```
+arm            eff   own plan   worst   settled   msgs   quotes
+free         0.386      0.949    0.93      5/30     14        0
+told         0.316      0.771    0.77      2/25     15        0
+built        0.368      0.898    0.93      3/16     11        6
+
+autarky floor 0.374     exchange ceiling 0.413     frontier 1.000
+```
+
+**Telling models the convention made them worse than telling them nothing.**
+`told` lands at 0.316 — below `free`, and below the autarky floor. Settlement
+nearly collapsed, 2 trades of 25 proposed.
+
+They adopted the vocabulary instantly and completely. Every `told` agent quoted
+prices in fish, exactly as asked:
+
+```
+a2: a2 prices: grain 1.01, cloth 0.21, timber 1.11, salt 1.47 per fish
+a4: a4 prices: grain 0.5,  cloth 1.8,  timber 1.2,  salt 0.5  per fish
+```
+
+Recovering each agent's final price vector from the transcript — the work a
+counterparty actually has to do — gives cloth quoted **30x apart**, salt 7.9x,
+grain 3.1x, and only three of four agents posting a parseable price list at all.
+One agent opened by copying another's numbers verbatim to two decimals across
+four goods, then later posted a completely different vector (cloth 0.21 → 1.02,
+salt 1.47 → 0.08). No anchoring, no convergence.
+
+Meanwhile every message describes its offers as "fair rates" and "fair value
+trades". That is the mechanism of the harm, and it is the Tier 1 result one level
+up: **the words of a convention are not the agreement.** Agents who merely talk
+know they disagree; agents handed a shared vocabulary act on prices they *believe*
+are shared while holding them 30x apart.
+
+**The machinery repairs most of that self-harm and does not deliver the
+convention.** `built` recovers 0.316 → 0.368, the worst-off agent 0.77x → 0.93x,
+and its allocation of its own production 0.771 → 0.898. Proposals get better
+targeted — 16 made instead of 25, and *none* rejected instead of four. But it
+still does not beat `free`, and the final quote board explains why:
+
+```
+a1: fish 1   grain 3.5  cloth 15  timber 0.5  salt 1
+a2: fish 1   grain 2.5  cloth 50  timber 1.1  salt 2.2
+a3: fish 1   grain 3.5  cloth 65  timber 1.5  salt 3
+a4: fish 1   grain 0.6  cloth 2.4  timber 1.4  salt 1.5
+```
+
+Cloth spans **27x**, grain 5.8x, salt and timber 3x. The one good every trader
+agrees on is `fish` — **the good the machinery pins for them.** Everything left
+to the traders stayed 3x to 27x apart. Validation and a fixed scale removed the
+ambiguity that a validator can remove; the `median_price` sitting in every
+`read_quotes` reply was available to all four and moved nobody. They posted
+quotes and read quotes, and never revised toward each other.
+
+That is the difference between the scripted arm C and every model arm. Scripted
+C converges because its policy *revises* every round against aggregate excess
+demand. The models had the aggregate and used it as a display. **Posting a price
+and agreeing a price are different things, and machinery that aggregates without
+obliging revision only delivers the first.**
+
+Underneath all three arms is a quieter failure that matters more. Every model arm
+sits at or below the exchange ceiling of 0.413, which means **none of them ever
+specialised production** — they used prices, when they had them, to haggle over
+stock they already held. But Tier 1 says the exchange gains are about a seventh
+of what is on the table. The convention's whole economic value is in telling you
+*what to make*, and no arm got near that, machinery or not.
+
+#### What this is and is not
+
+One island per arm, one model, one seed. **The efficiency ordering is not
+settled by this** — 0.316, 0.368 and 0.386 sit close enough that a single draw
+cannot separate them, and nothing here licenses "machinery is worth 0.05". What
+a single island *can* carry is the structural observation, because 27x is not a
+sampling artefact: agents given a unit of account, with or without a board to put
+it on, did not converge on prices, and the only agreement in the data is the one
+the machinery imposed.
+
+The obvious next rung, and the one this points at, is machinery that makes
+revision the default rather than available: a board that answers `read_quotes`
+with *your price against the median* and treats a stale quote as withdrawn.
+That would test whether the missing ingredient is aggregation or obligation.
 
 Limits, stated plainly: every agent-turn is a model call, so runs are small and
 one arm of one island costs about $2 and the better part of an hour; agents take
 turns rather than acting concurrently, and concurrency is where coordination is
-hardest; and a single seed cannot separate an effect from a draw.
+hardest; and a single seed cannot separate an effect from a draw. Raw records for
+all three arms are alongside this file as `tier2_seed1_*.json`.
 
 ## Files
 

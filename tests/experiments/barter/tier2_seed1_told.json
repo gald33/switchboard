@@ -1,0 +1,288 @@
+[
+  {
+    "arm": "told",
+    "seed": 1,
+    "model": "claude-haiku-4-5-20251001",
+    "cost_usd": 1.9419,
+    "efficiency": [
+      0.3159953178812555,
+      0.31952868907952214
+    ],
+    "ruined": [],
+    "own_plan": [
+      0.7707359858538763,
+      0.770735985853876
+    ],
+    "own_plan_ruined": [],
+    "autarky_floor": 0.37362189108253047,
+    "exchange_ceiling": 0.4133644945004108,
+    "worst_ratio": 0.7650509624574721,
+    "summary": {
+      "phase": "closed",
+      "tick": 5,
+      "proposed": 25,
+      "executed": 2,
+      "cancelled": 9,
+      "expired": 10,
+      "rejected": 4,
+      "utilities": [
+        0.294676,
+        0.279403,
+        0.326138,
+        0.175201
+      ]
+    },
+    "rejections": [
+      {
+        "tick": 0,
+        "agent": "a3",
+        "op": "produce",
+        "reason": "shares sum to 1.0001; you have 1.0 unit of labour"
+      },
+      {
+        "tick": 1,
+        "agent": "a2",
+        "op": "propose",
+        "reason": "unknown agent 'a0'"
+      },
+      {
+        "tick": 1,
+        "agent": "a2",
+        "op": "propose",
+        "reason": "unknown agent 'b0'"
+      },
+      {
+        "tick": 1,
+        "agent": "a1",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a1 holds 0.5098 salt, needs 1.0000 (escrowed in open proposals: {'salt': 1.5})"
+      },
+      {
+        "tick": 1,
+        "agent": "a1",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a1 holds 0.5098 salt, needs 0.8000 (escrowed in open proposals: {'salt': 1.5})"
+      },
+      {
+        "tick": 1,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0000 salt, needs 0.0335 (escrowed in open proposals: {'salt': 0.0335, 'grain': 0.3})"
+      },
+      {
+        "tick": 1,
+        "id": "t6",
+        "status": "rejected",
+        "reason": "seller short: a3 holds 0.7528 cloth, needs 4.0000"
+      },
+      {
+        "tick": 1,
+        "agent": "a3",
+        "op": "approve",
+        "reason": "you cannot cover this trade: a3 holds 0.7528 cloth, needs 4.0000; the offer was returned"
+      },
+      {
+        "tick": 2,
+        "id": "t9",
+        "status": "rejected",
+        "reason": "seller short: a2 holds 0.0034 cloth, needs 0.1500"
+      },
+      {
+        "tick": 2,
+        "agent": "a2",
+        "op": "approve",
+        "reason": "you cannot cover this trade: a2 holds 0.0034 cloth, needs 0.1500; the offer was returned"
+      },
+      {
+        "tick": 2,
+        "id": "t13",
+        "status": "rejected",
+        "reason": "seller short: a1 holds 0.1634 cloth, needs 0.3000"
+      },
+      {
+        "tick": 2,
+        "agent": "a1",
+        "op": "approve",
+        "reason": "you cannot cover this trade: a1 holds 0.1634 cloth, needs 0.3000; the offer was returned"
+      },
+      {
+        "tick": 4,
+        "id": "t5",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 4,
+        "id": "t7",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 4,
+        "agent": "a4",
+        "op": "cancel",
+        "reason": "trade t16 is not yours to cancel"
+      },
+      {
+        "tick": 4,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot trade with yourself"
+      },
+      {
+        "tick": 4,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot trade with yourself"
+      },
+      {
+        "tick": 4,
+        "agent": "a2",
+        "op": "cancel",
+        "reason": "trade t20 is not yours to cancel"
+      },
+      {
+        "tick": 4,
+        "agent": "a2",
+        "op": "propose",
+        "reason": "you cannot trade with yourself"
+      },
+      {
+        "tick": 4,
+        "agent": "a2",
+        "op": "propose",
+        "reason": "you cannot trade with yourself"
+      },
+      {
+        "tick": 4,
+        "id": "t24",
+        "status": "rejected",
+        "reason": "seller short: a1 holds 0.0166 fish, needs 0.1000"
+      },
+      {
+        "tick": 4,
+        "agent": "a1",
+        "op": "approve",
+        "reason": "you cannot cover this trade: a1 holds 0.0166 fish, needs 0.1000; the offer was returned"
+      },
+      {
+        "tick": 4,
+        "agent": "a1",
+        "op": "cancel",
+        "reason": "trade t21 is not yours to cancel"
+      },
+      {
+        "tick": 5,
+        "id": "t15",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 5,
+        "id": "t16",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 5,
+        "id": "t18",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t20",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t21",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t22",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t23",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t25",
+        "status": "expired",
+        "reason": "the floor closed"
+      }
+    ],
+    "said": [
+      {
+        "from": "a2",
+        "text": "a2 prices: grain 1.01, cloth 0.21, timber 1.11, salt 1.47 per fish"
+      },
+      {
+        "from": "a1",
+        "text": "a1 prices: grain 1.01, cloth 0.21, timber 1.11, salt 1.47 per fish. I have excess salt and need grain and cloth. Interested in trading salt for these goods at fair prices."
+      },
+      {
+        "from": "a4",
+        "text": "a4 prices: grain 0.5, cloth 1.8, timber 1.2, salt 0.5 per fish. I need cloth and timber badly and will pay well for them. I have excess salt and grain to trade."
+      },
+      {
+        "from": "a3",
+        "text": "Looking for fish and salt - have grain and timber to trade. Paying well for both."
+      },
+      {
+        "from": "a2",
+        "text": "a2: Looking for cloth - willing to trade grain or salt at fair rates. I have substantial excess grain. Also updating my prices based on market: grain 0.20, cloth 0.06, timber 0.68, salt 0.63 per fish."
+      },
+      {
+        "from": "a4",
+        "text": "a4: Critical need for cloth and salt to complete my portfolio. Have fish, grain, and timber available for fair trades. Also proposing direct salt trades - let's make deals that work for both sides."
+      },
+      {
+        "from": "a1",
+        "text": "a1 prices: fish 1.0, grain 0.62, cloth 1.02, timber 0.48, salt 0.08 per fish. I'm looking to rebalance - trading excess salt for timber and fish."
+      },
+      {
+        "from": "a3",
+        "text": "a3: Freed up timber for rebalancing. Looking to fine-tune my portfolio in the remaining rounds. Open to fair trades - I have cloth and timber to offer, seeking grain, fish, and salt to diversify holdings."
+      },
+      {
+        "from": "a1",
+        "text": "a1: I have fair trade offers pending (t5, t7, t15, t16) - converting salt to grain, timber, and fish to rebalance my portfolio before the final round. These trades are fairly priced. Hoping for quick approval!"
+      },
+      {
+        "from": "a3",
+        "text": "Cancelled t17 - preserving my cloth which is core to my portfolio. Looking for better trades. Have timber available, seeking grain and fish to rebalance before the final round."
+      },
+      {
+        "from": "a4",
+        "text": "a4: Canceling t14 - that was an impossible trade on my end. Refocusing on realistic deals. Still critical need for fish and cloth to maximize final score. Open to proposals from a1, a2, a3."
+      },
+      {
+        "from": "a4",
+        "text": "Final round push: Seeking cloth to maximize final score. Offering timber and other goods at fair rates. t18 still open with a3 (grain for cloth). Open to counter-proposals."
+      },
+      {
+        "from": "a2",
+        "text": "Final round rebalancing: t22 with a4 (grain\u2192salt), t23 with a3 (grain\u2192timber), t24 with a1 (salt\u2192fish). These are fair value trades to optimize final portfolio."
+      },
+      {
+        "from": "a3",
+        "text": "Final round: I'll trade 0.15 timber for grain from any trader. Also open to timber for fish trades. Protecting my cloth holdings."
+      },
+      {
+        "from": "a1",
+        "text": "Final round - need finalization: a3, a4, please approve t15 (my 0.3 salt for your 0.6 timber) and t16 (my 0.25 salt for your 0.3 fish). Critical for both portfolios!"
+      }
+    ],
+    "quote_board": {},
+    "quotes_posted": 0
+  }
+]
