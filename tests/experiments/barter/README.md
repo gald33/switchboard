@@ -323,6 +323,70 @@ stock they already held. But Tier 1 says the exchange gains are about a seventh
 of what is on the table. The convention's whole economic value is in telling you
 *what to make*, and no arm got near that, machinery or not.
 
+#### `bound` — the board pushes back
+
+```
+arm          eff  own plan  worst   settled  msgs  quotes    agree
+free       0.386     0.949   0.93      5/30    14       0        -
+told       0.316     0.771   0.77      2/25    15       0    30.0x
+built      0.368     0.898   0.93      3/16    11       6    27.1x
+bound   ruined 1     0.000   0.00      1/21    17      11     1.7x
+```
+
+**Obligation was the missing ingredient, and it worked.** Reporting each agent's
+own deviation and expiring stale quotes took price disagreement from 27.1x to
+**1.7x** — cloth from 27.1x to 1.5x, grain 5.8x to 1.5x, salt 3.0x to 1.2x. The
+final board is four traders who genuinely agree:
+
+```
+a1: fish 1  grain 1.5   cloth 2.25  timber 3.0  salt 1.8
+a2: fish 1  grain 1.4   cloth 2.0   timber 2.2  salt 1.7
+a3: fish 1  grain 1.75  cloth 2.25  timber 2.1  salt 1.8
+a4: fish 1  grain 1.2   cloth 3.0   timber 1.8  salt 2.0
+```
+
+Nothing in the prompt changed. The same words that produced 30x disagreement
+produced this once the board named your distance from the median and stopped
+carrying quotes you had abandoned. **What the convention needed from its
+substrate was pressure, not information.**
+
+**And it produced the worst outcome of any arm.** One agent ruined, one trade
+settled of twenty-one proposed, nine offers expiring unanswered. Final utilities
+`[0.319, 0.192, 0.353, 0.0]`.
+
+The transcript of the agent that went to zero is worth reading in full, because
+it is not confusion:
+
+```
+a4: URGENT: I need salt to avoid a zero score. a1, my t6 offer (0.6 grain
+    for 0.8 salt) is fair at your prices—please approve!
+a4: DESPERATE ROUND 4: I have ZERO salt - my score is 0. I need ANY salt
+    immediately. I can trade: 0.18 timber, 0.06 cloth, fish/grain...
+a4: Final round! I have zero salt which makes my score zero. I'm counting on
+    a1 and a3 to approve trades t17 and t18—these are fair at your quoted
+    prices and critical for me to get any score at all. Please approve!
+```
+
+t17 and t18 **expired unapproved. Nothing was rejected all run.** a4 knew what
+it needed, knew what everything was worth, offered fair value at prices every
+counterparty had publicly agreed to — and could not buy salt, because a1 and a3
+simply did not want what a4 had.
+
+That is the **double coincidence of wants**, and it is exactly where scripted arm
+C died: shared price reached, frontier reachable, and a third of islands ruined
+at a rate that never improved however long they ran. Two completely different
+routes — hand-written tatonnement policies, and Haiku agents choosing freely —
+hit the same wall the moment they achieved a shared price. That agreement across
+tiers is worth more than either result alone, because nothing was shared between
+them but the economy.
+
+Tier 1 already knows the answer, and no model arm has it. Arm D's one clause —
+*accept the numeraire past the point of wanting it, because you can spend it
+again* — took scripted ruin from 12 islands to 3. A unit of account tells two
+agents what a fair swap is. It does not make anyone want your cloth. The model
+ladder has now climbed to precisely the rung where money becomes necessary, and
+stopped there.
+
 #### What this is and is not
 
 One island per arm, one model, one seed. **The efficiency ordering is not
