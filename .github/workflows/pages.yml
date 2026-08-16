@@ -1,0 +1,60 @@
+name: Deploy viewer (GitHub Pages)
+
+# Publishes `examples/web` — the browser build of the viewer — to
+# https://gald33.github.io/switchboard/.
+#
+# It is deliberately hosted here rather than by the hub. A hub that serves
+# this page could serve a modified `switchboard-open.js` tomorrow and collect
+# the workspace key it is handed, which is precisely the property the
+# encryption exists to deny it. Two hosts, neither trusted with both halves:
+# the hub sees only ciphertext, the page host sees only what a browser fetches
+# from it. See examples/web/README.md.
+#
+# One-time manual step, because a workflow cannot enable Pages for a repo:
+#   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+# Until that is set, this job fails at `configure-pages` with a 404.
+#
+# The hub also has to allow this origin — a browser refuses the read
+# otherwise, before it is sent. That half lives in docker-compose.yml, and
+# `tests/test_deployment.py` fails if the two ever name different origins.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - examples/web/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+# Read the repo, write a Pages deployment, and mint the id-token that
+# `deploy-pages` exchanges for one. Nothing else.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One live page, and never two deploys racing to be it. Unlike CI, a
+# superseded deploy is worth cancelling: only the newest commit's page matters.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # No build step, and that is a feature: what ships is what is in the
+      # repo, so anyone can diff the served page against the commit it claims
+      # to come from. A bundler here would break that, and it is the only
+      # thing standing between "read the source" and "trust the host".
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/web
+      - id: deployment
+        uses: actions/deploy-pages@v4

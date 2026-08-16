@@ -21,6 +21,22 @@ services:
       #   python -c 'import secrets;print(secrets.token_urlsafe(32))'
       SWITCHBOARD_TOKEN: ${SWITCHBOARD_TOKEN:-}
       SWITCHBOARD_DB: /data/switchboard.db
+      # Origins allowed to read this hub from a browser, comma-separated.
+      # Empty means no browser may, which stays the default for a hub with no
+      # page pointed at it: CORS headers are attack surface you should not
+      # carry for a client you do not have.
+      #
+      # The default below is where this repo publishes the viewer's browser
+      # build (.github/workflows/pages.yml). Override it in `.env` if you host
+      # the page somewhere else; set it empty to turn browser reads off.
+      #
+      # Allowing an origin is not a grant of access. Every request still
+      # carries the same bearer token and every body is still sealed with a
+      # key this hub never receives, so the worst a hostile page gains is the
+      # ability to make a request it cannot authenticate. That is also why
+      # `allow_credentials` is false in server.py — the auth is a header, not
+      # a cookie, so nothing rides along on origin alone.
+      SWITCHBOARD_CORS_ORIGINS: ${SWITCHBOARD_CORS_ORIGINS-https://gald33.github.io}
     volumes:
       - switchboard-data:/data
 

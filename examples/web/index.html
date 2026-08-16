@@ -192,6 +192,21 @@ import { snapshot, summarise } from "./switchboard-room.js";
 
 const LOCAL = document.documentElement.dataset.source === "local";
 const STORE = "switchboard.rooms.v1";
+
+// The managed hub, and the token every client uses to reach it. Both are
+// copied from `config.py`, where the token is published on purpose: nothing
+// issues it, everyone has the same one, and it exists so untargeted scanning
+// costs a string compare instead of a query. It is not a boundary, and
+// filling it in here does not weaken one — what protects a room is that its
+// identifier is unguessable and its contents are sealed with a key this page
+// keeps to itself.
+//
+// Prefilled because the alternative is telling a person to go and find a
+// constant in a source file, which is how a working page comes to look
+// broken. `tests/test_deployment.py` fails if either value drifts from
+// config.py.
+const MANAGED_HUB = "https://switchboard.lucille-ai.com";
+const MANAGED_TOKEN = "sb_public_lucille";
 const $ = (id) => document.getElementById(id);
 
 let rooms = [];          // browser mode only
@@ -270,6 +285,7 @@ async function refresh() {
     } else {
       $("status").textContent = "no rooms yet";
       $("live").className = "dot off";
+      prefill();
       $("settings").showModal();
     }
   } catch (e) {
@@ -286,10 +302,17 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();
 });
 
+/** Start on the managed hub, because that is the one a reader arriving here
+ *  has not had to set up. Only ever a starting value: a typed hub wins, and
+ *  the field is left alone once it holds anything. */
+function prefill() {
+  if (!$("f-url").value) $("f-url").value = MANAGED_HUB;
+}
+
 if (!LOCAL) {
   rooms = load();
   $("settings-open").hidden = false;
-  $("settings-open").onclick = () => { drawSaved(); $("settings").showModal(); };
+  $("settings-open").onclick = () => { drawSaved(); prefill(); $("settings").showModal(); };
   $("settings-form").addEventListener("submit", (event) => {
     if (event.submitter && event.submitter.value !== "save") return;
     const data = new FormData($("settings-form"));
@@ -297,6 +320,9 @@ if (!LOCAL) {
       [...data.entries()].map(([k, v]) => [k, String(v).trim()]));
     if (!entry.url || !entry.workspace) return;
     entry.url = entry.url.replace(/\/$/, "");
+    // The managed hub's token is the same for everyone and nobody types it.
+    // A hub someone else runs gets no token they did not enter.
+    if (!entry.token && entry.url === MANAGED_HUB) entry.token = MANAGED_TOKEN;
     save([...rooms.filter((r) => id(r) !== id(entry)), entry]);
     selected = id(entry);
     $("settings-form").reset();
