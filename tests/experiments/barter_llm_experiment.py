@@ -4,8 +4,8 @@ Not collected by pytest — it costs money and needs a working model client. The
 mechanics are gated offline by ``tests/test_barter_llm.py``, which drives the
 whole harness with a scripted stand-in model and never makes a network call.
 
-    python tests/experiments/barter_llm_experiment.py --arm B
-    python tests/experiments/barter_llm_experiment.py --arms A B --agents 6 --rounds 8
+    python tests/experiments/barter_llm_experiment.py --arms told built
+    python tests/experiments/barter_llm_experiment.py --arms silent free --agents 6
 
 What is being measured
 ----------------------
@@ -21,18 +21,24 @@ Read them against the Tier 1 ladder, which is why that had to exist first:
     scripted arm C     a shared price, hand-coded — reaches 1.000
     frontier           1.000
 
-An arm B run that lands near the exchange ceiling means the models traded but
-never coordinated production. One that lands well above it means they found
-something, and the transcript says what. That is the whole point of keeping
-every message: the *content* of what agents invent is the finding here, and no
-aggregate can carry it.
+A run that lands near the exchange ceiling means the models traded but never
+coordinated production. One that lands well above it means they found something,
+and the transcript says what. That is the whole point of keeping every message
+and every quote: the *content* of what agents do with a convention is the
+finding here, and no aggregate can carry it.
+
+The four arms are `silent`, `free`, `told` and `built` — see `barter/llm.py`.
+`told` and `built` share a system prompt byte for byte and differ only in
+whether the convention has machinery, so running them as a pair is the point;
+running either alone measures very little.
 
 Honest limits
 -------------
 * **Small.** Defaults are a handful of agents over a handful of rounds, because
-  every agent-turn is a model call. One island is an anecdote; the seed sweep
-  that would make it evidence is the expensive part, and ``--islands`` exists
-  for when it is worth paying for.
+  every agent-turn is a model call, and one arm of one island costs about two
+  dollars and the better part of an hour. One island is an anecdote; the seed
+  sweep that would make it evidence is the expensive part, and ``--islands``
+  exists for when it is worth paying for.
 * **Turn-based.** Agents act in a shuffled order, one turn each per round. Real
   agents on a hub are concurrent, and concurrency is exactly where a
   coordination protocol is hardest. This measures the easier problem.
@@ -54,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
-from barter.llm import TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
+from barter.llm import ARMS, TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
 from barter.run import score  # noqa: E402
 
@@ -116,7 +122,8 @@ async def run_llm_island(
         wires, options = {}, {}
         for agent_id in manager.agents:
             wire = Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
-                        arm=arm, floor_channel=f"barter/{run}/floor")
+                        arm=arm, floor_channel=f"barter/{run}/floor",
+                        quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
             wires[agent_id] = wire
             options[agent_id] = ClaudeAgentOptions(
                 model=model,
@@ -170,6 +177,10 @@ async def run_llm_island(
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
+        board = {
+            str(e["key"]).rsplit("/", 1)[-1]: e["value"]
+            for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/")
+        }
 
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.
@@ -187,6 +198,8 @@ async def run_llm_island(
         "summary": manager.summary(),
         "rejections": manager.rejections[-40:],
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
+        "quote_board": board,
+        "quotes_posted": sum(w.quotes_posted for w in wires.values()),
         "transcript": transcript,
     }
 
@@ -213,8 +226,14 @@ def render(result: dict) -> str:
         f"  worst agent      {result['worst_ratio']:.2f}x autarky",
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
-        f"  said             {len(result['said'])} message(s)",
+        f"  said             {len(result['said'])} message(s)"
+        + (f", {result['quotes_posted']} quote(s) posted" if result.get("quotes_posted") else ""),
     ]
+    if result.get("quote_board"):
+        lines.append("\n  final quote board (fish per unit)")
+        for who, prices in sorted(result["quote_board"].items()):
+            shown = "  ".join(f"{g} {v:g}" for g, v in prices.items())
+            lines.append(f"    {who:>4}: {shown}")
     if result["said"]:
         lines.append("\n  what they said")
         for message in result["said"][:14]:
@@ -227,7 +246,7 @@ def render(result: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--arms", nargs="+", default=["B"], choices=["A", "B"])
+    parser.add_argument("--arms", nargs="+", default=["told", "built"], choices=list(ARMS))
     parser.add_argument("--agents", type=int, default=5)
     parser.add_argument("--goods", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=6)

@@ -153,11 +153,43 @@ in production rather than in swapping.
 ## Tier 2: models in the trader's seat
 
 `barter_llm_experiment.py` puts a language model in each agent, with the manager
-unchanged and still not a model. **Arms are tool surfaces, not instructions**:
-arm A has no channel tool, arm B has `say` and `listen` and *nothing about what
-to put in them*. The prompt never mentions prices, numeraires, or money. If a
-convention appears in arm B it was invented, and the Tier 1 ladder is what gives
-it a scale.
+unchanged and still not a model. Four arms:
+
+| | |
+|---|---|
+| `silent` | no channel tool at all |
+| `free` | `say` and `listen`, and nothing about what to put in them |
+| `told` | the numeraire convention, **stated in words**. Same tools as `free` |
+| `built` | the same words, **plus machinery**: a structured quote board with validation and a median |
+
+`silent` and `free` never hear the words "price", "numeraire" or "money" — so a
+convention appearing in `free` was invented, not followed, and the Tier 1 ladder
+is what gives it a scale.
+
+**`told` against `built` is the pair that matters, and they share a system prompt
+byte for byte** — a test asserts it. The only difference is whether the
+convention has an affordance or is only described. That is the difference between
+telling agents how to coordinate and building them something to coordinate
+*with*, and it is a question about what a coordination substrate should offer
+rather than about what a prompt should say. If they match, the machinery is
+ceremony. If `built` wins, knowing a convention and being able to run one are
+different things.
+
+The machinery is deliberately modest, and each piece earns its place:
+
+* `post_quote` **validates** — a number per good or an explanation. Under `told`
+  a trader can say "cloth is about two, maybe three" and the ambiguity survives
+  all the way to the trade.
+* fish is pinned at 1, so two traders cannot quote on different scales while
+  appearing to agree.
+* `read_quotes` returns the **median** per good. Turning scattered quotes into
+  one number everybody computes identically is the step a price convention
+  actually needs, and it is the step `told` leaves each agent to do in its head,
+  from prose — which is where a shared price stops being shared.
+
+The manager still knows nothing about prices and will settle any trade both sides
+agree to, at any rate at all. A convention it policed would be a rule instead,
+and there is a test for that too.
 
 Read a Tier 2 result against the ladder: near the exchange ceiling means the
 models traded but never coordinated production; well above it means they found
@@ -166,8 +198,10 @@ is the finding — no aggregate can carry it.
 
 ### One island each arm, Haiku 4.5, 4 agents, 5 rounds
 
+#### `silent` vs `free` — is the convention something models invent?
+
 ```
-                          A silent    B talking     benchmarks
+                          silent       free         benchmarks
   EFFICIENCY                 0.337        0.386     autarky floor    0.374
   of its own plan            0.836        0.949     exchange ceiling 0.413
   worst agent vs autarky     0.63x        0.93x     scripted price   1.000

@@ -25,9 +25,34 @@ test instead of the prompt.
 
 **Arms are tool surfaces, not instructions.** The prompt never suggests posting
 prices, choosing a numeraire, or using anything as money. Arm A simply has no
-channel tool; arm B has ``say`` and ``listen`` and nothing about what to put in
-them. If a convention appears in arm B it was invented, not followed — and the
-Tier 1 arms give it a scale to be measured against.
+channel tool; ``free`` has ``say`` and ``listen`` and nothing about what to put
+in them. If a convention appears in ``free`` it was invented, not followed — and
+the Tier 1 arms give it a scale to be measured against.
+
+The ladder
+----------
+``free`` answered its question: given a channel and no guidance, Haiku traders
+built a want-board rather than a market — fourteen messages, not one of them
+naming a price, a rate or a unit. So the next question is *what was missing*,
+and it splits in two:
+
+    silent   no channel at all
+    free     a channel, nothing said about what to put in it
+    told     the numeraire convention, stated in words. Same tools as `free`.
+    built    the same words, plus machinery that implements the convention:
+             a structured quote board with validation and aggregation.
+
+**``told`` against ``built`` is the arm that matters, and the two share a system
+prompt byte for byte.** A test asserts that. The only difference is whether the
+convention has an affordance or is merely described, which is the difference
+between telling agents how to coordinate and building them something to
+coordinate *with*. If ``told`` matches ``built``, the machinery is ceremony and
+the words were doing the work. If ``built`` wins, then knowing a convention and
+being able to run one are different things — and that is a claim about what a
+coordination substrate should offer, not about what a prompt should say.
+
+``free`` against ``told`` is the cheaper prior question: is the convention
+something models will not invent but will happily adopt?
 
 Cost
 ----
@@ -82,6 +107,42 @@ what has been posted since you last looked. Nobody is obliged to tell the truth
 and nobody is obliged to read.
 """
 
+#: Given verbatim to both `told` and `built`, which is what makes their
+#: comparison mean anything: same words, different affordances.
+#:
+#: It describes the convention and stops. It does not say to specialise, does
+#: not say a shared price is worth having, and does not say what to produce —
+#: because whether a unit of account leads agents to those things on their own
+#: is the question, not the setup. The last line is load-bearing in the other
+#: direction: a convention nobody enforces is exactly what a convention is, and
+#: an agent that thought the manager was checking prices would be following a
+#: rule rather than keeping an agreement.
+NUMERAIRE_BRIEF = """
+The island has a convention for talking about value.
+
+Fish is the unit of account. A good's price is how many fish one unit of it is
+worth, so fish is priced at 1 by definition.
+
+State your prices for the other goods in fish, and revise them as you see what
+others are stating.
+
+This is only a way of speaking. The manager knows nothing about prices, enforces
+none of this, and will settle any trade the two of you agree to.
+"""
+
+#: Arms, in order of how much is handed over. Named rather than lettered because
+#: the Tier 1 arms are lettered and mean different things — Tier 1's D is money,
+#: which is not on this ladder at all.
+ARMS = ("silent", "free", "told", "built")
+
+
+def speaks(arm: str) -> bool:
+    return arm != "silent"
+
+
+def has_quote_board(arm: str) -> bool:
+    return arm == "built"
+
 TURN = """\
 Round {round_no} of {rounds}. {phase_note}
 
@@ -104,8 +165,14 @@ class Wire:
     service: ManagerService
     arm: str
     floor_channel: str
+    #: Blackboard prefix for the `built` arm's quote board. One key per trader,
+    #: so a quote is a value anyone can read rather than a message somebody
+    #: might have scrolled past.
+    quote_prefix: str = ""
+    goods: tuple[str, ...] = ()
     calls: list[dict[str, Any]] = field(default_factory=list)
     said: list[str] = field(default_factory=list)
+    quotes_posted: int = 0
     _cursor: int = 0
 
     def manager_call(self, op: str, **kwargs: Any) -> dict[str, Any]:
@@ -128,6 +195,63 @@ class Wire:
         fresh = history[self._cursor:]
         self._cursor = len(history)
         return [m["body"] for m in fresh if isinstance(m.get("body"), dict)]
+
+    # --- the `built` arm's machinery ---------------------------------------
+
+    def post_quote(self, prices: Any) -> dict[str, Any]:
+        """Publish this trader's prices, in fish, on the shared board.
+
+        Validated rather than accepted. That is a real part of what "machinery"
+        means here: in the ``told`` arm a trader can say "cloth is about two,
+        maybe three" and the ambiguity survives to the point of trade, whereas
+        this either stores a number per good or explains why it did not. One
+        key per trader on the blackboard, overwritten each time, so the board
+        is a current state anyone can read rather than a history to scroll.
+        """
+        if not isinstance(prices, dict) or not prices:
+            return {"error": 'prices must be an object like {"cloth": 2.5, "salt": 0.8}'}
+        clean: dict[str, float] = {}
+        for good, value in prices.items():
+            name = str(good)
+            if name not in self.goods:
+                return {"error": f"unknown good {name!r}; goods are {', '.join(self.goods)}"}
+            try:
+                price = float(value)
+            except (TypeError, ValueError):
+                return {"error": f"price for {name!r} is not a number"}
+            if price != price or price <= 0 or price == float("inf"):
+                return {"error": f"price for {name!r} must be a positive number"}
+            clean[name] = price
+        # Fish is 1 by definition; storing anything else would let two traders
+        # quote on different scales while appearing to agree.
+        clean[self.goods[0]] = 1.0
+        self.client.board_set(f"{self.quote_prefix}{self.agent_id}", clean)
+        self.quotes_posted += 1
+        return {"posted": clean}
+
+    def read_quotes(self) -> dict[str, Any]:
+        """Every trader's latest quote, and the median for each good.
+
+        The median is the part that is genuinely machinery and not just
+        storage. Turning a scatter of individual quotes into one number
+        everybody computes identically is the step a price convention actually
+        needs, and it is the step ``told`` leaves each agent to do in its head
+        from prose — which is where a shared price stops being shared.
+        """
+        entries = self.client.board_list(prefix=self.quote_prefix)
+        quotes: dict[str, dict[str, float]] = {}
+        for entry in entries:
+            who = str(entry["key"]).rsplit("/", 1)[-1]
+            if isinstance(entry.get("value"), dict):
+                quotes[who] = entry["value"]
+        medians = {}
+        for good in self.goods:
+            values = sorted(q[good] for q in quotes.values() if good in q)
+            if values:
+                mid = len(values) // 2
+                medians[good] = (values[mid] if len(values) % 2
+                                 else (values[mid - 1] + values[mid]) / 2)
+        return {"quotes": quotes, "median_price": medians, "traders_quoting": len(quotes)}
 
 
 def build_tools(wire: Wire) -> Any:
@@ -177,7 +301,7 @@ def build_tools(wire: Wire) -> Any:
 
     tools = [my_state, produce, propose_trade, approve_trade, pending_trades, cancel_trade]
 
-    if wire.arm != "A":
+    if speaks(wire.arm):
         @tool("say", "Post a message all traders can read.", {"text": str})
         async def say(args: Any) -> dict[str, Any]:
             return _text(wire.post(str(args.get("text", ""))))
@@ -187,6 +311,25 @@ def build_tools(wire: Wire) -> Any:
             return _text(wire.read())
 
         tools += [say, listen]
+
+    if has_quote_board(wire.arm):
+        # Descriptions state mechanics only, for the same reason as everything
+        # else here. What the convention is comes from the brief, which `told`
+        # has word for word; what these add is somewhere to put it.
+        @tool("post_quote",
+              "Publish your prices on the shared quote board, in fish per unit. "
+              "Replaces your previous quote. Every trader can read it.",
+              {"prices": dict})
+        async def post_quote(args: Any) -> dict[str, Any]:
+            return _text(wire.post_quote(args.get("prices")))
+
+        @tool("read_quotes",
+              "The quote board: every trader's latest posted prices, and the "
+              "median price for each good across everyone quoting.", {})
+        async def read_quotes(_: Any) -> dict[str, Any]:
+            return _text(wire.read_quotes())
+
+        tools += [post_quote, read_quotes]
 
     return create_sdk_mcp_server(name=f"island-{wire.agent_id}", tools=tools)
 
@@ -198,14 +341,30 @@ def _text(payload: Any) -> dict[str, Any]:
 def tool_names(arm: str, agent_id: str) -> list[str]:
     names = ["my_state", "produce", "propose_trade", "approve_trade",
              "pending_trades", "cancel_trade"]
-    if arm != "A":
+    if speaks(arm):
         names += ["say", "listen"]
+    if has_quote_board(arm):
+        names += ["post_quote", "read_quotes"]
     return [f"mcp__island-{agent_id}__{name}" for name in names]
 
 
 def brief_for(island: Island, manager: Manager, agent_id: str, arm: str) -> str:
+    """The system prompt for one agent.
+
+    ``told`` and ``built`` must return byte-identical text — the machinery is
+    the only thing separating them, and a stray sentence pointing at the quote
+    tools would turn the comparison into one about prompts again. The tools
+    announce themselves through their own descriptions, which is what an
+    affordance is.
+    """
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; expected one of {', '.join(ARMS)}")
     text = BRIEF.format(
         agent_id=agent_id, n_others=island.n_agents - 1, n_goods=island.n_goods,
         goods=", ".join(manager.goods),
     )
-    return text + (CHANNEL_BRIEF if arm != "A" else "")
+    if speaks(arm):
+        text += CHANNEL_BRIEF
+    if arm in ("told", "built"):
+        text += NUMERAIRE_BRIEF
+    return text
