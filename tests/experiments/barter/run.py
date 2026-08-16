@@ -1,0 +1,216 @@
+"""Driving one island through production, price discovery and a trading floor.
+
+Two transports, one set of results. ``direct`` calls the ``Manager`` state
+machine in process; ``hub`` sends the identical requests as Switchboard
+messages to a ``ManagerService`` and reads the replies back off the hub. The
+experiment asserts the two agree exactly for the same seed
+(``test_barter.py::test_hub_and_direct_transports_agree``), which is the claim
+worth making about the transport: the hub carries the market without changing
+it. Sweeps then run on ``direct``, because a thousand HTTP round-trips per
+island buys nothing once that equality holds.
+"""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+from typing import Any
+
+from .economy import Efficiency, Island, autarky, capture, efficiency
+from .manager import Manager, ManagerRPC, ManagerService
+from .traders import Floor, Trader, propose_for
+
+#: Rounds of price discovery before production closes. Arm C needs a few to
+#: converge; A and B ignore them, and are charged for them anyway so the arms
+#: are not separated by round count.
+DISCOVERY_ROUNDS = 30
+
+#: Default trading rounds. Each is one proposal per agent plus one pass of
+#: approvals. This is a *tuning knob, not a constant*, and the arms respond to
+#: it differently enough that quoting any single value would decide the result:
+#: the price arm plateaus almost immediately and never improves, while the money
+#: arm keeps climbing as its scarce numeraire circulates. Comparing them at one
+#: budget picks a winner by picking the budget, so ``--rounds-sweep`` traces the
+#: whole curve and the report shows where each arm stops moving.
+TRADE_ROUNDS = 60
+
+
+@dataclass(frozen=True)
+class Outcome:
+    arm: str
+    seed: int
+    utilities: tuple[float, ...]
+    efficiency: Efficiency
+    #: Efficiency measured against the frontier of the *production plan they
+    #: chose*. High here with low overall efficiency means they swapped their
+    #: goods well but made the wrong ones.
+    exchange_efficiency: Efficiency
+    capture_lo: float
+    capture_hi: float
+    #: Worst agent's final utility as a multiple of its autarky utility. Below
+    #: 1.0 means somebody was made worse off by taking part, which voluntary
+    #: trade alone cannot cause -- only a production bet on a price that did not
+    #: materialise can.
+    worst_ratio: float
+    messages: int
+    proposed: int
+    executed: int
+    rejected: int
+
+    def row(self) -> str:
+        return (
+            f"{self.arm:<11} {self.efficiency!s:>13} {self.exchange_efficiency!s:>13} "
+            f"{self.capture_lo:>7.1%} {self.worst_ratio:>7.2f} "
+            f"{self.messages:>6} {self.executed:>5}/{self.proposed:<5} {self.rejected:>5}"
+        )
+
+
+HEADER = (
+    f"{'ARM':<11} {'EFFICIENCY':>13} {'OF OWN PLAN':>13} {'CAPTURE':>7} "
+    f"{'WORST':>7} {'MSGS':>6} {'TRADES':>11} {'REJ':>5}"
+)
+
+
+class _DirectPort:
+    """Manager access with no transport at all."""
+
+    def __init__(self, manager: Manager, agent_id: str) -> None:
+        self.manager, self.agent_id = manager, agent_id
+
+    def call(self, op: str, **kwargs: Any) -> dict[str, Any]:
+        return self.manager.dispatch(self.agent_id, {"op": op, **kwargs})
+
+
+def _hub_ports(hub: Any, manager: Manager, run: str) -> tuple[Any, dict[str, Any]]:
+    """Same market, over real Switchboard messages."""
+    service = ManagerService(hub.client("manager"), manager, run=run)
+    service.claim()
+    # `pump=service.drain` is what makes a single-threaded run work: the agent
+    # sends, the manager serves its inbox, the agent collects -- all inside one
+    # `call`. A manager in its own process would need no pump and the agent code
+    # would be unchanged.
+    ports: dict[str, Any] = {
+        agent_id: ManagerRPC(hub.client(agent_id), pump=service.drain)
+        for agent_id in manager.agents
+    }
+    return service, ports
+
+
+def run_island(
+    island: Island,
+    arm: str,
+    *,
+    seed: int = 0,
+    hub: Any = None,
+    run: str = "barter",
+    trade_rounds: int | None = None,
+) -> Outcome:
+    """One island, one arm, start to finish."""
+    rounds = TRADE_ROUNDS if trade_rounds is None else trade_rounds
+    rng = random.Random(seed * 1000 + ord(arm))
+    manager = Manager(island=island)
+    goods = manager.goods
+
+    floor = Floor(enabled=arm != "A")
+    traders = {
+        agent_id: Trader(agent_id, state.index, island, arm, random.Random(rng.random() * 1e9))
+        for agent_id, state in manager.agents.items()
+    }
+    for trader in traders.values():
+        trader.goods = goods
+
+    # Both ports expose the same `call(op, **kwargs)`, so everything below this
+    # point is written once and does not know which transport it is on. That is
+    # what makes the two comparable: it is the same run, not two runs that
+    # resemble each other.
+    service = None
+    if hub is None:
+        ports: dict[str, Any] = {a: _DirectPort(manager, a) for a in manager.agents}
+    else:
+        service, ports = _hub_ports(hub, manager, run)
+
+    def call(agent_id: str, op: str, **kwargs: Any) -> dict[str, Any]:
+        return ports[agent_id].call(op, **kwargs)
+
+    # --- talk, then produce -------------------------------------------------
+    for round_no in range(DISCOVERY_ROUNDS):
+        for trader in traders.values():
+            trader.declare(round_no, floor)
+        for trader in traders.values():
+            trader.observe_prices(round_no, floor)
+    for trader in traders.values():
+        trader.adopt_own_price(floor)
+
+    for agent_id, trader in traders.items():
+        call(agent_id, "produce", plan=trader.production_plan(floor))
+    manager.check_conservation()
+    manager.open_trading()
+    manager.check_conservation()
+
+    # --- the floor ----------------------------------------------------------
+    order = list(traders)
+    for _ in range(rounds):
+        rng.shuffle(order)
+        holdings = {a: list(manager.agents[a].holdings) for a in traders}
+        for agent_id in order:
+            trader = traders[agent_id]
+            offer = propose_for(trader, holdings[agent_id], list(traders.values()), holdings, rng)
+            if offer is None:
+                continue
+            seller, give, want = offer
+            reply = call(agent_id, "propose", seller=seller, give=give, want=want)
+            if reply.get("ok"):
+                holdings[agent_id] = list(manager.agents[agent_id].holdings)
+
+        # Approvals. A seller accepts only what raises its own utility, so every
+        # settled trade is voluntary on both sides.
+        for agent_id in order:
+            trader = traders[agent_id]
+            pending = call(agent_id, "pending")
+            for trade in pending.get("awaiting_your_approval", []):
+                # The seller receives what the buyer offered and hands over what
+                # the buyer asked for. Approval is always the seller's own call,
+                # by its own rule, so every settled trade is voluntary on both
+                # sides and nobody is scripted into a loss.
+                current = list(manager.agents[agent_id].holdings)
+                if trader.accepts(current, trade["give"], trade["want"]):
+                    call(agent_id, "approve", trade_id=trade["id"])
+        manager.advance()
+        manager.check_conservation()
+
+    manager.close()
+    manager.check_conservation()
+    if service is not None:
+        service.publish()
+
+    return score(island, manager, arm=arm, seed=seed, messages=floor.sent)
+
+
+def score(island: Island, manager: Manager, *, arm: str, seed: int,
+          messages: int = 0) -> Outcome:
+    """Turn a finished manager into an Outcome.
+
+    Shared by both tiers rather than written twice. A Tier 2 island costs real
+    money to produce, so the one thing that must not happen is a run completing
+    and then falling over on the way to a number — which is exactly what
+    happened when this logic was duplicated, and is why it now has a gate that
+    needs no model to exercise (``test_barter_llm.py``).
+    """
+    utils = manager.utilities()
+    _, autarky_utils = autarky(island)
+    realised = efficiency(island, utils)
+    # The frontier of the production plan they actually chose. High here beside
+    # a low overall score means they swapped well and made the wrong things.
+    plan = [list(manager.agents[a].shares or island.alpha[manager.agents[a].index])
+            for a in sorted(manager.agents, key=lambda a: manager.agents[a].index)]
+    lo, hi = capture(realised, efficiency(island, autarky_utils))
+    summary = manager.summary()
+    return Outcome(
+        arm=arm, seed=seed, utilities=tuple(utils), efficiency=realised,
+        exchange_efficiency=efficiency(island, utils, fixed_shares=plan),
+        capture_lo=lo, capture_hi=hi,
+        worst_ratio=min(utils[i] / autarky_utils[i] for i in range(island.n_agents)),
+        messages=messages, proposed=summary["proposed"],
+        executed=summary["executed"],
+        rejected=summary["rejected"] + summary["expired"],
+    )
