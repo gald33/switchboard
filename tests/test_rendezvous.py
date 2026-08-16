@@ -15,6 +15,7 @@ import pytest
 
 from switchboard import rendezvous
 from switchboard.cli import main
+from switchboard.crypto import generate_key
 from switchboard.testing import BASE_URL, hub
 
 WS = "rendezvous-ws"
@@ -139,11 +140,22 @@ def test_junk_on_the_board_is_ignored_rather_than_crashing():
 
 @pytest.fixture
 def cli_hub(monkeypatch):
+    """Encrypted, because that is where this command actually runs.
+
+    The first version of this fixture had no key, and two bugs lived through
+    it: prefix listings were dead in an encrypted room, so notes were never
+    found at all, and a peer whose name would not open was counted as somebody
+    you had met. Both are invisible on a keyless hub — there are no blinded
+    identifiers and no unreadable peers — so neither test failed.
+    """
     import switchboard.cli as cli_module
 
-    with hub(workspace=WS) as handle:
+    key = generate_key()
+    with hub(workspace=WS, key=key) as handle:
         monkeypatch.setattr(cli_module, "Client", handle.client_class())
         monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv("SWITCHBOARD_KEY", key)
+        handle.workspace_key = key
         yield handle
 
 
@@ -194,3 +206,65 @@ def test_an_agent_does_not_find_itself(cli_hub, capsys, monkeypatch):
     _run(["design-review", "--want", "hello", "--wait", "0"], capsys)
     out = _run(["design-review", "--wait", "0"], capsys)
     assert out["notes"] == []
+
+
+# --- the peer you have not met ----------------------------------------------
+
+
+def test_a_peer_on_another_key_is_not_somebody_you_have_met(
+    cli_hub, capsys, monkeypatch
+):
+    """This command's own failure mode, reproduced inside it.
+
+    Same hub, same workspace, different key: you are both in the roster and
+    cannot exchange a word. Counting that as a meeting is exactly the forty
+    minutes this whole feature exists to prevent — and worse here, because
+    `met` tells the agent to stop looking for the peer it could still find.
+    """
+    cli_hub.client("stranger", key=generate_key()).register(name="on another key")
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+    out = _run(["design-review", "--wait", "0"], capsys)
+
+    assert out["roster"] == [], "an unreadable peer is not a peer"
+    assert out["met"] is False, "do not stop looking because a stranger is here"
+
+
+def test_the_mismatch_is_reported_rather_than_silently_dropped(
+    cli_hub, capsys, monkeypatch
+):
+    """Excluding them quietly would trade one silent failure for another: the
+    key mismatch is the single most likely reason the peer is missing."""
+    cli_hub.client("stranger", key=generate_key()).register(name="on another key")
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+    out = _run(["design-review", "--wait", "0"], capsys)
+
+    assert len(out["key_mismatches"]) == 1
+
+
+def test_the_human_output_names_the_command_that_settles_it(
+    cli_hub, capsys, monkeypatch
+):
+    """A roster cannot tell you which room you are in; `join` can."""
+    cli_hub.client("stranger", key=generate_key()).register(name="on another key")
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+    assert main(["--url", BASE_URL, "-w", WS, "rendezvous", "t", "--wait", "0"]) == 0
+
+    out = capsys.readouterr().out
+    assert "key mismatch" in out
+    assert "switchboard join" in out
+
+
+def test_a_real_peer_is_still_found_alongside_a_stranger(cli_hub, capsys, monkeypatch):
+    """The fix must not throw out the meeting with the mismatch."""
+    cli_hub.client("stranger", key=generate_key()).register(name="on another key")
+    cli_hub.client("bob").register(name="a real peer")
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+    out = _run(["design-review", "--wait", "0"], capsys)
+
+    assert out["met"] is True
+    assert len(out["roster"]) == 1
+    assert len(out["key_mismatches"]) == 1

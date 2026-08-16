@@ -965,10 +965,24 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         slot = rendezvous.next_slot(config.workspace, topic, now)
 
         found: list[dict[str, Any]] = []
+        strangers: list[dict[str, Any]] = []
         for gap in rendezvous.schedule(look):
             if gap:
                 time.sleep(gap)
-            roster = [a for a in hub.agents() if a.get("agent_id") != hub.agent_id]
+            everyone = hub.agents()
+            # A peer whose name will not open is on a different key, which is
+            # the one person in the room you have *not* met: you will both sit
+            # in each other's roster and be unable to exchange a word. Counting
+            # them as found is this command's own failure mode, reproduced —
+            # it would report a meeting and stop the search that could still
+            # find a real one. They are reported instead, below.
+            strangers = hub.key_mismatches(everyone)
+            stranger_ids = {a.get("agent_id") for a in strangers}
+            roster = [
+                a for a in everyone
+                if a.get("agent_id") != hub.agent_id
+                and a.get("agent_id") not in stranger_ids
+            ]
             live = [a for a in roster if not a.get("away")]
             if live:
                 found = live
@@ -995,6 +1009,10 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             "roster": found, "notes": [n.as_json() for n in peers],
             "next_slot_in": round(slot - now, 1),
             "met": bool(found or peers),
+            # Separate from `roster` on purpose: a caller that treats these as
+            # peers has reintroduced the bug. They are here so the mismatch is
+            # actionable rather than invisible.
+            "key_mismatches": [a.get("agent_id") for a in strangers],
         })
         return EXIT_OK
 
@@ -1006,6 +1024,18 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
     for note in peers:
         print(f"{fmt.green('note')}   {note.agent_id[:33]:<34} "
               f"{note.want[:60] or '(no description)'}")
+    if strangers:
+        # Never presented as a near miss. This is the forty-minute failure
+        # exactly: same hub, same workspace, different key, both listed. The
+        # roster is the thing that cannot tell you, so say it here and point
+        # at the command that proves it either way.
+        print(
+            f"\n{fmt.yellow('key mismatch')} — {len(strangers)} agent(s) here are on a "
+            f"different workspace key.\nYou are in each other's roster and cannot "
+            f"exchange anything. If one of\nthem is who you came for, this is the "
+            f"whole problem: get an invite and\nrun `switchboard join <invite>`, "
+            f"which fails loudly instead of quietly."
+        )
     if not found and not peers:
         # The honest report, and the one that must not read as failure: an
         # agent told "nobody is here" stops, which is how both sides quit.
