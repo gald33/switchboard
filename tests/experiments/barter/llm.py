@@ -41,18 +41,29 @@ and it splits in two:
     told     the numeraire convention, stated in words. Same tools as `free`.
     built    the same words, plus machinery that implements the convention:
              a structured quote board with validation and aggregation.
+    bound    the same words and board, but the board pushes back: it names your
+             distance from the median, and a quote you stop renewing expires.
 
-**``told`` against ``built`` is the arm that matters, and the two share a system
-prompt byte for byte.** A test asserts that. The only difference is whether the
-convention has an affordance or is merely described, which is the difference
-between telling agents how to coordinate and building them something to
-coordinate *with*. If ``told`` matches ``built``, the machinery is ceremony and
-the words were doing the work. If ``built`` wins, then knowing a convention and
-being able to run one are different things — and that is a claim about what a
-coordination substrate should offer, not about what a prompt should say.
+All three quoting arms share a system prompt **byte for byte**, and a test
+asserts it. What separates them is only what the tools do, which is the
+difference between telling agents how to coordinate and building them something
+to coordinate *with* — a claim about what a coordination substrate should offer,
+not about what a prompt should say.
 
-``free`` against ``told`` is the cheaper prior question: is the convention
-something models will not invent but will happily adopt?
+``free`` against ``told`` asked whether this is a convention models will not
+invent but will happily adopt. The answer was worse than either: they adopted the
+*vocabulary* completely and the *agreement* not at all, quoting confidently while
+holding cloth 30x apart, and finished below the arm that said nothing.
+
+``told`` against ``built`` asked whether aggregation was the missing piece. It
+was not. Four traders had a median in every reply and still ended 27x apart on
+cloth — the only good they agreed on was the one the board pinned for them.
+
+``built`` against ``bound`` is what is left: whether the missing piece is
+**obligation** rather than aggregation. Same board, same median, but now it
+reports your own deviation instead of leaving you to notice it, and a quote you
+stop renewing falls off. If that is enough, what a convention needs from its
+substrate is pressure, not information.
 
 Cost
 ----
@@ -133,7 +144,12 @@ none of this, and will settle any trade the two of you agree to.
 #: Arms, in order of how much is handed over. Named rather than lettered because
 #: the Tier 1 arms are lettered and mean different things — Tier 1's D is money,
 #: which is not on this ladder at all.
-ARMS = ("silent", "free", "told", "built")
+ARMS = ("silent", "free", "told", "built", "bound")
+
+#: How many manager ticks a quote stays on the board under ``bound``. Two means
+#: a quote survives the round it was posted and one more, so an agent that never
+#: comes back drops off rather than sitting there being read as current.
+QUOTE_TTL_TICKS = 2
 
 
 def speaks(arm: str) -> bool:
@@ -141,7 +157,27 @@ def speaks(arm: str) -> bool:
 
 
 def has_quote_board(arm: str) -> bool:
-    return arm == "built"
+    return arm in ("built", "bound")
+
+
+def obliges_revision(arm: str) -> bool:
+    """``bound``: the board pushes back instead of merely storing.
+
+    ``built`` answered the aggregation question and the answer was no — four
+    traders had a median in every reply and ended 27x apart on cloth, because a
+    number you are shown is not a number you act on. So ``bound`` changes what
+    the board *does* rather than what it holds, in the two smallest ways that
+    turn a display into a demand:
+
+    * it reports **your** price against the median, per good, as a deviation —
+      the comparison every agent could have made and none did;
+    * a quote **goes stale**, so staying on the board is something you have to
+      keep doing rather than something you did once.
+
+    Both are still only about quoting. Nothing obliges an agent to trade at any
+    price, and the manager remains ignorant of prices entirely.
+    """
+    return arm == "bound"
 
 TURN = """\
 Round {round_no} of {rounds}. {phase_note}
@@ -225,9 +261,32 @@ class Wire:
         # Fish is 1 by definition; storing anything else would let two traders
         # quote on different scales while appearing to agree.
         clean[self.goods[0]] = 1.0
-        self.client.board_set(f"{self.quote_prefix}{self.agent_id}", clean)
+        # The tick is stored for every arm and only *read* under `bound`. One
+        # storage shape keeps the arms comparable: `built` must behave exactly
+        # as it did when its island was run, or the pair stops being a pair.
+        self.client.board_set(f"{self.quote_prefix}{self.agent_id}",
+                              {"prices": clean, "tick": self._tick()})
         self.quotes_posted += 1
         return {"posted": clean}
+
+    def _tick(self) -> int:
+        return int(self.service.manager.tick)
+
+    def _board(self) -> dict[str, tuple[dict[str, float], int]]:
+        out: dict[str, tuple[dict[str, float], int]] = {}
+        for entry in self.client.board_list(prefix=self.quote_prefix):
+            who = str(entry["key"]).rsplit("/", 1)[-1]
+            value = entry.get("value")
+            if isinstance(value, dict) and isinstance(value.get("prices"), dict):
+                out[who] = (value["prices"], int(value.get("tick", 0)))
+        return out
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        return (ordered[mid] if len(ordered) % 2
+                else (ordered[mid - 1] + ordered[mid]) / 2)
 
     def read_quotes(self) -> dict[str, Any]:
         """Every trader's latest quote, and the median for each good.
@@ -237,21 +296,43 @@ class Wire:
         everybody computes identically is the step a price convention actually
         needs, and it is the step ``told`` leaves each agent to do in its head
         from prose — which is where a shared price stops being shared.
+
+        Under ``bound`` two things are added, and they are the whole difference
+        between the arms: stale quotes drop off, and the reply names *your*
+        distance from the median rather than leaving you to notice it. ``built``
+        gets exactly the reply it always got.
         """
-        entries = self.client.board_list(prefix=self.quote_prefix)
-        quotes: dict[str, dict[str, float]] = {}
-        for entry in entries:
-            who = str(entry["key"]).rsplit("/", 1)[-1]
-            if isinstance(entry.get("value"), dict):
-                quotes[who] = entry["value"]
+        board = self._board()
+        if obliges_revision(self.arm):
+            now = self._tick()
+            board = {who: (prices, tick) for who, (prices, tick) in board.items()
+                     if now - tick < QUOTE_TTL_TICKS}
+        quotes = {who: prices for who, (prices, _) in board.items()}
         medians = {}
         for good in self.goods:
-            values = sorted(q[good] for q in quotes.values() if good in q)
+            values = [q[good] for q in quotes.values() if good in q]
             if values:
-                mid = len(values) // 2
-                medians[good] = (values[mid] if len(values) % 2
-                                 else (values[mid - 1] + values[mid]) / 2)
-        return {"quotes": quotes, "median_price": medians, "traders_quoting": len(quotes)}
+                medians[good] = self._median(values)
+
+        reply: dict[str, Any] = {"quotes": quotes, "median_price": medians,
+                                 "traders_quoting": len(quotes)}
+        if not obliges_revision(self.arm):
+            return reply
+
+        mine = quotes.get(self.agent_id)
+        reply["your_quote"] = mine
+        reply["quote_is_live"] = mine is not None
+        if mine is None:
+            reply["notice"] = ("You have no live quote. Quotes expire after "
+                               f"{QUOTE_TTL_TICKS} rounds; post one to stay on the board.")
+        else:
+            # Ratio, not difference: prices span orders of magnitude here, and
+            # "3.2x the median" is the form an agent can act on.
+            reply["your_deviation_from_median"] = {
+                good: round(mine[good] / medians[good], 3)
+                for good in mine if medians.get(good)
+            }
+        return reply
 
 
 def build_tools(wire: Wire) -> Any:
@@ -314,18 +395,29 @@ def build_tools(wire: Wire) -> Any:
 
     if has_quote_board(wire.arm):
         # Descriptions state mechanics only, for the same reason as everything
-        # else here. What the convention is comes from the brief, which `told`
-        # has word for word; what these add is somewhere to put it.
+        # else here. What the convention is comes from the brief, which every
+        # quoting arm has word for word; what these add is somewhere to put it.
+        # `bound`'s wording differs because its machinery differs — that is the
+        # affordance describing itself, which is the one place the arms are
+        # allowed to diverge.
+        stale = (f" Quotes expire after {QUOTE_TTL_TICKS} rounds; re-post to stay "
+                 "on the board." if obliges_revision(wire.arm) else "")
+
         @tool("post_quote",
               "Publish your prices on the shared quote board, in fish per unit. "
-              "Replaces your previous quote. Every trader can read it.",
+              "Replaces your previous quote. Every trader can read it." + stale,
               {"prices": dict})
         async def post_quote(args: Any) -> dict[str, Any]:
             return _text(wire.post_quote(args.get("prices")))
 
-        @tool("read_quotes",
-              "The quote board: every trader's latest posted prices, and the "
-              "median price for each good across everyone quoting.", {})
+        read_doc = ("The quote board: every trader's latest posted prices, and the "
+                    "median price for each good across everyone quoting.")
+        if obliges_revision(wire.arm):
+            read_doc += (" Also reports how far your own quote sits from the median "
+                         "on each good, as a multiple, and whether your quote is "
+                         "still live. Expired quotes are not on the board.")
+
+        @tool("read_quotes", read_doc, {})
         async def read_quotes(_: Any) -> dict[str, Any]:
             return _text(wire.read_quotes())
 
@@ -365,6 +457,6 @@ def brief_for(island: Island, manager: Manager, agent_id: str, arm: str) -> str:
     )
     if speaks(arm):
         text += CHANNEL_BRIEF
-    if arm in ("told", "built"):
+    if arm in ("told", "built", "bound"):
         text += NUMERAIRE_BRIEF
     return text

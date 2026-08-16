@@ -177,10 +177,11 @@ async def run_llm_island(
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
-        board = {
-            str(e["key"]).rsplit("/", 1)[-1]: e["value"]
-            for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/")
-        }
+        board = {}
+        for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
+            value = e.get("value")
+            if isinstance(value, dict) and isinstance(value.get("prices"), dict):
+                board[str(e["key"]).rsplit("/", 1)[-1]] = value["prices"]
 
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.

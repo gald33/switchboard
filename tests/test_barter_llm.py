@@ -269,6 +269,93 @@ def test_the_quote_board_validates_and_aggregates(island):
         assert all(q["fish"] == 1.0 for q in board["quotes"].values())
 
 
+def test_bound_reports_your_own_distance_from_the_median(island):
+    """`bound`'s first half: the comparison every `built` agent could have made
+    and none did. A number you are shown is not a number you act on, so the
+    board names the deviation instead of leaving it to be noticed."""
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "bound")
+        wires["a1"].post_quote({"cloth": 10.0})
+        wires["a2"].post_quote({"cloth": 2.0})
+        wires["a3"].post_quote({"cloth": 1.0})
+
+        board = wires["a1"].read_quotes()
+        assert board["median_price"]["cloth"] == 2.0
+        assert board["quote_is_live"] is True
+        # a1 is quoting cloth at five times what everyone else is.
+        assert board["your_deviation_from_median"]["cloth"] == 5.0
+        # ...and fish is pinned, so it is never a source of apparent deviation.
+        assert board["your_deviation_from_median"]["fish"] == 1.0
+
+
+def test_bound_lets_a_quote_go_stale(island):
+    """`bound`'s second half: staying on the board is something you keep doing.
+
+    A quote nobody renews is not a price anybody is offering, and leaving it up
+    lets a trader who stopped participating go on setting the median.
+    """
+    from barter.llm import QUOTE_TTL_TICKS
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "bound")
+        wires["a1"].post_quote({"cloth": 10.0})
+        wires["a2"].post_quote({"cloth": 2.0})
+        assert wires["a1"].read_quotes()["traders_quoting"] == 2
+
+        for _ in range(QUOTE_TTL_TICKS):
+            manager.advance()
+
+        # a2 keeps its quote current; a1 does not and drops off.
+        wires["a2"].post_quote({"cloth": 2.0})
+        board = wires["a1"].read_quotes()
+        assert board["traders_quoting"] == 1
+        assert board["quote_is_live"] is False
+        assert "expire" in board["notice"]
+        assert board["median_price"]["cloth"] == 2.0
+
+
+def test_built_is_untouched_by_the_bound_machinery(island):
+    """`built` must behave exactly as it did when its island was run.
+
+    The two share storage, and a stored shape that changed `built`'s replies
+    would retroactively break the comparison against a result already recorded.
+    `built` sees no deviation, no staleness, and no expiry.
+    """
+    from barter.llm import QUOTE_TTL_TICKS
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "built")
+        wires["a1"].post_quote({"cloth": 10.0})
+        wires["a2"].post_quote({"cloth": 2.0})
+        for _ in range(QUOTE_TTL_TICKS + 3):
+            manager.advance()
+
+        board = wires["a1"].read_quotes()
+        assert set(board) == {"quotes", "median_price", "traders_quoting"}
+        assert board["traders_quoting"] == 2      # nothing expires under `built`
+        assert board["quotes"]["a1"]["cloth"] == 10.0
+
+
+def test_every_quoting_arm_shares_one_brief(island):
+    """`told`, `built` and `bound` differ only in what their tools do.
+
+    Three arms now hang off this, so it is worth more than the pair: any
+    difference between them is a difference in affordance, and a sentence
+    drifting into one prompt would quietly turn the whole ladder into a study
+    of wording.
+    """
+    manager = Manager(island=island)
+    briefs = {arm: brief_for(island, manager, "a1", arm)
+              for arm in ("told", "built", "bound")}
+    assert len(set(briefs.values())) == 1
+    assert "unit of account" in briefs["bound"]
+    # The machinery differences live in the tool surface only.
+    assert tool_names("built", "a1") == tool_names("bound", "a1")
+
+
 def test_a_bad_quote_is_answered_not_stored(island):
     manager = Manager(island=island)
     with hub() as handle:
