@@ -164,30 +164,62 @@ models traded but never coordinated production; well above it means they found
 something, and the kept transcript says what. The content of what agents invent
 is the finding — no aggregate can carry it.
 
-### One island, arm A (silent), Haiku 4.5, 4 agents, 5 rounds
+### One island each arm, Haiku 4.5, 4 agents, 5 rounds
 
 ```
-  autarky floor    0.374
-  exchange ceiling 0.413
-  EFFICIENCY       0.337-0.339      <- below the autarky floor
-  of its own plan  0.836
-  worst agent      0.63x autarky
-  trades           9 settled of 36 proposed  (3 rejected, 9 expired)
+                          A silent    B talking     benchmarks
+  EFFICIENCY                 0.337        0.386     autarky floor    0.374
+  of its own plan            0.836        0.949     exchange ceiling 0.413
+  worst agent vs autarky     0.63x        0.93x     scripted price   1.000
+  settled / proposed          9/36         5/30
+  messages                       0           14
 ```
 
-Silent models land *below not trading at all*, and one agent finished at 0.63x
-what it would have had by ignoring everybody. This is the same shape as scripted
-arm B and it has the same cause: they moved off the autarky production plan —
-which is the best plan available to someone who cannot coordinate — and then
-could not trade their way back. Note they are not bad at trading: 0.836 of the
-best allocation of what they chose to make. They chose wrong, silently.
+**Silent models land below not trading at all** (0.337 against a 0.374 floor),
+with one agent finishing at 0.63x what it would have had by ignoring everybody.
+They are not bad at trading — 0.836 of the best allocation of what they chose to
+make. They moved off the autarky production plan, which is the best plan
+available to someone who cannot coordinate, and could not trade their way back.
+They chose wrong, silently. That is the same shape as scripted arm B, arrived at
+independently.
 
-Note also that a *quarter* of proposals expired unanswered. A proposal escrows
-the buyer's side, so an agent that offers into silence has locked up goods it
-then cannot offer to anybody else.
+**Talking helps, and helps most by preventing harm.** Arm B clears the autarky
+floor, and the worst-off agent goes from 0.63x to 0.93x. Most of the gain is in
+not wrecking anybody rather than in reaching anything new: 0.386 against an
+exchange ceiling of 0.413 is a market that swaps its existing goods competently
+(0.949 of its own plan) and still never coordinated what to produce.
 
-One island is an anecdote, not a result. It is reported because it is what was
-actually run.
+**And here is what they said.** Every one of the fourteen messages is an
+advertisement of a want or a holding. Twelve of fourteen name something the
+sender needs; eight name something it has. **Zero mention a price, a rate, an
+exchange ratio, a numeraire, or any unit of account at all** — checked by
+grepping the transcript for terms language, not by impression.
+
+```
+a2: Hi all! I'm a2. ... Most interested in getting more salt and grain.
+a4: Critical need: I'm looking for cloth! I have excess grain and fish to trade.
+a1: I'm critically low on fish (0.0099) and desperately need more. I have
+    abundant salt (0.5433 + 0.25 escrow) and solid grain/cloth holdings.
+a3: I cannot approve t5 and t10 due to insufficient holdings...
+```
+
+They understood the game — "I need fish to avoid a zero score" is an agent
+correctly reading its own Cobb-Douglas exponent — and they used a free public
+channel to build a **want-board rather than a market**. They coordinated on
+identity and need, and never once on *terms*. That is precisely the scripted
+"disclose" rung, and they did not climb to the "price" rung above it, where the
+frontier actually is.
+
+The settlement rate says the same thing from the other side: 25 of 30 proposals
+never settled. Without agreed terms an agent cannot tell whether an offer is fair
+before committing, and cannot tell what a counterparty can actually cover —
+"I cannot approve t5 and t10 due to insufficient holdings."
+
+One island per arm, one model, one seed. This is an anecdote and is reported
+because it is what was actually run; the seed sweep that would make it evidence
+is the expensive part. What it is good for is showing the harness works
+end to end and that the interesting question — *do models invent the missing
+rung?* — is live rather than foregone.
 
 Limits, stated plainly: every agent-turn is a model call, so runs are small and
 one arm of one island costs about $2 and the better part of an hour; agents take
