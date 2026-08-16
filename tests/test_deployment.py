@@ -85,7 +85,18 @@ def test_the_page_is_published_from_the_repo_without_a_build_step():
     """What is served has to be diffable against the commit it claims to come
     from — that is the only thing a reader can check about a hosted page."""
     assert "path: examples/web" in PAGES
-    assert "npm" not in PAGES and "build" not in PAGES.split("# ")[0]
+    # No `run:` anywhere in the workflow is the strict form of "no build step":
+    # the job is checkout, configure, upload, deploy, and nothing may run
+    # between the commit and what is served.
+    assert "run:" not in PAGES
+
+
+def test_publishing_the_page_needs_nobody_to_flip_a_switch():
+    """A repo that has never had Pages returns a bare `Not Found` here, which
+    reads as a broken workflow rather than an unset setting. Asking the action
+    to enable it costs one line and removes the only manual step."""
+    assert "enablement: true" in PAGES
+    assert "pages: write" in PAGES
 
 
 def test_the_hosted_origin_is_written_down_where_a_reader_will_look():
