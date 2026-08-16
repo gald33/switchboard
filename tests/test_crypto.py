@@ -1091,6 +1091,110 @@ def test_our_own_entry_still_reads_back_exactly(hub, key):
     assert mine.board_get("coord/reports/ours") == {"plan": SECRET}
 
 
+# --- prefix listings, which were dead in every encrypted room ---------------
+#
+# Every prefix test in this suite ran against a hub with no key, so all of
+# them passed while the feature did not work at all for anyone using
+# encryption. These run where it was broken.
+
+
+def test_a_prefix_listing_finds_entries_in_an_encrypted_room(hub, key):
+    """The regression. `prefix` was sent as a plaintext query parameter and
+    matched with SQL `LIKE` against the *blinded* keys the hub stores, so it
+    matched nothing and every prefixed listing came back empty.
+
+    Empty is the worst answer it could have given: the coordination convention
+    opens with `board_list prefix="coord/"`, and an empty result reads as an
+    empty room rather than as a broken query. Agents correctly concluded that
+    nobody was coordinating and started work twice.
+    """
+    mine = hub.client("mine")
+    mine.board_set("coord/reports/auth", {"plan": SECRET})
+    mine.board_set("scratch/notes", {"plan": "unrelated"})
+
+    found = mine.board_list(prefix="coord/")
+
+    assert [e["key"] for e in found] == ["coord/reports/auth"]
+    assert found[0]["value"] == {"plan": SECRET}
+
+
+def test_the_hub_still_cannot_do_the_matching_it_was_being_asked_to_do(hub, key):
+    """Both halves of the fix, stated against the hub's own store.
+
+    The hub holds blinded keys and could never have matched a plaintext
+    prefix — so the work moved to the client, and the prefix stopped being
+    sent at all. It is not merely useless to the hub; it was a plaintext
+    detail of what an agent was looking for, given to a party that could do
+    nothing with it.
+    """
+    hub.client("mine").board_set("coord/reports/auth", {"plan": SECRET})
+
+    assert hub.board() != [], "the entry is there — the guard below is not vacuous"
+    assert hub.board(prefix="coord/") == [], (
+        "the hub cannot see through blinding — this is why it is not asked to"
+    )
+    assert len(hub.client("mine").board_list(prefix="coord/")) == 1
+
+
+def test_a_listed_key_can_be_handed_straight_back_to_board_get(hub, key):
+    """The same bug in its quieter form: listings returned blinded tokens, and
+    feeding one back to `board_get` blinded it a second time and answered 404.
+    Restoring the readable key from inside the ciphertext fixes both."""
+    mine = hub.client("mine")
+    mine.board_set("coord/reports/auth", {"plan": SECRET})
+
+    entry = mine.board_list(prefix="coord/")[0]
+
+    assert mine.board_get(entry["key"]) == {"plan": SECRET}
+    assert entry["hub_key"] != entry["key"], "the routing token is still kept"
+
+
+def test_a_foreign_key_entry_is_kept_rather_than_filtered_away(hub, key):
+    """We cannot read a neighbour's key, so we cannot say it does not match.
+
+    Dropping it would restore the silent wrong answer in miniature — a prefix
+    listing that quietly omits rows it could not classify — and would also
+    hide the key mismatch that the count in `board list` exists to report.
+    """
+    mine = hub.client("mine")
+    mine.board_set("coord/reports/ours", {"plan": SECRET})
+    mine.board_set("scratch/ours", {"plan": "unrelated"})
+    hub.client("theirs", key=generate_key()).board_set("coord/reports/theirs", {"x": 1})
+
+    found = mine.board_list(prefix="coord/")
+
+    readable = [e for e in found if not e.get("unreadable")]
+    hidden = [e for e in found if e.get("unreadable")]
+    assert [e["key"] for e in readable] == ["coord/reports/ours"], (
+        "our own non-matching entry is still filtered out"
+    )
+    assert len(hidden) == 1, "an entry we cannot classify is kept and marked"
+
+
+def test_the_board_key_is_still_never_written_down_in_the_clear(hub, key, tmp_path):
+    """The label travels inside the ciphertext, so this must stay true."""
+    hub.client("mine").board_set("coord/reports/auth", {"plan": SECRET})
+
+    blob = hub_bytes(str(tmp_path / "e2e.db"))
+    assert b"coord/reports/auth" not in blob
+    assert SECRET.encode() not in blob
+
+
+def test_a_plaintext_room_still_lets_the_hub_do_the_filtering(tmp_path):
+    """No key, no blinding, nothing to fix — and the cheaper path stays."""
+    with make_hub(workspace=WS, db=str(tmp_path / "plain.db")) as handle:
+        mine = handle.client("mine")
+        mine.board_set("coord/reports/auth", {"plan": "readable"})
+        mine.board_set("scratch/notes", {"plan": "unrelated"})
+
+        assert [e["key"] for e in mine.board_list(prefix="coord/")] == [
+            "coord/reports/auth"
+        ]
+        assert len(handle.board(prefix="coord/")) == 1, (
+            "with nothing blinded the hub matches it directly, as it always did"
+        )
+
+
 # --- what the persisted witness log may and may not conclude -----------------
 
 

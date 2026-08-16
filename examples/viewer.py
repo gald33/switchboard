@@ -43,10 +43,11 @@ agent's next `inbox` come back empty.
 **It shows what the key it holds can open, and says so when it can't.** An
 encrypted room hides channel names, lease resources and board keys from the
 hub by blinding them, and blinding is one-way — nobody can reverse it, this
-viewer included. Channel names come back anyway, because a sealed body
-carries its own channel label. Lease resources and board keys have no such
-carrier, so they are shown as the tokens they are, marked sealed rather than
-dressed up as names. A room using a different key than this viewer holds is
+viewer included. Channel names and board keys come back anyway, because a
+sealed body and a sealed board value each carry their own label. Lease
+resources have no such carrier, so they are shown as the tokens they are,
+marked sealed rather than dressed up as names. A room using a different key
+than this viewer holds is
 reported as unreadable, in place, instead of failing the whole page.
 """
 
@@ -227,7 +228,10 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     view["board"] = [
         {
             "key": e.get("key", ""),
-            "sealed": sealed_ids,
+            # A board key comes back readable now — it travels sealed beside
+            # the value — so the lock belongs only on the ones that did not:
+            # an entry written on another key, whose token is all we have.
+            "sealed": sealed_ids and e.get("key") == e.get("hub_key"),
             "value": e.get("value"),
             "revision": e.get("revision"),
             "updated_by": _who(e.get("updated_by"), names),

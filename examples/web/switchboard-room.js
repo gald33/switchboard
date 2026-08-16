@@ -85,6 +85,12 @@ async function openAll(room, items, fields) {
           item.hub_channel = item.channel;
           item.channel = opened.ch;
           item[field] = opened.b;
+        } else if (context === "board.value" && isBoardLabelled(opened)) {
+          // Same move, same reason: a board key is stored blinded, so the
+          // readable one travels sealed beside the value.
+          item.hub_key = item.key;
+          item.key = opened.k;
+          item[field] = opened.v;
         } else {
           item[field] = opened;
         }
@@ -96,6 +102,9 @@ async function openAll(room, items, fields) {
     if (item.channel !== undefined && item.hub_channel === undefined) {
       item.hub_channel = item.channel;
     }
+    if (item.key !== undefined && item.hub_key === undefined) {
+      item.hub_key = item.key;
+    }
   }
   return items;
 }
@@ -104,6 +113,12 @@ function isLabelled(opened) {
   if (!opened || typeof opened !== "object") return false;
   const keys = Object.keys(opened).sort().join(",");
   return (keys === "b,ch" || keys === "b,ch,s") && typeof opened.ch === "string";
+}
+
+function isBoardLabelled(opened) {
+  if (!opened || typeof opened !== "object") return false;
+  return Object.keys(opened).sort().join(",") === "k,t,v"
+    && opened.t === "sbk1" && typeof opened.k === "string";
 }
 
 /** The timing forecast a sender folded into a body, split back out. */
@@ -173,7 +188,9 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   const board = await section("the blackboard",
     async () => openAll(room, (await get(config, "/board")).entries, SEALED.entries));
   view.board = (board ?? []).map((e) => ({
-    key: e.key, sealed: Boolean(room), value: e.value, revision: e.revision,
+    // Readable now unless it stayed a token — see the Python builder.
+    key: e.key, sealed: Boolean(room) && e.key === e.hub_key,
+    value: e.value, revision: e.revision,
     updated_by: who(e.updated_by), updated_at: e.updated_at,
     expires_in: e.expires_in,
   }));

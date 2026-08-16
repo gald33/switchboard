@@ -120,6 +120,13 @@ Identifiers are blinded rather than encrypted because the hub has to *compare*
 them — that is how a lease excludes a second holder and how a channel
 delivers to its subscribers. It never has to *read* them.
 
+Two of the blinded identifiers — channel names and blackboard keys — are
+*also* carried sealed alongside the thing they label, because blinding is
+one-way and a reader that only ever saw the token could not recover the name.
+The hub still holds nothing but the token; key holders get the name back. Both
+of those carriers were added after the same bug shipped without them, once for
+each: see "Design notes" below.
+
 ## What the hub can still infer
 
 Stated plainly, because overclaiming here would be worse than not doing it.
@@ -559,6 +566,28 @@ resolves to — a DM that vanishes with no error at all.
 reader could not otherwise recover `deploys` from the token. The label rides
 inside the ciphertext, so key holders see real channel names while the hub
 still sees only the token.
+
+**Board keys travel sealed with the value**, for the same reason and after the
+same bug. `board_list(prefix=…)` used to send the prefix as a plaintext query
+parameter, which the hub matched with SQL `LIKE` against the blinded keys it
+stores — so it matched nothing, and **every prefixed listing in every
+encrypted workspace came back empty**. That is the worst answer it could have
+given: the coordination convention opens with `board_list prefix="coord/"`,
+and an empty result reads as an empty room rather than as a broken query.
+
+The prefix is now not sent at all when the workspace is encrypted — the hub
+could do nothing with it except learn what an agent was looking for — and the
+filtering happens in the client against keys restored from inside the
+ciphertext. Two consequences worth knowing:
+
+- A key listed by `board_list` can be handed straight back to `board_get`.
+  Previously it was a blinded token, which `board_get` blinded a second time
+  and answered 404 for. `hub_key` still carries the routing token.
+- An entry whose value will not open — a peer on another key — has no
+  recoverable key either, so it cannot be matched against a prefix. It is
+  **kept** in the result and marked `unreadable` rather than dropped, because
+  quietly omitting rows you could not classify is the same silent wrong answer
+  in miniature.
 
 ## Verifying the claim yourself
 

@@ -331,6 +331,35 @@ def _is_labelled(opened: Any) -> bool:
     )
 
 
+#: Marker distinguishing a board envelope from a value that merely happens to
+#: be a dict. The message envelope above is recognised structurally and accepts
+#: the small risk of a body shaped like `{"b": …, "ch": …}`; a board value is
+#: far more often a plain dict written by an application, so this one carries
+#: an explicit tag rather than relying on its field names being unusual.
+_BOARD_ENVELOPE = "sbk1"
+
+
+def _board_envelope(key: str, value: Any) -> dict[str, Any]:
+    """Carry the plaintext key inside the ciphertext, beside the value.
+
+    Blinding is one-way, so `blind("coord/reports/auth")` cannot be turned
+    back into a key by anyone — including the agent that wrote it. That is
+    correct for routing and useless for reading, which is the same bind
+    message channels were in, and this is the same answer: the hub keeps the
+    opaque token it compares on, and the readable name travels sealed.
+    """
+    return {"t": _BOARD_ENVELOPE, "k": key, "v": value}
+
+
+def _board_labelled(opened: Any) -> bool:
+    return (
+        isinstance(opened, dict)
+        and set(opened) == {"t", "k", "v"}
+        and opened.get("t") == _BOARD_ENVELOPE
+        and isinstance(opened["k"], str)
+    )
+
+
 #: Sentinel distinguishing "caller did not pass a cipher" from "caller
 #: explicitly passed None" (meaning: this one call is unencrypted). Needed
 #: because ``WorkspaceCipher | None`` already uses ``None`` for the latter.
@@ -649,6 +678,13 @@ class _Base:
                 if block is not None:
                     labelled["s"] = block
                 body["body"] = labelled
+            # The same move for the blackboard, and for the same reason: the
+            # key the hub stores is `blind(key)`, so without this a listing
+            # comes back labelled with 22 opaque characters that cannot be fed
+            # back to `board_get` (which would blind them a second time and
+            # match nothing) and cannot be filtered by prefix at all.
+            if path == "/board" and isinstance(body.get("key"), str):
+                body["value"] = _board_envelope(body["key"], body.get("value"))
             for field, context in _SEAL_BODY.get(path, {}).items():
                 if body.get(field) is not None:
                     body[field] = (
@@ -698,6 +734,68 @@ class _Base:
                 if isinstance(item, dict) and "channel" in item:
                     item.setdefault("hub_channel", item["channel"])
 
+    @staticmethod
+    def _keep_hub_key(payload: dict[str, Any]) -> None:
+        """The same for board keys, which are about to be renamed the same way.
+
+        `hub_key` is what a delete or a conditional write has to quote back,
+        and what two clients comparing listings can actually match on.
+        """
+        for key in ("entries", "entry"):
+            target = payload.get(key)
+            if not target:
+                continue
+            for item in (target if isinstance(target, list) else [target]):
+                if isinstance(item, dict) and "key" in item:
+                    item.setdefault("hub_key", item["key"])
+
+    def _board_query(
+        self, prefix: str | None, workspace: str | None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Split a prefix into the part the hub can do and the part it cannot.
+
+        In a plaintext room the hub matches the prefix itself, which is both
+        cheaper and what it has always done. Under encryption it stores
+        `blind(key)`, and blinding is not prefix-preserving — a plaintext
+        `coord/` compared against opaque tokens matches **nothing**, so the
+        hub answered every prefixed listing with an empty list. That is the
+        worst possible shape for this failure: the convention's opening move
+        is `board_list prefix="coord/"`, and an empty result reads as an empty
+        room rather than as a broken query.
+
+        So under encryption the prefix is not sent at all — which also stops
+        leaking it to a hub that could not use it anyway — and the filtering
+        happens here, against the keys restored from inside the ciphertext.
+        """
+        params: dict[str, Any] = {"workspace": self._ws(workspace)}
+        if not prefix:
+            return params, None
+        if self.cipher is None:
+            params["prefix"] = prefix
+            return params, None
+        return params, prefix
+
+    @staticmethod
+    def _by_prefix(entries: list[dict[str, Any]], prefix: str | None) -> list[dict[str, Any]]:
+        """Filter restored entries, keeping the ones we cannot classify.
+
+        An entry is classifiable only if its readable key came back from
+        inside the ciphertext — which is exactly when `key` no longer equals
+        the `hub_key` it arrived as. The two that fail that test are a peer on
+        a different key, and an entry written by a client older than the
+        envelope. Neither can be matched against a prefix, and **dropping them
+        would be the silent wrong answer this function exists to remove**, so
+        they stay, already marked `unreadable` where that applies and counted
+        for the caller by the usual reporter.
+        """
+        if not prefix:
+            return entries
+        return [
+            e for e in entries
+            if str(e.get("key", "")).startswith(prefix)
+            or e.get("key") == e.get("hub_key")
+        ]
+
     def _mark_unopened(self, payload: dict[str, Any],
                        tolerate: frozenset[str]) -> dict[str, Any]:
         """Flag values this client has no key for, in the places it may.
@@ -736,6 +834,7 @@ class _Base:
         if not isinstance(payload, dict):
             return payload
         self._keep_hub_channel(payload)
+        self._keep_hub_key(payload)
         if cipher is None:
             # Nothing to open, but a keyless reader in an encrypted room still
             # gets envelopes back, and "empty" must not look like "sealed".
@@ -774,6 +873,12 @@ class _Base:
                         opened = opened["b"]
                         item[field] = opened
                         self._verify_message(item, block)
+                        continue
+                    if context == "board.value" and _board_labelled(opened):
+                        # Restore the readable key that travelled sealed
+                        # alongside the value; `hub_key` still holds the token.
+                        item["key"] = opened["k"]
+                        item[field] = opened["v"]
                         continue
                     item[field] = opened
 
@@ -1007,10 +1112,9 @@ class Client(_Base):
 
     def board_list(self, *, prefix: str | None = None,
                    workspace: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"workspace": self._ws(workspace)}
-        if prefix:
-            params["prefix"] = prefix
-        return self._call("GET", "/board", params=params)["entries"]
+        params, local = self._board_query(prefix, workspace)
+        entries = self._call("GET", "/board", params=params)["entries"]
+        return self._by_prefix(entries, local)
 
     def board_delete(self, key: str, *, workspace: str | None = None) -> bool:
         return self._call("DELETE", f"/board/{self._blind(key, 'board')}",
@@ -1209,11 +1313,9 @@ class AsyncClient(_Base):
 
     async def board_list(self, *, prefix: str | None = None,
                          workspace: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"workspace": self._ws(workspace)}
-        if prefix:
-            params["prefix"] = prefix
+        params, local = self._board_query(prefix, workspace)
         result = await self._call("GET", "/board", params=params)
-        return result["entries"]
+        return self._by_prefix(result["entries"], local)
 
     async def board_delete(self, key: str, *, workspace: str | None = None) -> bool:
         result = await self._call("DELETE", f"/board/{self._blind(key, 'board')}",

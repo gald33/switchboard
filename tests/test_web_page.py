@@ -194,10 +194,12 @@ def test_the_page_decrypts_in_the_browser_and_shows_it(browser, page, room):
         assert "parser:feat/lexer" in tab.inner_text("#agents")
         assert "rewriting the lexer" in tab.inner_text("#leases")
         assert "escapes" in tab.inner_text("#board")
-        # The hub only ever saw blinded identifiers for these two, and the page
-        # says so rather than dressing a token up as a name.
+        # A board key travels sealed beside its value, so it comes back
+        # readable — the same way a channel name does.
+        assert "handoff/lexer" in tab.inner_text("#board")
+        # A lease resource has no such carrier. The hub only ever saw a blinded
+        # token, and the page says so rather than dressing it up as a name.
         assert "🔒" in tab.inner_text("#leases")
-        assert "🔒" in tab.inner_text("#board")
     finally:
         tab.close()
 
