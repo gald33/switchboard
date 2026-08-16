@@ -8,7 +8,44 @@
 
 export let filter = null;   // channel name, or null for everything
 
-export function setFilter(value) { filter = value; }
+export function setFilter(value) { filter = value; toBottom = true; }
+
+// --- following the conversation ---------------------------------------------
+//
+// The pane is repainted from scratch every few seconds, which by itself sends
+// the reader back to the oldest message on every refresh. So the scroll
+// position is carried across the repaint, and the rule is the one every chat
+// window uses: stay pinned to the newest while the reader is at the bottom,
+// and stop the moment they scroll up to read something — a view that yanks
+// itself away mid-sentence is worse than one that never moved.
+//
+// Being scrolled up then has to be survivable, which is what the pill is for:
+// it says traffic arrived without moving anything, and clicking it re-pins.
+
+const NEAR_BOTTOM = 40;   // px of slack, so a half-pixel row height still counts
+
+let toBottom = true;      // next paint should land at the newest
+let following = null;     // room these scroll numbers belong to
+let seenSeq = 0;          // newest seq the reader has actually been shown
+let newestSeq = 0;
+let wired = false;
+
+function atBottom(pane) {
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight < NEAR_BOTTOM;
+}
+
+function stickToBottom(pane) {
+  pane.scrollTop = pane.scrollHeight;
+  seenSeq = newestSeq;
+}
+
+function drawJump() {
+  const jump = $("jump");
+  if (!jump) return;   // a page that renders one static state has no use for it
+  const behind = newestSeq - seenSeq;
+  jump.hidden = behind <= 0;
+  jump.textContent = behind === 1 ? "1 new message ↓" : `${behind} new messages ↓`;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -78,6 +115,7 @@ export function render(s, { onRoom } = {}) {
     tab.onclick = () => {
       if (tab.classList.contains("on")) return;
       filter = null;               // channels belong to the room you left
+      toBottom = true;             // and so does where you were reading
       if (onRoom) onRoom(tab.dataset.room);
     };
   }
@@ -91,11 +129,21 @@ export function render(s, { onRoom } = {}) {
         `${c.named ? esc(c.name) : "🔒 " + esc(short(c.name))}` +
         `<span class="n">${c.count}${c.unreadable ? " ⚠" : ""}</span></button>`)).join("");
   for (const chip of document.querySelectorAll(".chip")) {
-    chip.onclick = () => { filter = chip.dataset.c || null; render(s, { onRoom }); };
+    chip.onclick = () => {
+      filter = chip.dataset.c || null;
+      toBottom = true;   // a different channel starts at its newest, not mid-way
+      render(s, { onRoom });
+    };
   }
 
   const shown = s.messages.filter((m) => filter === null || m.channel === filter);
-  $("messages").innerHTML = shown.length ? shown.map((m) => `
+  const pane = $("messages");
+  // Measured before the repaint: afterwards these numbers describe the new
+  // content, and "was the reader at the bottom" can no longer be asked.
+  const room = `${s.hub.url}/${s.hub.workspace}`;
+  const follow = toBottom || room !== following || atBottom(pane);
+  const keep = pane.scrollTop;
+  pane.innerHTML = shown.length ? shown.map((m) => `
     <div class="msg">
       <div class="who">
         <b>${who(m.from)}</b>
@@ -110,6 +158,32 @@ export function render(s, { onRoom } = {}) {
           (m.forecast.speak_p50 ? `, next message ~${dur(m.forecast.speak_p50)}` : "") + `</div>` : ""}
       </div>
     </div>`).join("") : `<div class="empty">nothing on this channel</div>`;
+
+  newestSeq = shown.length ? shown[shown.length - 1].seq : 0;
+  if (room !== following) seenSeq = newestSeq;   // a new room starts caught up
+  following = room;
+  toBottom = false;
+  if (follow) stickToBottom(pane); else pane.scrollTop = keep;
+  drawJump();
+
+  if (!wired) {
+    // Scrolling back down catches you up immediately rather than at the next
+    // refresh, which is the difference between a pill that tracks the reader
+    // and one that lingers after they have already read everything.
+    wired = true;
+    pane.addEventListener("scroll", () => {
+      if (atBottom(pane)) { seenSeq = newestSeq; drawJump(); }
+    }, { passive: true });
+    const jump = $("jump");
+    if (jump) {
+      jump.onclick = () => {
+        const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        pane.scrollTo({ top: pane.scrollHeight, behavior: still ? "auto" : "smooth" });
+        seenSeq = newestSeq;
+        drawJump();
+      };
+    }
+  }
 
   $("agents").innerHTML = s.agents.length ? s.agents.map((a) => `
     <div>

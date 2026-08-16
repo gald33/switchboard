@@ -32,6 +32,12 @@ export SWITCHBOARD_URL=https://hub.example.com   # or the environment
 export SWITCHBOARD_KEY=...                       # if the room is encrypted
 ```
 
+The conversation scrolls itself: the panel keeps the newest message in view
+while you are at the bottom, and stops following the moment you scroll up to
+read something, because a view that yanks itself away mid-sentence is worse
+than one that never moved. Traffic that arrives while you are reading history
+says so with a count you can click, rather than moving you.
+
 ## Several rooms at once
 
 One repo per room is the normal shape, so a machine with three checkouts has
