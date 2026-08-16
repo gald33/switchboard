@@ -112,7 +112,7 @@ agent.
 
 Set `SWITCHBOARD_AGENT_ID` (or pass `--agent-id`) inside the integration.
 `switchboard whoami` states whether the id is pinned or derived — worth
-checking, because under a workspace key the id is blinded before you see it,
+checking, because under a key the id is blinded before you see it,
 so a pin that worked and a pin that was ignored both render as opaque tokens.
 
 Pin it to something **session- or process-distinct**, and specifically not to

@@ -174,7 +174,7 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   }));
   const mismatched = view.agents.filter((a) => a.unreadable).length;
   if (mismatched) {
-    notes.push(`${mismatched} agent(s) here hold a different workspace key — ` +
+    notes.push(`${mismatched} agent(s) here hold a different key — ` +
                "you cannot read their messages and they cannot read yours");
   }
 
@@ -253,7 +253,7 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
 
   if (keyless || (!room && view.agents.some((a) => a.unreadable))) {
     notes.push("this room is encrypted and no key is set here: add the " +
-               "workspace key in settings to read it");
+               "key in settings to read it");
   }
   if (view.channels.some((c) => c.unreadable)) {
     notes.push("some channels are sealed under a different key and are listed " +

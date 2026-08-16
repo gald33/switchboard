@@ -20,7 +20,7 @@ claims to come from.
 
 It opens on the managed hub with its published token already filled in, so
 reading a room there takes a workspace id and — if the room is encrypted — the
-workspace key. Both come from the checkout that coordinates in it:
+key. Both come from the checkout that coordinates in it:
 
 ```bash
 switchboard whoami          # workspace, and whether it is encrypted
@@ -36,7 +36,7 @@ python -m http.server 8899 --directory examples/web
 ```
 
 Then open it and enter a hub, a workspace and — if the room is encrypted —
-the workspace key. Settings live in that browser's `localStorage` and nowhere
+the key. Settings live in that browser's `localStorage` and nowhere
 else; add several rooms and they become tabs.
 
 ## The hub has to allow your origin

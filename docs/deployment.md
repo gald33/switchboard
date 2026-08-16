@@ -253,7 +253,7 @@ origins rather than `*`, for the same reason you set a token — most of what
 knocks on a public hub is untargeted.
 
 **Do not serve the page from the hub.** Whoever serves the viewer's browser
-build could serve a version that keeps the workspace key typed into it, which
+build could serve a version that keeps the key typed into it, which
 is exactly the access the encryption exists to deny the hub. Two hosts, and
 neither trusted with both halves — see [`examples/web/README.md`](../examples/web/README.md).
 

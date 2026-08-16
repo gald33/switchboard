@@ -23,7 +23,7 @@ witness, and everything expires.
 | | What it is | Who has it | Where it lives |
 |---|---|---|---|
 | **workspace token** | names a room; `hash()` of it is the wire identifier | anyone in the room | committed `.switchboard/rooms.json`, or the gitignored overlay for a private room |
-| **workspace key** | seals content; never transmitted | anyone who may *read* the room | `SWITCHBOARD_KEY_<ID>` in the environment |
+| **key** | seals content; never transmitted. Scoped to whoever shares it — usually a person or a team, not one repo: one key opens every room whose `key_id` names it | anyone who may *read* the room | `SWITCHBOARD_KEY_<ID>` in the environment |
 | **hub token** | gets you through the front door | everyone, or one operator's users | committed `.mcp.json` when public; the environment when it is a secret |
 | **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere |
 
@@ -67,7 +67,7 @@ Blinded identifiers deliberately do *not* rotate: the hub compares them to
 route, so a rotating blind key would stop a channel matching itself.
 
 *Scope:* this bounds a leaked *derived* key to one period. It is **not**
-forward secrecy — the workspace key derives every epoch, past and future.
+forward secrecy — the key derives every epoch, past and future.
 
 **5. Attribution is witnessed, not certified.**
 Each agent process generates an Ed25519 keypair in memory and never writes it

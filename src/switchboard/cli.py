@@ -1083,7 +1083,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         # screen share is the kind of thing that should take a deliberate flag.
         if not key:
             print(
-                "error: no workspace key here — none set in the environment and "
+                "error: no key here — none set in the environment and "
                 f"no {_LOCAL_SETTINGS_REL} in this directory. `switchboard init "
                 "--new-key` mints one.",
                 file=sys.stderr,
@@ -1251,7 +1251,7 @@ def _warn_unreadable(items: list[dict[str, Any]], noun: str, fmt: Fmt) -> None:
         return
     print(
         fmt.yellow(
-            f"note: {hidden} {noun} sealed to a different workspace key and "
+            f"note: {hidden} {noun} sealed to a different key and "
             f"could not be read."
         )
         + "\nRun `switchboard agents` to see who is on another key.",
@@ -1334,7 +1334,7 @@ def cmd_agents(args: argparse.Namespace) -> int:
         print(
             "\n" + fmt.red(
                 f"warning: {len(mismatched)} agent(s) here hold a DIFFERENT "
-                f"workspace key."
+                f"key."
             )
             + "\nYou cannot see their messages and they cannot see yours, and "
               "your leases\ndo not exclude each other. Check SWITCHBOARD_KEY "
@@ -2872,12 +2872,12 @@ def _init_hub_token(
 #: replacing an existing one without --force is refused.
 _LOCAL_SECRETS = {
     "SWITCHBOARD_KEY": (
-        "workspace key",
+        "key",
         "Replacing it silently would cut this agent off from everyone still "
         "using the old one",
     ),
     "SWITCHBOARD_TOKEN": (
-        "workspace token",
+        "hub token",
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
@@ -3309,7 +3309,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             # the old one — the exact divergence `_init_key` refuses to cause
             # on its own. Say where it lives instead. The real risk is losing
             # the *file*, which is a back-it-up problem, not a memorize-it one.
-            print(fmt.bold("Your new workspace key:"))
+            print(fmt.bold("Your new key:"))
             print(f"  {minted}")
             print(
                 f"  Give teammates: switchboard init --key {minted} -w {workspace}"
@@ -3457,7 +3457,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-id", help="override this agent's id")
     parser.add_argument(
         "--key",
-        help="workspace key for end-to-end encryption (env: SWITCHBOARD_KEY). "
+        help="key for end-to-end encryption (env: SWITCHBOARD_KEY). "
              "Never sent to the hub; generate one with `switchboard keygen`.",
     )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -3511,14 +3511,14 @@ def build_parser() -> argparse.ArgumentParser:
     # subcommand. cmd_init reads both.
     p.add_argument(
         "--key", dest="init_key",
-        help="adopt an existing workspace key (env: SWITCHBOARD_KEY) — the one a "
+        help="adopt an existing key (env: SWITCHBOARD_KEY) — the one a "
              "teammate gave you. Written to .claude/settings.local.json, which is "
              "kept out of git. Pair it with the same -w workspace they use, or you "
              "will be sealed correctly and routed somewhere else.",
     )
     p.add_argument(
         "--no-key", action="store_true",
-        help="do not encrypt: skip minting a workspace key. `init` mints one by "
+        help="do not encrypt: skip minting a key. `init` mints one by "
              "default, so bodies, board values, lease notes and branch names are "
              "sealed before they leave this machine. Use this only where the hub is "
              "already trusted with plaintext.",
@@ -3672,7 +3672,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--show-key", action="store_true",
-        help="print this repo's workspace key, and the command that hands it to a "
+        help="print this repo's key, and the command that hands it to a "
              "teammate. Reads .claude/settings.local.json, so it works from a plain "
              "shell where nothing is exported. Prints a secret — it goes to stdout "
              "on purpose so it can be piped, but mind your scrollback.",
@@ -3681,8 +3681,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "keygen",
-        help="generate a workspace key — encryption, never sent to the hub",
-        description="Generate a workspace key for end-to-end encryption. This key "
+        help="generate a key — encryption, never sent to the hub",
+        description="Generate a key for end-to-end encryption. This key "
                     "never reaches the hub, which is what makes the hub unable to "
                     "read the workspace — and unable to help you recover it. Not to "
                     "be confused with a workspace token (`register-token`), which is sent "
@@ -3701,7 +3701,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
     p.add_argument("--no-key", action="store_true",
-                   help="omit the workspace key (the peer must already hold it)")
+                   help="omit the key (the peer must already hold it)")
     p.add_argument("--no-token", action="store_true", help="omit the hub token")
     p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_invite)
