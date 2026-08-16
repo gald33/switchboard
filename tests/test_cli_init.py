@@ -1126,7 +1126,7 @@ def test_show_key_without_a_key_is_a_clean_error(monkeypatch, capsys, tmp_path):
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == ""
-    assert "no workspace key here" in captured.err
+    assert "no key here" in captured.err
 
 
 def test_whoami_does_not_claim_encryption_it_will_not_perform(monkeypatch, capsys, tmp_path):

@@ -217,7 +217,7 @@ def test_a_peer_on_another_key_is_named_in_the_notes():
 
         view = snapshot(viewer(h))
 
-        assert any("different workspace key" in n for n in view["notes"])
+        assert any("different key" in n for n in view["notes"])
         assert sum(1 for a in view["agents"] if a["unreadable"]) == 1
 
 

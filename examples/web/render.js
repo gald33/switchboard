@@ -117,7 +117,7 @@ export function render(s, { onRoom } = {}) {
       <div class="sub">${esc(a.kind || "")}${a.branch ? " · " + esc(a.branch) : ""} · seen ${esc(ago(a.last_seen_at))}</div>
       ${a.task ? `<div class="sub">${esc(a.task)}</div>` : ""}
       ${a.channels.length ? `<div class="sub">watching ${a.channels.map(esc).join(", ")}</div>` : ""}
-      ${a.unreadable ? `<div class="sub" style="color:var(--warn)">different workspace key</div>` : ""}
+      ${a.unreadable ? `<div class="sub" style="color:var(--warn)">a different key</div>` : ""}
     </div>`).join("") : `<div class="empty">nobody is here</div>`;
 
   $("leases").innerHTML = s.leases.length ? s.leases.map((l) => `

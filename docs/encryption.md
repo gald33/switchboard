@@ -71,7 +71,7 @@ bootstrap caches, so an environment can sit on an older build until
 What rotation buys is bounded exposure of a *derived* key: one that leaks is
 useless after the next boundary. It is **not** forward secrecy — the workspace
 key derives every epoch, past and future — and it does not help if the
-workspace key itself leaks. Blinded identifiers deliberately do not rotate:
+key itself leaks. Blinded identifiers deliberately do not rotate:
 the hub compares them to route, so a rotating blind key would stop a channel
 matching itself across a boundary.
 
@@ -272,7 +272,7 @@ precise about why rather than adding it because it sounds stronger.
 
 **The blinding key is already a secret the hub does not have.** Tokens are
 `HMAC(blind_key, domain || identifier)`, and `blind_key` is derived from the
-workspace key by HKDF. That is already a pseudorandom function under a secret
+key by HKDF. That is already a pseudorandom function under a secret
 key: without the key the hub cannot compute a token, cannot invert one, and
 cannot confirm a guess about what an identifier says.
 
@@ -405,7 +405,7 @@ AGENT                    KIND    BRANCH        SEEN     TASK
 lQoth7Cc6xKbBx...        local   feat/billing  2s ago   migrating orders
 t2gjDnEknQVqwQ...        cloud   -             1s ago
 
-warning: 1 agent(s) here hold a DIFFERENT workspace key.
+warning: 1 agent(s) here hold a DIFFERENT key.
 You cannot see their messages and they cannot see yours, and your leases
 do not exclude each other. Check SWITCHBOARD_KEY matches on every agent.
 ```

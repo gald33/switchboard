@@ -207,7 +207,7 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
     mismatched = [a.get("agent_id", "") for a in agents if a.get("unreadable")]
     if mismatched:
         notes.append(
-            f"{len(mismatched)} agent(s) here hold a different workspace key — "
+            f"{len(mismatched)} agent(s) here hold a different key — "
             "you cannot read their messages and they cannot read yours"
         )
 

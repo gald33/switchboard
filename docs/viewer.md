@@ -14,7 +14,7 @@ python examples/viewer.py   # → http://127.0.0.1:8799
 That is the whole setup. Standing in a repo that has been set up, the viewer
 reads the same configuration the CLI reads — the hub and room `init`
 committed to `.mcp.json` — plus the two gitignored files it wrote on this
-machine: the workspace key in `.claude/settings.local.json` and the dev hub's
+machine: the key in `.claude/settings.local.json` and the dev hub's
 token in `.env`. It prints where each came from on the way up:
 
 ```
