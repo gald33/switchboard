@@ -356,6 +356,92 @@ def test_every_quoting_arm_shares_one_brief(island):
     assert tool_names("built", "a1") == tool_names("bound", "a1")
 
 
+def test_prose_prices_are_read_the_way_a_counterparty_would():
+    """`told` keeps its prices in sentences, so comparing it to a board arm
+    means reading them back out. That extraction is the measurement, so it is
+    gated rather than trusted."""
+    from barter.analysis import prices_from_prose
+
+    said = [
+        {"from": "a2",
+         "text": "a2 prices: grain 1.01, cloth 0.21, timber 1.11, salt 1.47 per fish"},
+        {"from": "a4", "text": "a4 prices: grain 0.5, cloth 1.8, timber 1.2, salt 0.5 per fish"},
+        {"from": "a3", "text": "Looking for fish and salt - have grain and timber to trade."},
+    ]
+    prices = prices_from_prose(said)
+    assert prices["a2"]["cloth"] == 0.21
+    assert prices["a4"]["timber"] == 1.2
+    # a3 named goods but no numbers, so it has no quote — and "3 of 4 agents
+    # ever posted a price list" is a finding, not something to paper over.
+    assert "a3" not in prices
+
+
+def test_a_trade_offer_is_not_mistaken_for_a_price_list():
+    """The extraction has to be biased toward missing a disagreement rather
+    than inventing one, or a large measured spread means nothing."""
+    from barter.analysis import prices_from_prose
+
+    said = [
+        {"from": "a1", "text": "I'll trade 0.15 timber for grain. Also offering 0.6 salt."},
+        {"from": "a1", "text": "Updated: fish 1.0, grain 0.62, cloth 1.02, timber 0.48, salt 0.08"},
+    ]
+    prices = prices_from_prose(said)
+    # The offer names two goods with numbers and is not a quote; the later
+    # message is, and it is the one kept because agents revise.
+    assert prices["a1"]["grain"] == 0.62
+    assert prices["a1"]["cloth"] == 1.02
+
+
+def test_price_spread_says_how_far_apart_the_traders_are():
+    from barter.analysis import price_spread
+
+    assert price_spread({
+        "a1": {"cloth": 2.0, "salt": 1.0},
+        "a2": {"cloth": 54.0, "salt": 1.0},
+    }) == {"cloth": 27.0, "salt": 1.0}
+    # A good only one trader named is neither agreement nor disagreement.
+    assert price_spread({"a1": {"cloth": 2.0}, "a2": {"salt": 1.0}}) == {}
+
+
+def test_a_board_arm_and_a_prose_arm_land_on_the_same_axis():
+    """The whole point of the extraction: `told` has no board and `built` has
+    one, and they still have to be comparable on price agreement."""
+    from barter.analysis import summarise
+
+    boardless = summarise({
+        "arm": "told", "efficiency": [0.316, 0.320], "own_plan": [0.771, 0.771],
+        "worst_ratio": 0.77, "summary": {"executed": 2, "proposed": 25},
+        "said": [
+            {"from": "a1", "text": "grain 1.0, cloth 0.2, timber 1.1, salt 1.5"},
+            {"from": "a2", "text": "grain 1.0, cloth 6.0, timber 1.1, salt 1.5"},
+        ],
+    })
+    boarded = summarise({
+        "arm": "built", "efficiency": [0.368, 0.370], "own_plan": [0.898, 0.898],
+        "worst_ratio": 0.93, "summary": {"executed": 3, "proposed": 16}, "said": [],
+        "quote_board": {"a1": {"cloth": 2.0, "fish": 1.0},
+                        "a2": {"cloth": 60.0, "fish": 1.0}},
+    })
+    assert boardless["price_source"] == "prose"
+    assert boarded["price_source"] == "board"
+    assert boardless["worst_spread"] == 30.0
+    assert boarded["worst_spread"] == 30.0
+
+
+def test_an_arm_that_never_quoted_reports_no_spread_rather_than_agreement():
+    """`silent` and `free` must not read as 'perfectly agreed' just because
+    there is nothing to disagree about."""
+    from barter.analysis import summarise
+
+    row = summarise({
+        "arm": "free", "efficiency": [0.386, 0.389], "own_plan": [0.949, 0.949],
+        "worst_ratio": 0.93, "summary": {"executed": 5, "proposed": 30},
+        "said": [{"from": "a1", "text": "I need fish and have salt"}],
+    })
+    assert row["worst_spread"] is None
+    assert row["traders_quoting"] == 0
+
+
 def test_a_bad_quote_is_answered_not_stored(island):
     manager = Manager(island=island)
     with hub() as handle:
