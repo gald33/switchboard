@@ -10,12 +10,22 @@ name: Deploy viewer (GitHub Pages)
 # the hub sees only ciphertext, the page host sees only what a browser fetches
 # from it. See examples/web/README.md.
 #
-# `enablement: true` below turns Pages on for the repo the first time this
-# runs, so there is no manual step. Without it the job fails at
-# `configure-pages` with a bare `Not Found`, which is what a repo that has
-# never had Pages returns — an error that reads like a broken workflow rather
-# than an unset switch. It needs the `pages: write` permission granted below
-# and nothing else, and it is a no-op once Pages is on.
+# One manual step, once per repo, and it genuinely cannot be automated from
+# here:
+#
+#   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+#
+# `configure-pages` has an `enablement: true` that is supposed to do this, and
+# it was tried: creating a Pages site needs *admin* on the repo, and the
+# workflow's GITHUB_TOKEN never has that however its `permissions:` block is
+# written. Asking for it produced `Create Pages site failed. Error: Resource
+# not accessible by integration`, so the option is left off rather than kept
+# as a line that looks like it handles this.
+#
+# Until the switch is flipped, this job fails at `configure-pages` with a bare
+# `Not Found` — the API's answer for a repo that has never had Pages, and an
+# error that reads like a broken workflow rather than an unset setting. It is
+# not: re-run this workflow after flipping it and the page publishes.
 #
 # The hub also has to allow this origin — a browser refuses the read
 # otherwise, before it is sent. That half lives in docker-compose.yml, and
@@ -56,8 +66,6 @@ jobs:
       # to come from. A bundler here would break that, and it is the only
       # thing standing between "read the source" and "trust the host".
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: examples/web

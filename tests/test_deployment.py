@@ -91,12 +91,23 @@ def test_the_page_is_published_from_the_repo_without_a_build_step():
     assert "run:" not in PAGES
 
 
-def test_publishing_the_page_needs_nobody_to_flip_a_switch():
-    """A repo that has never had Pages returns a bare `Not Found` here, which
-    reads as a broken workflow rather than an unset setting. Asking the action
-    to enable it costs one line and removes the only manual step."""
-    assert "enablement: true" in PAGES
-    assert "pages: write" in PAGES
+def test_the_workflow_asks_for_the_permissions_a_deploy_needs_and_no_more():
+    for granted in ("contents: read", "pages: write", "id-token: write"):
+        assert granted in PAGES
+
+
+def test_the_manual_step_stays_written_down_where_the_error_will_send_you():
+    """`enablement: true` was tried and cannot work — creating a Pages site
+    needs repo admin, which GITHUB_TOKEN never has. So the switch is manual,
+    and the failure when it is unset is a bare `Not Found` that names nothing.
+    The workflow is the only place a reader will land from that error, so the
+    remedy has to be legible there."""
+    assert "enablement" not in PAGES.replace("# ", "", 1).split("jobs:")[1], (
+        "the enablement option is back in the job; it fails with "
+        "'Resource not accessible by integration'")
+    header = PAGES.split("jobs:")[0]
+    assert "Settings -> Pages" in header
+    assert "Source: GitHub Actions" in header
 
 
 def test_the_hosted_origin_is_written_down_where_a_reader_will_look():
