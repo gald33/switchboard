@@ -164,8 +164,35 @@ models traded but never coordinated production; well above it means they found
 something, and the kept transcript says what. The content of what agents invent
 is the finding — no aggregate can carry it.
 
-Limits, stated plainly: runs are small (every agent-turn is a model call), agents
-take turns rather than acting concurrently, and one island is an anecdote.
+### One island, arm A (silent), Haiku 4.5, 4 agents, 5 rounds
+
+```
+  autarky floor    0.374
+  exchange ceiling 0.413
+  EFFICIENCY       0.337-0.339      <- below the autarky floor
+  of its own plan  0.836
+  worst agent      0.63x autarky
+  trades           9 settled of 36 proposed  (3 rejected, 9 expired)
+```
+
+Silent models land *below not trading at all*, and one agent finished at 0.63x
+what it would have had by ignoring everybody. This is the same shape as scripted
+arm B and it has the same cause: they moved off the autarky production plan —
+which is the best plan available to someone who cannot coordinate — and then
+could not trade their way back. Note they are not bad at trading: 0.836 of the
+best allocation of what they chose to make. They chose wrong, silently.
+
+Note also that a *quarter* of proposals expired unanswered. A proposal escrows
+the buyer's side, so an agent that offers into silence has locked up goods it
+then cannot offer to anybody else.
+
+One island is an anecdote, not a result. It is reported because it is what was
+actually run.
+
+Limits, stated plainly: every agent-turn is a model call, so runs are small and
+one arm of one island costs about $2 and the better part of an hour; agents take
+turns rather than acting concurrently, and concurrency is where coordination is
+hardest; and a single seed cannot separate an effect from a draw.
 
 ## Files
 

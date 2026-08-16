@@ -248,13 +248,18 @@ def main(argv: list[str] | None = None) -> int:
                 verbose=args.verbose,
             ))
             results.append(result)
-            print(render(result))
-            print()
+            print(render(result), flush=True)
+            print(flush=True)
+            # Written after *every* island, not once at the end. An island costs
+            # real money and takes real wall-clock, so a later one timing out or
+            # dying must not take the finished ones with it — which it did, the
+            # first time this was run under a timeout.
+            if args.json:
+                args.json.write_text(json.dumps(results, indent=2, default=str))
 
     total = sum(r["cost_usd"] for r in results)
     print(f"total ${total:.2f} over {len(results)} island(s)")
     if args.json:
-        args.json.write_text(json.dumps(results, indent=2, default=str))
         print(f"wrote {args.json}")
     return 0
 
