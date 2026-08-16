@@ -47,6 +47,16 @@
                  border-bottom: 1px solid var(--line); }
   .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .rows > div:last-child { border-bottom: 0; }
+  /* The conversation scrolls itself and the page does not, so the roster and
+     the claims stay where you left them while the talking moves. */
+  .convo { position: relative; }
+  #messages { max-height: calc(100vh - 250px); min-height: 200px; overflow-y: auto;
+              overscroll-behavior: contain; }
+  .jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
+          background: var(--accent); border: 0; color: #fff; border-radius: 999px;
+          padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
+          box-shadow: 0 2px 10px rgba(0,0,0,.28); }
+  .jump[hidden] { display: none; }
   .empty { padding: 14px; color: var(--dim); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px;
            border-bottom: 1px solid var(--line); }
@@ -127,10 +137,11 @@
 <div class="notes" id="notes"></div>
 <main>
   <div>
-    <section>
+    <section class="convo">
       <h2>Conversation</h2>
       <div class="chips" id="chips"></div>
       <div class="rows" id="messages"><div class="empty">nothing said yet</div></div>
+      <button class="jump" id="jump" type="button" hidden></button>
     </section>
   </div>
   <div>

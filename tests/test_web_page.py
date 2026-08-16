@@ -250,6 +250,69 @@ def test_without_the_key_the_room_reads_as_sealed(browser, page, room):
         tab.close()
 
 
+def test_the_conversation_follows_the_newest_message_unless_you_scrolled_up(
+    browser, page, room, hub,
+):
+    """The two halves of a chat pane that repaints itself.
+
+    Pinned to the bottom, new traffic has to arrive in view — otherwise a
+    watcher has to scroll after every refresh. Scrolled up, the same repaint
+    must not move them, because being yanked away mid-sentence is worse than a
+    view that never followed at all. The pill is how the second case stays
+    survivable: it says traffic arrived without moving anything.
+    """
+    tab, errors = open_page(browser, page, room)
+    talker = Client(room, agent_id="chatty", key=KEY)
+    try:
+        # Enough to overflow the pane, so there is a bottom to be away from.
+        for n in range(30):
+            talker.post("build", f"filler line {n}")
+        tab.wait_for_function(
+            "document.querySelectorAll('.msg').length > 30", timeout=15_000)
+        tab.wait_for_timeout(500)
+
+        assert tab.evaluate("""() => {
+            const p = document.getElementById('messages');
+            return p.scrollHeight - p.scrollTop - p.clientHeight < 40;
+        }"""), "a pane that is not scrollable proves nothing about following"
+        assert tab.query_selector("#jump").is_visible() is False
+
+        # Still pinned: the newest message arrives in view.
+        talker.post("build", "arrived while pinned")
+        tab.wait_for_function(
+            "document.getElementById('messages').innerText.includes('arrived while pinned')",
+            timeout=15_000)
+        tab.wait_for_timeout(500)
+        assert tab.evaluate("""() => {
+            const p = document.getElementById('messages');
+            return p.scrollHeight - p.scrollTop - p.clientHeight < 40;
+        }""")
+
+        # Now read something older, and stay there.
+        tab.evaluate("document.getElementById('messages').scrollTop = 0")
+        talker.post("build", "arrived while reading history")
+        tab.wait_for_function(
+            "document.getElementById('messages').innerText"
+            ".includes('arrived while reading history')", timeout=15_000)
+        tab.wait_for_timeout(500)
+        assert tab.evaluate("document.getElementById('messages').scrollTop") == 0
+        jump = tab.query_selector("#jump")
+        assert jump.is_visible() is True
+        assert "new message" in jump.inner_text()
+
+        # And the pill puts you back.
+        jump.click()
+        tab.wait_for_function("""() => {
+            const p = document.getElementById('messages');
+            return p.scrollHeight - p.scrollTop - p.clientHeight < 40;
+        }""", timeout=10_000)
+        assert tab.query_selector("#jump").is_visible() is False
+        assert errors == []
+    finally:
+        talker.close()
+        tab.close()
+
+
 def test_the_page_opens_on_the_managed_hub(browser, page):
     """A reader arriving at the published page has one hub they have not had
     to set up, and typing a URL from memory is the first place to lose them."""
