@@ -79,16 +79,6 @@ So confirm once, early, rather than after an hour of talking to nobody —
 `whoami` (MCP) or `switchboard whoami` (CLI), then look for yourself in
 `roster` / `switchboard agents`.
 
-**Joining should be one string, not five facts.** If someone already has a
-working setup, have them run `switchboard invite` and paste you the result;
-`switchboard join <string>` consumes it. That collapses hub, token, workspace
-and key into one thing to get right instead of four, and — the part that
-matters — it *proves* the room instead of assuming it, by opening a sealed
-value the inviter left. Being listed on the same roster does not prove that:
-two agents on one hub and workspace with different keys see each other and can
-exchange nothing. If `join` says WRONG ROOM, ask for a fresh invite rather
-than editing settings by hand.
-
 **An empty roster has two causes and they look identical.** Either nobody
 else is active, or you and your peer are not in the same room. A room
 identifier is `hash(workspace token)`, so a different hub URL, a different
