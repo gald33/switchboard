@@ -203,6 +203,12 @@ that is how to do leader election without a lease.
 List entries, optionally by key prefix. `_` and `%` in a prefix are matched
 literally, not as SQL wildcards.
 
+`prefix` matches the key **as stored**. In an encrypted workspace that key is
+`blind(key)`, which no plaintext prefix matches, so the clients do not send
+the parameter at all there and filter their own results instead — see
+[encryption.md](encryption.md). A client of your own must do the same, or
+every prefixed listing will silently come back empty.
+
 ### `DELETE /board/{key}?workspace=`
 `{"deleted": true|false}`.
 

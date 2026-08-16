@@ -490,6 +490,29 @@ def test_board_tools_round_trip(hub):
     assert [e["key"] for e in listing["entries"]] == ["plan/x"]
 
 
+def test_board_tools_round_trip_in_an_encrypted_room():
+    """The same trip where it was broken.
+
+    `prefix` used to be matched by the hub against the blinded keys it stores,
+    so this listing came back empty for every encrypted workspace — and every
+    prefix test in this suite ran without a key, which is why it stayed that
+    way. The MCP surface is where agents actually meet this, so it is asserted
+    here as well as in the client.
+    """
+    from switchboard.crypto import generate_key
+
+    with make_hub(workspace=WS, key=generate_key()) as handle:
+        a1, a2 = make_bridge(handle, "a1"), make_bridge(handle, "a2")
+        call(a1, "board_set", key="plan/x", value={"steps": [1, 2]})
+        call(a1, "board_set", key="scratch/y", value={"steps": []})
+
+        listing, _ = call(a2, "board_list", prefix="plan/")
+
+        assert [e["key"] for e in listing["entries"]] == ["plan/x"], (
+            "a readable key, and only the matching one"
+        )
+
+
 def test_board_get_missing_key_is_not_an_error(hub):
     payload, is_error = call(make_bridge(hub), "board_get", key="absent")
     assert is_error is False
