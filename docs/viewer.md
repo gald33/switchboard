@@ -69,7 +69,14 @@ it cannot open is not shown, because it could not be read.
 The same page runs as four static files that read the hub directly, for an
 environment with no checkout and no Python — a shared machine, a tablet, a
 laptop that has never seen the repo. Settings are typed into the page and kept
-in that browser:
+in that browser.
+
+It is published at **<https://gald33.github.io/switchboard/>**, opening on the
+managed hub with its published token filled in, so a room there needs only a
+workspace id and its key. The managed hub allows that one origin
+(`SWITCHBOARD_CORS_ORIGINS` in `docker-compose.yml`) and no other.
+
+Anywhere else, both halves are yours to set:
 
 ```bash
 python -m http.server 8899 --directory examples/web   # or any static host

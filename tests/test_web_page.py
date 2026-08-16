@@ -248,6 +248,49 @@ def test_without_the_key_the_room_reads_as_sealed(browser, page, room):
         tab.close()
 
 
+def test_the_page_opens_on_the_managed_hub(browser, page):
+    """A reader arriving at the published page has one hub they have not had
+    to set up, and typing a URL from memory is the first place to lose them."""
+    from switchboard.config import MANAGED_HUB_URL
+
+    tab = browser.new_page()
+    tab.goto(page, wait_until="networkidle")
+    try:
+        # No rooms stored, so the sheet opens itself with the hub already in.
+        tab.wait_for_function("document.querySelector('#settings').open", timeout=10_000)
+        assert tab.input_value("#f-url") == MANAGED_HUB_URL
+    finally:
+        tab.close()
+
+
+def test_the_managed_hub_token_is_filled_in_and_a_private_hub_gets_none(browser, page):
+    """The published token is prefilled because nobody types it; a hub someone
+    else runs must never inherit it."""
+    from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL
+
+    tab = browser.new_page()
+    # Nothing here should reach a network, managed hub included: this is about
+    # what gets stored, and the reads that follow are not the subject.
+    tab.route("**/*", lambda route: route.abort()
+              if "127.0.0.1" not in route.request.url else route.continue_())
+    tab.goto(page, wait_until="networkidle")
+    try:
+        tab.fill("#f-url", MANAGED_HUB_URL)
+        tab.fill("#f-workspace", "w_somebody")
+        tab.click("#settings-save")
+        tab.click("#settings-open")  # saving closes the sheet
+        tab.fill("#f-url", "https://hub.example.invalid")
+        tab.fill("#f-workspace", "w_theirs")
+        tab.click("#settings-save")
+        stored = json.loads(tab.evaluate("localStorage.getItem('switchboard.rooms.v1')"))
+    finally:
+        tab.close()
+
+    by_url = {r["url"]: r.get("token", "") for r in stored}
+    assert by_url[MANAGED_HUB_URL] == MANAGED_HUB_TOKEN
+    assert by_url["https://hub.example.invalid"] == ""
+
+
 def test_a_hub_that_does_not_allow_this_origin_says_which_problem_that_is(
     browser, page, room, hub,
 ):

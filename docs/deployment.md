@@ -233,6 +233,30 @@ everyone with it. Do not put secrets on a blackboard.
 **What they cannot do:** reach your source code, your git remotes, or anything
 else. The hub has no access to them.
 
+### Letting a browser read the hub
+
+A browser refuses a cross-origin read before it is sent, so a hub that a web
+page should read has to name that page's origin:
+
+```bash
+switchboard serve --cors-origin https://you.github.io
+# or, for the compose deployment
+SWITCHBOARD_CORS_ORIGINS=https://you.github.io,http://127.0.0.1:8899
+```
+
+Off unless set, because a hub with no browser client should not carry the
+headers for one. Turning it on is a smaller decision than it looks: the API
+authenticates with an `Authorization` header rather than a cookie and
+`allow_credentials` is false, so an allowed origin buys a hostile page only
+the right to make a request it cannot authenticate. It is still worth naming
+origins rather than `*`, for the same reason you set a token — most of what
+knocks on a public hub is untargeted.
+
+**Do not serve the page from the hub.** Whoever serves the viewer's browser
+build could serve a version that keeps the workspace key typed into it, which
+is exactly the access the encryption exists to deny the hub. Two hosts, and
+neither trusted with both halves — see [`examples/web/README.md`](../examples/web/README.md).
+
 ## Backups
 
 Don't bother. Every record in a hub expires within a day at the outside; a
