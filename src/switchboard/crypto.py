@@ -411,7 +411,7 @@ def looks_sealed(value: Any) -> bool:
 
     Public because that meeting is not only the client's business. Anything
     reading a room it might not hold the key to — the viewer in
-    `examples/viewer.py` is the first — has to tell "this is empty" from "this
+    `switchboard_viewer/viewer.py` is the first — has to tell "this is empty" from "this
     is sealed and I cannot open it", and those two must never render the same.
     """
     if is_sealed(value):

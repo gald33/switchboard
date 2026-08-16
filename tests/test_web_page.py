@@ -1,7 +1,7 @@
 """The browser build, against a real hub over a real socket.
 
-`examples/web/switchboard-room.js` assembles the same view that `snapshot()`
-in `examples/viewer.py` assembles, so that one renderer can paint either. Two
+`switchboard_viewer/web/switchboard-room.js` assembles the same view that `snapshot()`
+in `switchboard_viewer/viewer.py` assembles, so that one renderer can paint either. Two
 builders of one shape drift the moment nobody compares them, and the drift is
 invisible: a field quietly missing renders as an empty column, not an error.
 So this compares them — same hub, same room, same instant — rather than
@@ -28,12 +28,13 @@ from switchboard.config import ClientConfig, ServerConfig
 from switchboard.crypto import generate_key
 from switchboard.store import Store
 
-WEB = Path(__file__).resolve().parents[1] / "examples" / "web"
+WEB = Path(__file__).resolve().parents[1] / "extras" / "viewer" / "switchboard_viewer" / "web"
 WORKSPACE = "w_browser-tests"
 KEY = generate_key()
 
 _spec = importlib.util.spec_from_file_location(
-    "example_viewer_page", Path(__file__).resolve().parents[1] / "examples" / "viewer.py")
+    "example_viewer_page",
+    Path(__file__).resolve().parents[1] / "extras" / "viewer" / "switchboard_viewer" / "viewer.py")
 viewer_app = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = viewer_app
 _spec.loader.exec_module(viewer_app)

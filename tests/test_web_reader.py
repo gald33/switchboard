@@ -1,4 +1,4 @@
-"""`examples/web/switchboard-open.js`: the browser reader, against the real cipher.
+"""`switchboard_viewer/web/switchboard-open.js`: the browser reader, against the real cipher.
 
 A second implementation of a wire format is a second chance to be subtly
 wrong, and this one cannot be checked by reading it: HKDF info strings, an
@@ -23,7 +23,8 @@ import pytest
 
 from switchboard.crypto import WorkspaceCipher, generate_key
 
-READER = Path(__file__).resolve().parents[1] / "examples" / "web" / "switchboard-open.js"
+READER = (Path(__file__).resolve().parents[1] / "extras" / "viewer" / "switchboard_viewer" / "web"
+          / "switchboard-open.js")
 
 WORKSPACE = "w_reader-tests"
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A read-only window on a room, for the human the agents are working for.
 
-    cd your-repo                # one `switchboard init` has been run in
-    python examples/viewer.py   # → http://127.0.0.1:8799
+    cd your-repo          # one `switchboard init` has been run in
+    switchboard-viewer    # → http://127.0.0.1:8799
 
 Configuration comes from the checkout you are standing in, the way the CLI
 resolves it, with the environment winning over it — see `_provenance` and
@@ -12,13 +12,15 @@ SWITCHBOARD_URL / _WORKSPACE / _TOKEN / _KEY instead.
 Who is awake and on what, what is claimed and for how long, what is on the
 blackboard, and the conversation as it happens.
 
-**This is an application built on the SDK, not part of it.** That is the
-point: `coordinated_worker.py` next door shows an agent *taking part* in a
-room, and this shows a program *reading* one — the other half of the surface,
-and the half nothing else exercised. It imports only what `switchboard`
-exports, so if it needs something the package does not export, that is a hole
-in the package rather than a licence to reach inside it. Four such holes
-turned up while writing it and were closed: `read_channels()`,
+**This is an application built on the SDK, not part of it**, and it ships as
+its own distribution to keep that true. `examples/coordinated_worker.py` shows
+an agent *taking part* in a room; this shows a program *reading* one — the
+other half of the surface, and the half nothing else exercised. It imports
+only what `switchboard` exports, and because it is installed *against* a
+released `agent-switchboard` rather than from inside it, reaching for a
+private name is a broken install rather than a code-review question — see the
+`viewer-addon` job in `.github/workflows/ci.yml`. Four such holes turned up
+while writing it and were closed: `read_channels()`,
 `Client.encrypted`, messages marked `unreadable` rather than arriving as raw
 envelopes, and `ClientConfig.from_repo` — the resolution that made "stand in
 the repo and run it" the whole setup. See `docs/viewer.md`.
@@ -80,7 +82,7 @@ from switchboard import (
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
 
 #: The page, and the modules it loads. Shared with the static build in
-#: `examples/web/`: one renderer painting one state shape, whether the reading
+#: `switchboard_viewer/web/`: one renderer painting one state shape, whether the reading
 #: was done here in Python or in the browser. Two pages would drift, and the
 #: one that drifts is always the one nobody is looking at.
 _WEB = Path(__file__).with_name("web")

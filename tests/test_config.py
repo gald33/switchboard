@@ -448,7 +448,7 @@ def test_the_drift_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
 # --- what a checkout says, and what only its owner may read -----------------
 #
 # `from_repo` is the tier the CLI has always had and nothing else could reach.
-# It moved into the package when `examples/viewer.py` needed the same answer:
+# It moved into the package when `switchboard_viewer/viewer.py` needed the same answer:
 # a program standing in a set-up repo should land in the same room as the
 # agents that live there, without being told anything twice.
 

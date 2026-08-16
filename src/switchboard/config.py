@@ -534,7 +534,7 @@ class ClientConfig:
         machine the file is already on, gains nothing by declining to open
         what its owner can open with a text editor — it just shows them
         ciphertext instead. So the caller says which of the two it is, rather
-        than the resolver guessing: `examples/viewer.py` passes True, the CLI
+        than the resolver guessing: `switchboard_viewer/viewer.py` passes True, the CLI
         does not.
         """
         where = Path.cwd() if directory is None else Path(directory)

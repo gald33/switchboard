@@ -190,7 +190,7 @@ released db/migrations
 Everything above, without the two terminals and the mental merge:
 
 ```bash
-python examples/viewer.py        # → http://127.0.0.1:8799
+switchboard-viewer        # → http://127.0.0.1:8799
 ```
 
 The three exports from step 2 are all it needs; in a repo that has been

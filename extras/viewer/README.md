@@ -1,8 +1,33 @@
-# The viewer, in a browser
+# switchboard-viewer
 
-The same page as [`examples/viewer.py`](../viewer.py), doing the reading in
-the browser instead of in a local Python process. Four static files, no build
-step, no server of its own:
+A read-only page showing your [Switchboard](https://github.com/gald33/switchboard)
+rooms to a human: who is awake and on what, what is claimed and for how long,
+what is on the blackboard, and the conversation as it happens.
+
+```bash
+pip install switchboard-viewer     # or: pipx install / uvx switchboard-viewer
+cd your-repo                       # one `switchboard init` has been run in
+switchboard-viewer                 # → http://127.0.0.1:8799
+```
+
+That is the whole setup. It reads the hub, room and key the way the CLI does —
+`.mcp.json`, `.claude/settings.local.json`, `.env`, environment first — and
+prints where each came from, so there is nothing to type. `--repo` and
+`--scan ~/code` add other checkouts as tabs, each with its own hub and key.
+
+It is a **client**, and deliberately a separate package from the SDK: it is the
+only thing in the project that consumes `switchboard` from outside, so anything
+it needs has to be exported rather than merely reachable. It reads and never
+writes — no registering, no posting, and every read leaves agents' cursors
+where it found them, so watching a room cannot make an agent's next `inbox`
+come back empty.
+
+Full documentation: [docs/viewer.md](https://github.com/gald33/switchboard/blob/main/docs/viewer.md).
+
+## The same page, in a browser
+
+`switchboard_viewer/web/` does the reading in the browser instead of in a local
+Python process. Four static files, no build step, no server of its own:
 
 | | |
 |---|---|
@@ -13,8 +38,8 @@ step, no server of its own:
 
 ## The published one
 
-<https://gald33.github.io/switchboard/> — this directory, at the commit on
-`main`, deployed by [`.github/workflows/pages.yml`](../../.github/workflows/pages.yml)
+<https://gald33.github.io/switchboard/> — `switchboard_viewer/web/` at the
+commit on `main`, deployed by [`.github/workflows/pages.yml`](../../.github/workflows/pages.yml)
 with no build step, so what is served can be diffed against the commit it
 claims to come from.
 
@@ -32,7 +57,7 @@ echo "$SWITCHBOARD_KEY"     # or the `key` in .mcp.json / .env
 Anything that serves static files:
 
 ```bash
-python -m http.server 8899 --directory examples/web
+python -m http.server 8899 --directory switchboard_viewer/web
 ```
 
 Then open it and enter a hub, a workspace and — if the room is encrypted —
@@ -79,7 +104,7 @@ What follows from that:
   host can be untrusted with your traffic, and neither is trusted with both.
 - **Prefer a host you control**, pinned to a commit you have read. These files
   are small and dependency-free on purpose: they are meant to be read.
-- **Or run the local viewer** — `python examples/viewer.py` — which asks you
+- **Or run the local viewer** — `switchboard-viewer` — which asks you
   to trust only a package you installed, and reads your checkout so there is
   nothing to type at all.
 

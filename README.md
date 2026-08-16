@@ -277,12 +277,12 @@ The real app over the real store, reached in-process. See
 
 ### An application built on it
 
-[`examples/viewer.py`](examples/viewer.py) is that SDK used in anger: a local,
+[`switchboard_viewer/viewer.py`](extras/viewer/switchboard_viewer/viewer.py) is that SDK used in anger: a local,
 read-only page showing one room to the human the agents are working for.
 
 ```bash
 cd your-repo                     # one `switchboard init` has been run in
-python examples/viewer.py        # → http://127.0.0.1:8799
+switchboard-viewer        # → http://127.0.0.1:8799
 ```
 
 ![The viewer](docs/images/viewer.png)
@@ -301,7 +301,7 @@ has no login.
 
 It needs no configuring in a repo that has been set up: it resolves the hub,
 room and key the way the CLI does, and says on stderr where each came from.
-The same page also runs [as static files](examples/web/) that read the hub
+The same page also runs [as static files](extras/viewer/switchboard_viewer/web/) that read the hub
 straight from a browser — for a machine with no checkout — decrypting with
 WebCrypto and keeping what you type in that browser. That build is published
 at [gald33.github.io/switchboard](https://gald33.github.io/switchboard/),
@@ -325,7 +325,7 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [Demo](demo/README.md) — two agents, two sessions, one terminal, ~40 seconds, reproducible
 - [Why the coordination protocol exists](docs/why-this-exists.md) — the failure that made "messages vs. blackboard" a written rule instead of a guess
 - [Quickstart](docs/quickstart.md) — hub up and two agents talking, in five minutes
-- [The viewer](docs/viewer.md) — `examples/viewer.py`: a read-only page showing one room to a human, and what building it on the SDK found
+- [The viewer](docs/viewer.md) — `switchboard_viewer/viewer.py`: a read-only page showing one room to a human, and what building it on the SDK found
 - [The model](docs/model.md) — **authoritative**: how identity, access and encryption work, what was rejected and why. If another doc disagrees with it, this one is right
 - [Concepts](docs/concepts.md) — the TTL rules, and what Switchboard deliberately is *not*
 - [Layers](docs/layers.md) — which rules belong in the hub, in the client, in a convention, and in your own tooling — and how strongly each is held

@@ -1,6 +1,6 @@
 """The browser build's view assembly, run under node against a real hub.
 
-`examples/web/switchboard-room.js` and `snapshot()` in `examples/viewer.py`
+`switchboard_viewer/web/switchboard-room.js` and `snapshot()` in `switchboard_viewer/viewer.py`
 build the same shape from the same room, so one renderer can paint either.
 `tests/test_web_page.py` already compares them — but only inside a browser,
 and the browser tests skip wherever playwright is absent, **which includes
@@ -40,14 +40,14 @@ from switchboard.config import ClientConfig, ServerConfig
 from switchboard.crypto import generate_key
 from switchboard.store import Store
 
-WEB = Path(__file__).resolve().parents[1] / "examples" / "web"
+WEB = Path(__file__).resolve().parents[1] / "extras" / "viewer" / "switchboard_viewer" / "web"
 ROOM_JS = WEB / "switchboard-room.js"
 WORKSPACE = "w_node-snapshot"
 KEY = generate_key()
 
 _spec = importlib.util.spec_from_file_location(
     "example_viewer_snapshot",
-    Path(__file__).resolve().parents[1] / "examples" / "viewer.py")
+    Path(__file__).resolve().parents[1] / "extras" / "viewer" / "switchboard_viewer" / "viewer.py")
 viewer_app = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = viewer_app
 _spec.loader.exec_module(viewer_app)
