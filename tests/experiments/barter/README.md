@@ -198,8 +198,10 @@ something, and the kept transcript says what. The content of what agents invent
 is the finding — no aggregate can carry it.
 
 The short version of what came back: **models adopt a convention's vocabulary
-instantly and its substance not at all**, and being handed the vocabulary without
-the substance is worse than being handed nothing.
+instantly and its substance not at all**. Read the arm table with its caveat
+attached, though — single-island variance turned out to swamp the differences
+between arms, so what Tier 2 has produced is a catalogue of failure modes rather
+than a ranking of designs.
 
 ### One island each arm, Haiku 4.5, 4 agents, 5 rounds
 
@@ -387,26 +389,82 @@ agents what a fair swap is. It does not make anyone want your cloth. The model
 ladder has now climbed to precisely the rung where money becomes necessary, and
 stopped there.
 
-#### What this is and is not
+#### `spend` and `paid` — money, and a calculator for it
 
-One island per arm, one model, one seed. **The efficiency ordering is not
-settled by this** — 0.316, 0.368 and 0.386 sit close enough that a single draw
-cannot separate them, and nothing here licenses "machinery is worth 0.05". What
-a single island *can* carry is the structural observation, because 27x is not a
-sampling artefact: agents given a unit of account, with or without a board to put
-it on, did not converge on prices, and the only agreement in the data is the one
-the machinery imposed.
+```
+arm          eff  own plan  worst   settled  msgs  quotes    agree
+free       0.386     0.949   0.93      5/30    14       0        -
+told       0.316     0.771   0.77      2/25    15       0    30.0x
+built      0.368     0.898   0.93      3/16    11       6    27.1x
+bound   ruined 1     0.000   0.00      1/21    17      11     1.7x
+spend      0.272     0.645   0.36      9/30    19      10     6.7x
+paid    ruined 2     0.000   0.00      0/26    25       9    14.0x
+```
 
-The obvious next rung, and the one this points at, is machinery that makes
-revision the default rather than available: a board that answers `read_quotes`
-with *your price against the median* and treats a stale quote as withdrawn.
-That would test whether the missing ingredient is aggregation or obligation.
+`spend` adds the money clause in words to `bound`'s board; `paid` adds the `pay`
+calculator on top. **`spend` did what money is for**: nine trades settled against
+`bound`'s one, and nobody ruined. The double coincidence dissolved, exactly as
+Tier 1's arm D says it should.
 
-Limits, stated plainly: every agent-turn is a model call, so runs are small and
-one arm of one island costs about $2 and the better part of an hour; agents take
-turns rather than acting concurrently, and concurrency is where coordination is
-hardest; and a single seed cannot separate an effect from a draw. Raw records for
-all three arms are alongside this file as `tier2_seed1_*.json`.
+**And `paid` settled nothing at all.** Its transcript shows why, and the reason
+is not economic:
+
+```
+a1: I can't approve t14 and t15 because I don't currently have grain or cloth
+    to give. But I need your approvals to get grain (t13 to a4) and timber
+    (t12 to a3) first.
+```
+
+That is a **circular wait**. Every agent's ability to settle depends on somebody
+else settling first, and escrow makes it bite harder — goods committed to a
+pending offer are unavailable for the offer that would unblock it. It is a
+distributed-systems deadlock wearing an economy's clothes, and it is the kind of
+finding a transcript can carry that no aggregate can.
+
+#### What this is and is not — read this before the table above
+
+**The arm-to-arm ordering in that table is not supported by this data, and I
+should not have implied otherwise for `bound`.**
+
+`bound`, `spend` and `paid` all run the same board machinery on the same island
+and seed, differing by two sentences and one calculator. They produced:
+
+| | `bound` | `spend` | `paid` |
+|---|---|---|---|
+| settled trades | 1/21 | 9/30 | 0/26 |
+| price agreement | 1.7x | 6.7x | 14.0x |
+| agents ruined | 1 | 0 | 2 |
+
+Those are not small differences between near-identical setups — they are the
+same size as every effect this ladder has claimed. **The honest reading is that
+single-island run-to-run variance swamps the arm differences.**
+
+That specifically retracts something said earlier here: that `bound`'s 27.1x →
+1.7x price convergence was too large to be a draw. The same board went on to
+produce 6.7x and 14.0x. The board may well help — Tier 1 says a shared price is
+worth a great deal — but **one island cannot show it, and this file previously
+said it could.**
+
+What does survive:
+
+* **Tier 1.** Twelve islands, every arm swept across five round budgets. Those
+  numbers are replicated and the structural claim in them — C's ruin flat at
+  8/12 while D's falls 12→3 — rests on a sweep, not a draw.
+* **Mechanisms visible in transcripts.** An agent explaining that it starved
+  holding fair offers nobody wanted, or that it cannot approve until someone
+  approves it first, is legible regardless of how the run scored. These are
+  observations about *what can go wrong*, not estimates of how often.
+
+What is needed next is **replication, not a seventh arm**: the same arm over
+several seeds, to measure within-arm variance directly. Until that exists, every
+Tier 2 number here is an anecdote, and the ladder is a catalogue of failure modes
+rather than a ranking of designs.
+
+Limits, restated: every agent-turn is a model call, so one arm of one island
+costs $2–5 and the better part of an hour; agents take turns rather than acting
+concurrently, and concurrency is where coordination is hardest; it is one model
+(Haiku 4.5) and the behaviour may be model-specific. Raw records for all six arms
+are alongside this file as `tier2_seed1_*.json`.
 
 ## Files
 
