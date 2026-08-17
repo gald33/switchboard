@@ -37,9 +37,10 @@ the name — do not reach for the underscore.
 The two directories differ in what they promise. `examples/` is read;
 `extras/` is *installed*, as its own distribution with its own `pyproject.toml`
 and version. So an add-on may only depend on `agent-switchboard` and what it
-declares itself, and the `viewer-addon` CI job enforces it by building both
-wheels and installing them somewhere that is not this repo — where reaching
-into `src/` stops being possible rather than merely frowned upon. Add-ons are
+declares itself, and the `viewer-addon` CI job enforces it by installing the add-on's wheel
+against the SDK **from PyPI**, somewhere that is not this repo — so an add-on
+that reaches into `src/`, or uses API `main` has but no release has shipped,
+fails there rather than in somebody's `pip install`. Add-ons are
 named `switchboard-<thing>` and live one directory each under `extras/`.
 
 ## Things to preserve

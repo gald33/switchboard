@@ -16,10 +16,11 @@ blackboard, and the conversation as it happens.
 its own distribution to keep that true. `examples/coordinated_worker.py` shows
 an agent *taking part* in a room; this shows a program *reading* one — the
 other half of the surface, and the half nothing else exercised. It imports
-only what `switchboard` exports, and because it is installed *against* a
-released `agent-switchboard` rather than from inside it, reaching for a
-private name is a broken install rather than a code-review question — see the
-`viewer-addon` job in `.github/workflows/ci.yml`. Four such holes turned up
+only what `switchboard` exports, and because CI installs it against the
+`agent-switchboard` on PyPI rather than the one in this checkout, a private
+name — or one that exists on `main` but in no release — is a broken install
+rather than a code-review question. See the `viewer-addon` job in
+`.github/workflows/ci.yml`. Four such holes turned up
 while writing it and were closed: `read_channels()`,
 `Client.encrypted`, messages marked `unreadable` rather than arriving as raw
 envelopes, and `ClientConfig.from_repo` — the resolution that made "stand in

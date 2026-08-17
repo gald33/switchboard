@@ -78,12 +78,14 @@ jobs:
   # that distinction is invisible, because `src/` is on the path either way.
   # Two wheels and a directory that is not the repo make it visible.
   #
-  # What this proves: the add-on installs from its own metadata, brings the
-  # browser build with it, and runs with nothing but what it declared. What it
-  # cannot prove while the SDK it needs is unreleased: that the *published*
-  # `agent-switchboard` is enough. Change the base install below to
-  # `pip install agent-switchboard` once 0.8.0 ships and it proves that too —
-  # today that is a red build, since 0.7.2 does not export `rooms_in`.
+  # The SDK comes from PyPI, not from this checkout, which is the whole point:
+  # it proves the add-on needs nothing that is merely *reachable* in a source
+  # tree, and nothing that has not actually been released. When `main` grows
+  # API the viewer starts using, this job goes red until that API ships — which
+  # is the honest moment to find out, rather than after someone runs
+  # `pip install switchboard-viewer` and gets an ImportError.
+  #
+  # (It went red exactly that way on its first run: 0.7.2 had no `rooms_in`.)
   viewer-addon:
     runs-on: ubuntu-latest
     steps:
@@ -91,12 +93,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: build both wheels
+      - name: build the add-on's wheel — and only the add-on's
         run: |
           pip install build
-          python -m build --wheel --outdir /tmp/wheels .
           python -m build --wheel --outdir /tmp/wheels extras/viewer
-      - name: install them, and nothing else
+      - name: install it, resolving the SDK from PyPI like anyone else
         run: pip install /tmp/wheels/*.whl
       - name: it must not have pulled this repo's source in
         run: |
@@ -106,7 +107,7 @@ jobs:
           for module in (switchboard, switchboard_viewer):
               where = pathlib.Path(module.__file__).resolve()
               assert here / "src" not in where.parents, f"{module.__name__} came from {where}"
-          print("switchboard from", switchboard.__file__)
+          print("switchboard", switchboard.__version__, "from", switchboard.__file__)
           PY
       - name: it runs, and the page it serves came with it
         run: |
