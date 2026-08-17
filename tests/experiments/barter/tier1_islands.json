@@ -1,0 +1,907 @@
+{
+  "agents": 12,
+  "goods": 5,
+  "islands": 12,
+  "floors": [
+    0.31640317240349886,
+    0.3480421768950582,
+    0.40516287514821003,
+    0.48767835448191926,
+    0.46921061814616405,
+    0.43697984610879176,
+    0.35230892978420436,
+    0.3935744741097023,
+    0.34716888948616764,
+    0.5234816597409054,
+    0.460692501682087,
+    0.40123967327334614
+  ],
+  "ceilings": [
+    0.3623621216669172,
+    0.4211147438330943,
+    0.49330795326052035,
+    0.5456249353389223,
+    0.6025916153019742,
+    0.5134078549538652,
+    0.4399382552753601,
+    0.404495048996178,
+    0.40877217830264484,
+    0.5845623564488266,
+    0.5190284785247959,
+    0.47535743248040585
+  ],
+  "arms": {
+    "A": [
+      {
+        "seed": 1,
+        "efficiency": [
+          0.3661008834923287,
+          0.36641264108639354
+        ],
+        "own_plan": [
+          0.9957258749818729,
+          0.9957258749818729
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0367108500633977,
+        "executed": 140,
+        "proposed": 466,
+        "rejected": 326,
+        "messages": 0
+      },
+      {
+        "seed": 2,
+        "efficiency": [
+          0.424395233311773,
+          0.42444905183061443
+        ],
+        "own_plan": [
+          0.9920371081798257,
+          0.9920371081798255
+        ],
+        "ruined": [],
+        "worst_ratio": 1.072741366762062,
+        "executed": 182,
+        "proposed": 511,
+        "rejected": 329,
+        "messages": 0
+      },
+      {
+        "seed": 3,
+        "efficiency": [
+          0.4865500129816397,
+          0.4871314737569642
+        ],
+        "own_plan": [
+          0.9834538426369428,
+          0.9834538426369428
+        ],
+        "ruined": [],
+        "worst_ratio": 1.04829400554743,
+        "executed": 113,
+        "proposed": 470,
+        "rejected": 357,
+        "messages": 0
+      },
+      {
+        "seed": 4,
+        "efficiency": [
+          0.5470456739161886,
+          0.5483917546069234
+        ],
+        "own_plan": [
+          0.99078734546277,
+          0.9907873454627703
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0182778496929683,
+        "executed": 146,
+        "proposed": 483,
+        "rejected": 337,
+        "messages": 0
+      },
+      {
+        "seed": 5,
+        "efficiency": [
+          0.6027723284188686,
+          0.6040650182659977
+        ],
+        "own_plan": [
+          0.988404170434526,
+          0.9884041704345258
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0717016860063626,
+        "executed": 129,
+        "proposed": 415,
+        "rejected": 286,
+        "messages": 0
+      },
+      {
+        "seed": 6,
+        "efficiency": [
+          0.5093422637879406,
+          0.5104868709805293
+        ],
+        "own_plan": [
+          0.9890395680040425,
+          0.9890395680040421
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0643645456105515,
+        "executed": 157,
+        "proposed": 484,
+        "rejected": 327,
+        "messages": 0
+      },
+      {
+        "seed": 7,
+        "efficiency": [
+          0.4171886145750362,
+          0.4180057331800754
+        ],
+        "own_plan": [
+          0.9563338219972274,
+          0.9563338219972274
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0501156712915234,
+        "executed": 128,
+        "proposed": 354,
+        "rejected": 226,
+        "messages": 0
+      },
+      {
+        "seed": 8,
+        "efficiency": [
+          0.42735914747918496,
+          0.42871560010583554
+        ],
+        "own_plan": [
+          0.9544977539129085,
+          0.9544977539129084
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0261558383284433,
+        "executed": 107,
+        "proposed": 366,
+        "rejected": 259,
+        "messages": 0
+      },
+      {
+        "seed": 9,
+        "efficiency": [
+          0.4015831793023502,
+          0.4016178136428624
+        ],
+        "own_plan": [
+          0.9818354818122336,
+          0.9818354818122333
+        ],
+        "ruined": [],
+        "worst_ratio": 1.038033983983806,
+        "executed": 73,
+        "proposed": 305,
+        "rejected": 232,
+        "messages": 0
+      },
+      {
+        "seed": 10,
+        "efficiency": [
+          0.5851970180042779,
+          0.5892284227870809
+        ],
+        "own_plan": [
+          0.9905932674765978,
+          0.9905932674765976
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0443063860266117,
+        "executed": 96,
+        "proposed": 400,
+        "rejected": 304,
+        "messages": 0
+      },
+      {
+        "seed": 11,
+        "efficiency": [
+          0.5193341249969564,
+          0.5195521181534029
+        ],
+        "own_plan": [
+          0.9784256968329622,
+          0.9784256968329622
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0375765506242274,
+        "executed": 144,
+        "proposed": 426,
+        "rejected": 282,
+        "messages": 0
+      },
+      {
+        "seed": 12,
+        "efficiency": [
+          0.46105119382842785,
+          0.46196441126726356
+        ],
+        "own_plan": [
+          0.961846649946434,
+          0.9618466499464338
+        ],
+        "ruined": [],
+        "worst_ratio": 1.0128667336577817,
+        "executed": 77,
+        "proposed": 338,
+        "rejected": 261,
+        "messages": 0
+      }
+    ],
+    "B": [
+      {
+        "seed": 1,
+        "efficiency": [
+          0.26518205121216165,
+          0.26519047538509055
+        ],
+        "own_plan": [
+          0.44118608961943345,
+          0.44118608961943345
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5912999509503027,
+        "executed": 5,
+        "proposed": 720,
+        "rejected": 715,
+        "messages": 360
+      },
+      {
+        "seed": 2,
+        "efficiency": [
+          0.42419462204539693,
+          0.42424573871091176
+        ],
+        "own_plan": [
+          0.6833863965834901,
+          0.6833863965834899
+        ],
+        "ruined": [],
+        "worst_ratio": 0.6386167900929923,
+        "executed": 26,
+        "proposed": 720,
+        "rejected": 694,
+        "messages": 360
+      },
+      {
+        "seed": 3,
+        "efficiency": [
+          0.5282957364897337,
+          0.5301030250407249
+        ],
+        "own_plan": [
+          0.7376792393470798,
+          0.7376792393470796
+        ],
+        "ruined": [],
+        "worst_ratio": 0.518672571746172,
+        "executed": 22,
+        "proposed": 720,
+        "rejected": 698,
+        "messages": 360
+      },
+      {
+        "seed": 4,
+        "efficiency": [
+          0.5396561319841181,
+          0.540172387364106
+        ],
+        "own_plan": [
+          0.7280488852388696,
+          0.7280488852388698
+        ],
+        "ruined": [],
+        "worst_ratio": 0.6405409303667167,
+        "executed": 23,
+        "proposed": 720,
+        "rejected": 697,
+        "messages": 360
+      },
+      {
+        "seed": 5,
+        "efficiency": [
+          0.3921401613337909,
+          0.39587603418423034
+        ],
+        "own_plan": [
+          0.7131463241203119,
+          0.7131463241203115
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5317132205013371,
+        "executed": 2,
+        "proposed": 720,
+        "rejected": 718,
+        "messages": 360
+      },
+      {
+        "seed": 6,
+        "efficiency": [
+          0.42238407142593565,
+          0.4228630451859896
+        ],
+        "own_plan": [
+          0.6595446814037403,
+          0.6595446814037403
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5004845535215273,
+        "executed": 8,
+        "proposed": 720,
+        "rejected": 712,
+        "messages": 360
+      },
+      {
+        "seed": 7,
+        "efficiency": [
+          0.4986445084010019,
+          0.4991311875657736
+        ],
+        "own_plan": [
+          0.7310859700153209,
+          0.7310859700153209
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5190080596281504,
+        "executed": 31,
+        "proposed": 720,
+        "rejected": 689,
+        "messages": 360
+      },
+      {
+        "seed": 8,
+        "efficiency": [
+          0.4840789132713732,
+          0.4852289041420125
+        ],
+        "own_plan": [
+          0.6859722422154311,
+          0.6859722422154311
+        ],
+        "ruined": [],
+        "worst_ratio": 0.585465640178849,
+        "executed": 30,
+        "proposed": 720,
+        "rejected": 690,
+        "messages": 360
+      },
+      {
+        "seed": 9,
+        "efficiency": [
+          0.3606886417237034,
+          0.36069421574138927
+        ],
+        "own_plan": [
+          0.5620696006162857,
+          0.5620696006162857
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5155651451693445,
+        "executed": 14,
+        "proposed": 720,
+        "rejected": 706,
+        "messages": 360
+      },
+      {
+        "seed": 10,
+        "efficiency": [
+          0.46712808874916134,
+          0.4678899782026254
+        ],
+        "own_plan": [
+          0.604625385533265,
+          0.6046253855332651
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5109610979344039,
+        "executed": 10,
+        "proposed": 720,
+        "rejected": 710,
+        "messages": 360
+      },
+      {
+        "seed": 11,
+        "efficiency": [
+          0.5746079479377851,
+          0.5747476442153602
+        ],
+        "own_plan": [
+          0.7714580021698096,
+          0.7714580021698096
+        ],
+        "ruined": [],
+        "worst_ratio": 0.7190532762594583,
+        "executed": 29,
+        "proposed": 720,
+        "rejected": 691,
+        "messages": 360
+      },
+      {
+        "seed": 12,
+        "efficiency": [
+          0.4419128062495945,
+          0.44212740638376763
+        ],
+        "own_plan": [
+          0.6755961908616885,
+          0.6755961908616883
+        ],
+        "ruined": [],
+        "worst_ratio": 0.5283592929799233,
+        "executed": 14,
+        "proposed": 720,
+        "rejected": 706,
+        "messages": 360
+      }
+    ],
+    "C": [
+      {
+        "seed": 1,
+        "efficiency": [
+          0.9998881383879124,
+          0.9998881383879121
+        ],
+        "own_plan": [
+          0.9998881383879126,
+          0.9998881383879121
+        ],
+        "ruined": [],
+        "worst_ratio": 1.382591780425788,
+        "executed": 211,
+        "proposed": 688,
+        "rejected": 477,
+        "messages": 360
+      },
+      {
+        "seed": 2,
+        "efficiency": [
+          0.999878115061287,
+          0.9998781150612868
+        ],
+        "own_plan": [
+          0.9998781150612872,
+          0.9998781150612868
+        ],
+        "ruined": [],
+        "worst_ratio": 1.5266115159285445,
+        "executed": 168,
+        "proposed": 720,
+        "rejected": 552,
+        "messages": 360
+      },
+      {
+        "seed": 3,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          5,
+          6,
+          9,
+          10
+        ],
+        "worst_ratio": 0.0,
+        "executed": 51,
+        "proposed": 460,
+        "rejected": 409,
+        "messages": 360
+      },
+      {
+        "seed": 4,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          9,
+          11
+        ],
+        "worst_ratio": 0.0,
+        "executed": 83,
+        "proposed": 719,
+        "rejected": 636,
+        "messages": 360
+      },
+      {
+        "seed": 5,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          3
+        ],
+        "worst_ratio": 0.0,
+        "executed": 65,
+        "proposed": 279,
+        "rejected": 214,
+        "messages": 360
+      },
+      {
+        "seed": 6,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          6
+        ],
+        "worst_ratio": 0.0,
+        "executed": 134,
+        "proposed": 663,
+        "rejected": 529,
+        "messages": 360
+      },
+      {
+        "seed": 7,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          8
+        ],
+        "worst_ratio": 0.0,
+        "executed": 92,
+        "proposed": 337,
+        "rejected": 245,
+        "messages": 360
+      },
+      {
+        "seed": 8,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          2,
+          5,
+          6,
+          11
+        ],
+        "worst_ratio": 0.0,
+        "executed": 48,
+        "proposed": 158,
+        "rejected": 110,
+        "messages": 360
+      },
+      {
+        "seed": 9,
+        "efficiency": [
+          0.9985926590399758,
+          0.998628065286709
+        ],
+        "own_plan": [
+          0.9985927924958474,
+          0.9985927924958472
+        ],
+        "ruined": [],
+        "worst_ratio": 1.6406827462987619,
+        "executed": 181,
+        "proposed": 716,
+        "rejected": 535,
+        "messages": 360
+      },
+      {
+        "seed": 10,
+        "efficiency": [
+          0.9933451078208092,
+          0.9942926491437692
+        ],
+        "own_plan": [
+          0.9934291035004362,
+          0.9934291035004362
+        ],
+        "ruined": [],
+        "worst_ratio": 1.318891323584329,
+        "executed": 189,
+        "proposed": 669,
+        "rejected": 480,
+        "messages": 360
+      },
+      {
+        "seed": 11,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          5,
+          6,
+          10
+        ],
+        "worst_ratio": 0.0,
+        "executed": 64,
+        "proposed": 275,
+        "rejected": 211,
+        "messages": 360
+      },
+      {
+        "seed": 12,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          0,
+          8,
+          10
+        ],
+        "worst_ratio": 0.0,
+        "executed": 90,
+        "proposed": 330,
+        "rejected": 240,
+        "messages": 360
+      }
+    ],
+    "D": [
+      {
+        "seed": 1,
+        "efficiency": [
+          0.752949046171958,
+          0.7549208147837738
+        ],
+        "own_plan": [
+          0.7534215723235375,
+          0.7534215723235372
+        ],
+        "ruined": [],
+        "worst_ratio": 0.301971018828955,
+        "executed": 229,
+        "proposed": 720,
+        "rejected": 491,
+        "messages": 360
+      },
+      {
+        "seed": 2,
+        "efficiency": [
+          0.9431767289230393,
+          0.9431767289230389
+        ],
+        "own_plan": [
+          0.943176728923039,
+          0.9431767289230389
+        ],
+        "ruined": [],
+        "worst_ratio": 1.271490882252325,
+        "executed": 235,
+        "proposed": 720,
+        "rejected": 485,
+        "messages": 360
+      },
+      {
+        "seed": 3,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          9
+        ],
+        "worst_ratio": 0.0,
+        "executed": 197,
+        "proposed": 720,
+        "rejected": 523,
+        "messages": 360
+      },
+      {
+        "seed": 4,
+        "efficiency": [
+          0.8309106171097757,
+          0.8319752498819821
+        ],
+        "own_plan": [
+          0.851876136602813,
+          0.851876136602813
+        ],
+        "ruined": [],
+        "worst_ratio": 1.1812948011183155,
+        "executed": 260,
+        "proposed": 720,
+        "rejected": 460,
+        "messages": 360
+      },
+      {
+        "seed": 5,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          0,
+          8,
+          9,
+          11
+        ],
+        "worst_ratio": 0.0,
+        "executed": 151,
+        "proposed": 720,
+        "rejected": 569,
+        "messages": 360
+      },
+      {
+        "seed": 6,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          0,
+          4,
+          5,
+          9
+        ],
+        "worst_ratio": 0.0,
+        "executed": 158,
+        "proposed": 720,
+        "rejected": 562,
+        "messages": 360
+      },
+      {
+        "seed": 7,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          8
+        ],
+        "worst_ratio": 0.0,
+        "executed": 194,
+        "proposed": 689,
+        "rejected": 495,
+        "messages": 360
+      },
+      {
+        "seed": 8,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          9
+        ],
+        "worst_ratio": 0.0,
+        "executed": 176,
+        "proposed": 720,
+        "rejected": 544,
+        "messages": 360
+      },
+      {
+        "seed": 9,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          5
+        ],
+        "worst_ratio": 0.0,
+        "executed": 218,
+        "proposed": 720,
+        "rejected": 502,
+        "messages": 360
+      },
+      {
+        "seed": 10,
+        "efficiency": [
+          0.0,
+          0.0
+        ],
+        "own_plan": [
+          0.0,
+          0.0
+        ],
+        "ruined": [
+          0,
+          10
+        ],
+        "worst_ratio": 0.0,
+        "executed": 203,
+        "proposed": 720,
+        "rejected": 517,
+        "messages": 360
+      },
+      {
+        "seed": 11,
+        "efficiency": [
+          0.7725945044257274,
+          0.7758099610638688
+        ],
+        "own_plan": [
+          0.7880915223743836,
+          0.7880915223743836
+        ],
+        "ruined": [],
+        "worst_ratio": 0.7474881399860143,
+        "executed": 221,
+        "proposed": 720,
+        "rejected": 499,
+        "messages": 360
+      },
+      {
+        "seed": 12,
+        "efficiency": [
+          0.9094120903067376,
+          0.9096355243809235
+        ],
+        "own_plan": [
+          0.9105166682586477,
+          0.910516668258648
+        ],
+        "ruined": [],
+        "worst_ratio": 1.4178537677899896,
+        "executed": 183,
+        "proposed": 720,
+        "rejected": 537,
+        "messages": 360
+      }
+    ]
+  }
+}
