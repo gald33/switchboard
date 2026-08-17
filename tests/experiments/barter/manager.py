@@ -95,8 +95,19 @@ class AgentState:
     alpha: tuple[float, ...]
     capacity: tuple[float, ...]
     holdings: list[float]
-    produced: bool = False
-    shares: tuple[float, ...] | None = None
+    #: Cumulative labour shares, one entry per good, summing to at most 1 across
+    #: the whole run. A list rather than a one-shot tuple because labour can be
+    #: committed in instalments — see ``Manager.labour_per_round``.
+    shares: list[float] = field(default_factory=list)
+    #: Labour committed so far, 0..1.
+    spent: float = 0.0
+    #: The tick of the most recent commitment, so labour cannot be spent twice
+    #: in one round.
+    last_spent_tick: int | None = None
+
+    @property
+    def produced(self) -> bool:
+        return self.spent > 1e-12
 
 
 @dataclass
@@ -109,10 +120,37 @@ class Manager:
     """
 
     island: Island
-    #: ``production`` accepts labour plans; ``trading`` accepts trades;
-    #: ``closed`` accepts neither. The manager owns the phase because a phase
-    #: agents could advance is a phase one agent can advance early.
+    #: ``discovery`` accepts neither labour plans nor trades — it is time to talk
+    #: before anything is committed; ``production`` accepts labour plans;
+    #: ``trading`` accepts trades; ``closed`` accepts neither. The manager owns
+    #: the phase because a phase agents could advance is a phase one agent can
+    #: advance early.
+    #:
+    #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
+    #: themselves. Production was committed in the first round, before any agent
+    #: had said anything, so every convention on the ladder could only ever
+    #: describe the world after the one irreversible decision was behind it.
+    #: Implied production quality came out at ~0.41 in every arm — the exchange
+    #: ceiling — because no arm had the information to specialise, whatever it
+    #: had been told. Deliberation has to come before manufacturing or it cannot
+    #: plan for it.
+    #:
+    #: It defaults off. Tier 1 constructs its manager without it and starts in
+    #: ``production``, exactly as before, because its scripted agents do their
+    #: price discovery outside the manager entirely.
     phase: str = "production"
+    #: How much of an agent's single unit of labour one ``produce`` call may
+    #: commit. 1.0 is the original one-shot bet. Smaller spreads the *same* total
+    #: labour over instalments, which leaves the frontier, the autarky floor and
+    #: the exchange ceiling all exactly where they were — so a rolling run and a
+    #: one-shot run are directly comparable and differ only in whether a
+    #: commitment can be revised.
+    labour_per_round: float = 1.0
+    #: Whether labour may still be committed once trading has opened. Off, the
+    #: production decision is a bet placed before any price exists and a wrong
+    #: one cannot be unwound — which is what made specialisation dangerous and
+    #: ruin total. On, an agent produces a little, watches, and produces again.
+    rolling: bool = False
     tick: int = 0
     agents: dict[str, AgentState] = field(default_factory=dict)
     trades: dict[str, Trade] = field(default_factory=dict)
@@ -129,6 +167,7 @@ class Manager:
                     agent_id=agent_id, index=i,
                     alpha=self.island.alpha[i], capacity=self.island.capacity[i],
                     holdings=[0.0] * self.island.n_goods,
+                    shares=[0.0] * self.island.n_goods,
                 )
 
     # --- helpers ------------------------------------------------------------
@@ -211,6 +250,7 @@ class Manager:
             "utility": round(utility(state.alpha, state.holdings), 6),
             "value_per_unit": {g: round(rates[i], 4) for i, g in enumerate(self.goods)},
             "produced": state.produced,
+            "labour_left": round(max(0.0, 1.0 - state.spent), 4),
             "escrowed": self._escrow_of(agent_id),
         }
 
@@ -223,17 +263,34 @@ class Manager:
         return held
 
     def op_produce(self, agent_id: str, plan: Any) -> dict[str, Any]:
-        """Commit a labour allocation. Once, and only while production is open.
+        """Commit labour. ``plan`` is ``{good: share}``, shares >= 0 summing to
+        at most 1 -- a split of *this instalment*, not of the whole run.
 
-        ``plan`` is ``{good: share}`` with shares >= 0 summing to at most 1 --
-        one unit of labour. Shares are not renormalised if they sum to less than
-        one: idle labour is a choice an agent is allowed to make badly.
+        With ``labour_per_round == 1.0`` (the default) there is one instalment
+        and this is the original one-shot decision: everything is staked before
+        any price exists, and a wrong bet cannot be unwound.
+
+        With a smaller instalment and ``rolling`` on, the same total unit of
+        labour is spread across rounds, so an agent produces a little, sees what
+        prices do, and produces again. Total production possibilities are
+        identical either way -- the frontier, the autarky floor and the exchange
+        ceiling are all unchanged -- so the two are directly comparable and the
+        only thing varying is whether commitment is one-shot or incremental.
+
+        Idle labour is lost, not carried. An instalment an agent does not spend
+        is a round it chose not to work, which is a choice it is allowed to make
+        badly.
         """
-        if self.phase != "production":
+        allowed = self.phase == "production" or (self.rolling and self.phase == "trading")
+        if not allowed:
             raise TradeError(f"production is {self.phase}, not open")
         state = self._agent(agent_id)
-        if state.produced:
-            raise TradeError("you have already produced; the plan is committed for the run")
+        if state.last_spent_tick == self.tick:
+            raise TradeError("you have already worked this round")
+        remaining = 1.0 - state.spent
+        if remaining <= 1e-9:
+            raise TradeError("you have no labour left; it is all committed")
+        instalment = min(self.labour_per_round, remaining)
 
         shares = [0.0] * self.island.n_goods
         if not isinstance(plan, dict) or not plan:
@@ -249,16 +306,24 @@ class Manager:
             shares[g] += value
         total = sum(shares)
         if total > 1.0 + 1e-6:
-            raise TradeError(f"shares sum to {total:.4f}; you have 1.0 unit of labour")
+            raise TradeError(
+                f"shares sum to {total:.4f}; they are fractions of this round's "
+                f"labour and must sum to at most 1")
 
-        state.shares = tuple(shares)
-        state.produced = True
+        # Scale the split by the instalment, so `shares` stays a fraction of the
+        # agent's whole labour endowment however many instalments there were.
+        # Conservation and the own-plan frontier then need no special case.
         for g in range(self.island.n_goods):
+            shares[g] *= instalment
+            state.shares[g] += shares[g]
             state.holdings[g] += state.capacity[g] * shares[g]
+        state.spent += instalment * total
+        state.last_spent_tick = self.tick
         return {
             "produced": {g: round(state.capacity[i] * shares[i], 4)
                          for i, g in enumerate(self.goods)},
-            "idle_labour": round(max(0.0, 1.0 - total), 4),
+            "labour_left": round(max(0.0, 1.0 - state.spent), 4),
+            "idle_labour": round(instalment * max(0.0, 1.0 - total), 4),
             "holdings": {g: round(state.holdings[i], 4) for i, g in enumerate(self.goods)},
         }
 
@@ -385,6 +450,17 @@ class Manager:
                 expired.append(trade.id)
         return expired
 
+    def open_production(self) -> None:
+        """Close deliberation, let labour be committed.
+
+        Only reachable from ``discovery``. Production remains a one-shot
+        decision — what changes is that agents have had rounds to talk, quote
+        and read a board before making it, rather than making it into silence.
+        """
+        if self.phase != "discovery":
+            raise TradeError(f"cannot open production from {self.phase}")
+        self.phase = "production"
+
     def open_trading(self) -> None:
         """Close production, open the floor. Agents that never produced get
         their autarky-optimal plan rather than nothing, so a silent agent shows
@@ -394,9 +470,12 @@ class Manager:
             raise TradeError(f"cannot open trading from {self.phase}")
         for state in self.agents.values():
             if not state.produced:
+                # A silent agent gets its autarky-optimal plan for one
+                # instalment rather than nothing, so "never spoke" shows up as
+                # not having specialised rather than as starvation — two very
+                # different failures that would otherwise be indistinguishable.
                 plan = {g: state.alpha[i] for i, g in enumerate(self.goods)}
                 self.op_produce(state.agent_id, plan)
-                state.shares = tuple(state.alpha)
         self.phase = "trading"
 
     def close(self) -> None:
@@ -422,9 +501,8 @@ class Manager:
         """
         produced = [0.0] * self.island.n_goods
         for state in self.agents.values():
-            if state.shares is not None:
-                for g in range(self.island.n_goods):
-                    produced[g] += state.capacity[g] * state.shares[g]
+            for g in range(self.island.n_goods):
+                produced[g] += state.capacity[g] * state.shares[g]
         held = [0.0] * self.island.n_goods
         for state in self.agents.values():
             for g in range(self.island.n_goods):

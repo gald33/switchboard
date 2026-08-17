@@ -54,13 +54,16 @@ import asyncio
 import json
 import random
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from barter.analysis import render as render_comparison  # noqa: E402
+from barter.analysis import snapshot, trajectory_table  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
+from barter.flow import play  # noqa: E402
 from barter.llm import ARMS, TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
 from barter.run import score  # noqa: E402
@@ -70,7 +73,7 @@ from switchboard.testing import hub  # noqa: E402
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
-async def _drive(options: object, prompt: str) -> tuple[str, float]:
+async def _drive(options: object, prompt: str, budget: int | None = None) -> tuple[str, float]:
     """One agent turn. Returns its final text and what the turn cost.
 
     Running out of turns ends the agent's round; it does not end the run. An
@@ -82,6 +85,12 @@ async def _drive(options: object, prompt: str) -> tuple[str, float]:
     """
     from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
 
+    if budget is not None:
+        # Per-phase budgets, because the phases are not the same size of job.
+        # Talking needs a handful of calls; a trading pass needs to look around
+        # and act. Spending a trading budget on every phase was most of what
+        # made the old flow expensive.
+        options = replace(options, max_turns=budget)
     said, cost = [], 0.0
     try:
         async for message in query(prompt=prompt, options=options):
@@ -108,11 +117,27 @@ async def run_llm_island(
     model: str,
     max_turns: int,
     verbose: bool,
+    discovery: int = 3,
+    labour: str = "once",
+    turns_talk: int = 8,
+    turns_produce: int = 8,
+    turns_offer: int = 14,
+    turns_settle: int = 8,
 ) -> dict:
     from claude_agent_sdk import ClaudeAgentOptions
 
     island = draw_island(agents, goods, seed=seed)
-    manager = Manager(island=island)
+    # Rolling labour spreads the *same* one unit across the production round and
+    # every trading round, so the frontier and both benchmarks are untouched and
+    # a rolling island is directly comparable to a one-shot one.
+    rolling = labour == "rolling"
+    instalments = 1 + rounds if rolling else 1
+    manager = Manager(
+        island=island,
+        phase="discovery" if discovery else "production",
+        labour_per_round=1.0 / instalments,
+        rolling=rolling,
+    )
     rng = random.Random(seed)
     run = f"llm{seed}{arm}"
 
@@ -143,38 +168,45 @@ async def run_llm_island(
             )
 
         cost = 0.0
-        order = list(manager.agents)
-        transcript: list[dict] = []
 
-        for round_no in range(1, rounds + 1):
-            if round_no == 2:
-                # Production closes after round 1. Anyone who did not spend
-                # their labour gets the autarky plan, so "never produced" shows
-                # up as not having specialised rather than as starvation.
-                manager.open_trading()
-                manager.check_conservation()
-            phase_note = (
-                "Production is open — this is the only round in which you can call "
-                "`produce`. Trading opens next round."
-                if round_no == 1 else
-                f"Trading is open. {rounds - round_no} round(s) remain after this one."
-            )
-            rng.shuffle(order)
-            for agent_id in order:
-                prompt = TURN.format(round_no=round_no, rounds=rounds, phase_note=phase_note)
-                text, spent = await _drive(options[agent_id], prompt)
-                cost += spent
-                transcript.append({"round": round_no, "agent": agent_id, "text": text})
-                if verbose:
-                    print(f"  [{round_no}] {agent_id}: {text[:160]}", file=sys.stderr)
-            service.drain()
-            manager.advance()
-            manager.check_conservation()
+        async def take_turn(agent_id: str, *, round_no: int, label: str,
+                            note: str, budget: int) -> str:
+            nonlocal cost
+            prompt = TURN.format(round_no=round_no,
+                                 rounds=discovery + 1 + rounds, phase_note=note)
+            text, spent = await _drive(options[agent_id], prompt, budget)
+            cost += spent
+            if verbose:
+                print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
+            return text
 
-        if manager.phase == "production":
-            manager.open_trading()
-        manager.close()
-        manager.check_conservation()
+        def observe(round_no: int, label: str) -> dict | None:
+            # Only after a pass that could have changed something. Snapshotting
+            # inside a pass would read a half-applied round.
+            if label not in ("talk", "produce", "settle"):
+                return None
+            live = {}
+            for entry in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
+                value = entry.get("value")
+                if isinstance(value, dict) and isinstance(value.get("prices"), dict):
+                    live[str(entry["key"]).rsplit("/", 1)[-1]] = value["prices"]
+            if not live:
+                # Boardless arms keep their prices in sentences, so read them
+                # back out the way a counterparty would have to.
+                from barter.analysis import prices_from_prose
+                said = [m["body"] for m in
+                        handle.client("reader").history(f"barter/{run}/floor", limit=500)
+                        if isinstance(m.get("body"), dict)]
+                live = prices_from_prose(said)
+            return snapshot(island, manager, live, round_no=round_no, label=label)
+
+        # The order of play lives in `barter/flow.py`, with nothing in it that
+        # knows about models, so it can be exercised offline in milliseconds.
+        # Both previous flow errors were found by paying for a run.
+        played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
+                            rng=rng, drain=service.drain, rolling=rolling,
+                            on_round=observe)
+        transcript = played.transcript
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
@@ -186,6 +218,12 @@ async def run_llm_island(
 
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.
+    # Separate "the seller declined" from "the seller never got a turn". Only
+    # the first is an economic result; the second is the harness losing trades
+    # for us, and reporting them together would credit a flow artefact to the
+    # arm's design.
+    unseen = played.expired_unseen(manager)
+
     outcome = score(island, manager, arm=arm, seed=seed, messages=len(floor))
     _, autarky_utils = autarky(island)
     return {
@@ -202,6 +240,10 @@ async def run_llm_island(
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
         "quote_board": board,
         "quotes_posted": sum(w.quotes_posted for w in wires.values()),
+        "expired_unseen": unseen,
+        "trajectory": played.trajectory,
+        "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2,
+                 "labour": labour, "instalments": instalments},
         "transcript": transcript,
     }
 
@@ -228,6 +270,11 @@ def render(result: dict) -> str:
         f"  worst agent      {result['worst_ratio']:.2f}x autarky",
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
+        f"  flow             {result['flow']['discovery']} talk + produce + "
+        f"{result['flow']['trade_rounds']}x2 trade, labour "
+        f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
+        f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
+        f"seller never having had a turn",
         f"  said             {len(result['said'])} message(s)"
         + (f", {result['quotes_posted']} quote(s) posted" if result.get("quotes_posted") else ""),
     ]
@@ -236,6 +283,9 @@ def render(result: dict) -> str:
         for who, prices in sorted(result["quote_board"].items()):
             shown = "  ".join(f"{g} {v:g}" for g, v in prices.items())
             lines.append(f"    {who:>4}: {shown}")
+    if result.get("trajectory"):
+        lines.append("\n  trajectory")
+        lines += ["    " + line for line in trajectory_table(result["trajectory"]).splitlines()]
     if result["said"]:
         lines.append("\n  what they said")
         for message in result["said"][:14]:
@@ -251,7 +301,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arms", nargs="+", default=["told", "built"], choices=list(ARMS))
     parser.add_argument("--agents", type=int, default=5)
     parser.add_argument("--goods", type=int, default=5)
-    parser.add_argument("--rounds", type=int, default=6)
+    parser.add_argument("--rounds", type=int, default=8,
+                        help="trading rounds (each is a propose pass and a settle pass)")
+    parser.add_argument("--labour", choices=["once", "rolling"], default="once",
+                        help="one-shot commitment, or the same total labour in "
+                             "instalments across rounds")
+    parser.add_argument("--discovery", type=int, default=3,
+                        help="rounds of talk before any labour is committed")
     parser.add_argument("--islands", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -275,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
             result = asyncio.run(run_llm_island(
                 arm=arm, agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
-                verbose=args.verbose,
+                verbose=args.verbose, discovery=args.discovery,
+                labour=args.labour,
             ))
             results.append(result)
             print(render(result), flush=True)
