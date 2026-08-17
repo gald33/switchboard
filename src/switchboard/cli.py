@@ -1047,6 +1047,99 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+#: Where an arriving agent writes what it came to do. Under `coord/` so the
+#: convention's own first move — read that prefix — finds it.
+ARRIVE_PREFIX = "coord/agents/"
+
+
+def cmd_arrive(args: argparse.Namespace) -> int:
+    """Announce, read EVERY durable surface, and leave something that outlives you.
+
+    The command exists because "check the room" had no defined meaning, and two
+    agents proved on 2026-08-17 that this is not pedantry. One checked the
+    roster and the channel list; the other checked its inbox. Both concluded the
+    room was empty. It was not: a board entry had been sitting in it for
+    twenty-four minutes, and neither of them read the board.
+
+    An inbox check in a room you just joined is the worst of these, because it
+    can only ever come back empty — nobody has yet sent a message to an id you
+    have not published. Answering "is anybody here?" with it is asking a
+    question that has one possible answer.
+
+    So this reads all three, and — the part that matters — **names what it
+    checked**. "Nobody is here" and "I looked in one place" must not render the
+    same, which is the same rule the claim audit follows when it cannot reach
+    the roster.
+
+    The write is not a courtesy either. Presence lapses in two minutes and the
+    hub is designed to be cheap to lose, so a handoff between sessions that do
+    not overlap cannot live in presence. It lives in the board entry this
+    leaves, which outlasts the turn that wrote it by a day.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    identity = detect_identity(agent_id=args.agent_id)
+    intent = args.intent or "(no intent given)"
+
+    with _make_client(args) as hub:
+        agent = hub.register(
+            name=identity.name, kind=identity.kind, branch=identity.branch,
+            task=intent, channels=args.channel or [], meta=identity.meta,
+            back_in=args.back_in,
+        )
+        now = _hub_now(agent)
+
+        roster = [a for a in hub.agents() if a.get("agent_id") != hub.agent_id]
+        strangers = hub.key_mismatches(hub.agents())
+        stranger_ids = {a.get("agent_id") for a in strangers}
+        peers = [a for a in roster if a.get("agent_id") not in stranger_ids]
+        board = [e for e in hub.board_list(prefix="coord/")
+                 if e.get("key") != ARRIVE_PREFIX + hub.agent_id]
+        waiting = hub.inbox(peek=True, limit=20)
+
+        hub.board_set(
+            ARRIVE_PREFIX + hub.agent_id,
+            {"agent_id": hub.agent_id, "branch": identity.branch,
+             "name": identity.name, "intent": intent, "since": now},
+        )
+
+    surfaces = {"roster": len(peers), "board": len(board), "inbox": len(waiting)}
+    if args.json:
+        _print_json({
+            "intent": intent, "agent_id": hub.agent_id, "checked": surfaces,
+            "roster": peers, "board": board, "inbox": waiting,
+            "key_mismatches": [a.get("agent_id") for a in strangers],
+            "alone": not (peers or board or waiting),
+        })
+        return EXIT_OK
+
+    for a in peers:
+        state = f"away {_dur(a.get('back_in') or 0)}" if a.get("away") else "here"
+        print(f"{fmt.green('peer')}   {str(a.get('agent_id'))[:33]:<34} {state}  "
+              f"{(a.get('task') or '')[:40]}")
+    for e in board:
+        print(f"{fmt.green('board')}  {str(e.get('key'))[:33]:<34} "
+              f"{_dur(e.get('expires_in') or 0)} left")
+    for m in waiting:
+        print(f"{fmt.green('inbox')}  #{m.get('seq')} from {str(m.get('from'))[:26]}")
+
+    if strangers:
+        print(f"\n{fmt.yellow('key mismatch')} — {len(strangers)} agent(s) here hold a "
+              f"different workspace key. You are in each other's roster and cannot "
+              f"exchange anything; `switchboard join <invite>` settles it either way.")
+
+    # The line this command exists for. An empty room and an unchecked one are
+    # different findings, and only one of them justifies going quiet.
+    print(f"\nchecked {surfaces['roster']} peer(s) on the roster, "
+          f"{surfaces['board']} note(s) under coord/, "
+          f"{surfaces['inbox']} unread message(s).")
+    if not (peers or board or waiting):
+        print("Every durable surface is empty — this room really is unused, not "
+              "merely unchecked.")
+    print(f"Your intent is on the board at {ARRIVE_PREFIX}{hub.agent_id[:12]}… and "
+          f"outlives this turn; presence does not.")
+    return EXIT_OK
+
+
 def hub_id_hint(intent: rendezvous.Intent) -> str:
     return intent.agent_id[:33]
 
@@ -1463,6 +1556,60 @@ def cmd_say(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _resolve_recipient(hub: Client, to: str, fmt: Fmt) -> str:
+    """Turn what a human typed into something a peer's inbox actually reads.
+
+    Two failures, both of which used to be silent, and both measured in this
+    project's own dogfooding on 2026-08-17:
+
+    An **operator-side label is not an address.** Two agents were told to call
+    each other `switchboard_multi` and `roadmap_sep_agent`; only one pinned its
+    id, so a DM to the other went to `blind("roadmap_sep_agent")` — a channel
+    nobody was listening on. The hub accepted it and reported `sent #344`.
+
+    And **an agent's own id is not stable across processes** (see
+    `session_suffix`), while its *branch* is. So a branch or a name from the
+    roster resolves here to the id that peer is currently reading, which is the
+    same "match on branch, not id" rule the roadmap's claim reaper adopted for
+    the same reason.
+
+    Nothing here is an error. A peer legitimately between turns is absent from
+    the roster and must still be reachable — `blind` is deterministic, so the
+    message waits in the right place for them. What is not acceptable is doing
+    that *silently*, because it is indistinguishable from a typo.
+    """
+    roster = hub.agents()
+    by_id = {a.get("agent_id"): a for a in roster if a.get("agent_id")}
+    if to in by_id:
+        return to
+
+    for field in ("branch", "name"):
+        matches = [a for a in roster if a.get(field) == to and a.get("agent_id")]
+        if len(matches) == 1:
+            resolved = matches[0]["agent_id"]
+            print(f"note: {to!r} matched the {field} of {resolved[:22]} on the roster; "
+                  f"sending there.", file=sys.stderr)
+            return resolved
+        if len(matches) > 1:
+            raise SystemExit(
+                f"{to!r} matches the {field} of {len(matches)} agents on the roster. "
+                f"Pass an agent_id from `switchboard agents` instead — a branch with "
+                f"two live sessions is exactly when the wrong one would be picked."
+            )
+
+    if hub.peer_id(to) not in by_id:
+        print(
+            f"{fmt.yellow('warning')}: nobody on the roster answers to {to!r}. The "
+            f"message will be accepted by the hub and read by nobody unless a peer "
+            f"is between turns under exactly that id.\n"
+            f"  ids come from `switchboard agents`, and are NOT the labels an "
+            f"operator gave you — an unpinned agent derives its own.\n"
+            f"  a peer that pinned SWITCHBOARD_AGENT_ID={to} will still receive this.",
+            file=sys.stderr,
+        )
+    return to
+
+
 def cmd_dm(args: argparse.Namespace) -> int:
     body = _read_body(args)
     timing = _Timing(args)
@@ -1470,7 +1617,8 @@ def cmd_dm(args: argparse.Namespace) -> int:
     forecast = timing.declare()
     timing.close()
     with _make_client(args) as hub:
-        msg = hub.send(args.to, wrap_forecast(body, forecast),
+        target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
+        msg = hub.send(target, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
     if args.json:
         _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
@@ -3777,6 +3925,25 @@ def build_parser() -> argparse.ArgumentParser:
              "The single cheapest thing you can do for a peer you have not met yet.",
     )
     p.set_defaults(func=cmd_register)
+
+    p = sub.add_parser(
+        "arrive",
+        help="the first thing to run in a room: read every durable surface, and leave one",
+        description="Announce, read the roster, the coord/ board and your inbox in one "
+                    "go, and write what you came to do somewhere that outlives your "
+                    "turn. Run this before concluding anything about a room. Checking "
+                    "one surface and finding it empty is not the same finding as the "
+                    "room being empty — two agents proved that on 2026-08-17, one "
+                    "reading the roster and one reading its inbox, while a board entry "
+                    "neither of them looked at sat in the room between them.",
+    )
+    p.add_argument("intent", nargs="?", help="one line on what you came to do")
+    p.add_argument(
+        "--back-in", type=float, metavar="SECONDS",
+        help="how long until you expect to be back, so you stay listed as `away`",
+    )
+    p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
+    p.set_defaults(func=cmd_arrive)
 
     p = sub.add_parser(
         "rendezvous",

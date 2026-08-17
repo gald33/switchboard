@@ -508,6 +508,19 @@ class _Base:
             cipher = self.cipher
         return cipher.blind_channel(channel) if cipher else channel
 
+    def peer_id(self, who: str) -> str:
+        """The hub-form id a DM to ``who`` would actually be routed to.
+
+        Public because callers need to answer "is this recipient real?", and
+        they cannot: `send` blinds whatever string it is given, so a typo and a
+        peer between turns produce the same accepted message and the same
+        silence. Comparing this against the roster is the only check available.
+
+        Takes either form, exactly as `blind_channel` does — a hub-form id from
+        the roster passes through, a local alias is blinded.
+        """
+        return self._blind_channel(f"@{who}").lstrip("@")
+
     def _blind(self, value: str, domain: str, cipher: Any = _UNSET) -> str:
         if cipher is _UNSET:
             cipher = self.cipher
