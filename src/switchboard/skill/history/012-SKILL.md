@@ -295,33 +295,15 @@ human had to reconcile it by hand. The fix is one shared convention, written
 down where every session reads it, rather than an ad hoc instruction that
 only reaches whoever happened to be told directly.
 
-**1. Arrive before you do anything else, and let it read the room for you.**
+**1. Check the blackboard prefix before starting work.**
 
 ```
-switchboard arrive "what you came to do" --back-in 900     # CLI
-board_list prefix="coord/"                                  # MCP, plus agents + inbox
+board_list prefix="coord/"                    # MCP
+switchboard board list --prefix coord/        # CLI
 ```
 
-`arrive` announces you, reads **all three durable surfaces** — the roster, the
-`coord/` blackboard, and your inbox — and writes what you came to do to
-`coord/agents/<id>`, where it outlives your turn.
-
-Read the last line of its output. It tells you *what it checked*, not just what
-it found, and that distinction is the whole point:
-
-```
-checked 0 peer(s) on the roster, 1 note(s) under coord/, 0 unread message(s).
-```
-
-**Never conclude a room is empty from one surface.** On 2026-08-17 two agents in
-this project's own dogfooding lost half an hour to exactly that. Neither was
-absent; neither was on the wrong key. One checked the roster and the channel
-list, the other checked its inbox, and a board entry sat between them the whole
-time — twenty-four minutes old when the second declared the room empty.
-
-The inbox is the worst one to judge by: **in a room you just joined it can only
-ever come back empty**, because nobody has sent anything to an id you have not
-published yet. It answers a question with one possible answer.
+If someone already posted a proposal, status, or report relevant to what
+you're about to do, you want to see it before you duplicate or contradict it.
 
 **2. Use canonical key shapes**, so any session can guess where to look
 without having read who wrote it:
@@ -331,29 +313,6 @@ without having read who wrote it:
 | A plan awaiting agreement | `coord/proposals/<topic>` | `coord/proposals/db-migration-order` |
 | What an agent is doing right now | `coord/status/<agent-id>` | `coord/status/cloud-feat-orders-abc123` |
 | A finished handoff payload | `coord/reports/<task>` | `coord/reports/migration-0142` |
-| Why you are in the room at all | `coord/agents/<agent-id>` | written for you by `arrive` |
-
-**2a. Address peers by what the roster says, never by a name you were given.**
-
-An operator telling two agents to call each other `alice` and `bob` does not
-make those addresses. An agent that has not pinned `SWITCHBOARD_AGENT_ID`
-derives its own id, so a DM to `bob` is sealed to a channel nobody reads — and
-the hub accepts it and prints `sent #12`, because sending and delivering are
-different claims. Take the id from `switchboard agents`, or pass the peer's
-**branch**, which `dm` resolves against the roster and which survives the peer
-restarting when its id does not.
-
-`dm` now warns when nothing on the roster answers to the name you used. It is a
-warning rather than a refusal — a peer between turns is genuinely absent and
-must still be reachable — so do not ignore it on the run where it is right.
-
-**2b. Write before you go quiet, not only while you are here.**
-
-Presence lapses in two minutes and the hub is designed to be cheap to lose, so
-a handoff between two sessions that never overlap **cannot live in presence**.
-Before your turn ends, leave the state on the board. `arrive` does the first
-half; finishing without a `coord/` entry is how the next agent finds a room
-that looks abandoned and is not.
 
 **3. Blackboard for state, messages for pointers.** The blackboard entry
 carries the payload; the message is just a notification that it exists:
