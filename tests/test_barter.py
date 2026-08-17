@@ -133,6 +133,47 @@ def test_conservation_holds_through_a_whole_run(island):
         assert outcome.executed >= 0
 
 
+def test_discovery_comes_before_anything_is_committed(island):
+    """Deliberation has to precede manufacturing, or it cannot plan for it.
+
+    The Tier 2 runs exposed this in themselves: production was committed in the
+    first round, before anybody had spoken, so every convention on the ladder
+    could only describe the world after the one irreversible decision was
+    already behind it. Implied production quality came out at the exchange
+    ceiling in every arm — nobody specialised, because nobody could.
+    """
+    manager = Manager(island=island, phase="discovery")
+    with pytest.raises(TradeError, match="production is discovery"):
+        manager.op_produce("a1", {"fish": 1.0})
+    with pytest.raises(TradeError, match="trading is discovery"):
+        manager.op_propose("a1", "a2", {"fish": 1.0}, {"grain": 1.0})
+
+    manager.open_production()
+    assert manager.op_produce("a1", {"fish": 1.0})["produced"]["fish"] > 0
+    manager.open_trading()
+    manager.check_conservation()
+
+
+def test_a_phase_cannot_be_skipped_or_replayed(island):
+    """The manager owns the phase, so no agent can advance it early — and the
+    operator cannot accidentally reopen one either."""
+    manager = Manager(island=island, phase="discovery")
+    with pytest.raises(TradeError, match="cannot open trading from discovery"):
+        manager.open_trading()
+    manager.open_production()
+    with pytest.raises(TradeError, match="cannot open production from production"):
+        manager.open_production()
+    manager.open_trading()
+    with pytest.raises(TradeError, match="cannot open production from trading"):
+        manager.open_production()
+
+
+def test_tier_one_still_starts_in_production(island):
+    """Tier 1 does its price discovery outside the manager entirely, so the new
+    phase defaults off and its runs are unchanged."""
+    assert Manager(island=island).phase == "production"
+
+
 def test_production_is_committed_once(manager):
     manager.op_produce("a1", {"fish": 1.0})
     with pytest.raises(TradeError, match="already produced"):

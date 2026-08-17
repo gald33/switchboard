@@ -109,9 +109,24 @@ class Manager:
     """
 
     island: Island
-    #: ``production`` accepts labour plans; ``trading`` accepts trades;
-    #: ``closed`` accepts neither. The manager owns the phase because a phase
-    #: agents could advance is a phase one agent can advance early.
+    #: ``discovery`` accepts neither labour plans nor trades — it is time to talk
+    #: before anything is committed; ``production`` accepts labour plans;
+    #: ``trading`` accepts trades; ``closed`` accepts neither. The manager owns
+    #: the phase because a phase agents could advance is a phase one agent can
+    #: advance early.
+    #:
+    #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
+    #: themselves. Production was committed in the first round, before any agent
+    #: had said anything, so every convention on the ladder could only ever
+    #: describe the world after the one irreversible decision was behind it.
+    #: Implied production quality came out at ~0.41 in every arm — the exchange
+    #: ceiling — because no arm had the information to specialise, whatever it
+    #: had been told. Deliberation has to come before manufacturing or it cannot
+    #: plan for it.
+    #:
+    #: It defaults off. Tier 1 constructs its manager without it and starts in
+    #: ``production``, exactly as before, because its scripted agents do their
+    #: price discovery outside the manager entirely.
     phase: str = "production"
     tick: int = 0
     agents: dict[str, AgentState] = field(default_factory=dict)
@@ -384,6 +399,17 @@ class Manager:
                 self._settle(trade, "expired", "nobody approved it in time")
                 expired.append(trade.id)
         return expired
+
+    def open_production(self) -> None:
+        """Close deliberation, let labour be committed.
+
+        Only reachable from ``discovery``. Production remains a one-shot
+        decision — what changes is that agents have had rounds to talk, quote
+        and read a board before making it, rather than making it into silence.
+        """
+        if self.phase != "discovery":
+            raise TradeError(f"cannot open production from {self.phase}")
+        self.phase = "production"
 
     def open_trading(self) -> None:
         """Close production, open the floor. Agents that never produced get

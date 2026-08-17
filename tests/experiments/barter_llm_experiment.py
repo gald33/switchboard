@@ -54,6 +54,7 @@ import asyncio
 import json
 import random
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,7 +71,7 @@ from switchboard.testing import hub  # noqa: E402
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
-async def _drive(options: object, prompt: str) -> tuple[str, float]:
+async def _drive(options: object, prompt: str, budget: int | None = None) -> tuple[str, float]:
     """One agent turn. Returns its final text and what the turn cost.
 
     Running out of turns ends the agent's round; it does not end the run. An
@@ -82,6 +83,12 @@ async def _drive(options: object, prompt: str) -> tuple[str, float]:
     """
     from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
 
+    if budget is not None:
+        # Per-phase budgets, because the phases are not the same size of job.
+        # Talking needs a handful of calls; a trading pass needs to look around
+        # and act. Spending a trading budget on every phase was most of what
+        # made the old flow expensive.
+        options = replace(options, max_turns=budget)
     said, cost = [], 0.0
     try:
         async for message in query(prompt=prompt, options=options):
@@ -108,11 +115,16 @@ async def run_llm_island(
     model: str,
     max_turns: int,
     verbose: bool,
+    discovery: int = 3,
+    turns_talk: int = 8,
+    turns_produce: int = 8,
+    turns_offer: int = 14,
+    turns_settle: int = 8,
 ) -> dict:
     from claude_agent_sdk import ClaudeAgentOptions
 
     island = draw_island(agents, goods, seed=seed)
-    manager = Manager(island=island)
+    manager = Manager(island=island, phase="discovery" if discovery else "production")
     rng = random.Random(seed)
     run = f"llm{seed}{arm}"
 
@@ -145,34 +157,75 @@ async def run_llm_island(
         cost = 0.0
         order = list(manager.agents)
         transcript: list[dict] = []
+        # Which agents have had a turn while a given trade was open. An offer
+        # that expires without its seller ever getting a turn is a flow
+        # artefact, not a refusal, and the two must not be counted together.
+        seen_by: dict[str, set[str]] = {}
 
-        for round_no in range(1, rounds + 1):
-            if round_no == 2:
-                # Production closes after round 1. Anyone who did not spend
-                # their labour gets the autarky plan, so "never produced" shows
-                # up as not having specialised rather than as starvation.
-                manager.open_trading()
-                manager.check_conservation()
-            phase_note = (
-                "Production is open — this is the only round in which you can call "
-                "`produce`. Trading opens next round."
-                if round_no == 1 else
-                f"Trading is open. {rounds - round_no} round(s) remain after this one."
-            )
+        async def take_turns(round_no: int, label: str, note: str, budget: int) -> None:
+            nonlocal cost
             rng.shuffle(order)
             for agent_id in order:
-                prompt = TURN.format(round_no=round_no, rounds=rounds, phase_note=phase_note)
-                text, spent = await _drive(options[agent_id], prompt)
+                prompt = TURN.format(round_no=round_no, rounds=total_rounds, phase_note=note)
+                text, spent = await _drive(options[agent_id], prompt, budget)
                 cost += spent
-                transcript.append({"round": round_no, "agent": agent_id, "text": text})
+                transcript.append({"round": round_no, "pass": label,
+                                   "agent": agent_id, "text": text})
+                for trade in manager.trades.values():
+                    if trade.status == "pending":
+                        seen_by.setdefault(trade.id, set()).add(agent_id)
                 if verbose:
-                    print(f"  [{round_no}] {agent_id}: {text[:160]}", file=sys.stderr)
+                    print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
             service.drain()
+
+        total_rounds = discovery + 1 + rounds
+        round_no = 0
+
+        # --- deliberate, before anything is committed ------------------------
+        # The whole reason this phase exists: production used to happen in round
+        # one, so every word an agent said came after the only irreversible
+        # decision it would make. A convention that arrives after manufacturing
+        # cannot plan for it.
+        for _ in range(discovery):
+            round_no += 1
+            await take_turns(
+                round_no, "talk",
+                f"Nothing is committed yet. Production opens in "
+                f"{discovery - round_no + 1} round(s), and you spend your labour once. "
+                "Use this time however you think best.",
+                turns_talk)
+
+        # --- commit labour ---------------------------------------------------
+        round_no += 1
+        if manager.phase == "discovery":
+            manager.open_production()
+        await take_turns(
+            round_no, "produce",
+            "Production is open and this is the only round in which you can call "
+            "`produce`. Trading opens next round.",
+            turns_produce)
+        manager.check_conservation()
+        manager.open_trading()
+        manager.check_conservation()
+
+        # --- trade, in two passes --------------------------------------------
+        # Tier 1 runs propose-then-approve as separate passes. A single turn per
+        # agent per round meant roughly half of all offers could not be answered
+        # until the following round, which with a three-tick expiry gave a
+        # proposal one or two real chances at being seen at all.
+        for _ in range(rounds):
+            round_no += 1
+            left = discovery + 1 + rounds - round_no
+            await take_turns(round_no, "offer",
+                             f"Trading is open. {left} round(s) remain after this one.",
+                             turns_offer)
+            await take_turns(round_no, "settle",
+                             "Same round, second pass: answer what is waiting on you. "
+                             f"{left} round(s) remain after this one.",
+                             turns_settle)
             manager.advance()
             manager.check_conservation()
 
-        if manager.phase == "production":
-            manager.open_trading()
         manager.close()
         manager.check_conservation()
         service.publish()
@@ -186,6 +239,15 @@ async def run_llm_island(
 
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.
+    # Separate "the seller declined" from "the seller never got a turn". Only
+    # the first is an economic result; the second is the harness losing trades
+    # for us, and reporting them together would credit a flow artefact to the
+    # arm's design.
+    unseen = sum(
+        1 for t in manager.trades.values()
+        if t.status == "expired" and t.seller not in seen_by.get(t.id, set())
+    )
+
     outcome = score(island, manager, arm=arm, seed=seed, messages=len(floor))
     _, autarky_utils = autarky(island)
     return {
@@ -202,6 +264,8 @@ async def run_llm_island(
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
         "quote_board": board,
         "quotes_posted": sum(w.quotes_posted for w in wires.values()),
+        "expired_unseen": unseen,
+        "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2},
         "transcript": transcript,
     }
 
@@ -228,6 +292,10 @@ def render(result: dict) -> str:
         f"  worst agent      {result['worst_ratio']:.2f}x autarky",
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
+        f"  flow             {result['flow']['discovery']} talk + produce + "
+        f"{result['flow']['trade_rounds']}x2 trade",
+        f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
+        f"seller never having had a turn",
         f"  said             {len(result['said'])} message(s)"
         + (f", {result['quotes_posted']} quote(s) posted" if result.get("quotes_posted") else ""),
     ]
@@ -251,7 +319,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arms", nargs="+", default=["told", "built"], choices=list(ARMS))
     parser.add_argument("--agents", type=int, default=5)
     parser.add_argument("--goods", type=int, default=5)
-    parser.add_argument("--rounds", type=int, default=6)
+    parser.add_argument("--rounds", type=int, default=8,
+                        help="trading rounds (each is a propose pass and a settle pass)")
+    parser.add_argument("--discovery", type=int, default=3,
+                        help="rounds of talk before any labour is committed")
     parser.add_argument("--islands", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -275,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             result = asyncio.run(run_llm_island(
                 arm=arm, agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
-                verbose=args.verbose,
+                verbose=args.verbose, discovery=args.discovery,
             ))
             results.append(result)
             print(render(result), flush=True)
