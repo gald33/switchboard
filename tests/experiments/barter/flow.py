@@ -51,6 +51,10 @@ class Budgets:
 @dataclass
 class Played:
     transcript: list[dict[str, Any]] = field(default_factory=list)
+    #: One row per round: where the island stood after it. A trajectory rather
+    #: than a point, which is both how the price/production lag becomes readable
+    #: and how one island stops being a single noisy observation.
+    trajectory: list[dict[str, Any]] = field(default_factory=list)
     #: For each trade id, which agents have had a turn while it was pending.
     #: An offer that expires without its seller ever having had a turn is the
     #: harness losing a trade, not a refusal, and the two must never be counted
@@ -78,6 +82,7 @@ async def play(
     drain: Callable[[], Any] | None = None,
     total_label: int | None = None,
     rolling: bool = False,
+    on_round: Callable[[int, str], Any] | None = None,
 ) -> Played:
     """Run one island's order of play. Returns the transcript and diagnostics."""
     budgets = budgets or Budgets()
@@ -101,6 +106,10 @@ async def play(
                     played.seen_by.setdefault(trade.id, set()).add(agent_id)
         if drain is not None:
             drain()
+        if on_round is not None:
+            row = on_round(round_no, label)
+            if row is not None:
+                played.trajectory.append(row)
 
     for _ in range(discovery):
         round_no += 1

@@ -388,9 +388,13 @@ def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
         return f"{agent_id} did {label}"
 
     import anyio
-    played = anyio.run(lambda: play(manager, take_turn, discovery=discovery,
-                                    rounds=rounds, rng=random.Random(0),
-                                    budgets=Budgets()))
+    from barter.analysis import snapshot
+    played = anyio.run(lambda: play(
+        manager, take_turn, discovery=discovery, rounds=rounds,
+        rng=random.Random(0), budgets=Budgets(),
+        on_round=lambda round_no, label: (
+            snapshot(island, manager, None, round_no=round_no, label=label)
+            if label in ("talk", "produce", "settle") else None)))
     return manager, played, log
 
 
@@ -610,6 +614,88 @@ def test_a_trade_offer_is_not_mistaken_for_a_price_list():
     # message is, and it is the one kept because agents revise.
     assert prices["a1"]["grain"] == 0.62
     assert prices["a1"]["cloth"] == 1.02
+
+
+def test_specialisation_reads_one_when_labour_follows_prices(island):
+    """The production half of convergence, and the half no arm has moved.
+
+    Revenue earned by the labour spent over the most it could have earned at the
+    prices agents currently hold. It is measured at *believed* prices on purpose:
+    the question is whether agents act on what they agreed, not whether what
+    they agreed was right.
+    """
+    from barter.analysis import specialisation
+
+    goods = tuple(draw_island(2, 5, seed=1).good_ids())
+    two = draw_island(2, 5, seed=1)
+    prices = {g: 1.0 for g in goods}
+    # With every price at 1, the best good is simply the highest capacity.
+    best = [max(range(5), key=lambda g: two.capacity[i][g]) for i in range(2)]
+    all_in = [[1.0 if g == best[i] else 0.0 for g in range(5)] for i in range(2)]
+    assert specialisation(two, all_in, prices, goods) == pytest.approx(1.0)
+
+    # Autarky spreads labour by taste and scores well short of it.
+    spread = [list(two.alpha[i]) for i in range(2)]
+    assert specialisation(two, spread, prices, goods) < 0.95
+    # Nobody has worked yet: undefined, not zero.
+    assert specialisation(two, [[0.0] * 5, [0.0] * 5], prices, goods) is None
+
+
+def test_concentration_is_a_price_free_check_on_specialisation():
+    """Reported alongside because `specialisation` is measured at prices agents
+    may simply have wrong. This one says whether they committed to anything."""
+    from barter.analysis import concentration
+
+    assert concentration([[0.2] * 5]) == pytest.approx(0.2)          # even = 1/k
+    assert concentration([[1.0, 0, 0, 0, 0]]) == pytest.approx(1.0)  # all in
+    assert concentration([[0.0] * 5]) is None                        # no labour
+
+
+def test_a_snapshot_reports_not_yet_scoreable_rather_than_zero(island):
+    """Early rounds have agents holding none of something, which is Cobb-Douglas
+    zero. A trajectory that plotted that as 0.0 would show a dramatic climb that
+    is really just the goods arriving."""
+    from barter.analysis import snapshot
+
+    manager = Manager(island=island, phase="discovery")
+    row = snapshot(island, manager, None, round_no=1, label="talk")
+    assert row["efficiency"] is None
+    assert row["holding_nothing"] == island.n_agents
+    assert row["labour_spent"] == 0.0
+
+    manager.open_production()
+    for agent_id, state in manager.agents.items():
+        manager.op_produce(agent_id, {g: state.alpha[i]
+                                      for i, g in enumerate(manager.goods)})
+    scored = snapshot(island, manager, None, round_no=2, label="produce")
+    assert 0.0 < scored["efficiency"] < 1.0
+    assert scored["holding_nothing"] == 0
+    assert scored["labour_spent"] == pytest.approx(1.0)
+
+
+def test_a_snapshot_takes_prices_from_a_board_or_from_one_vector(island):
+    """Boards are per-agent and a settled convention is one vector. Both have to
+    land on the same `price_agreement` axis or the trajectory is not a line."""
+    from barter.analysis import snapshot
+
+    manager = Manager(island=island)
+    board = snapshot(island, manager, {"a1": {"fish": 1.0, "cloth": 2.0},
+                                       "a2": {"fish": 1.0, "cloth": 8.0}},
+                     round_no=1)
+    assert board["price_agreement"] == pytest.approx(4.0)
+    agreed = snapshot(island, manager, {"fish": 1.0, "cloth": 2.0}, round_no=1)
+    assert agreed["price_agreement"] == pytest.approx(1.0)
+
+
+def test_the_trajectory_is_recorded_once_per_round(island):
+    """One row per round, after a pass that could have changed something —
+    snapshotting mid-round would read a half-applied state."""
+    manager, played, _ = _scripted_island(island, discovery=2, rounds=3)
+    labels = [row["label"] for row in played.trajectory]
+    assert labels == ["talk", "talk", "produce"] + ["settle"] * 3
+    assert [row["round"] for row in played.trajectory] == [1, 2, 3, 4, 5, 6]
+    # Labour is fully committed at the produce round and stays put under `once`.
+    assert played.trajectory[2]["labour_spent"] == pytest.approx(1.0)
 
 
 def test_price_spread_says_how_far_apart_the_traders_are():

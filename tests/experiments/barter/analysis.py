@@ -93,6 +93,132 @@ def price_spread(vectors: dict[str, dict[str, float]]) -> dict[str, float]:
     return out
 
 
+def specialisation(island: Any, shares: list[list[float]],
+                   prices: dict[str, float], goods: tuple[str, ...]) -> float | None:
+    """How much like a price-taker the island is producing, at ``prices``.
+
+    Revenue actually earned by the labour spent, over the most it could have
+    earned. 1.0 means every unit of labour went to the good paying best for that
+    agent; the autarky spread scores well below it.
+
+    This is the production half of the convergence question, and the half no arm
+    has ever moved. It is measured *at the prices agents currently believe*
+    rather than at the true equilibrium, deliberately — the question is whether
+    agents act on what they have agreed, not whether what they agreed was right.
+    """
+    earned = 0.0
+    best = 0.0
+    for i in range(island.n_agents):
+        spent = sum(shares[i])
+        if spent <= 1e-12:
+            continue
+        rates = [prices.get(goods[g], 0.0) * island.capacity[i][g]
+                 for g in range(island.n_goods)]
+        if max(rates) <= 0:
+            continue
+        earned += sum(rates[g] * shares[i][g] for g in range(island.n_goods))
+        best += max(rates) * spent
+    return earned / best if best > 1e-12 else None
+
+
+def concentration(shares: list[list[float]]) -> float | None:
+    """How specialised production is, without reference to any price.
+
+    A labour-weighted Herfindahl: 1/k when an agent spreads evenly across k
+    goods, 1.0 when it puts everything on one. Reported beside
+    ``specialisation`` because that one is measured at prices agents may simply
+    have wrong — this one says whether they committed to *anything*, which is a
+    different question and a check on the first.
+    """
+    total = 0.0
+    weight = 0.0
+    for row in shares:
+        spent = sum(row)
+        if spent <= 1e-12:
+            continue
+        total += spent * sum((s / spent) ** 2 for s in row)
+        weight += spent
+    return total / weight if weight > 1e-12 else None
+
+
+def snapshot(island: Any, manager: Any, prices: dict[str, float] | None,
+             *, round_no: int, label: str = "") -> dict[str, Any]:
+    """One row of the trajectory: where the island stands right now.
+
+    The point of recording this per round rather than once at the end is the
+    conflation that rolling labour introduces. Price convergence and production
+    convergence become coupled, and the only way to keep that legible is to
+    watch both and read the *lag* between them — "production followed prices two
+    rounds later" is a finding, where a single end-state number would just be a
+    confound.
+
+    It also turns one island into a trajectory rather than a point, which is
+    some help against the run-to-run variance that made single-arm comparisons
+    unusable.
+    """
+    from .economy import efficiency as _efficiency
+
+    goods = tuple(manager.goods)
+    ordered = sorted(manager.agents.values(), key=lambda s: s.index)
+    shares = [list(s.shares) for s in ordered]
+    utilities = manager.utilities()
+
+    scored = _efficiency(island, utilities)
+    settled = sum(1 for t in manager.trades.values() if t.status == "executed")
+    return {
+        "round": round_no,
+        "label": label,
+        # None rather than 0.0 while anybody still holds none of something: a
+        # zero here is "not yet scoreable", not "scored badly", and averaging
+        # the two together is how a trajectory starts lying.
+        "efficiency": None if scored.ruined else round(scored.lower, 4),
+        "holding_nothing": len(scored.ruined),
+        "price_agreement": _price_agreement(prices),
+        "specialisation": (round(s, 4) if (s := specialisation(
+            island, shares, prices or {}, goods)) is not None else None),
+        "concentration": (round(c, 4) if (c := concentration(shares)) is not None else None),
+        "labour_spent": round(sum(st.spent for st in ordered) / len(ordered), 4),
+        "settled": settled,
+    }
+
+
+def _price_agreement(prices: Any) -> float | None:
+    """Worst max/min ratio across traders. ``None`` when nobody has quoted.
+
+    Two shapes arrive here and they mean different things. A *board* is one
+    vector per trader, and the spread across them is the measurement. A single
+    flat vector is one price everybody holds — a convention that has already
+    settled — and its agreement is 1.0 by construction, not undefined. Returning
+    ``None`` for that case would make a fully converged island look like an
+    island where nobody spoke.
+    """
+    if not prices:
+        return None
+    if not isinstance(next(iter(prices.values())), dict):
+        return 1.0
+    spread = price_spread(prices)
+    return max(spread.values()) if spread else None
+
+
+def trajectory_table(rows: list[dict[str, Any]]) -> str:
+    """The convergence pair, side by side, which is the whole point of it."""
+    out = [f"{'round':>6}{'pass':>9}{'agree':>8}{'special':>9}{'concen':>8}"
+           f"{'labour':>8}{'eff':>8}{'settled':>9}"]
+    for row in rows:
+        agree = f"{row['price_agreement']:.1f}x" if row.get("price_agreement") else "-"
+        out.append(
+            f"{row['round']:>6}{row.get('label', ''):>9}{agree:>8}"
+            f"{_num(row.get('specialisation')):>9}{_num(row.get('concentration')):>8}"
+            f"{_num(row.get('labour_spent')):>8}{_num(row.get('efficiency')):>8}"
+            f"{row.get('settled', 0):>9}"
+        )
+    return "\n".join(out)
+
+
+def _num(value: Any) -> str:
+    return f"{value:.3f}" if isinstance(value, (int, float)) else "-"
+
+
 def quoted_prices(record: dict[str, Any]) -> tuple[dict[str, dict[str, float]], str]:
     """Whatever prices this run has, and where they came from.
 

@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from barter.analysis import render as render_comparison  # noqa: E402
+from barter.analysis import snapshot, trajectory_table  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
 from barter.flow import play  # noqa: E402
 from barter.llm import ARMS, TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
@@ -179,11 +180,32 @@ async def run_llm_island(
                 print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
             return text
 
+        def observe(round_no: int, label: str) -> dict | None:
+            # Only after a pass that could have changed something. Snapshotting
+            # inside a pass would read a half-applied round.
+            if label not in ("talk", "produce", "settle"):
+                return None
+            live = {}
+            for entry in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
+                value = entry.get("value")
+                if isinstance(value, dict) and isinstance(value.get("prices"), dict):
+                    live[str(entry["key"]).rsplit("/", 1)[-1]] = value["prices"]
+            if not live:
+                # Boardless arms keep their prices in sentences, so read them
+                # back out the way a counterparty would have to.
+                from barter.analysis import prices_from_prose
+                said = [m["body"] for m in
+                        handle.client("reader").history(f"barter/{run}/floor", limit=500)
+                        if isinstance(m.get("body"), dict)]
+                live = prices_from_prose(said)
+            return snapshot(island, manager, live, round_no=round_no, label=label)
+
         # The order of play lives in `barter/flow.py`, with nothing in it that
         # knows about models, so it can be exercised offline in milliseconds.
         # Both previous flow errors were found by paying for a run.
         played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
-                            rng=rng, drain=service.drain, rolling=rolling)
+                            rng=rng, drain=service.drain, rolling=rolling,
+                            on_round=observe)
         transcript = played.transcript
         service.publish()
 
@@ -219,6 +241,7 @@ async def run_llm_island(
         "quote_board": board,
         "quotes_posted": sum(w.quotes_posted for w in wires.values()),
         "expired_unseen": unseen,
+        "trajectory": played.trajectory,
         "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2,
                  "labour": labour, "instalments": instalments},
         "transcript": transcript,
@@ -260,6 +283,9 @@ def render(result: dict) -> str:
         for who, prices in sorted(result["quote_board"].items()):
             shown = "  ".join(f"{g} {v:g}" for g, v in prices.items())
             lines.append(f"    {who:>4}: {shown}")
+    if result.get("trajectory"):
+        lines.append("\n  trajectory")
+        lines += ["    " + line for line in trajectory_table(result["trajectory"]).splitlines()]
     if result["said"]:
         lines.append("\n  what they said")
         for message in result["said"][:14]:
