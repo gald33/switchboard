@@ -76,6 +76,11 @@ select = ["E", "F", "I", "B"]
 # Header(...), Depends(...)). B008 exists to catch accidental shared mutable
 # defaults, which this is not.
 "src/switchboard/server.py" = ["B008"]
+# A whole HTML page — stylesheet, SVG chart code and all — lives in one string
+# literal here. Wrapping CSS rules and SVG attribute lists at 100 columns to
+# satisfy a Python line-length rule makes the template harder to read, not
+# easier, and the Python around it is a dozen lines.
+"tests/experiments/barter/report.py" = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
