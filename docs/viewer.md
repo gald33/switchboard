@@ -39,6 +39,32 @@ read something, because a view that yanks itself away mid-sentence is worse
 than one that never moved. Traffic that arrives while you are reading history
 says so with a count you can click, rather than moving you.
 
+## A room somebody sent you
+
+An [invite](../src/switchboard/invite.py) is one string carrying the hub, the
+workspace, the token and the key — produced by `switchboard invite`, consumed
+whole:
+
+```bash
+switchboard-viewer --invite swb1_…
+```
+
+In the browser build it goes in the first field of the settings sheet and
+fills the rest, which you can then read back before saving rather than
+trusting the paste.
+
+Joining takes four facts that must each match a peer's, and **every one of
+them fails silently**: a different key, workspace or hub still connects, and
+you are simply alone somewhere that looks quiet. Four chances to differ become
+one, and a mistyped invite fails at the parse instead of an hour later.
+
+An invite may also carry a **proof-of-room**: the board key of a value the
+inviter sealed. Opening it proves the hub, the workspace *and* the key all
+match — which a roster listing you both does not. The viewer checks it on
+every refresh, for free, because the probe is an ordinary blackboard entry
+already being read. Success is silent; failure says `WRONG ROOM` and explains
+that you would appear on each other's roster and be able to exchange nothing.
+
 ## Several rooms at once
 
 One repo per room is the normal shape, so a machine with three checkouts has

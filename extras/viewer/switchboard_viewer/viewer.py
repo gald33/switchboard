@@ -78,6 +78,7 @@ from switchboard import (
     rooms_in,
     unwrap_forecast,
 )
+from switchboard.invite import PROBE_SENTINEL, Invite, InviteError
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "snapshot", "page", "make_server", "serve"]
 
@@ -139,8 +140,43 @@ def _who(agent_id: str | None, names: dict[str, str]) -> dict[str, Any]:
     return {"id": agent_id or "", "name": names.get(agent_id or "")}
 
 
+_WRONG_ROOM = (
+    "WRONG ROOM: reached this hub and workspace, but could not read the proof "
+    "the inviter left. Your key does not match theirs — you would appear on "
+    "each other's roster and be unable to exchange anything. Ask for a fresh "
+    "invite rather than editing settings"
+)
+
+
+def _probe_verdict(probe: str, board: list[dict[str, Any]]) -> str | None:
+    """What an invite's proof-of-room says, or None when there is nothing to
+    say.
+
+    Only failures. Opening a value the inviter sealed proves the hub, the
+    workspace *and* the key all match — which a roster listing you both does
+    not — but announcing every success would be shouting the normal case, and
+    these notes are drawn as warnings. Silence is the good outcome.
+
+    Free: the probe is an ordinary board entry and the board has already been
+    read, so checking it costs no request. The browser reader does the same
+    thing in the same place.
+    """
+    entry = next((e for e in board if e.get("key") == probe), None)
+    if entry is not None:
+        return None if entry.get("value") == PROBE_SENTINEL else _WRONG_ROOM
+    # Not found is not the same as absent. A board key travels sealed beside
+    # its value, so a key this room cannot open never comes back as a name —
+    # the inviter's probe is sitting right there under a token neither side
+    # can match. An unopened entry is the answer, not a missing one.
+    if any(e.get("sealed") for e in board):
+        return _WRONG_ROOM
+    return ("this invite carries a proof-of-room and it is not on the "
+            "blackboard — it may have expired, or this may not be the room "
+            "the invite described")
+
+
 def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
-             refresh: float = DEFAULT_REFRESH) -> dict[str, Any]:
+             refresh: float = DEFAULT_REFRESH, probe: str = "") -> dict[str, Any]:
     """One complete view of the room, as JSON the page can render.
 
     Section by section, so a hub that has gone away mid-poll — or a room whose
@@ -242,6 +278,11 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
         }
         for e in board
     ]
+
+    if probe:
+        verdict = _probe_verdict(probe, view["board"])
+        if verdict:
+            notes.append(verdict)
 
     channels = section("the channel list", hub.channels) or []
     if len(channels) > MAX_CHANNELS:
@@ -356,6 +397,10 @@ class Room:
     label: str
     client: Client
     source: str = ""
+    #: Board key of a value an inviter sealed, when this room came from an
+    #: invite. Checking it is what turns "these settings" into "the same
+    #: room" — see `_probe_verdict`.
+    probe: str = ""
 
     @property
     def id(self) -> str:
@@ -411,7 +456,7 @@ class _Handler(BaseHTTPRequestHandler):
             selected = next((r for r in rooms if r.id == wanted), rooms[0])
             with server.lock:
                 payload = snapshot(selected.client, limit=server.limit,
-                                   refresh=server.refresh)
+                                   refresh=server.refresh, probe=selected.probe)
                 payload["rooms"] = [
                     # The selected room is already fully read; asking it for a
                     # roster a second time would be a request per refresh spent
@@ -588,6 +633,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", help="hub to read, overriding whatever the "
                                       "checkout says (env: SWITCHBOARD_URL)")
     parser.add_argument("--workspace", "-w", help="room to read, overriding the checkout")
+    parser.add_argument("--invite", metavar="swb1_…",
+                        help="read a room somebody sent you, from the string "
+                             "`switchboard invite` produced — hub, workspace, "
+                             "token and key in one paste, with the proof-of-room "
+                             "checked on every refresh")
     parser.add_argument("--repo", action="append", default=[], metavar="PATH",
                         help="also show the rooms this checkout takes part in; "
                              "repeatable. Defaults to the current directory")
@@ -622,6 +672,26 @@ def main(argv: list[str] | None = None) -> int:
     # this machine — so in repos that have been set up, this is the whole
     # configuration step. `include_secrets` is the viewer saying what it is: a
     # reader, on the machine the key is already on, that never sends anything.
+    if args.invite:
+        # An invite is the whole configuration and outranks the checkout it is
+        # pasted in, because it names a room somebody else is already in — the
+        # case where reading the local repo would silently show the wrong one.
+        try:
+            blob = Invite.decode(args.invite)
+        except InviteError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        config = ClientConfig(url=blob.url, url_source="flag",
+                              workspace=blob.workspace, token=blob.token,
+                              key=blob.key)
+        rooms = [Room(label=blob.note or blob.workspace, client=Client(config),
+                      source="invite", probe=blob.probe)]
+        if not blob.probe:
+            print("note: this invite carries no proof-of-room, so nothing can "
+                  "check that these settings reach the room it describes",
+                  file=sys.stderr)
+        return _run(args, rooms)
+
     rooms = discover(args.repo or (["."] if not args.scan else []), args.scan)
     if not rooms and not args.repo and not args.scan:
         # Nothing declared here. Fall back to wherever an unconfigured client
@@ -648,6 +718,16 @@ def main(argv: list[str] | None = None) -> int:
               "and SWITCHBOARD_WORKSPACE", file=sys.stderr)
         return 1
 
+    return _run(args, rooms)
+
+
+def _run(args: argparse.Namespace, rooms: list[Room]) -> int:
+    """Serve whatever set of rooms was resolved, and close them on the way out.
+
+    Split from `main` because an invite resolves rooms a completely different
+    way — one string instead of a directory walk — and the serving half is
+    identical either way.
+    """
     try:
         serve(
             rooms, host=args.host, port=args.port, limit=args.limit,

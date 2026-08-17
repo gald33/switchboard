@@ -539,3 +539,87 @@ def test_scanning_finds_the_checkouts_that_have_been_set_up(tmp_path, monkeypatc
     finally:
         for room in rooms:
             room.client.close()
+
+
+# --- invites ----------------------------------------------------------------
+
+
+def test_a_probe_the_key_can_open_says_nothing_at_all(h):
+    """Silence is the good outcome. These notes are drawn as warnings, and a
+    viewer that announced every success would be shouting the normal case."""
+    from switchboard.invite import PROBE_SENTINEL
+
+    key = generate_key()
+    inviter = h.client("inviter", key=key, register=True)
+    inviter.board_set("join/probe/abcd", PROBE_SENTINEL)
+
+    view = snapshot(viewer(h, key=key), probe="join/probe/abcd")
+
+    assert not any("proof-of-room" in n or "WRONG ROOM" in n for n in view["notes"])
+
+
+def test_a_probe_this_key_cannot_open_is_the_forty_minute_failure_caught(h):
+    """Same hub, same workspace, different key: both parties on one roster,
+    able to exchange nothing. Only opening what the other side sealed can tell
+    you that, which is exactly what the probe is."""
+    from switchboard.invite import PROBE_SENTINEL
+
+    inviter = h.client("inviter", key=generate_key(), register=True)
+    inviter.board_set("join/probe/abcd", PROBE_SENTINEL)
+
+    view = snapshot(viewer(h, key=generate_key()), probe="join/probe/abcd")
+
+    assert any("WRONG ROOM" in n for n in view["notes"])
+
+
+def test_a_probe_that_is_simply_gone_says_that_instead(h):
+    """An expired probe is not a wrong key, and telling someone their key is
+    wrong when it isn't sends them to re-key a room that was fine."""
+    key = generate_key()
+    h.client("inviter", key=key, register=True).board_set("plan", {"next": "0143"})
+
+    view = snapshot(viewer(h, key=key), probe="join/probe/vanished")
+
+    notes = " ".join(view["notes"])
+    assert "not on the blackboard" in notes
+    assert "WRONG ROOM" not in notes
+
+
+def test_an_invite_is_the_whole_configuration(monkeypatch):
+    """`--invite` outranks the checkout, because it names a room somebody else
+    is already in — the case where reading the local repo shows the wrong one
+    with no sign that it did."""
+    from switchboard.invite import Invite
+
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    blob = Invite(url="https://hub.example.com", workspace="w_theirs",
+                  token="tok", key=generate_key(), note="parser room",
+                  probe="join/probe/abcd").encode()
+
+    served: dict[str, object] = {}
+    monkeypatch.setattr(viewer_app, "_run",
+                        lambda args, rooms: served.setdefault("rooms", rooms) and 0)
+
+    assert viewer_app.main(["--invite", blob]) in (0, None)
+
+    rooms = served["rooms"]
+    assert len(rooms) == 1
+    room = rooms[0]
+    try:
+        assert room.label == "parser room"
+        assert room.source == "invite"
+        assert room.probe == "join/probe/abcd"
+        assert room.client.config.url == "https://hub.example.com"
+        assert room.client.workspace == "w_theirs"
+        assert room.client.config.token == "tok"
+    finally:
+        room.client.close()
+
+
+def test_a_mangled_invite_stops_before_anything_is_served(capsys, monkeypatch):
+    monkeypatch.setattr(viewer_app, "_run",
+                        lambda args, rooms: pytest.fail("should not have served"))
+
+    assert viewer_app.main(["--invite", "swb1_nonsense"]) == 1
+    assert "corrupt or truncated" in capsys.readouterr().err
