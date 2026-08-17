@@ -1,0 +1,111 @@
+name: Publish switchboard-viewer to PyPI
+
+# `extras/viewer`, published as its own distribution on its own cadence. Same
+# machinery as `publish.yml` — Trusted Publishing over OIDC, nothing secret in
+# this repo — pointed at a different project and a different tag prefix.
+#
+# Tags here are `viewer-vX.Y.Z`, not `vX.Y.Z`. The two distributions version
+# independently on purpose: the viewer is an ordinary client of a published
+# SDK, so a fix to the page is not a reason to re-release the hub, and a hub
+# release is not a reason to re-release the page.
+#
+# To cut one: bump `version` in extras/viewer/pyproject.toml, merge, then
+#   gh release create viewer-vX.Y.Z --generate-notes --title 'switchboard-viewer X.Y.Z'
+#
+# ONE-TIME SETUP, and it cannot be done from here — the project does not exist
+# on PyPI until its first upload, so the trust relationship has to be created
+# ahead of it as a *pending* publisher:
+#
+#   https://pypi.org/manage/account/publishing/ → "Add a new pending publisher"
+#     PyPI Project Name: switchboard-viewer
+#     Owner:             gald33
+#     Repository:        switchboard
+#     Workflow name:     publish-viewer.yml
+#     Environment:       pypi-viewer
+#
+# The environment name must match the `environment:` below and differ from the
+# SDK's, or a trust relationship scoped to one project would admit uploads of
+# the other.
+
+on:
+  release:
+    types: [published]
+  # Same retry path as the SDK's: `release: published` fires once, so a run
+  # lost to an Actions outage would otherwise leave that tag unpublishable.
+  #   gh workflow run publish-viewer.yml --ref viewer-vX.Y.Z
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Only this project's tags. An SDK release fires this workflow as well,
+    # and skipping is the honest outcome — nothing failed.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || startsWith(github.event.release.tag_name, 'viewer-v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # PyPI never lets a version be reused, so publishing an in-progress
+      # branch as if it were a release is silent and unfixable. Require a tag,
+      # and require it to agree with the version actually being built.
+      - name: Refuse to publish anything but a matching version tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::refusing to publish from $GITHUB_REF_TYPE '$GITHUB_REF_NAME' — dispatch against a viewer-v tag"
+            exit 1
+          fi
+          version=$(python -c 'import tomllib; print(tomllib.load(open("extras/viewer/pyproject.toml","rb"))["project"]["version"])')
+          if [ "viewer-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag '$GITHUB_REF_NAME' does not match extras/viewer version 'viewer-v$version'"
+            exit 1
+          fi
+          echo "publishing switchboard-viewer $version from tag $GITHUB_REF_NAME"
+      # The lower bound has to be satisfiable, or `pip install switchboard-viewer`
+      # resolves to nothing the day it lands. This is the one check that cannot
+      # be made from inside the repo: it asks PyPI what actually exists.
+      - name: The SDK it requires must already be on PyPI
+        run: |
+          python -m pip install --upgrade packaging
+          python - <<'PY'
+          import json, tomllib, urllib.request
+          from packaging.requirements import Requirement
+          from packaging.version import Version
+
+          meta = tomllib.load(open("extras/viewer/pyproject.toml", "rb"))["project"]
+          need = next(Requirement(d) for d in meta["dependencies"]
+                      if Requirement(d).name == "agent-switchboard")
+          with urllib.request.urlopen(
+                  "https://pypi.org/pypi/agent-switchboard/json") as response:
+              released = [Version(v) for v in json.load(response)["releases"]]
+          ok = [v for v in released if v in need.specifier]
+          assert ok, (
+              f"switchboard-viewer requires {need}, and PyPI has none: "
+              f"newest published is {max(released)}. Release the SDK first.")
+          print(f"{need} is satisfiable — newest match {max(ok)}")
+          PY
+      - run: python -m pip install --upgrade build
+      - run: python -m build extras/viewer --outdir dist
+      - run: python -m pip install --upgrade twine && python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-viewer
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi-viewer
+    permissions:
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-viewer
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

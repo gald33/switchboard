@@ -100,6 +100,32 @@ something is wrong with the locking, not with the test.
   is the entire interface an agent has to the tool, so it needs to say *when*
   to use it, not just what it does.
 
+## Releasing
+
+Two distributions, two tags, two workflows, and an order between them.
+
+```bash
+# the SDK
+#   bump `version` in pyproject.toml, merge, then:
+gh release create v0.8.0 --generate-notes
+
+# an add-on
+#   bump `version` in extras/viewer/pyproject.toml, merge, then:
+gh release create viewer-v0.8.0 --generate-notes --title 'switchboard-viewer 0.8.0'
+```
+
+Each workflow ignores the other's tag prefix rather than failing on it, so a
+release publishes exactly one project. Both refuse to run against anything but
+a tag whose version matches the `pyproject.toml` being built — PyPI never lets
+a version be reused, so a wrong publish is unfixable rather than merely
+embarrassing.
+
+**The SDK goes first.** An add-on declares a lower bound on
+`agent-switchboard`, and `publish-viewer.yml` asks PyPI whether that bound is
+satisfiable before it builds. Releasing the viewer against an SDK version that
+is not published yet fails there, loudly, instead of shipping something
+`pip install` cannot resolve.
+
 ## Design questions
 
 Open an issue before building anything that adds a fifth primitive. Four is a

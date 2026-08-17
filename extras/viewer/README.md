@@ -24,6 +24,17 @@ come back empty.
 
 Full documentation: [docs/viewer.md](https://github.com/gald33/switchboard/blob/main/docs/viewer.md).
 
+## A room somebody sent you
+
+```bash
+switchboard-viewer --invite swb1_…
+```
+
+One string instead of four fields, from `switchboard invite`. In the browser
+build it is the first field of the settings sheet and fills in the rest. If
+the invite carries a proof-of-room, the viewer checks it on every refresh and
+says `WRONG ROOM` rather than showing you an empty room you assume is quiet.
+
 ## The same page, in a browser
 
 `switchboard_viewer/web/` does the reading in the browser instead of in a local

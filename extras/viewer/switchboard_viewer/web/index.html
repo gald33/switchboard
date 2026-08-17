@@ -121,6 +121,11 @@
   .saved .where { color: var(--dim); font-size: 11px; font-family: var(--mono);
                   overflow-wrap: anywhere; }
   .warn { color: var(--warn); font-size: 12px; margin-top: 12px; }
+  .ok { color: var(--ok); font-size: 12px; margin-top: 8px; }
+  .or { display: flex; align-items: center; gap: 10px; color: var(--dim);
+        font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+        margin: 16px 0 2px; }
+  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 </style>
 </head>
 <body>
@@ -158,6 +163,9 @@
     <p>Everything here stays in this browser. The key is used to decrypt in the
        page and is never sent to the hub — the hub could not use it if it
        arrived.</p>
+    <label for="f-invite">Invite <span class="sub">(paste one and the rest fills itself)</span></label>
+    <input id="f-invite" name="invite" autocomplete="off" placeholder="swb1_…">
+    <div class="or"><span>or enter it yourself</span></div>
     <label for="f-url">Hub</label>
     <input id="f-url" name="url" placeholder="https://switchboard.lucille-ai.com" required>
     <div class="row">
@@ -175,6 +183,8 @@
     <label for="f-token">Hub token <span class="sub">(if the hub requires one)</span></label>
     <input id="f-token" name="token" type="password" autocomplete="off"
            placeholder="SWITCHBOARD_TOKEN">
+    <div class="ok" id="invite-ok" hidden></div>
+    <div class="warn" id="invite-warn" hidden></div>
     <div class="warn" id="settings-warn" hidden></div>
     <div class="actions">
       <button value="cancel" formnovalidate>Cancel</button>
@@ -199,7 +209,7 @@
 // only a package you installed.
 
 import { render, setFilter } from "./render.js";
-import { snapshot, summarise } from "./switchboard-room.js";
+import { decodeInvite, InviteError, snapshot, summarise } from "./switchboard-room.js";
 
 const LOCAL = document.documentElement.dataset.source === "local";
 const STORE = "switchboard.rooms.v1";
@@ -320,15 +330,57 @@ function prefill() {
   if (!$("f-url").value) $("f-url").value = MANAGED_HUB;
 }
 
+/** An invite is the four fields below, already agreed with whoever sent it.
+ *
+ *  It fills them rather than replacing them, so what is about to be saved
+ *  stays visible and correctable — a form that silently swallows a string and
+ *  says "done" gives a reader no way to notice it pasted the wrong one. The
+ *  probe rides along in the saved room, and is what later turns "these
+ *  settings" into "the same room", so it is deliberately not shown as a field.
+ */
+let invitedProbe = "";
+
+function applyInvite(text) {
+  const warn = $("invite-warn"), ok = $("invite-ok");
+  warn.hidden = ok.hidden = true;
+  invitedProbe = "";
+  if (!String(text).trim()) return;
+  let invite;
+  try {
+    invite = decodeInvite(text);
+  } catch (e) {
+    warn.hidden = false;
+    warn.textContent = e instanceof InviteError ? e.message : String(e);
+    return;
+  }
+  $("f-url").value = invite.url;
+  $("f-workspace").value = invite.workspace;
+  if (invite.key) $("f-key").value = invite.key;
+  if (invite.token) $("f-token").value = invite.token;
+  if (invite.note && !$("f-label").value) $("f-label").value = invite.note;
+  invitedProbe = invite.probe;
+  ok.hidden = false;
+  ok.textContent = "read this invite: " + invite.workspace + " on " + invite.url
+    + (invite.key ? ", with a key" : ", no key")
+    + (invite.probe ? ". It carries a proof-of-room, checked once you are in."
+                    : ". It carries no proof-of-room, so nothing can check it.")
+    + (invite.note ? ` — ${invite.note}` : "");
+}
+
 if (!LOCAL) {
   rooms = load();
   $("settings-open").hidden = false;
   $("settings-open").onclick = () => { drawSaved(); prefill(); $("settings").showModal(); };
+  // On input rather than on submit: a bad invite should say so while the
+  // string is still on screen to compare against, not after the sheet closes.
+  $("f-invite").addEventListener("input", (event) => applyInvite(event.target.value));
   $("settings-form").addEventListener("submit", (event) => {
     if (event.submitter && event.submitter.value !== "save") return;
     const data = new FormData($("settings-form"));
     const entry = Object.fromEntries(
       [...data.entries()].map(([k, v]) => [k, String(v).trim()]));
+    delete entry.invite;   // the fields it filled are what gets stored
+    if (invitedProbe) entry.probe = invitedProbe;
     if (!entry.url || !entry.workspace) return;
     entry.url = entry.url.replace(/\/$/, "");
     // The managed hub's token is the same for everyone and nobody types it.
@@ -337,6 +389,8 @@ if (!LOCAL) {
     save([...rooms.filter((r) => id(r) !== id(entry)), entry]);
     selected = id(entry);
     $("settings-form").reset();
+    invitedProbe = "";
+    $("invite-ok").hidden = $("invite-warn").hidden = true;
     setFilter(null);
     refresh();
   });

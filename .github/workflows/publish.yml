@@ -10,6 +10,12 @@ name: Publish to PyPI
 # `gh release create vX.Y.Z --generate-notes`. The tag must match the version
 # in pyproject.toml — the build job checks, and fails loudly if it doesn't.
 #
+# This workflow publishes `agent-switchboard` only. Add-ons under `extras/`
+# are separate distributions with their own cadence and their own workflow —
+# see `publish-viewer.yml`. Tags are prefixed accordingly (`v…` here,
+# `viewer-v…` there) so releasing one never publishes the other, and the guard
+# below ignores a tag that is not this project's rather than failing on it.
+#
 # If a run fails for reasons unrelated to the code (Actions outage, a hosted
 # runner that never gets assigned), re-run it from the Actions tab, or
 # `gh workflow run publish.yml --ref vX.Y.Z` once the tag carries this file.
@@ -31,6 +37,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # An add-on's release fires this workflow too, and must not publish the
+    # SDK. Skipped rather than failed: a red X on someone else's release reads
+    # as a broken release, and there is nothing broken about it.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || !startsWith(github.event.release.tag_name, 'viewer-v')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

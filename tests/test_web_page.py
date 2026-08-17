@@ -314,6 +314,85 @@ def test_the_conversation_follows_the_newest_message_unless_you_scrolled_up(
         tab.close()
 
 
+def test_one_pasted_invite_fills_the_whole_sheet(browser, page, room):
+    """The reason invites exist, in the place a person actually arrives.
+
+    Four fields typed by hand are four chances to differ from the peer who
+    sent them, and every one of them fails silently — a room you are alone in
+    looks exactly like a quiet one. So the paste has to do all four, and the
+    room it produces has to actually read.
+    """
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=KEY,
+                  note="parser room").encode()
+    tab = browser.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    tab.goto(page, wait_until="networkidle")
+    try:
+        tab.fill("#f-invite", blob)
+        assert tab.input_value("#f-url") == room.url
+        assert tab.input_value("#f-workspace") == room.workspace
+        assert tab.input_value("#f-key") == KEY
+        assert tab.input_value("#f-label") == "parser room"
+        assert tab.query_selector("#invite-ok").is_visible() is True
+
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert "parser.py is mine for ~20 minutes" in tab.inner_text("#messages")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_bad_invite_says_so_while_it_is_still_on_screen(browser, page):
+    """Reported as it is typed rather than on submit: after the sheet closes,
+    the string you would compare against is gone."""
+    tab = browser.new_page()
+    tab.goto(page, wait_until="networkidle")
+    try:
+        tab.fill("#f-invite", "swb1_this-is-not-base64-json")
+        warn = tab.query_selector("#invite-warn")
+        assert warn.is_visible() is True
+        assert "corrupt or truncated" in warn.inner_text()
+        # And nothing was half-applied from it.
+        assert tab.input_value("#f-workspace") == ""
+    finally:
+        tab.close()
+
+
+def test_an_invite_whose_proof_this_key_cannot_open_says_WRONG_ROOM(
+    browser, page, room, hub,
+):
+    """The forty-minute failure, caught on the first refresh.
+
+    Same hub, same workspace, different key: both parties appear on one
+    roster and can exchange nothing. A roster cannot tell you that; opening a
+    value the inviter sealed can, and the invite carries the board key of one.
+    """
+    from switchboard.invite import PROBE_SENTINEL, Invite
+
+    inviter = Client(room, agent_id="inviter", key=KEY)
+    inviter.board_set("join/probe/aaaa", PROBE_SENTINEL)
+    inviter.close()
+
+    stranger = generate_key()
+    blob = Invite(url=room.url, workspace=room.workspace, key=stranger,
+                  probe="join/probe/aaaa").encode()
+    tab = browser.new_page()
+    tab.goto(page, wait_until="networkidle")
+    try:
+        tab.fill("#f-invite", blob)
+        tab.click("#settings-save")
+        tab.wait_for_function(
+            "document.querySelector('#notes').innerText.length > 0", timeout=10_000)
+        assert "WRONG ROOM" in tab.inner_text("#notes")
+    finally:
+        tab.close()
+
+
 def test_the_page_opens_on_the_managed_hub(browser, page):
     """A reader arriving at the published page has one hub they have not had
     to set up, and typing a URL from memory is the first place to lose them."""

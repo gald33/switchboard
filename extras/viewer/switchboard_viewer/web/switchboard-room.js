@@ -23,6 +23,67 @@ const SEALED = {
 
 const MAX_CHANNELS = 60;
 
+// --- invites ----------------------------------------------------------------
+//
+// The read half of `invite.py`, for the same reason the cipher has one: this
+// page is where a person who was handed a room actually arrives, and asking
+// them to split one string into four fields by hand reintroduces exactly the
+// mistake an invite exists to remove. Four chances to differ become one, and a
+// wrong one fails at the parse instead of an hour later in an empty room.
+//
+// Kept byte-compatible with the Python encoder — same prefix, same version,
+// same single-letter keys, same unpadded base64url — and held there by
+// `tests/test_web_reader.py`, which encodes with `Invite` and decodes here.
+
+export const INVITE_PREFIX = "swb1_";
+export const INVITE_VERSION = 1;
+export const PROBE_SENTINEL = "switchboard-room-proof";
+
+export class InviteError extends Error {}
+
+/** Read an invite, or throw. Never a partial join: a string this cannot fully
+ *  understand is refused rather than half-applied. */
+export function decodeInvite(text) {
+  const blob = String(text ?? "").trim();
+  if (!blob.startsWith(INVITE_PREFIX)) {
+    throw new InviteError(
+      `not a switchboard invite (expected it to start with '${INVITE_PREFIX}'). ` +
+      "Invites are produced by `switchboard invite` and pasted whole.");
+  }
+  let payload;
+  try {
+    const body = blob.slice(INVITE_PREFIX.length)
+      .replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(body + "=".repeat((4 - (body.length % 4)) % 4));
+    payload = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(raw, (c) => c.charCodeAt(0))));
+  } catch (e) {
+    throw new InviteError(`invite is corrupt or truncated (${e.message})`);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new InviteError("invite did not contain an object");
+  }
+  if (payload.v !== INVITE_VERSION) {
+    throw new InviteError(
+      `invite is version ${JSON.stringify(payload.v)}, this page understands ` +
+      `${INVITE_VERSION}. Get a newer page rather than editing the string.`);
+  }
+  if (typeof payload.u !== "string" || !payload.u) {
+    throw new InviteError("invite has no hub URL");
+  }
+  if (typeof payload.w !== "string" || !payload.w) {
+    throw new InviteError("invite has no workspace");
+  }
+  return {
+    url: payload.u.replace(/\/$/, ""),
+    workspace: payload.w,
+    token: String(payload.t ?? "") || null,
+    key: String(payload.k ?? "") || null,
+    note: String(payload.n ?? ""),
+    probe: String(payload.p ?? ""),
+  };
+}
+
 class HubError extends Error {}
 
 async function get(config, path, params = {}) {
@@ -121,6 +182,35 @@ function isBoardLabelled(opened) {
     && opened.t === "sbk1" && typeof opened.k === "string";
 }
 
+const WRONG_ROOM =
+  "WRONG ROOM: reached this hub and workspace, but could not read the proof " +
+  "the inviter left. Your key does not match theirs — you would appear on " +
+  "each other's roster and be unable to exchange anything. Ask for a fresh " +
+  "invite rather than editing settings";
+
+/** What an invite's proof-of-room says, or null when there is nothing to say.
+ *
+ *  Only failures. Opening a value the inviter sealed proves the hub, the
+ *  workspace *and* the key all match — but a viewer that announced every
+ *  success would be shouting the normal case, and these notes are drawn as
+ *  warnings. Silence is the good outcome.
+ *
+ *  Free, because the board has already been read: the probe is an ordinary
+ *  entry, so no extra request is made to check it.
+ */
+function probeVerdict(probe, board) {
+  const entry = board.find((e) => e.key === probe);
+  if (entry) return entry.value === PROBE_SENTINEL ? null : WRONG_ROOM;
+  // Not found is not the same as absent. A board key travels sealed beside
+  // its value, so a key this room cannot open never comes back as a name —
+  // the inviter's probe is sitting right there under a token neither side can
+  // match. So an unopened entry is the answer, not a missing one.
+  if (board.some((e) => e.sealed)) return WRONG_ROOM;
+  return "this invite carries a proof-of-room and it is not on the " +
+         "blackboard — it may have expired, or this may not be the room the " +
+         "invite described";
+}
+
 /** The timing forecast a sender folded into a body, split back out. */
 function unwrapForecast(body) {
   if (body && typeof body === "object" && !Array.isArray(body)
@@ -194,6 +284,11 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
     updated_by: who(e.updated_by), updated_at: e.updated_at,
     expires_in: e.expires_in,
   }));
+
+  if (config.probe) {
+    const verdict = probeVerdict(config.probe, view.board);
+    if (verdict) notes.push(verdict);
+  }
 
   let channels = (await section("the channel list",
     async () => (await get(config, "/channels")).channels)) ?? [];
