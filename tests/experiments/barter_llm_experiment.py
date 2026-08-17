@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from barter.analysis import render as render_comparison  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
+from barter.flow import play  # noqa: E402
 from barter.llm import ARMS, TURN, Wire, brief_for, build_tools, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
 from barter.run import score  # noqa: E402
@@ -155,79 +156,24 @@ async def run_llm_island(
             )
 
         cost = 0.0
-        order = list(manager.agents)
-        transcript: list[dict] = []
-        # Which agents have had a turn while a given trade was open. An offer
-        # that expires without its seller ever getting a turn is a flow
-        # artefact, not a refusal, and the two must not be counted together.
-        seen_by: dict[str, set[str]] = {}
 
-        async def take_turns(round_no: int, label: str, note: str, budget: int) -> None:
+        async def take_turn(agent_id: str, *, round_no: int, label: str,
+                            note: str, budget: int) -> str:
             nonlocal cost
-            rng.shuffle(order)
-            for agent_id in order:
-                prompt = TURN.format(round_no=round_no, rounds=total_rounds, phase_note=note)
-                text, spent = await _drive(options[agent_id], prompt, budget)
-                cost += spent
-                transcript.append({"round": round_no, "pass": label,
-                                   "agent": agent_id, "text": text})
-                for trade in manager.trades.values():
-                    if trade.status == "pending":
-                        seen_by.setdefault(trade.id, set()).add(agent_id)
-                if verbose:
-                    print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
-            service.drain()
+            prompt = TURN.format(round_no=round_no,
+                                 rounds=discovery + 1 + rounds, phase_note=note)
+            text, spent = await _drive(options[agent_id], prompt, budget)
+            cost += spent
+            if verbose:
+                print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
+            return text
 
-        total_rounds = discovery + 1 + rounds
-        round_no = 0
-
-        # --- deliberate, before anything is committed ------------------------
-        # The whole reason this phase exists: production used to happen in round
-        # one, so every word an agent said came after the only irreversible
-        # decision it would make. A convention that arrives after manufacturing
-        # cannot plan for it.
-        for _ in range(discovery):
-            round_no += 1
-            await take_turns(
-                round_no, "talk",
-                f"Nothing is committed yet. Production opens in "
-                f"{discovery - round_no + 1} round(s), and you spend your labour once. "
-                "Use this time however you think best.",
-                turns_talk)
-
-        # --- commit labour ---------------------------------------------------
-        round_no += 1
-        if manager.phase == "discovery":
-            manager.open_production()
-        await take_turns(
-            round_no, "produce",
-            "Production is open and this is the only round in which you can call "
-            "`produce`. Trading opens next round.",
-            turns_produce)
-        manager.check_conservation()
-        manager.open_trading()
-        manager.check_conservation()
-
-        # --- trade, in two passes --------------------------------------------
-        # Tier 1 runs propose-then-approve as separate passes. A single turn per
-        # agent per round meant roughly half of all offers could not be answered
-        # until the following round, which with a three-tick expiry gave a
-        # proposal one or two real chances at being seen at all.
-        for _ in range(rounds):
-            round_no += 1
-            left = discovery + 1 + rounds - round_no
-            await take_turns(round_no, "offer",
-                             f"Trading is open. {left} round(s) remain after this one.",
-                             turns_offer)
-            await take_turns(round_no, "settle",
-                             "Same round, second pass: answer what is waiting on you. "
-                             f"{left} round(s) remain after this one.",
-                             turns_settle)
-            manager.advance()
-            manager.check_conservation()
-
-        manager.close()
-        manager.check_conservation()
+        # The order of play lives in `barter/flow.py`, with nothing in it that
+        # knows about models, so it can be exercised offline in milliseconds.
+        # Both previous flow errors were found by paying for a run.
+        played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
+                            rng=rng, drain=service.drain)
+        transcript = played.transcript
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
@@ -243,10 +189,7 @@ async def run_llm_island(
     # the first is an economic result; the second is the harness losing trades
     # for us, and reporting them together would credit a flow artefact to the
     # arm's design.
-    unseen = sum(
-        1 for t in manager.trades.values()
-        if t.status == "expired" and t.seller not in seen_by.get(t.id, set())
-    )
+    unseen = played.expired_unseen(manager)
 
     outcome = score(island, manager, arm=arm, seed=seed, messages=len(floor))
     _, autarky_utils = autarky(island)

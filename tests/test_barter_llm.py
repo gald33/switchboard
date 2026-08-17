@@ -356,6 +356,116 @@ def test_every_quoting_arm_shares_one_brief(island):
     assert tool_names("built", "a1") == tool_names("bound", "a1")
 
 
+def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
+    """Run the real order of play with a scripted stand-in for the model.
+
+    No SDK, no network, milliseconds. This exists because both flow errors so
+    far — production committed before anyone spoke, and one turn per agent for
+    both proposing and answering — were found by paying for a run and reading
+    the wreckage. A loop nobody can exercise is a loop nobody exercises.
+    """
+    import random
+
+    from barter.flow import Budgets, play
+
+    manager = Manager(island=island, phase="discovery")
+    log = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        log.append({"round": round_no, "label": label, "agent": agent_id,
+                    "budget": budget, "phase": manager.phase})
+        if label == "produce":
+            manager.dispatch(agent_id, {"op": "produce",
+                                        "plan": plan or {"fish": 0.4, "grain": 0.6}})
+        elif label == "offer":
+            manager.dispatch(agent_id, {
+                "op": "propose", "seller": next(a for a in manager.agents if a != agent_id),
+                "give": {"fish": 0.01}, "want": {"grain": 0.005}})
+        elif label == "settle":
+            waiting = manager.dispatch(agent_id, {"op": "pending"})
+            for trade in waiting.get("awaiting_your_approval", []):
+                manager.dispatch(agent_id, {"op": "approve", "trade_id": trade["id"]})
+        return f"{agent_id} did {label}"
+
+    import anyio
+    played = anyio.run(lambda: play(manager, take_turn, discovery=discovery,
+                                    rounds=rounds, rng=random.Random(0),
+                                    budgets=Budgets()))
+    return manager, played, log
+
+
+def test_the_order_of_play_deliberates_then_produces_then_trades(island):
+    manager, played, log = _scripted_island(island, discovery=2, rounds=3)
+
+    labels = [entry["label"] for entry in log]
+    n = island.n_agents
+    # Two talk rounds, one produce round, then three trade rounds of two passes.
+    assert labels[:2 * n] == ["talk"] * (2 * n)
+    assert labels[2 * n:3 * n] == ["produce"] * n
+    assert labels[3 * n:] == (["offer"] * n + ["settle"] * n) * 3
+
+    # ...and during every talk turn the manager really did refuse everything.
+    assert {e["phase"] for e in log if e["label"] == "talk"} == {"discovery"}
+    assert manager.phase == "closed"
+    manager.check_conservation()
+
+
+def test_nothing_can_be_committed_before_the_talking_is_done(island):
+    """The point of the discovery phase, asserted at the flow level rather than
+    trusted to the prompt: an eager agent that tries to produce during talk is
+    refused by the manager, not merely discouraged."""
+    manager = Manager(island=island, phase="discovery")
+    assert manager.dispatch("a1", {"op": "produce", "plan": {"fish": 1.0}})["ok"] is False
+    assert manager.dispatch("a1", {"op": "propose", "seller": "a2",
+                                   "give": {"fish": 1.0},
+                                   "want": {"grain": 1.0}})["ok"] is False
+
+
+def test_every_offer_gets_a_settle_pass_in_its_own_round(island):
+    """The second flow error: with one turn per agent, roughly half of all
+    offers could not be answered until the following round, and a three-tick
+    expiry gave a proposal one or two real chances at being seen. Two passes
+    mean every offer is seen by its seller in the round it was made."""
+    manager, played, _ = _scripted_island(island, discovery=1, rounds=2)
+    assert played.expired_unseen(manager) == 0
+    assert any(t.status == "executed" for t in manager.trades.values())
+
+
+def test_each_phase_gets_its_own_turn_budget(island):
+    """Budgets differ by phase because the phases are not the same size of job,
+    and a trading budget spent on every phase is most of what made the previous
+    flow expensive."""
+    from barter.flow import Budgets
+
+    _, _, log = _scripted_island(island, discovery=1, rounds=1)
+    got = {e["label"]: e["budget"] for e in log}
+    assert got == {"talk": Budgets().talk, "produce": Budgets().produce,
+                   "offer": Budgets().offer, "settle": Budgets().settle}
+
+
+def test_a_flow_artefact_is_not_counted_as_a_refusal(island):
+    """`expired_unseen` is the guard on this experiment's own honesty: an offer
+    the seller never had a chance to look at must not be reported next to one it
+    considered and declined."""
+    from barter.flow import Played
+
+    manager = Manager(island=island, phase="discovery")
+    manager.open_production()
+    for agent_id, state in manager.agents.items():
+        manager.op_produce(agent_id, {g: state.alpha[i]
+                                      for i, g in enumerate(manager.goods)})
+    manager.open_trading()
+    trade = manager.op_propose("a1", "a2", {"fish": 0.01}, {"grain": 0.005})
+    for _ in range(4):
+        manager.advance()
+    assert manager.trades[trade["trade_id"]].status == "expired"
+
+    never_looked = Played()
+    assert never_looked.expired_unseen(manager) == 1
+    looked = Played(seen_by={trade["trade_id"]: {"a2"}})
+    assert looked.expired_unseen(manager) == 0
+
+
 def test_the_money_arms_differ_from_bound_by_exactly_one_clause(island):
     """`spend` flips the ladder's axis and should do so cleanly.
 
