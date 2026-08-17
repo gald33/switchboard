@@ -673,6 +673,35 @@ def test_a_snapshot_reports_not_yet_scoreable_rather_than_zero(island):
     assert scored["labour_spent"] == pytest.approx(1.0)
 
 
+def test_a_board_is_collapsed_to_one_vector_before_specialisation(island):
+    """`specialisation` needs a single price vector; a board is one per trader.
+
+    Without the collapse it looked goods up in a dict keyed by agent, found
+    none, and returned None every round — an empty column in the trajectory and
+    no error anywhere. That is the failure mode this whole experiment keeps
+    hitting: a paid run that reports nothing about the thing it measures.
+    """
+    from barter.analysis import consensus, snapshot, specialisation
+
+    board = {"a1": {"fish": 1.0, "cloth": 15.0}, "a2": {"fish": 1.0, "cloth": 8.0}}
+    assert consensus(board) == {"fish": 1.0, "cloth": 11.5}
+    # A flat vector passes through untouched.
+    assert consensus({"fish": 1.0, "cloth": 3.0}) == {"fish": 1.0, "cloth": 3.0}
+    assert consensus({}) == {}
+
+    goods = tuple(island.good_ids())
+    shares = [[1.0] + [0.0] * 4 for _ in range(island.n_agents)]
+    assert specialisation(island, shares, board, goods) is None       # unusable shape
+    assert specialisation(island, shares, consensus(board), goods) is not None
+
+    manager = Manager(island=island)
+    for agent_id, state in manager.agents.items():
+        manager.op_produce(agent_id, {g: state.alpha[i]
+                                      for i, g in enumerate(manager.goods)})
+    row = snapshot(island, manager, board, round_no=1, label="produce")
+    assert row["specialisation"] is not None
+
+
 def test_a_snapshot_takes_prices_from_a_board_or_from_one_vector(island):
     """Boards are per-agent and a settled convention is one vector. Both have to
     land on the same `price_agreement` axis or the trajectory is not a line."""
