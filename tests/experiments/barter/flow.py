@@ -77,6 +77,7 @@ async def play(
     budgets: Budgets | None = None,
     drain: Callable[[], Any] | None = None,
     total_label: int | None = None,
+    rolling: bool = False,
 ) -> Played:
     """Run one island's order of play. Returns the transcript and diagnostics."""
     budgets = budgets or Budgets()
@@ -106,8 +107,10 @@ async def play(
         await pass_over(
             "talk",
             f"Nothing is committed yet. Production opens in "
-            f"{discovery - round_no + 1} round(s), and you spend your labour once. "
-            "Use this time however you think best.",
+            f"{discovery - round_no + 1} round(s), and "
+            + ("you spend your labour in instalments from then on, so you can "
+               "revise as you learn. " if rolling else "you spend your labour once. ")
+            + "Use this time however you think best.",
             budgets.talk,
         )
 
@@ -116,8 +119,12 @@ async def play(
         manager.open_production()
     await pass_over(
         "produce",
-        "Production is open and this is the only round in which you can call "
-        "`produce`. Trading opens next round.",
+        ("Production is open. You have a share of your labour to spend now and "
+         "more in each round that follows, so you can change your mind as you "
+         "learn. Trading opens next round."
+         if rolling else
+         "Production is open and this is the only round in which you can call "
+         "`produce`. Trading opens next round."),
         budgets.produce,
     )
     manager.check_conservation()
@@ -127,9 +134,13 @@ async def play(
     for _ in range(rounds):
         round_no += 1
         left = total - round_no
-        await pass_over("offer",
-                        f"Trading is open. {left} round(s) remain after this one.",
-                        budgets.offer)
+        await pass_over(
+            "offer",
+            ("Trading is open, and you still have labour to spend — `produce` "
+             "once more this round if you want to, and `my_state` shows how much "
+             "is left. " if rolling else "Trading is open. ")
+            + f"{left} round(s) remain after this one.",
+            budgets.offer)
         await pass_over("settle",
                         "Same round, second pass: answer what is waiting on you. "
                         f"{left} round(s) remain after this one.",

@@ -117,6 +117,7 @@ async def run_llm_island(
     max_turns: int,
     verbose: bool,
     discovery: int = 3,
+    labour: str = "once",
     turns_talk: int = 8,
     turns_produce: int = 8,
     turns_offer: int = 14,
@@ -125,7 +126,17 @@ async def run_llm_island(
     from claude_agent_sdk import ClaudeAgentOptions
 
     island = draw_island(agents, goods, seed=seed)
-    manager = Manager(island=island, phase="discovery" if discovery else "production")
+    # Rolling labour spreads the *same* one unit across the production round and
+    # every trading round, so the frontier and both benchmarks are untouched and
+    # a rolling island is directly comparable to a one-shot one.
+    rolling = labour == "rolling"
+    instalments = 1 + rounds if rolling else 1
+    manager = Manager(
+        island=island,
+        phase="discovery" if discovery else "production",
+        labour_per_round=1.0 / instalments,
+        rolling=rolling,
+    )
     rng = random.Random(seed)
     run = f"llm{seed}{arm}"
 
@@ -172,7 +183,7 @@ async def run_llm_island(
         # knows about models, so it can be exercised offline in milliseconds.
         # Both previous flow errors were found by paying for a run.
         played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
-                            rng=rng, drain=service.drain)
+                            rng=rng, drain=service.drain, rolling=rolling)
         transcript = played.transcript
         service.publish()
 
@@ -208,7 +219,8 @@ async def run_llm_island(
         "quote_board": board,
         "quotes_posted": sum(w.quotes_posted for w in wires.values()),
         "expired_unseen": unseen,
-        "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2},
+        "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2,
+                 "labour": labour, "instalments": instalments},
         "transcript": transcript,
     }
 
@@ -236,7 +248,8 @@ def render(result: dict) -> str:
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
         f"  flow             {result['flow']['discovery']} talk + produce + "
-        f"{result['flow']['trade_rounds']}x2 trade",
+        f"{result['flow']['trade_rounds']}x2 trade, labour "
+        f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
         f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
         f"seller never having had a turn",
         f"  said             {len(result['said'])} message(s)"
@@ -264,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goods", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=8,
                         help="trading rounds (each is a propose pass and a settle pass)")
+    parser.add_argument("--labour", choices=["once", "rolling"], default="once",
+                        help="one-shot commitment, or the same total labour in "
+                             "instalments across rounds")
     parser.add_argument("--discovery", type=int, default=3,
                         help="rounds of talk before any labour is committed")
     parser.add_argument("--islands", type=int, default=1)
@@ -290,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                 arm=arm, agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
                 verbose=args.verbose, discovery=args.discovery,
+                labour=args.labour,
             ))
             results.append(result)
             print(render(result), flush=True)

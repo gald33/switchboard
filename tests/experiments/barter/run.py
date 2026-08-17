@@ -201,7 +201,8 @@ def score(island: Island, manager: Manager, *, arm: str, seed: int,
     realised = efficiency(island, utils)
     # The frontier of the production plan they actually chose. High here beside
     # a low overall score means they swapped well and made the wrong things.
-    plan = [list(manager.agents[a].shares or island.alpha[manager.agents[a].index])
+    plan = [list(manager.agents[a].shares) if sum(manager.agents[a].shares) > 1e-9
+            else list(island.alpha[manager.agents[a].index])
             for a in sorted(manager.agents, key=lambda a: manager.agents[a].index)]
     lo, hi = capture(realised, efficiency(island, autarky_utils))
     summary = manager.summary()

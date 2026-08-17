@@ -174,15 +174,79 @@ def test_tier_one_still_starts_in_production(island):
     assert Manager(island=island).phase == "production"
 
 
-def test_production_is_committed_once(manager):
+def test_one_shot_labour_is_spent_once_and_cannot_be_unwound(manager):
+    """The default: everything staked before any price exists.
+
+    This is what made specialisation a bet — and, when settlement then failed,
+    what made ruin total rather than marginal.
+    """
     manager.op_produce("a1", {"fish": 1.0})
-    with pytest.raises(TradeError, match="already produced"):
+    with pytest.raises(TradeError, match="already worked this round"):
+        manager.op_produce("a1", {"grain": 1.0})
+    manager.advance()
+    with pytest.raises(TradeError, match="no labour left"):
         manager.op_produce("a1", {"grain": 1.0})
 
 
 def test_labour_is_bounded(manager):
-    with pytest.raises(TradeError, match="1.0 unit of labour"):
+    with pytest.raises(TradeError, match="must sum to at most 1"):
         manager.op_produce("a1", {"fish": 0.7, "grain": 0.7})
+
+
+def test_rolling_labour_spreads_the_same_endowment_over_rounds(island):
+    """Instalments, not a bigger economy.
+
+    Total labour is still exactly one unit per agent, so the frontier, the
+    autarky floor and the exchange ceiling are all untouched and a rolling run
+    is directly comparable to a one-shot one. The only thing that varies is
+    whether a commitment can be revised after seeing what prices do.
+    """
+    manager = Manager(island=island, labour_per_round=0.25, rolling=True)
+    for _ in range(4):
+        manager.op_produce("a1", {"fish": 1.0})
+        manager.advance()
+    state = manager.agents["a1"]
+    assert state.spent == pytest.approx(1.0)
+    assert sum(state.shares) == pytest.approx(1.0)
+    # Four quarter-instalments on fish is exactly one whole unit on fish.
+    assert state.holdings[0] == pytest.approx(state.capacity[0])
+    with pytest.raises(TradeError, match="no labour left"):
+        manager.op_produce("a1", {"grain": 1.0})
+
+
+def test_rolling_labour_can_be_redirected_as_prices_appear(island):
+    """The point of instalments: an agent may change its mind."""
+    manager = Manager(island=island, labour_per_round=0.5, rolling=True)
+    manager.op_produce("a1", {"fish": 1.0})
+    manager.advance()
+    manager.op_produce("a1", {"grain": 1.0})
+    state = manager.agents["a1"]
+    assert state.shares[0] == pytest.approx(0.5)
+    assert state.shares[1] == pytest.approx(0.5)
+    manager.check_conservation()
+
+
+def test_rolling_labour_still_only_works_once_a_round(island):
+    manager = Manager(island=island, labour_per_round=0.25, rolling=True)
+    manager.op_produce("a1", {"fish": 1.0})
+    with pytest.raises(TradeError, match="already worked this round"):
+        manager.op_produce("a1", {"grain": 1.0})
+
+
+def test_labour_stays_shut_during_trading_unless_rolling(island):
+    """One-shot means one-shot: once the floor opens, the plan is history."""
+    manager = Manager(island=island)
+    manager.op_produce("a1", {"fish": 1.0})
+    manager.open_trading()
+    with pytest.raises(TradeError, match="production is trading, not open"):
+        manager.op_produce("a2", {"fish": 1.0})
+
+    rolling = Manager(island=island, labour_per_round=0.5, rolling=True)
+    rolling.op_produce("a1", {"fish": 1.0})
+    rolling.open_trading()
+    rolling.advance()
+    assert rolling.op_produce("a1", {"grain": 1.0})["labour_left"] == 0.0
+    rolling.check_conservation()
 
 
 def test_a_bad_request_costs_a_turn_and_nothing_more(manager):

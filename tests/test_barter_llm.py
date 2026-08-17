@@ -431,6 +431,41 @@ def test_every_offer_gets_a_settle_pass_in_its_own_round(island):
     assert any(t.status == "executed" for t in manager.trades.values())
 
 
+def _notes_for(island, rolling):
+    """Every note the flow shows an agent, for one labour mode."""
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island, phase="discovery",
+                      labour_per_round=0.5 if rolling else 1.0, rolling=rolling)
+    notes = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        notes.append(note)
+        if label == "produce":
+            manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        return ""
+
+    anyio.run(lambda: play(manager, take_turn, discovery=1, rounds=1,
+                           rng=random.Random(0), rolling=rolling))
+    return " ".join(notes).lower()
+
+
+def test_the_notes_never_promise_the_wrong_labour_rule(island):
+    """The two labour modes are different games, and an agent told the wrong one
+    plans for the wrong game. `once` must never invite a second `produce`, and
+    `rolling` must never call the decision final."""
+    once = _notes_for(island, rolling=False)
+    assert "labour once" in once and "instalment" not in once
+
+    rolling = _notes_for(island, rolling=True)
+    assert "instalment" in rolling and "labour once" not in rolling
+    # ...and rolling has to actually tell them the option is still open later.
+    assert "produce` once more" in rolling
+
+
 def test_each_phase_gets_its_own_turn_budget(island):
     """Budgets differ by phase because the phases are not the same size of job,
     and a trading budget spent on every phase is most of what made the previous
