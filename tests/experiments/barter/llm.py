@@ -430,14 +430,14 @@ def build_tools(wire: Wire) -> Any:
     @tool("my_state", "Your capacities, tastes, holdings and current score. "
                       "Nobody else's — this is private to you.", {})
     async def my_state(_: Any) -> dict[str, Any]:
-        return _text(wire.manager_call("state"))
+        return _text(await _off(wire.manager_call, "state"))
 
     @tool("produce",
           "Spend your one unit of labour. Pass shares per good, each >= 0, "
           "summing to at most 1. You may only do this once.",
           {"plan": dict})
     async def produce(args: Any) -> dict[str, Any]:
-        return _text(wire.manager_call("produce", plan=args.get("plan")))
+        return _text(await _off(lambda: wire.manager_call("produce", plan=args.get("plan"))))
 
     @tool("propose_trade",
           "Offer a trade to one named trader. `give` is what you hand over and "
@@ -445,34 +445,35 @@ def build_tools(wire: Wire) -> Any:
           "a trade id. Nothing settles until that trader approves the id.",
           {"seller": str, "give": dict, "want": dict, "note": str})
     async def propose_trade(args: Any) -> dict[str, Any]:
-        return _text(wire.manager_call(
+        return _text(await _off(lambda: wire.manager_call(
             "propose", seller=args.get("seller"), give=args.get("give"),
-            want=args.get("want"), note=args.get("note", "")))
+            want=args.get("want"), note=args.get("note", ""))))
 
     @tool("approve_trade", "Settle a trade that was offered to you, by its id.",
           {"trade_id": str})
     async def approve_trade(args: Any) -> dict[str, Any]:
-        return _text(wire.manager_call("approve", trade_id=args.get("trade_id")))
+        trade_id = args.get("trade_id")
+        return _text(await _off(lambda: wire.manager_call("approve", trade_id=trade_id)))
 
     @tool("pending_trades", "Offers waiting on your approval, and your own open offers.", {})
     async def pending_trades(_: Any) -> dict[str, Any]:
-        return _text(wire.manager_call("pending"))
+        return _text(await _off(wire.manager_call, "pending"))
 
     @tool("cancel_trade", "Withdraw one of your own open offers and release its escrow.",
           {"trade_id": str})
     async def cancel_trade(args: Any) -> dict[str, Any]:
-        return _text(wire.manager_call("cancel", trade_id=args.get("trade_id")))
+        return _text(await _off(lambda: wire.manager_call("cancel", trade_id=args.get("trade_id"))))
 
     tools = [my_state, produce, propose_trade, approve_trade, pending_trades, cancel_trade]
 
     if speaks(wire.arm):
         @tool("say", "Post a message all traders can read.", {"text": str})
         async def say(args: Any) -> dict[str, Any]:
-            return _text(wire.post(str(args.get("text", ""))))
+            return _text(await _off(wire.post, str(args.get("text", ""))))
 
         @tool("listen", "Everything posted since you last called this.", {})
         async def listen(_: Any) -> dict[str, Any]:
-            return _text(wire.read())
+            return _text(await _off(wire.read))
 
         tools += [say, listen]
 
@@ -491,7 +492,7 @@ def build_tools(wire: Wire) -> Any:
               "Replaces your previous quote. Every trader can read it." + stale,
               {"prices": dict})
         async def post_quote(args: Any) -> dict[str, Any]:
-            return _text(wire.post_quote(args.get("prices")))
+            return _text(await _off(wire.post_quote, args.get("prices")))
 
         read_doc = ("The quote board: every trader's latest posted prices, and the "
                     "median price for each good across everyone quoting.")
@@ -502,7 +503,7 @@ def build_tools(wire: Wire) -> Any:
 
         @tool("read_quotes", read_doc, {})
         async def read_quotes(_: Any) -> dict[str, Any]:
-            return _text(wire.read_quotes())
+            return _text(await _off(wire.read_quotes))
 
         tools += [post_quote, read_quotes]
 
@@ -514,7 +515,8 @@ def build_tools(wire: Wire) -> Any:
               "it, exactly as with any other offer.",
               {"seller": str, "good": str, "qty": float})
         async def pay(args: Any) -> dict[str, Any]:
-            return _text(wire.pay(args.get("seller"), args.get("good"), args.get("qty")))
+            return _text(await _off(wire.pay, args.get("seller"), args.get("good"),
+                                    args.get("qty")))
 
         tools += [pay]
 
@@ -523,6 +525,25 @@ def build_tools(wire: Wire) -> Any:
 
 def _text(payload: Any) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(payload, default=str)}]}
+
+
+async def _off(fn: Any, *args: Any) -> Any:
+    """Run a blocking Switchboard call off the event loop.
+
+    Every ``Wire`` method below talks to the hub over synchronous HTTP. Calling
+    one directly from an ``async`` tool handler blocks the loop for the duration
+    — which was survivable when each agent turn was its own short-lived
+    subprocess, and is not now that every agent holds a live session for the
+    whole island. One agent's blocking tool call stalls the transports of every
+    other agent still connected, and the run deadlocks on the second turn.
+
+    The switchboard client is deliberately synchronous (it depends only on
+    httpx, which is the point of it), so the right place to fix this is here: do
+    the blocking work in a worker thread and leave the loop free.
+    """
+    import anyio
+
+    return await anyio.to_thread.run_sync(fn, *args)
 
 
 def tool_names(arm: str, agent_id: str) -> list[str]:

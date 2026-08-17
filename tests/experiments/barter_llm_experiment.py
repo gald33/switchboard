@@ -51,11 +51,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import random
 import sys
-from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -73,38 +74,100 @@ from switchboard.testing import hub  # noqa: E402
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
-async def _drive(options: object, prompt: str, budget: int | None = None) -> tuple[str, float]:
-    """One agent turn. Returns its final text and what the turn cost.
+def _only(allowed: list[str]) -> Any:
+    """Permission callback: yes to this island's tools, no to everything else.
 
-    Running out of turns ends the agent's round; it does not end the run. An
-    agent that spent its whole budget calling tools has simply used its time,
-    the same as an agent that stopped early, and the goods it moved before
-    running out are real. Letting that abort the island would silently bias the
-    experiment toward whichever arm happens to be terser — and arm B, which has
-    two extra tools to spend turns on, is exactly the talkative one.
+    The island is meant to be an agent's whole world — no filesystem, no shell,
+    no network beyond the manager. `allowed_tools` expresses that, but on its
+    own it only means "do not offer these"; something the model reaches for
+    anyway becomes a question, and a question with no terminal behind it is a
+    hang rather than a refusal. Denying in-process turns that into an ordinary
+    tool error the agent can read and route around.
     """
-    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
+    from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
-    if budget is not None:
-        # Per-phase budgets, because the phases are not the same size of job.
-        # Talking needs a handful of calls; a trading pass needs to look around
-        # and act. Spending a trading budget on every phase was most of what
-        # made the old flow expensive.
-        options = replace(options, max_turns=budget)
-    said, cost = [], 0.0
-    try:
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        said.append(block.text)
-            elif isinstance(message, ResultMessage):
-                cost += message.total_cost_usd or 0.0
-    except Exception as exc:  # noqa: BLE001 - the turn is over either way
-        if "maximum number of turns" not in str(exc):
-            raise
-        said.append("[turn budget exhausted]")
-    return "\n".join(said), cost
+    permitted = set(allowed)
+
+    async def decide(tool_name: str, _input: Any, _ctx: Any) -> Any:
+        if tool_name in permitted:
+            return PermissionResultAllow()
+        return PermissionResultDeny(
+            message=f"{tool_name} does not exist on this island. "
+                    f"You have: {', '.join(sorted(n.rsplit('__', 1)[-1] for n in permitted))}.")
+
+    return decide
+
+
+class Trader:
+    """One agent, one session, for the whole island.
+
+    Each turn used to be a fresh ``query()``, which was a mistake with two
+    costs. The obvious one is money: the system prompt and all ten tool schemas
+    were re-sent sixty times an island, cached against nothing.
+
+    The one that matters is that the agent had **amnesia**. It could not recall
+    the price it posted last round, the trade it proposed, or anything a peer
+    had said — every turn it woke up with the brief and had to rediscover the
+    world through tools. Worse, ``listen`` is a cursor: messages read in round
+    three were gone permanently, because nothing remembered them and the cursor
+    had moved past. An agent that cannot remember a convention cannot keep one,
+    and results collected that way are about forgetting at least as much as
+    about coordination.
+
+    Statelessness was never a design decision here; it fell out of reaching for
+    the one-shot helper. A session per agent is what the experiment always
+    meant.
+    """
+
+    def __init__(self, agent_id: str, options: Any) -> None:
+        self.agent_id = agent_id
+        self.options = options
+        self.client: Any = None
+        self.cost = 0.0
+        self.turns = 0
+
+    async def connect(self) -> None:
+        from claude_agent_sdk import ClaudeSDKClient
+
+        self.client = ClaudeSDKClient(self.options)
+        await self.client.connect()
+
+    async def close(self) -> None:
+        if self.client is not None:
+            with contextlib.suppress(Exception):
+                await self.client.disconnect()
+
+    async def take_turn(self, prompt: str) -> str:
+        """One turn on the running conversation.
+
+        Running out of turns ends this turn, not the island: an agent that spent
+        its budget on tool calls has used its time like any other, and the goods
+        it moved before running out are real.
+        """
+        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+        said = []
+        try:
+            await self.client.query(prompt)
+            async for message in self.client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            said.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    # Assigned, not accumulated. On a persistent session
+                    # `total_cost_usd` is the running total for the whole
+                    # session, not the cost of this turn — a probe showed one
+                    # agent reporting 0.0211 then 0.0299 across two turns.
+                    # Adding those would have double-counted every island's
+                    # spend, and increasingly so the longer the session ran.
+                    self.cost = message.total_cost_usd or self.cost
+        except Exception as exc:  # noqa: BLE001 - the turn is over either way
+            if "maximum number of turns" not in str(exc):
+                raise
+            said.append("[turn budget exhausted]")
+        self.turns += 1
+        return "\n".join(said)
 
 
 async def run_llm_island(
@@ -115,7 +178,7 @@ async def run_llm_island(
     rounds: int,
     seed: int,
     model: str,
-    max_turns: int,
+    max_turns: int = 240,
     verbose: bool,
     discovery: int = 3,
     labour: str = "once",
@@ -145,13 +208,13 @@ async def run_llm_island(
         service = ManagerService(handle.client("manager"), manager, run=run)
         service.claim()
 
-        wires, options = {}, {}
+        wires, traders = {}, {}
         for agent_id in manager.agents:
             wire = Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
                         arm=arm, floor_channel=f"barter/{run}/floor",
                         quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
             wires[agent_id] = wire
-            options[agent_id] = ClaudeAgentOptions(
+            traders[agent_id] = Trader(agent_id, ClaudeAgentOptions(
                 model=model,
                 system_prompt=brief_for(island, manager, agent_id, arm),
                 mcp_servers={f"island-{agent_id}": build_tools(wire)},
@@ -163,19 +226,30 @@ async def run_llm_island(
                 # out of the run, which would otherwise vary the experiment with
                 # whatever happens to be checked out.
                 allowed_tools=tool_names(arm, agent_id),
+                # Answer permission questions in-process. Without this the CLI
+                # asks about anything outside the allowlist and waits on a stdin
+                # nobody is attached to — the session simply stops, with the
+                # event loop idle and no error to read. That is survivable when
+                # each turn is a throwaway subprocess and fatal once a session
+                # has to live for a whole island.
+                can_use_tool=_only(tool_names(arm, agent_id)),
+                # Session-wide, not per turn: the session is now the whole
+                # island. Sized so no agent can starve itself early, with the
+                # per-phase shaping moved into the turn note instead.
                 max_turns=max_turns,
                 setting_sources=[],
-            )
-
-        cost = 0.0
+            ))
+        for trader in traders.values():
+            await trader.connect()
 
         async def take_turn(agent_id: str, *, round_no: int, label: str,
                             note: str, budget: int) -> str:
-            nonlocal cost
+            hint = (f" Keep this turn to about {budget} tool calls."
+                    if budget else "")
             prompt = TURN.format(round_no=round_no,
-                                 rounds=discovery + 1 + rounds, phase_note=note)
-            text, spent = await _drive(options[agent_id], prompt, budget)
-            cost += spent
+                                 rounds=discovery + 1 + rounds,
+                                 phase_note=note + hint)
+            text = await traders[agent_id].take_turn(prompt)
             if verbose:
                 print(f"  [{round_no}/{label}] {agent_id}: {text[:140]}", file=sys.stderr)
             return text
@@ -203,10 +277,15 @@ async def run_llm_island(
         # The order of play lives in `barter/flow.py`, with nothing in it that
         # knows about models, so it can be exercised offline in milliseconds.
         # Both previous flow errors were found by paying for a run.
-        played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
-                            rng=rng, drain=service.drain, rolling=rolling,
-                            on_round=observe)
+        try:
+            played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
+                                rng=rng, drain=service.drain, rolling=rolling,
+                                on_round=observe)
+        finally:
+            for trader in traders.values():
+                await trader.close()
         transcript = played.transcript
+        cost = sum(t.cost for t in traders.values())
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
