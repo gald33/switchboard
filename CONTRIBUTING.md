@@ -27,12 +27,20 @@ The dependency direction is one-way: `store` knows nothing about HTTP,
 `server` knows nothing about the CLI, and `cli`/`mcp_server` both go through
 `client`. Keep it that way.
 
-`examples/` is downstream of all of it. Those files import only what the
-package exports, which is the point: `examples/viewer.py` is a whole
-application built on the published surface, and its tests
-(`tests/test_example_viewer.py`) fail if that surface stops being enough to
-build it. When an example needs a private name, export the name — do not
-reach for the underscore.
+`examples/` and `extras/` are downstream of all of it, and import only what the
+package exports. That is the point rather than a nicety: `extras/viewer` is a
+whole application built on the published surface, and its tests
+(`tests/test_example_viewer.py`, `tests/test_web_page.py`) fail if that surface
+stops being enough to build it. When one of them needs a private name, export
+the name — do not reach for the underscore.
+
+The two directories differ in what they promise. `examples/` is read;
+`extras/` is *installed*, as its own distribution with its own `pyproject.toml`
+and version. So an add-on may only depend on `agent-switchboard` and what it
+declares itself, and the `viewer-addon` CI job enforces it by building both
+wheels and installing them somewhere that is not this repo — where reaching
+into `src/` stops being possible rather than merely frowned upon. Add-ons are
+named `switchboard-<thing>` and live one directory each under `extras/`.
 
 ## Things to preserve
 

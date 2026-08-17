@@ -295,7 +295,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
 
     The repo tiers now live in `ClientConfig.from_repo`, because the CLI is
     no longer the only thing standing in a checkout asking this question —
-    `examples/viewer.py` asks it too, and a second implementation of a
+    `switchboard_viewer/viewer.py` asks it too, and a second implementation of a
     precedence order is a second answer that can disagree with the first.
 
     The workspace key is deliberately NOT resolved from the repo here, which

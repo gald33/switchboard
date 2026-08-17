@@ -70,12 +70,64 @@ jobs:
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             | switchboard-mcp | grep -q '"serverInfo"'
 
+  # The viewer, installed the way somebody else installs it.
+  #
+  # This job is the reason the viewer is a separate distribution at all. It is
+  # the only thing here that consumes the SDK from outside, so what it needs
+  # has to be *exported* rather than reachable — and from inside a source tree
+  # that distinction is invisible, because `src/` is on the path either way.
+  # Two wheels and a directory that is not the repo make it visible.
+  #
+  # What this proves: the add-on installs from its own metadata, brings the
+  # browser build with it, and runs with nothing but what it declared. What it
+  # cannot prove while the SDK it needs is unreleased: that the *published*
+  # `agent-switchboard` is enough. Change the base install below to
+  # `pip install agent-switchboard` once 0.8.0 ships and it proves that too —
+  # today that is a red build, since 0.7.2 does not export `rooms_in`.
+  viewer-addon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build both wheels
+        run: |
+          pip install build
+          python -m build --wheel --outdir /tmp/wheels .
+          python -m build --wheel --outdir /tmp/wheels extras/viewer
+      - name: install them, and nothing else
+        run: pip install /tmp/wheels/*.whl
+      - name: it must not have pulled this repo's source in
+        run: |
+          python - <<'PY'
+          import pathlib, switchboard, switchboard_viewer
+          here = pathlib.Path.cwd().resolve()
+          for module in (switchboard, switchboard_viewer):
+              where = pathlib.Path(module.__file__).resolve()
+              assert here / "src" not in where.parents, f"{module.__name__} came from {where}"
+          print("switchboard from", switchboard.__file__)
+          PY
+      - name: it runs, and the page it serves came with it
+        run: |
+          switchboard-viewer --help > /dev/null
+          python - <<'PY'
+          import pathlib, switchboard_viewer
+          web = pathlib.Path(switchboard_viewer.__file__).with_name("web")
+          missing = [name for name in ("index.html", "render.js",
+                                       "switchboard-room.js", "switchboard-open.js")
+                     if not (web / name).exists()]
+          assert not missing, f"the wheel left the browser build behind: {missing}"
+          PY
+      - name: python -m works too, for a PATH without console scripts
+        run: python -m switchboard_viewer --help > /dev/null
+
   # The page, in a real browser. Separate from `test` on purpose: nothing here
   # varies by Python version, so putting Chromium in that 4-way matrix would
   # download it four times to learn one thing.
   #
   # This job exists because the tests it runs were passing without running.
-  # `test_web_page.py` guards `examples/web` behind `importorskip("playwright")`,
+  # `test_web_page.py` guards `extras/viewer/switchboard_viewer/web` behind `importorskip("playwright")`,
   # which is not installed by the `test` job — so every browser assertion
   # skipped in CI while reporting green, including the ones that check the
   # published page dials the right hub with the right token. The board-key

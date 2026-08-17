@@ -1,7 +1,7 @@
 // Painting a room, wherever the reading was done.
 //
-// One renderer, two callers: `examples/viewer.py` builds the state in Python
-// and serves it over `api/state`; `examples/web/index.html` builds the same
+// One renderer, two callers: `switchboard_viewer/viewer.py` builds the state in Python
+// and serves it over `api/state`; `switchboard_viewer/web/index.html` builds the same
 // state in the browser with `switchboard-room.js`. Sharing this file is what
 // keeps them one product rather than two that drift — the state shape is the
 // contract, and `tests/test_web_page.py` holds the two builders to it.

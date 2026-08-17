@@ -7,8 +7,9 @@ the conversation as it happens. It refreshes itself every few seconds.
 ![The viewer](images/viewer.png)
 
 ```bash
-cd your-repo                # one `switchboard init` has been run in
-python examples/viewer.py   # → http://127.0.0.1:8799
+pip install switchboard-viewer   # or pipx / uvx — it is its own package
+cd your-repo                     # one `switchboard init` has been run in
+switchboard-viewer               # → http://127.0.0.1:8799
 ```
 
 That is the whole setup. Standing in a repo that has been set up, the viewer
@@ -27,7 +28,7 @@ Anywhere else — no checkout, or a room you reach by naming it — flags beat
 the checkout and the environment beats both, the same precedence the CLI has:
 
 ```bash
-python examples/viewer.py --url https://hub.example.com -w my-org/my-repo
+switchboard-viewer --url https://hub.example.com -w my-org/my-repo
 export SWITCHBOARD_URL=https://hub.example.com   # or the environment
 export SWITCHBOARD_KEY=...                       # if the room is encrypted
 ```
@@ -45,8 +46,8 @@ three rooms — usually on the same managed hub, under whatever name each repo
 gave it.
 
 ```bash
-python examples/viewer.py --repo ~/code/parser --repo ~/code/billing
-python examples/viewer.py --scan ~/code        # every set-up checkout, 3 deep
+switchboard-viewer --repo ~/code/parser --repo ~/code/billing
+switchboard-viewer --scan ~/code        # every set-up checkout, 3 deep
 ```
 
 Each becomes a tab, labelled the way *your machine* names it: a rooms file's
@@ -85,7 +86,7 @@ workspace id and its key. The managed hub allows that one origin
 Anywhere else, both halves are yours to set:
 
 ```bash
-python -m http.server 8899 --directory examples/web   # or any static host
+python -m http.server 8899 --directory extras/viewer/switchboard_viewer/web   # or any static host
 switchboard serve --cors-origin http://127.0.0.1:8899 # the hub must allow it
 ```
 
@@ -101,18 +102,19 @@ today — a test asserts no request carries it — but that is a property of the
 code you are being served, not of the protocol. So: do not host it on the hub,
 whose whole promise is that it cannot read your rooms; prefer a host you
 control, pinned to a commit you have read; or run the local viewer, which asks
-you to trust only a package you installed. `examples/web/README.md` says this
+you to trust only a package you installed. `extras/viewer/README.md` says this
 at more length, next to the code it is about.
 
-## Why it is an example and not a command
+## Why it is its own package and not a subcommand
 
 Two audiences read this project's docs. Someone deciding whether the SDK is
 worth building on wants to see something real built on it, not a tour of
 method signatures — and the maintainers want to find out where the public
 surface is too thin *before* somebody else does.
 
-So this is [`examples/viewer.py`](../examples/viewer.py) — about 450 lines,
-importing nothing but what `switchboard` exports, tested in
+So this is
+[`extras/viewer/switchboard_viewer/viewer.py`](../extras/viewer/switchboard_viewer/viewer.py)
+— about 450 lines, importing nothing but what `switchboard` exports, tested in
 [`tests/test_example_viewer.py`](../tests/test_example_viewer.py) against a
 real hub from `switchboard.testing`. It is the read-only counterpart to
 [`examples/coordinated_worker.py`](../examples/coordinated_worker.py), which
@@ -120,9 +122,16 @@ shows an agent *taking part* in a room; this one shows a program *reading*
 one, which nothing else exercised.
 
 Keeping it out of the package is the discipline that makes it useful. A
-feature inside `switchboard` can reach for an underscore and nobody notices;
-an example cannot, so every wall it hit turned into an SDK change instead of a
-private import.
+feature inside `switchboard` can reach for an underscore and nobody notices; a
+separate distribution cannot, so every wall it hit turned into an SDK change
+instead of a private import — and the `viewer-addon` CI job installs it from
+two wheels into a directory that is not this repo, where "exported" and
+"reachable" stop being the same thing.
+
+It can live apart because it is an ordinary client. The hub ships inside
+`agent-switchboard` because the wire protocol has no version negotiation and a
+hub must not drift from the clients it was tested against; a reader has no such
+constraint, and `agent-switchboard>=…` says everything it needs.
 
 ### The walls it hit
 
@@ -247,7 +256,7 @@ a text editor buys nothing and shows them ciphertext instead. The CLI passes
 
 ```python
 from switchboard import Client
-import viewer                       # examples/viewer.py
+import viewer                       # switchboard_viewer/viewer.py
 
 with Client() as hub:
     view = viewer.snapshot(hub)     # one JSON-able dict: agents, leases,
@@ -267,6 +276,7 @@ cost of watching does not grow with how much there is to watch.
 `server.serve_forever()` and read `server.server_address[1]` for the port you
 were given.
 
-The page itself is [`examples/viewer.html`](../examples/viewer.html): one
-file, no build step, no CDN, and re-read on each request so editing it is a
-browser refresh.
+The page itself is
+[`switchboard_viewer/web/index.html`](../extras/viewer/switchboard_viewer/web/index.html)
+— the same file the static build serves: no build step, no CDN, and re-read on
+each request so editing it is a browser refresh.

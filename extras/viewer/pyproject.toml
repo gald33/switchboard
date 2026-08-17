@@ -1,0 +1,66 @@
+# The viewer, as its own distribution.
+#
+# Not folded into `agent-switchboard`, and the reason is the same one that made
+# the viewer worth writing. It is the only thing in this project that consumes
+# the SDK the way a stranger would, so every wall it hit became a public API
+# change instead of a private import — `from_repo`, `rooms_in`,
+# `read_channels`, `Client.encrypted`, `hub_channel`. Inside the package that
+# discipline is a promise somebody has to keep in review. Installed *against* a
+# released `agent-switchboard`, it is a fact: a private import is an
+# ImportError in CI.
+#
+# It can live apart because it is an ordinary client. The hub ships with the
+# clients because the wire protocol has no version negotiation; a reader has no
+# such constraint, and a lower bound says everything it needs.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "switchboard-viewer"
+version = "0.8.0"
+description = "A read-only page showing your Switchboard rooms to a human: who is awake, what is claimed, and the conversation as it happens."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Switchboard contributors" }]
+keywords = ["agents", "orchestration", "switchboard", "viewer"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+]
+
+# Only the SDK, and only its public surface. httpx arrives with it and is used
+# directly for the one thing the client does not cover — serving this page.
+#
+# The bound is ahead of the newest release on purpose. `main` carries API this
+# viewer needs and 0.7.2 does not export — `rooms_in`, `ClientConfig.from_repo`,
+# `read_channels` — which is exactly the drift a separate distribution is meant
+# to make visible: installing this against the published SDK fails with
+# `ImportError: cannot import name 'rooms_in'` rather than working by accident
+# from a source tree. So it says what it needs, and becomes installable the day
+# 0.8.0 ships.
+dependencies = [
+  "agent-switchboard>=0.8.0",
+]
+
+[project.scripts]
+switchboard-viewer = "switchboard_viewer.viewer:main"
+
+[project.urls]
+Homepage = "https://github.com/gald33/switchboard"
+Documentation = "https://github.com/gald33/switchboard/blob/main/docs/viewer.md"
+
+# `web/` sits inside the package directory and so rides along with it — the
+# browser build and the local viewer are one page (`render.js` is served by
+# both), and a second copy of it in a second distribution is exactly the drift
+# the parity test exists to prevent. No force-include: hatchling already ships
+# everything under the package path, and adding it twice is a build error.
+[tool.hatch.build.targets.wheel]
+packages = ["switchboard_viewer"]

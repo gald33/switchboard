@@ -23,13 +23,14 @@ from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL, ServerConfig
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = (ROOT / "docker-compose.yml").read_text()
 PAGES = (ROOT / ".github" / "workflows" / "pages.yml").read_text()
-PAGE = (ROOT / "examples" / "web" / "index.html").read_text()
-WEB_README = (ROOT / "examples" / "web" / "README.md").read_text()
+PAGE = (ROOT / "extras" / "viewer" / "switchboard_viewer" / "web"
+        / "index.html").read_text()
+WEB_README = (ROOT / "extras" / "viewer" / "README.md").read_text()
 
 
 def _js_const(name: str) -> str:
     found = re.search(rf'^const {name} = "([^"]*)";', PAGE, re.M)
-    assert found, f"{name} is gone from examples/web/index.html"
+    assert found, f"{name} is gone from extras/viewer/switchboard_viewer/web/index.html"
     return found.group(1)
 
 
@@ -84,7 +85,7 @@ def test_an_operator_can_still_turn_browser_reads_off(monkeypatch):
 def test_the_page_is_published_from_the_repo_without_a_build_step():
     """What is served has to be diffable against the commit it claims to come
     from — that is the only thing a reader can check about a hosted page."""
-    assert "path: examples/web" in PAGES
+    assert "path: extras/viewer/switchboard_viewer/web" in PAGES
     # No `run:` anywhere in the workflow is the strict form of "no build step":
     # the job is checkout, configure, upload, deploy, and nothing may run
     # between the commit and what is served.

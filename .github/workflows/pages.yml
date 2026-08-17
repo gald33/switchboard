@@ -1,6 +1,6 @@
 name: Deploy viewer (GitHub Pages)
 
-# Publishes `examples/web` — the browser build of the viewer — to
+# Publishes `extras/viewer/switchboard_viewer/web` — the browser build of the viewer — to
 # https://gald33.github.io/switchboard/.
 #
 # It is deliberately hosted here rather than by the hub. A hub that serves
@@ -8,7 +8,7 @@ name: Deploy viewer (GitHub Pages)
 # the workspace key it is handed, which is precisely the property the
 # encryption exists to deny it. Two hosts, neither trusted with both halves:
 # the hub sees only ciphertext, the page host sees only what a browser fetches
-# from it. See examples/web/README.md.
+# from it. See extras/viewer/README.md.
 #
 # One manual step, once per repo, and it genuinely cannot be automated from
 # here:
@@ -35,7 +35,7 @@ on:
   push:
     branches: [main]
     paths:
-      - examples/web/**
+      - extras/viewer/switchboard_viewer/web/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -68,6 +68,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: examples/web
+          path: extras/viewer/switchboard_viewer/web
       - id: deployment
         uses: actions/deploy-pages@v4

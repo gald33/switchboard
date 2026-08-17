@@ -1,4 +1,4 @@
-// Reading a room from a browser: the same view `examples/viewer.py` builds,
+// Reading a room from a browser: the same view `switchboard_viewer/viewer.py` builds,
 // assembled on this side of the wire instead.
 //
 // This is deliberately a mirror of `snapshot()` in the Python viewer, down to

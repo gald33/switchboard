@@ -1,4 +1,4 @@
-"""`examples/viewer.py`: what a human is shown, and what it promises not to do.
+"""`switchboard_viewer/viewer.py`: what a human is shown, and what it promises not to do.
 
 The example is here to prove the SDK is enough to build a real application on,
 so these tests are as much about the package as about the page. They import it
@@ -31,9 +31,11 @@ from switchboard.config import ClientConfig
 from switchboard.crypto import generate_key
 from switchboard.testing import hub
 
-#: Loaded from `examples/` rather than imported from the package, because that
-#: is where it lives and how a reader of the repo would run it.
-_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "viewer.py"
+#: Loaded by path rather than imported, because this suite runs against the
+#: repo without `switchboard-viewer` installed. Installing it — and proving it
+#: needs nothing private to work — is the `viewer-addon` job's business.
+_EXAMPLE = (Path(__file__).resolve().parents[1]
+            / "extras" / "viewer" / "switchboard_viewer" / "viewer.py")
 _spec = importlib.util.spec_from_file_location("example_viewer", _EXAMPLE)
 viewer_app = importlib.util.module_from_spec(_spec)
 # Registered before executing, which anything loading a module by path has to

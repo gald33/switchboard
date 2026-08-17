@@ -69,7 +69,7 @@ would attach on its own, so there is no ambient authority for a hostile page to
 borrow — which is also why `*` is an acceptable value here rather than the
 mistake it usually is.
 
-`examples/web/` is a page that needs this. It decrypts in the browser; the hub
+`switchboard_viewer/web/` is a page that needs this. It decrypts in the browser; the hub
 sees the same requests an agent makes.
 
 ### `POST /sweep`
