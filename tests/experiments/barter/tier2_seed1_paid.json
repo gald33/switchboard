@@ -1,0 +1,369 @@
+[
+  {
+    "arm": "paid",
+    "seed": 1,
+    "model": "claude-haiku-4-5-20251001",
+    "cost_usd": 4.5044,
+    "efficiency": [
+      0.0,
+      0.0
+    ],
+    "ruined": [
+      0,
+      1
+    ],
+    "own_plan": [
+      0.0,
+      0.0
+    ],
+    "own_plan_ruined": [
+      0,
+      1
+    ],
+    "autarky_floor": 0.37362189108253047,
+    "exchange_ceiling": 0.4133644945004108,
+    "worst_ratio": 0.0,
+    "summary": {
+      "phase": "closed",
+      "tick": 5,
+      "proposed": 26,
+      "executed": 0,
+      "cancelled": 11,
+      "expired": 14,
+      "rejected": 1,
+      "utilities": [
+        0.0,
+        0.0,
+        0.297474,
+        0.140724
+      ]
+    },
+    "rejections": [
+      {
+        "tick": 1,
+        "agent": "a2",
+        "op": "propose",
+        "reason": "unknown agent 'a0'"
+      },
+      {
+        "tick": 1,
+        "agent": "a1",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a1 holds 0.9663 salt, needs 3.5000 (escrowed in open proposals: {'salt': 3.5})"
+      },
+      {
+        "tick": 1,
+        "id": "t2",
+        "status": "rejected",
+        "reason": "seller short: a3 holds 0.2910 cloth, needs 0.3000"
+      },
+      {
+        "tick": 1,
+        "agent": "a3",
+        "op": "approve",
+        "reason": "you cannot cover this trade: a3 holds 0.2910 cloth, needs 0.3000; the offer was returned"
+      },
+      {
+        "tick": 2,
+        "agent": "a1",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a1 holds 0.0663 salt, needs 1.2000 (escrowed in open proposals: {'salt': 4.4})"
+      },
+      {
+        "tick": 2,
+        "agent": "a1",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a1 holds 0.0663 salt, needs 1.0000 (escrowed in open proposals: {'salt': 4.4})"
+      },
+      {
+        "tick": 3,
+        "agent": "a3",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a3 holds 0.0421 fish, needs 1.9500"
+      },
+      {
+        "tick": 3,
+        "agent": "a3",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a3 holds 0.0821 timber, needs 0.0821 (escrowed in open proposals: {'timber': 0.5})"
+      },
+      {
+        "tick": 3,
+        "agent": "a3",
+        "op": "cancel",
+        "reason": "trade t12 is not yours to cancel"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "cancel",
+        "reason": "trade t3 is not yours to cancel"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "cancel",
+        "reason": "trade t13 is not yours to cancel"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "cancel",
+        "reason": "trade t16 is not yours to cancel"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0671 grain, needs 0.3500 (escrowed in open proposals: {'grain': 0.7})"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0671 grain, needs 0.2500 (escrowed in open proposals: {'grain': 0.7})"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0671 grain, needs 0.1000 (escrowed in open proposals: {'grain': 0.7})"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0071 grain, needs 0.2000 (escrowed in open proposals: {'grain': 0.76})"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0071 grain, needs 0.1500 (escrowed in open proposals: {'grain': 0.76})"
+      },
+      {
+        "tick": 3,
+        "agent": "a4",
+        "op": "propose",
+        "reason": "you cannot cover this offer: a4 holds 0.0071 grain, needs 0.1000 (escrowed in open proposals: {'grain': 0.76})"
+      },
+      {
+        "tick": 4,
+        "id": "t1",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 4,
+        "id": "t3",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 4,
+        "id": "t9",
+        "status": "expired",
+        "reason": "nobody approved it in time"
+      },
+      {
+        "tick": 5,
+        "id": "t16",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t17",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t18",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t19",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t20",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t21",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t22",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t23",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t24",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t25",
+        "status": "expired",
+        "reason": "the floor closed"
+      },
+      {
+        "tick": 5,
+        "id": "t26",
+        "status": "expired",
+        "reason": "the floor closed"
+      }
+    ],
+    "said": [
+      {
+        "from": "a2",
+        "text": "Hello! I'm trader a2. I've produced grain, salt, fish and timber. Looking to acquire some cloth to round out my portfolio. My quotes are posted - I'm offering competitive prices on grain and salt."
+      },
+      {
+        "from": "a2",
+        "text": "I need cloth! Can anyone trade cloth for fish, grain, salt, or timber? I have good quantities of these and flexible prices. What are your holdings and needs?"
+      },
+      {
+        "from": "a2",
+        "text": "Traders a1, a3, a4: I've sent generous trade proposals (t1, t2, t3) offering my grain and salt for cloth. These trades heavily favor the cloth seller! Please consider - cloth is listed at 0.01 fish on the board, so you'd be profiting significantly. What are you producing and what do you need? Let's make trades!"
+      },
+      {
+        "from": "a2",
+        "text": "Does anyone have cloth in their holdings? I'm willing to pay premium prices (higher than the 0.01 quoted). If you produced cloth or want to discuss what you're willing to trade, reply here. I have grain, salt, fish, and timber available."
+      },
+      {
+        "from": "a1",
+        "text": "I have abundant salt (4.4663 units) available. Looking to acquire cloth - I can offer salt at favorable rates. Which traders have cloth? Let's make deals!"
+      },
+      {
+        "from": "a4",
+        "text": "Traders a1 and a2: I appreciate your cloth offers (t3, t8) but I'm short on salt. I've sent counter-proposals (t9, t10): grain for cloth/timber. I have abundant grain and need to build up my cloth and timber holdings. Let's find terms that work for both sides!"
+      },
+      {
+        "from": "a3",
+        "text": "I've posted my quote. Looking to trade timber for salt to round out my portfolio. I need safety on salt especially - have 0.58 timber available."
+      },
+      {
+        "from": "a2",
+        "text": "Round 3 update: I NEED cloth to survive. I have two pending offers for cloth (t1 with a1: 0.1 grain for 0.5 cloth; t3 with a4: 0.12 salt for 0.4 cloth). If either can be approved, it saves my game. Otherwise, does anyone want to discuss alternative trades for cloth? I have fish, grain, timber, and salt available."
+      },
+      {
+        "from": "a4",
+        "text": "a2, a1: I appreciate your cloth offers (t3, t8), but I'm in dire need of cloth for my own portfolio - my score depends heavily on it. I can't approve those trades. However, I'm offering grain trades (t9 with a1, t10 with a2) if you want to acquire grain instead. Grain is my most abundant resource. I'm hoping to convert it to cloth and timber to survive the endgame. My new cloth quote of 7.0 reflects my priority to acquire cloth."
+      },
+      {
+        "from": "a1",
+        "text": "I have 4.4 salt available in trades. Looking for grain and cloth to complete my portfolio. Willing to negotiate terms - let's find a deal that works for both sides. a3, interested in trading salt for something? a4, I can offer salt for grain at favorable rates."
+      },
+      {
+        "from": "a3",
+        "text": "a1: Thanks for the generous salt offer (t12). Working on accumulating timber to meet the threshold. Have proposed t14 and t15 to secure the timber. Expect to approve t12 once those settle."
+      },
+      {
+        "from": "a1",
+        "text": "a3, a4: I see the challenge. I can't fulfill t14/t15 without grain first, but I need your approvals to get grain (t13 to a4) and timber (t12 to a3). Let me simplify: a3, would you approve t12 directly without needing t14/t15 first? a4, would you approve t13 so I can get grain and complete subsequent trades? We can make this work!"
+      },
+      {
+        "from": "a1",
+        "text": "a2: I'll soon have grain available (if a4 approves my trade). Would you be interested in trading some grain for fish? I need to ensure I have at least some of every good for my final score."
+      },
+      {
+        "from": "a1",
+        "text": "a3: I need to clarify - I can't approve t14 and t15 because I don't currently have grain or cloth to give. But I genuinely want t12! The timber is crucial for my score. Can we make t12 happen independently? I value the salt I'm offering."
+      },
+      {
+        "from": "a3",
+        "text": "a1: I realize I can't approve t12 - I only have 0.5821 timber but you're asking for 1.0. I can give you 0.5821 timber + 0.15 salt for 0.6 timber in return, or we can restructure. My critical need is cloth - very high taste weight. Can anyone help me get cloth?"
+      },
+      {
+        "from": "a3",
+        "text": "Round 4 update: I've proposed three trades to improve my holdings - building up cloth which is my highest taste weight (0.6467). Awaiting responses on t16 (timber\u2192grain), t17 (timber\u2192cloth), t18 (grain\u2192cloth). These should help me reach a more balanced portfolio."
+      },
+      {
+        "from": "a2",
+        "text": "a1, a4: My score is currently zero because I have no cloth. I've offered you favorable cloth deals (t1 and t3) at my price of 5.0, well below the median of 6.5. These trades benefit us both. If you can approve these, it would be critical for me to survive the endgame. Please consider it!"
+      },
+      {
+        "from": "a4",
+        "text": "a1, a2, a3: Friendly reminder on our pending trades (t9, t19, t20). I'm offering grain at 0.18 - well below the 3.0 median - paired with cloth and timber you need. Let's finalize these deals and help each other optimize before Round 4 ends. Looking forward to your approvals!"
+      },
+      {
+        "from": "a4",
+        "text": "a1, a2: I cannot approve t13 (t13 asks for 8.0 grain but I only have 0.7671 total) or t16 (asks for 1.2 grain for timber - poor value trade). HOWEVER: I urgently need you to APPROVE my open offers t9 and t10 (grain for cloth/timber). These free up grain I can immediately reinvest into more cloth trades. I'm desperate for cloth (41% of my score) and you both stand to gain grain from me. a2: I cannot accept t3 (need cloth myself, not give it away). Instead, consider approving t9/t10 so I have resources for better collaborations. Round 4 of 5 - time to act decisively!"
+      },
+      {
+        "from": "a4",
+        "text": "Cloth prices looking solid this round! My grain is abundant and ready to move - clearing inventory for strategic holdings. Ready to settle trades quickly."
+      },
+      {
+        "from": "a4",
+        "text": "Final call - Round 4 closing. I have 4 active grain trades with favorable terms (t9 with a1, t19 with a2, t20 with a3, t21 with a1). Please approve to finalize these deals before round end. I cannot fulfill t3, t13, or t16 due to inventory constraints and strategic priorities. Let's complete these mutually beneficial trades now!"
+      },
+      {
+        "from": "a4",
+        "text": "Round 5 closing - final positions being locked in. I have 3 pending trades (t19 with a2: 0.3 grain for 0.22 cloth; t20 with a3: 0.06 grain for 0.12 timber; t21 with a1: 0.005 grain for 0.003 cloth) that represent mutually beneficial deals. These trades maximize my cloth and timber holdings which are critical for my score. Posted updated quote reflecting my valuations. Ready to finalize."
+      },
+      {
+        "from": "a2",
+        "text": "a1: FINAL ROUND - I'm at zero score (zero cloth). I'll trade ALL remaining holdings (fish, timber, salt, and grain) for ANY amount of cloth. This is my last chance. Please respond."
+      },
+      {
+        "from": "a1",
+        "text": "To all traders: Final round (5/5)! I need cloth desperately to avoid zero score. Proposed trades with a3 and a4 for grain/timber. If there's a trader a2, or if anyone has cloth or fish to trade for salt, I'm interested. We're down to the wire!"
+      },
+      {
+        "from": "a1",
+        "text": "Final appeal: a4, a3, a2 - I've put forward four trades (t23-t26) offering all my salt at fair market rates. I'm the ONLY trader who can help you by absorbing salt. The economy needs someone to hold salt. Please approve so we all survive to the final score calculation. This is it!"
+      }
+    ],
+    "quote_board": {
+      "a1": {
+        "fish": 1.0,
+        "grain": 3.0,
+        "cloth": 6.0,
+        "timber": 2.0,
+        "salt": 1.5
+      },
+      "a2": {
+        "fish": 1.0,
+        "grain": 3.0,
+        "cloth": 5.0,
+        "timber": 2.0,
+        "salt": 0.4
+      },
+      "a3": {
+        "fish": 1.0,
+        "grain": 5.0,
+        "cloth": 25.0,
+        "timber": 0.5,
+        "salt": 1.0
+      },
+      "a4": {
+        "fish": 1.0,
+        "grain": 0.3563,
+        "cloth": 3.4081,
+        "timber": 2.7381,
+        "salt": 0.3761
+      }
+    },
+    "quotes_posted": 9
+  }
+]

@@ -356,6 +356,81 @@ def test_every_quoting_arm_shares_one_brief(island):
     assert tool_names("built", "a1") == tool_names("bound", "a1")
 
 
+def test_the_money_arms_differ_from_bound_by_exactly_one_clause(island):
+    """`spend` flips the ladder's axis and should do so cleanly.
+
+    Everything up to `bound` held the words fixed and varied machinery. The
+    money clause cannot be machinery — it is a disposition — so `spend` holds
+    the machinery fixed and varies the words instead. That is a legitimate but
+    *different* comparison, and it is only interpretable if the difference is
+    exactly the clause and nothing else has drifted.
+    """
+    from barter.llm import MONEY_BRIEF
+
+    manager = Manager(island=island)
+    bound = brief_for(island, manager, "a1", "bound")
+    spend = brief_for(island, manager, "a1", "spend")
+    assert spend == bound + MONEY_BRIEF
+    # ...and `paid` varies machinery against `spend` with the words held fixed,
+    # which restores the original axis one rung up.
+    assert brief_for(island, manager, "a1", "paid") == spend
+    assert set(tool_names("paid", "a1")) - set(tool_names("spend", "a1")) == {
+        "mcp__island-a1__pay"}
+
+
+def test_the_money_clause_asks_for_acceptance_not_just_settlement(island):
+    """The load-bearing half is "accept past wanting it", not "settle in fish".
+
+    A trader that takes the numeraire only up to what it wants to consume stops
+    selling once full, and the market is back to barter. If that sentence ever
+    goes missing the arm still looks like money and cannot work like it.
+    """
+    manager = Manager(island=island)
+    spend = " ".join(brief_for(island, manager, "a1", "spend").split())
+    assert "medium of exchange" in spend
+    assert "Accept fish past the point of wanting it for itself" in spend
+
+
+def test_pay_prices_at_the_median_and_still_needs_approval(island):
+    """`pay` is a calculator. It does the arithmetic and commits nobody."""
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "paid")
+        for agent_id, state in manager.agents.items():
+            wires[agent_id].manager_call(
+                "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
+        manager.open_trading()
+
+        for who, price in (("a1", 2.0), ("a2", 4.0), ("a3", 6.0)):
+            wires[who].post_quote({"grain": price})
+
+        out = wires["a1"].pay("a2", "grain", 0.01)
+        assert out["median_used"] == 4.0
+        # 0.01 grain at 4 fish/grain = 0.04 fish.
+        assert out["offered"]["pay"] == pytest.approx(0.04)
+        assert out["result"]["ok"]
+
+        # The seller has not agreed to anything yet — this is the property that
+        # keeps the tool a calculator rather than an exchange.
+        trade_id = out["result"]["trade_id"]
+        assert manager.trades[trade_id].status == "pending"
+        assert wires["a2"].manager_call("approve", trade_id=trade_id)["ok"]
+        assert manager.trades[trade_id].status == "executed"
+        manager.check_conservation()
+
+
+def test_pay_declines_when_there_is_no_price_to_pay(island):
+    """No quotes, no median, no made-up number."""
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "paid")
+        manager.open_trading()
+        assert "error" in wires["a1"].pay("a2", "grain", 1.0)
+        wires["a2"].post_quote({"grain": 2.0})
+        for bad in (0, -1, "lots"):
+            assert "error" in wires["a1"].pay("a2", "grain", bad)
+
+
 def test_prose_prices_are_read_the_way_a_counterparty_would():
     """`told` keeps its prices in sentences, so comparing it to a board arm
     means reading them back out. That extraction is the measurement, so it is
