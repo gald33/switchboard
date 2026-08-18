@@ -608,3 +608,94 @@ def test_slicing_labour_trades_the_frontier_away_for_insurance(island):
              if not (once[i].efficiency.ruined or rolling[i].efficiency.ruined)]
     for i in clean:
         assert rolling[i].efficiency.lower <= once[i].efficiency.lower + 1e-6
+
+
+# --- who the gains went to --------------------------------------------------
+#
+# Efficiency is distribution-neutral by construction: it scales every agent by
+# the same factor, so it measures how much was wasted and says nothing about
+# who got it. That separation is deliberate, and it means the second question
+# needs its own answer. These gates are about that answer being meaningful.
+
+
+def test_the_gain_ratios_are_measured_against_each_agent_s_own_autarky(island):
+    """Not against each other, and the distinction is not stylistic.
+
+    Cobb-Douglas utilities are not interpersonally comparable — each is defined
+    only up to its own monotone transformation — so "agent 3 has more utility
+    than agent 7" is arithmetic without meaning, and a Gini or Nash product over
+    raw utilities would inherit that meaninglessness. A ratio to the agent's own
+    counterfactual is a true statement about that agent, and ratios can then be
+    compared because they are pure numbers against a per-agent baseline.
+    """
+    from barter.economy import gains
+
+    _, autarky_utils = autarky(island)
+    self_scored = gains(island, autarky_utils)
+    assert all(abs(r - 1.0) < 1e-9 for r in self_scored.ratios)
+    assert self_scored.below == 0 and self_scored.median == pytest.approx(1.0)
+
+    # Doubling one agent's utility must move only that agent's ratio.
+    bumped = list(autarky_utils)
+    bumped[0] *= 2
+    after = gains(island, bumped)
+    assert after.ratios[0] == pytest.approx(2.0)
+    assert after.ratios[1:] == self_scored.ratios[1:]
+
+
+def test_the_competitive_equilibrium_leaves_nobody_below_autarky(island):
+    """A theorem, used as a self-test on the measure.
+
+    At equilibrium prices an agent's income is at least the value of its own
+    autarky bundle — that bundle is still feasible for it — so it can always
+    afford autarky and its equilibrium utility cannot be lower. If `below` were
+    ever non-zero here, the measure would be wrong, not the economy.
+    """
+    from barter.economy import gains, walras
+
+    for seed in (1, 5, 9):
+        isl = draw_island(6, 5, seed=seed)
+        shared = gains(isl, walras(isl).utilities)
+        assert shared.below == 0, f"seed {seed}: {shared}"
+        assert shared.worst >= 1.0 - 1e-6
+
+
+def test_below_autarky_sees_harm_that_the_worst_agent_alone_cannot(island):
+    """The reason this column exists at all.
+
+    One agent at 0.5x and six agents at 0.9x are different failures — a bad
+    draw against a convention that systematically harms a subgroup — and `worst`
+    reports them identically. So does ruin, which only counts the agents that
+    reached exactly zero.
+    """
+    from barter.economy import Gains
+
+    concentrated = Gains(ratios=(0.5, 1.4, 1.4, 1.4, 1.4, 1.4), worst=0.5,
+                         median=1.4, below=1)
+    diffuse = Gains(ratios=(0.9, 0.9, 0.9, 0.9, 0.9, 0.5), worst=0.5,
+                    median=0.9, below=6)
+    assert concentrated.worst == diffuse.worst
+    assert concentrated.below != diffuse.below
+
+    # And on a real run it is genuinely not redundant with ruin: an arm can ruin
+    # one agent while leaving several more under their own autarky.
+    outcome = run_island(draw_island(12, 5, seed=3), "D", seed=3, trade_rounds=60)
+    assert outcome.gains.below > len(outcome.efficiency.ruined)
+    assert outcome.gains.worst == pytest.approx(min(outcome.gains.ratios))
+
+
+def test_a_ruined_agent_scores_zero_in_the_ratios_rather_than_a_sentinel(island):
+    """Here 0.0 is the true value, not the "undefined" marker efficiency uses.
+
+    The agent's utility really is zero and its autarky utility really is
+    positive, so the ratio really is zero — and unlike the efficiency bracket,
+    this one stays meaningful and can be averaged.
+    """
+    from barter.economy import gains
+
+    _, autarky_utils = autarky(island)
+    wrecked = list(autarky_utils)
+    wrecked[1] = 0.0
+    shared = gains(island, wrecked)
+    assert shared.ratios[1] == 0.0
+    assert shared.below == 1 and shared.worst == 0.0

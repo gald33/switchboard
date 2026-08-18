@@ -514,3 +514,66 @@ def capture(realised: Efficiency, autarky_eff: Efficiency) -> tuple[float, float
         return (1.0, 1.0)
     return ((realised.lower - floor) / (1.0 - floor),
             (realised.upper - floor) / (1.0 - floor))
+
+
+@dataclass(frozen=True)
+class Gains:
+    """How the gains from trade were shared out, one agent at a time.
+
+    Efficiency is deliberately *distribution-neutral*: it scales every agent by
+    the same factor, so it measures how much was wasted while saying nothing
+    about who got it. That separation is a virtue — but it means the second
+    question needs its own answer, and this is it.
+
+    Every number here is a ratio of an agent's realised utility to **its own**
+    autarky utility, and that normalisation is not a stylistic choice. Cobb-
+    Douglas utilities are not interpersonally comparable: each agent's is
+    defined only up to its own monotone transformation, so a Gini or a Nash
+    product over raw utilities would be arithmetic without meaning. "Agent 3
+    has more utility than agent 7" says nothing. "Agent 3 ended at 0.4x what it
+    would have had alone" says something true about agent 3, and the ratios can
+    then be compared because they are all pure numbers against a per-agent
+    baseline.
+
+    ``below`` is the one worth watching. Voluntary trade cannot make anybody
+    worse off — every settled trade passed both sides' own accept test — so an
+    agent finishing under 1.0 is never a bad swap. It is a *production* bet
+    placed on a price that did not materialise, which is the specific harm a
+    convention can do that silence cannot.
+    """
+
+    #: ``u_i / autarky_i`` for every agent, in agent order. Kept whole so any
+    #: quantile can be recovered later; a percentile computed here would
+    #: degenerate at Tier 2's four agents and quietly mislead.
+    ratios: tuple[float, ...]
+    #: The Rawlsian number: the worst-served agent.
+    worst: float
+    median: float
+    #: How many agents would rather not have taken part. One agent at 0.5x and
+    #: six agents at 0.9x are different failures, and ``worst`` alone reports
+    #: them identically.
+    below: int
+
+    @property
+    def n(self) -> int:
+        return len(self.ratios)
+
+    def __str__(self) -> str:
+        return f"worst {self.worst:.2f}x  med {self.median:.2f}x  below {self.below}/{self.n}"
+
+
+def gains(island: Island, utilities: list[float] | tuple[float, ...]) -> Gains:
+    """Each agent's outcome as a multiple of what it would have had alone.
+
+    A ruined agent scores 0.0 and counts in ``below`` — that is not a sentinel
+    here but the true ratio, since its utility really is zero and its autarky
+    utility really is positive.
+    """
+    _, autarky_utils = autarky(island)
+    ratios = tuple(u / a for u, a in zip(utilities, autarky_utils, strict=True))
+    ordered = sorted(ratios)
+    mid = len(ordered) // 2
+    median = (ordered[mid] if len(ordered) % 2
+              else 0.5 * (ordered[mid - 1] + ordered[mid]))
+    return Gains(ratios=ratios, worst=ordered[0], median=median,
+                 below=sum(1 for r in ratios if r < 1.0 - _EPS))

@@ -335,6 +335,12 @@ async def run_llm_island(
         "autarky_floor": efficiency(island, autarky_utils).lower,
         "exchange_ceiling": exchange_ceiling(island).lower,
         "worst_ratio": outcome.worst_ratio,
+        # Each agent against its own autarky. Kept whole: a Tier 2 island costs
+        # real money, so any statistic anyone later wants must be recoverable
+        # from the record rather than by re-running it.
+        "gain_ratios": [round(x, 5) for x in outcome.gains.ratios],
+        "below_autarky": outcome.gains.below,
+        "median_gain": round(outcome.gains.median, 5),
         "summary": manager.summary(),
         "rejections": manager.rejections[-40:],
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
@@ -369,6 +375,11 @@ def render(result: dict) -> str:
         f"  EFFICIENCY       {verdict}",
         f"  of its own plan  {_plan_note(result)}",
         f"  worst agent      {result['worst_ratio']:.2f}x autarky",
+        f"  gains shared     {result.get('below_autarky', 0)}/"
+        f"{len(result.get('gain_ratios') or [])} agent(s) below their own autarky, "
+        f"median {result.get('median_gain', float('nan')):.2f}x"
+        + (f"  [{'  '.join(f'{r:.2f}' for r in result['gain_ratios'])}]"
+           if result.get("gain_ratios") else ""),
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
         f"  flow             {result['flow']['discovery']} talk + produce + "
