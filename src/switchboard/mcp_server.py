@@ -29,6 +29,8 @@ from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identi
 from .config import ClientConfig, isolation_warning
 from .crypto import generate_key
 from .guidance import skill_text
+from .holds import clear_own_declaration, declared_hold, holder
+from .holds import declare as declare_hold
 from .signing import SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
@@ -245,12 +247,25 @@ TOOLS: list[dict[str, Any]] = [
             "agree on — a path ('backend/migrations'), a subsystem ('auth'), a ticket id. "
             "Returns an error naming the current holder if someone else has it; pick "
             "different work rather than waiting. The lease expires on its own, so a "
-            "crashed agent never blocks anyone permanently."
+            "crashed agent never blocks anyone permanently. If somebody has declared "
+            "the resource theirs past their own turn, 'standing_hold' says so — you "
+            "still hold the lease, so decide deliberately rather than reflexively."
         ),
         "inputSchema": _schema({
             "resource": {**_STR, "description": "resource key to claim"},
             "note": {**_STR, "description": "short reason, shown to other agents"},
             "ttl": {**_NUM, "description": "seconds to hold it (default 900)"},
+            "declare": {
+                "type": "boolean",
+                "description": (
+                    "Also record a standing claim on the blackboard, which outlives "
+                    "this lease by a day. Use it when the resource is yours across "
+                    "turns rather than for the next few minutes — a lease cannot say "
+                    "that, because renewal is a side effect of checkin and it lapses "
+                    "the moment you stop. Anyone claiming it is warned, not blocked. "
+                    "release clears it."
+                ),
+            },
             "custom_scope": _CUSTOM_SCOPE,
         }, ["resource"]),
     },
@@ -691,9 +706,15 @@ class Bridge:
         }
 
     def claim(self, resource: str, note: str | None = None,
-              ttl: float | None = None,
+              ttl: float | None = None, declare: bool = False,
               custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
+        # A declaration is an ordinary board entry, and the board has no
+        # custom-scope form — writing one here would put the note in the
+        # ambient workspace while the lease went to the private one, which is
+        # a declaration nobody in the conversation can see. Say so instead.
+        scoped_away = declare and custom_scope is not None
+        standing = None if custom_scope is not None else declared_hold(self.client, resource)
         try:
             lease = self.client.acquire(resource, note=note, ttl=ttl, custom_scope=custom_scope)
         except LeaseHeld as exc:
@@ -708,11 +729,32 @@ class Bridge:
                 ),
                 "unread_dms": unread_dms,
             }
+        declared = False
+        if declare and not scoped_away:
+            try:
+                declare_hold(self.client, resource, intent=note or "",
+                             since=lease.get("acquired_at"))
+                declared = True
+            except SwitchboardError:
+                declared = False
         return {
             "acquired": True,
             "resource": lease["resource"],
             "expires_in": lease["expires_in"],
             "note": "Renewed automatically by checkin. Call release when you finish.",
+            "declared": declared,
+            **({"declare_note": (
+                "Not declared: a declaration is a blackboard entry and the blackboard "
+                "has no custom-scope form, so it would have landed in your default "
+                "workspace where nobody in this conversation would see it."
+            )} if scoped_away else {}),
+            **({"standing_hold": standing,
+                "advice": (
+                    f"{holder(standing)} has declared this resource theirs past their "
+                    f"own turn: {standing.get('intent') or 'no reason given'}. You hold "
+                    f"the lease anyway — that is deliberate, since a declaration "
+                    f"outlives its author. Ask them, or proceed knowing you were told."
+                )} if standing else {}),
             "unread_dms": unread_dms,
         }
 
@@ -720,7 +762,10 @@ class Bridge:
                 custom_scope: dict[str, str] | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
         released = self.client.release(resource, custom_scope=custom_scope)
-        return {"released": released, "resource": resource, "unread_dms": unread_dms}
+        cleared = (False if custom_scope is not None
+                   else clear_own_declaration(self.client, resource))
+        return {"released": released, "resource": resource,
+                "declaration_cleared": cleared, "unread_dms": unread_dms}
 
     def claims(self, mine: bool = False) -> dict[str, Any]:
         unread_dms = self._touch()

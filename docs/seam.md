@@ -74,6 +74,37 @@ forever. The plan therefore needs a reaper, and the reaper needs evidence —
 the roster for two of them". Switchboard answers that question; it does not
 hold the claim and does not decide. Read-only, and the plan pulls it.
 
+## The enforced surface has to mention the advisory one
+
+Splitting the three questions above across two surfaces is right, and it has a
+failure mode that only shows up once you actually run it.
+
+A subagent was given a thin brief and asked to coordinate the way the skill
+says to. It read the board, found `rewriting the lexer in src/parser.py — do
+not touch it, I am mid-rewrite`, and then took the lease on that exact file.
+Nothing it did was wrong. The lease is the enforced surface, the board is the
+durable one, and the enforced one had never heard of the durable one — so
+checking leases *instead of* the board, which is the cheaper and more obvious
+check, walks straight past a standing "mine".
+
+The fix is not to merge them; that is the long-TTL lease this page already
+refuses. It is that `claim` **reads** the durable surface and reports what it
+found. `switchboard claim <resource> --declare` writes `coord/holds/<resource>`
+alongside the lease, and every later `claim` on that resource surfaces it —
+on stderr for a human, in `standing_hold` for a `--json` or MCP caller, since
+a fix that only reaches the CLI leaves every scripted agent as blind as before.
+
+Three properties keep it from becoming the thing it replaces:
+
+- **Advisory, always.** The claim still succeeds. Warn-never-block is not a
+  default here, it is the invariant — a declaration outlives its author, and
+  one that could block would be a lock that survives its holder's death.
+- **It expires.** A board entry lasts a day. Nobody has to garbage-collect
+  intent that was abandoned, which is the whole reason it is not a file.
+- **`release` clears your own, and only your own.** `--force` breaks somebody
+  else's lease because liveness is a claim that can be wrong. Intent is not
+  force's to revoke.
+
 ## Static collisions compile to names
 
 A plan often knows something Switchboard cannot: that two differently-named

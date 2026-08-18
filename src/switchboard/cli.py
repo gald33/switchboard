@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, invite, rendezvous, rooms
+from . import __version__, drill, holds, invite, rendezvous, rooms
 from .client import (
     Client,
     Identity,
@@ -1471,6 +1471,17 @@ def cmd_agents(args: argparse.Namespace) -> int:
 def cmd_claim(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     with _make_client(args) as hub:
+        standing = holds.declared_hold(hub, args.resource)
+        if standing and not args.json:
+            print(
+                f"{fmt.yellow('declared')} — {holds.holder(standing)} says: "
+                f"{str(standing.get('intent') or 'no reason given')[:70]}\n"
+                f"  That is a standing declaration on the board, not a lease, so it "
+                f"does not stop you — it is the thing a lease cannot say: somebody "
+                f"means to keep this past their current turn. Check with them, or "
+                f"go ahead knowing you were told.",
+                file=sys.stderr,
+            )
         try:
             lease = hub.acquire(args.resource, note=args.note, ttl=args.ttl)
         except LeaseHeld as exc:
@@ -1482,18 +1493,42 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
             return EXIT_CONFLICT
+        declared = False
+        if args.declare:
+            try:
+                holds.declare(hub, args.resource, intent=args.note or "",
+                              since=lease.get("acquired_at"))
+                declared = True
+            except SwitchboardError as exc:
+                # The enforced half succeeded, so this is not a failed claim and
+                # must not be reported as one. It IS a claim quieter than you
+                # asked for, which you have to hear about.
+                if not args.json:
+                    print(fmt.yellow(f"claimed, but the declaration did not stick: {exc}"),
+                          file=sys.stderr)
     if args.json:
-        _print_json({"acquired": True, **lease})
+        _print_json({"acquired": True, "declared": declared,
+                     "standing_hold": standing, **lease})
     elif not args.quiet:
         print(fmt.green(f"claimed {lease['resource']} for {_dur(lease['expires_in'])}"))
+        if declared:
+            print(f"declared at {holds.HOLDS_PREFIX}{args.resource} — outlives the lease by "
+                  f"design, so `release` it when you are actually done")
     return EXIT_OK
 
 
 def cmd_release(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         released = hub.release(args.resource, force=args.force)
+        # And drop your own declaration. It outlives the lease by a day; the
+        # work did not, and a standing hold with nobody behind it is exactly
+        # the litter this is meant to prevent rather than create.
+        #
+        # Your own only — see `holds.clear_own_declaration` for why force does
+        # not reach this far.
+        cleared = holds.clear_own_declaration(hub, args.resource)
     if args.json:
-        _print_json({"released": released})
+        _print_json({"released": released, "declaration_cleared": cleared})
     elif not args.quiet:
         print(f"released {args.resource}" if released else f"no lease on {args.resource}")
     return EXIT_OK
@@ -3984,6 +4019,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("resource")
     p.add_argument("-m", "--note", help="why you want it")
     p.add_argument("--ttl", type=float, help="seconds (default 900)")
+    p.add_argument(
+        "--declare", action="store_true",
+        help="also record a standing claim on the board, which outlives this "
+             "lease (a day, unless you release it). Use it when the resource is "
+             "yours across turns rather than for the next few minutes — a lease "
+             "cannot say that, because renewal is a heartbeat side effect and it "
+             "lapses the moment you stop. Anyone claiming it is warned, not "
+             "blocked.",
+    )
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("release", help="drop a lease")
