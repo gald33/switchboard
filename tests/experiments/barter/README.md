@@ -216,11 +216,11 @@ holds the protocol constant and varies only what the numeraire is for.**
 
 ```
  ROUNDS          A silent        B disclose           C price           D money
-     15   0.468 ruin 0/12   0.401 ruin 0/12  0.994 ruin 11/12    -   ruin 12/12
-     30   0.474 ruin 0/12   0.435 ruin 0/12  0.992 ruin 10/12  0.770 ruin 11/12
-     60   0.474 ruin 0/12   0.455 ruin 0/12   0.999 ruin 8/12   0.831 ruin 7/12
-    120   0.475 ruin 0/12   0.465 ruin 0/12   1.000 ruin 8/12   0.972 ruin 5/12
-    240   0.476 ruin 0/12   0.466 ruin 0/12   1.000 ruin 8/12   0.976 ruin 3/12
+     15   0.466 ruin 0/12   0.401 ruin 0/12  0.952 ruin 10/12    -   ruin 12/12
+     30   0.475 ruin 0/12   0.444 ruin 0/12   0.964 ruin 8/12    -   ruin 12/12
+     60   0.476 ruin 0/12   0.457 ruin 0/12   0.997 ruin 6/12  0.872 ruin 10/12
+    120   0.477 ruin 0/12   0.457 ruin 0/12   0.998 ruin 6/12   0.978 ruin 4/12
+    240   0.478 ruin 0/12   0.458 ruin 0/12   0.999 ruin 6/12   0.980 ruin 4/12
 ```
 
 *Ruin* means an agent finished holding none of some good — zero utility. It is
@@ -236,8 +236,8 @@ is ever ruined, nobody ever finishes below autarky.
 **Talking, without an agreed way to read what is said, is worse than silence.**
 Arm B publishes true information and lands *below* arm A. Every agent averages
 the floor its own way, so each specialises against a slightly different price,
-and then they cannot trade with each other — 18 settled trades against arm A's
-128. Communication is not free: it induces commitment without producing
+and then they cannot trade with each other — 14 settled trades against arm A's
+120. Communication is not free: it induces commitment without producing
 coordination.
 
 **A shared price is what converts disclosure into specialisation that pays.**
@@ -245,9 +245,9 @@ Arm C reaches the frontier *exactly* — 1.000, the competitive equilibrium,
 found by agents applying a common update rule to public posts with no
 auctioneer and no help from the manager.
 
-**And then it ruins a third of its islands, permanently.** This is the result
-worth the whole experiment. Arm C's ruin rate stalls at 8/12 and **never
-improves however long it runs** — 15 rounds or 240, it is stuck. A shared price
+**And then it ruins half its islands, permanently.** This is the result worth
+the whole experiment. Arm C's ruin rate stalls at 6/12 and **never improves
+however long it runs** — 60 rounds or 240, it is stuck. A shared price
 tells two agents what a fair swap is; it does not make the agent holding the
 only pile of fish *want* your cloth. That is the double coincidence of wants, and
 no amount of agreeing on prices dissolves it. Meanwhile specialisation has turned
@@ -256,8 +256,8 @@ rather than marginal.
 
 **The clause that fixes it is not about prices at all.** Arm D changes one
 thing: the numeraire is accepted *past the point of wanting it*, because it can
-be spent again. Its ruin rate falls monotonically — 12, 11, 7, 5, 3 — and its
-efficiency climbs to 0.976. The two failures look identical at any single round
+be spent again. Its ruin rate falls with time where C's does not — 12, 12, 10,
+4, 4 — and its efficiency climbs to 0.980. The two failures look identical at any single round
 budget and are completely different: **C's is structural and D's is merely
 slow.** That distinction is only visible because the round budget is swept
 rather than chosen, which is also why quoting any single number for these arms
@@ -285,30 +285,54 @@ bet placed on a price that did not materialise**.
 ```
              seats  ruined (0.00x)  harmed (0<r<1)   gained   worst partial loss
 silent         144          0 (0%)          0 (0%)     100%   —
-disclose       144          0 (0%)        63 (44%)      56%   0.50x
-price          144        19 (13%)          1 (1%)      86%   0.99x
-money          144        14 (10%)          8 (6%)      85%   0.06x
+disclose       144          0 (0%)        67 (47%)      53%   0.50x
+price          144        17 (12%)          1 (1%)      88%   0.67x
+money          144        18 (12%)         11 (8%)      80%   0.01x
 ```
 
 **The arms differ in the *shape* of their harm, not merely its amount**, and
 the shapes are qualitatively different in a way no single number could show:
 
 * **silent** never harms anybody. Every one of 144 seats gains.
-* **disclose** ruins nobody and yet makes **44% of agents worse off than not
+* **disclose** ruins nobody and yet makes **47% of agents worse off than not
   taking part**, none of them catastrophically. Broad and shallow — the damage
   of specialising against a price nobody else held.
 * **price** is almost perfectly bimodal: 13% wiped out, 86% gaining, and
   **exactly one seat in between**, at 0.99x. Under a shared price you are ruined
   or you gain; there is essentially no middle. That is what specialisation on a
   correct price does — it works or it strands you.
-* **money** trades a little of that ruin for a tail of *severe* partial losses,
-  down to **0.06x**. It buys robustness against being wiped out and pays in
-  dispersion.
+* **money** carries a tail of *severe* partial losses, down to **0.01x** — an
+  agent left with a hundredth of what it would have had by never trading. It
+  buys its robustness over time and pays in dispersion.
 
 Note that `worst` cannot tell any of this apart. `disclose` and `money` both
 report a worst agent around 0.5x and 0.3x; one of them harmed 63 agents and the
 other 22, and one of those groups was wiped out while the other was merely
 disappointed.
+
+### The tie-break is not free
+
+Every number above is with the scripted tie-break in place. It does what it was
+built for — **no pair anywhere swaps twice, in any arm** — but it is not a
+free improvement, and the two arms it matters to move in opposite directions:
+
+| at 60 rounds | ruin before | ruin after | trades before | trades after |
+|---|---|---|---|---|
+| **C price** | 8/12 | **6/12** | 91 | **115** |
+| **D money** | 7/12 | **10/12** | 200 | **170** |
+
+The reason is that the two arms have different bottlenecks. **Price is limited by
+matching**, so withdrawing the duplicate half of a crossing removes an offer that
+was never going to settle anyway and frees the escrow behind it — more trades,
+less ruin. **Money is limited by throughput**: its whole mechanism is the
+numeraire circulating, and half of every crossing is a lap that no longer
+happens. It recovers with time (4/12 by 240 rounds) but it is worse at 60 than
+it was without the rule.
+
+So a shared convention that removes redundant commitments helps a market whose
+problem is finding the counterparty and hurts one whose problem is volume. That
+is a result about conventions rather than about this rule, and it is the sort of
+thing that only shows up because both arms run the same tie-break.
 
 ## Irreversibility: the ruin was never an information problem
 
@@ -321,18 +345,18 @@ are formed, and the frontier and both benchmarks stay exactly where they were.
 
 ```
 INSTALS          A silent        B disclose           C price           D money
-      1   0.474 ruin 0/12   0.455 ruin 0/12   0.999 ruin 8/12   0.831 ruin 7/12
-      2   0.339 ruin 0/12   0.456 ruin 0/12   0.664 ruin 9/12   0.686 ruin 7/12
-      4   0.520 ruin 0/12   0.424 ruin 0/12   0.624 ruin 7/12   0.508 ruin 7/12
-     16   0.578 ruin 0/12   0.433 ruin 0/12   0.526 ruin 1/12   0.525 ruin 1/12
-     61   0.684 ruin 0/12   0.416 ruin 0/12   0.504 ruin 0/12   0.468 ruin 0/12
+      1   0.476 ruin 0/12   0.457 ruin 0/12   0.997 ruin 6/12  0.872 ruin 10/12
+      2   0.341 ruin 0/12   0.443 ruin 0/12   0.683 ruin 9/12   0.656 ruin 7/12
+      4   0.510 ruin 0/12   0.436 ruin 0/12   0.620 ruin 7/12   0.590 ruin 7/12
+     16   0.578 ruin 0/12   0.429 ruin 0/12   0.528 ruin 0/12   0.484 ruin 1/12
+     61   0.671 ruin 0/12   0.399 ruin 0/12   0.496 ruin 0/12   0.469 ruin 0/12
 ```
 
-**Arm C's ruin — flat at 8/12 however long it ran, the result the whole
+**Arm C's ruin — flat at 6/12 however long it ran, the result the whole
 experiment turned on — goes to zero.** So does arm D's. Neither needed anything
 said to anybody. Arm D's clause exists precisely to dissolve the double
 coincidence of wants, and it needs two hundred and forty rounds to get ruin down
-to 3/12; sixteen instalments of labour take both arms to 1/12 in sixty.
+to 4/12; sixteen instalments of labour take both arms to 0 or 1 in sixty.
 
 **And it is a scissors, not a free win.** Efficiency on the islands that survive
 falls by about as much as ruin does, because an agent that keeps re-aiming at
@@ -342,10 +366,10 @@ at the zero it literally is:
 
 ```
 INSTALS          A silent        B disclose           C price           D money
-      1             0.474             0.455             0.000             0.000
-      4             0.520             0.424             0.000             0.000
-     16             0.578             0.433             0.513             0.497
-     61             0.684             0.416             0.504             0.468
+      1             0.476             0.457             0.000             0.000
+      4             0.510             0.436             0.000             0.000
+     16             0.578             0.429             0.528             0.478
+     61             0.671             0.399             0.496             0.469
 ```
 
 Read the zeros carefully: **under a shared price the median island is a ruined
@@ -354,8 +378,8 @@ was hiding — it is a median over the four islands the arm did not wreck.
 
 Two things this table does not say, and one it says by accident:
 
-* **It is not "more slicing is always better".** Arm A drops from 0.474 to 0.339
-  at *two* instalments before climbing to 0.684 at sixty-one. A coarse instalment
+* **It is not "more slicing is always better".** Arm A drops from 0.476 to 0.341
+  at *two* instalments before climbing to 0.671 at sixty-one. A coarse instalment
   is a worse bet than the one-shot spread, because it commits half the labour to
   a single good; only fine slicing smooths back out.
 * **Arm A is partly a policy improvement, not only a timing one.** Its rolling
@@ -378,6 +402,8 @@ The choice of rolling policy does not drive any of this. An alternative rule tha
 keeps specialising and only re-ranks away from goods the market would not take
 gives 0.504 against 0.508 at sixty-one instalments, and identical medians on the
 common subset.
+
+Nor does the tie-break, though it is not neutral either — see below.
 
 ## What Tier 1 cannot tell you
 
