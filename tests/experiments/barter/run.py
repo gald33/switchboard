@@ -16,7 +16,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from .economy import Efficiency, Island, autarky, capture, efficiency
+from .economy import Efficiency, Gains, Island, autarky, capture, efficiency, gains
 from .manager import Manager, ManagerRPC, ManagerService
 from .traders import Floor, Trader, propose_for
 
@@ -52,6 +52,10 @@ class Outcome:
     #: trade alone cannot cause -- only a production bet on a price that did not
     #: materialise can.
     worst_ratio: float
+    #: The whole distribution behind ``worst_ratio``. Efficiency is
+    #: distribution-neutral by construction, so who the gains went to is a
+    #: question it cannot answer and this one can.
+    gains: Gains
     messages: int
     proposed: int
     executed: int
@@ -66,13 +70,14 @@ class Outcome:
         return (
             f"{self.arm:<11} {self.efficiency!s:>13} {self.exchange_efficiency!s:>13} "
             f"{self.capture_lo:>7.1%} {self.worst_ratio:>7.2f} "
+            f"{(self.gains.below if self.gains else 0):>5} "
             f"{self.messages:>6} {self.executed:>5}/{self.proposed:<5} {self.rejected:>5}"
         )
 
 
 HEADER = (
     f"{'ARM':<11} {'EFFICIENCY':>13} {'OF OWN PLAN':>13} {'CAPTURE':>7} "
-    f"{'WORST':>7} {'MSGS':>6} {'TRADES':>11} {'REJ':>5}"
+    f"{'WORST':>7} {'BELOW':>5} {'MSGS':>6} {'TRADES':>11} {'REJ':>5}"
 )
 
 
@@ -249,6 +254,7 @@ def score(island: Island, manager: Manager, *, arm: str, seed: int,
         exchange_efficiency=efficiency(island, utils, fixed_shares=plan),
         capture_lo=lo, capture_hi=hi,
         worst_ratio=min(utils[i] / autarky_utils[i] for i in range(island.n_agents)),
+        gains=gains(island, utils),
         messages=messages, proposed=summary["proposed"],
         executed=summary["executed"],
         rejected=summary["rejected"] + summary["expired"],

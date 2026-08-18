@@ -339,7 +339,7 @@ def report(result: dict, *, agents: int, goods: int, islands: int) -> str:
         "with none of some good, which is zero utility and is never averaged in.",
         "",
         f"{'ARM':<12} {'EFFICIENCY (med)':>17} {'min':>6} {'max':>6} "
-        f"{'RUINED':>7} {'WORST':>6} {'TRADES':>7} {'MSGS':>6}",
+        f"{'RUINED':>7} {'WORST':>6} {'BELOW':>6} {'MEDGAIN':>8} {'TRADES':>7} {'MSGS':>6}",
     ]
     for arm in ARMS:
         rows = result["rows"][arm]
@@ -348,9 +348,17 @@ def report(result: dict, *, agents: int, goods: int, islands: int) -> str:
         lo, med, hi = _stat(effs)
         ruined = sum(1 for r in rows if r.efficiency.ruined)
         worst = min((r.worst_ratio for r in clean), default=float("nan"))
+        # Over every agent on every island, not per island: "how often does
+        # taking part leave somebody worse off than staying home" is a question
+        # about agents, and averaging per-island rates would weight a 12-agent
+        # island the same as one bad agent on it.
+        seats = sum(r.gains.n for r in rows)
+        below = sum(r.gains.below for r in rows)
+        med_gain = statistics.median([r.gains.median for r in rows])
         out.append(
             f"{arm + ' ' + ARM_NAMES[arm]:<12} {med:>17.3f} {lo:>6.3f} {hi:>6.3f} "
             f"{f'{ruined}/{len(rows)}':>7} {worst:>6.2f} "
+            f"{f'{100 * below / seats:.0f}%':>6} {med_gain:>7.2f}x "
             f"{statistics.median([r.executed for r in rows]):>7.0f} "
             f"{statistics.median([r.messages for r in rows]):>6.0f}"
         )
@@ -363,6 +371,13 @@ def report(result: dict, *, agents: int, goods: int, islands: int) -> str:
         "WORST       worst single agent's final utility as a multiple of its autarky",
         "            utility, across all islands. Below 1.0 means somebody would have",
         "            done better never trading.",
+        "BELOW       share of all agent-seats finishing under their own autarky utility.",
+        "            Voluntary trade cannot cause this -- every settled trade passed both",
+        "            sides' accept test -- so it is always a production bet placed on a",
+        "            price that did not materialise. WORST reports one agent; this reports",
+        "            how many, and an arm can be safe by one and dangerous by the other.",
+        "MEDGAIN     median agent's multiple of its own autarky utility. Beside BELOW it",
+        "            says whether an arm lifted everybody a little or a few enormously.",
     ]
     return "\n".join(out)
 
@@ -458,6 +473,11 @@ def main(argv: list[str] | None = None) -> int:
                     "executed": r.executed, "proposed": r.proposed,
                     "rejected": r.rejected, "messages": r.messages,
                     "instalments": r.instalments,
+                    # The whole distribution, not a summary of it. Any quantile
+                    # is then recoverable without a re-run, which matters at
+                    # Tier 2 prices and costs nothing here.
+                    "gain_ratios": [round(x, 5) for x in r.gains.ratios],
+                    "below_autarky": r.gains.below,
                 } for r in result["rows"][arm]]
                 for arm in ARMS
             },

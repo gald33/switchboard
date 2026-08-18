@@ -150,6 +150,50 @@ would have decided the result by picking the budget.
 Money buys robustness and charges for it in transaction volume: arm D settles
 roughly twice as many trades as arm C to get there.
 
+## Who the gains went to
+
+Efficiency is **distribution-neutral by construction** — it scales every agent
+by the same factor, so it measures how much was wasted and says nothing about
+who got it. That is a virtue, and it means the other question needs its own
+column. Every number below is an agent's realised utility as a multiple of
+**its own** autarky utility, because Cobb-Douglas utilities are not
+interpersonally comparable: each is defined only up to its own monotone
+transformation, so a Gini or a Nash product over raw utilities would be
+arithmetic without meaning, while a ratio to an agent's own counterfactual is a
+true statement about that agent.
+
+Voluntary trade cannot put anybody below 1.0 — every settled trade passed both
+sides' accept test — so a seat under its own autarky is always a **production
+bet placed on a price that did not materialise**.
+
+```
+             seats  ruined (0.00x)  harmed (0<r<1)   gained   worst partial loss
+silent         144          0 (0%)          0 (0%)     100%   —
+disclose       144          0 (0%)        63 (44%)      56%   0.50x
+price          144        19 (13%)          1 (1%)      86%   0.99x
+money          144        14 (10%)          8 (6%)      85%   0.06x
+```
+
+**The arms differ in the *shape* of their harm, not merely its amount**, and
+the shapes are qualitatively different in a way no single number could show:
+
+* **silent** never harms anybody. Every one of 144 seats gains.
+* **disclose** ruins nobody and yet makes **44% of agents worse off than not
+  taking part**, none of them catastrophically. Broad and shallow — the damage
+  of specialising against a price nobody else held.
+* **price** is almost perfectly bimodal: 13% wiped out, 86% gaining, and
+  **exactly one seat in between**, at 0.99x. Under a shared price you are ruined
+  or you gain; there is essentially no middle. That is what specialisation on a
+  correct price does — it works or it strands you.
+* **money** trades a little of that ruin for a tail of *severe* partial losses,
+  down to **0.06x**. It buys robustness against being wiped out and pays in
+  dispersion.
+
+Note that `worst` cannot tell any of this apart. `disclose` and `money` both
+report a worst agent around 0.5x and 0.3x; one of them harmed 63 agents and the
+other 22, and one of those groups was wiped out while the other was merely
+disappointed.
+
 ## Irreversibility: the ruin was never an information problem
 
 Every rung of the ladder above is trying to make one irreversible bet a *better*
