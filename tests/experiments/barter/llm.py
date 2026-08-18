@@ -473,6 +473,26 @@ class Wire:
         self.client.post(self.floor_channel, {"from": self.agent_id, "text": text})
         return {"posted": True}
 
+    def history(self) -> list[dict[str, Any]]:
+        """The whole floor from the beginning, oldest first.
+
+        Deliberately a *tool call* rather than something appended to every turn
+        note, and that is the cache-shaped decision. An agent holds one session
+        for the whole island, so its own past is already in its context and
+        costs nothing to keep — but pasting the shared floor into each turn
+        would re-send the entire transcript on every turn of every agent, and
+        it grows with the square of the run. Fetching it on demand keeps the
+        session's cached prefix append-only, which is what makes a long island
+        affordable at all.
+
+        Reading does not move the ``listen`` cursor. The two answer different
+        questions — "what did I miss" and "what was ever said" — and an agent
+        that catches up on the whole record should not thereby lose track of
+        what it had already seen.
+        """
+        return [m["body"] for m in self.client.history(self.floor_channel, limit=500)
+                if isinstance(m.get("body"), dict)]
+
     def read(self) -> list[dict[str, Any]]:
         history = self.client.history(self.floor_channel, limit=200)
         fresh = history[self._cursor:]
@@ -684,7 +704,13 @@ def build_tools(wire: Wire) -> Any:
         async def listen(_: Any) -> dict[str, Any]:
             return _text(await _off(wire.read))
 
-        tools += [say, listen]
+        @tool("history", "The whole public floor from the start of the run, "
+                         "oldest first. Does not affect what `listen` shows you "
+                         "next.", {})
+        async def history(_: Any) -> dict[str, Any]:
+            return _text(await _off(wire.history))
+
+        tools += [say, listen, history]
 
     if telling.board:
         # Descriptions state mechanics only, for the same reason as everything
@@ -768,7 +794,7 @@ def tool_names(spec: str | Telling, agent_id: str) -> list[str]:
     names = ["my_state", "produce", "propose_trade", "approve_trade",
              "pending_trades", "cancel_trade"]
     if telling.channel:
-        names += ["say", "listen"]
+        names += ["say", "listen", "history"]
     if telling.board:
         names += ["post_quote", "read_quotes"]
     if telling.pay_tool:

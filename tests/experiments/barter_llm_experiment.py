@@ -205,10 +205,12 @@ async def run_llm_island(
     # every trading round, so the frontier and both benchmarks are untouched and
     # a rolling island is directly comparable to a one-shot one.
     rolling = telling.rolling
-    instalments = 1 + rounds if rolling else 1
+    # Every round has its own production stage now, so a rolling run has exactly
+    # one instalment per round -- no spare, and no stage that cannot reach one.
+    instalments = rounds if rolling else 1
     manager = Manager(
         island=island,
-        phase="discovery" if discovery else "production",
+        phase="discovery",
         labour_per_round=1.0 / instalments,
         rolling=rolling,
     )
@@ -268,7 +270,7 @@ async def run_llm_island(
         def observe(round_no: int, label: str) -> dict | None:
             # Only after a pass that could have changed something. Snapshotting
             # inside a pass would read a half-applied round.
-            if label not in ("talk", "produce", "settle"):
+            if label not in ("talk", "plan", "produce", "settle"):
                 return None
             live = {}
             for entry in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
@@ -294,7 +296,7 @@ async def run_llm_island(
             # carries.
             notes = telling.to_notes()
             notes.labour = lambda who: max(0.0, 1.0 - manager.agents[who].spent)
-            played = await play(manager, take_turn, discovery=discovery, rounds=rounds,
+            played = await play(manager, take_turn, rounds=rounds, lead_in=discovery,
                                 rng=rng, drain=service.drain, notes=notes,
                                 on_round=observe)
         finally:
@@ -382,8 +384,9 @@ def render(result: dict) -> str:
            if result.get("gain_ratios") else ""),
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
-        f"  flow             {result['flow']['discovery']} talk + produce + "
-        f"{result['flow']['trade_rounds']}x2 trade, labour "
+        f"  flow             {result['flow']['discovery']} lead-in + "
+        f"{result['flow']['trade_rounds']} rounds of "
+        f"plan/produce/deal/tradex2, labour "
         f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
         f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
         f"seller never having had a turn",
@@ -426,8 +429,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="turn these switches off. `--arms bound --without expiry` "
                              "isolates the deviation report from staleness, which no "
                              "rung of the ladder does on its own")
-    parser.add_argument("--discovery", type=int, default=3,
-                        help="rounds of talk before any labour is committed")
+    parser.add_argument("--discovery", type=int, default=0,
+                        help="extra talk-only rounds before the first production "
+                             "stage. Defaults to none: every round already opens "
+                             "with one")
     parser.add_argument("--islands", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)

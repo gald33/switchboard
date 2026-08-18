@@ -233,19 +233,33 @@ def test_rolling_labour_still_only_works_once_a_round(island):
         manager.op_produce("a1", {"grain": 1.0})
 
 
-def test_labour_stays_shut_during_trading_unless_rolling(island):
-    """One-shot means one-shot: once the floor opens, the plan is history."""
-    manager = Manager(island=island)
-    manager.op_produce("a1", {"fish": 1.0})
-    manager.open_trading()
-    with pytest.raises(TradeError, match="production is trading, not open"):
-        manager.op_produce("a2", {"fish": 1.0})
+def test_labour_stays_shut_during_trading_however_the_labour_rolls(island):
+    """The stage deadline is real, and rolling is not an exception to it.
 
+    It used to be one: ``op_produce`` let a rolling island commit labour during
+    trading, because rolling had no production stage of its own to commit it in.
+    Now every round opens one, so the allowance is not merely unnecessary — it
+    would make the deadline advisory, and a deadline agents can work past is a
+    deadline the manager is not enforcing.
+    """
+    for rolling in (False, True):
+        manager = Manager(island=island, rolling=rolling,
+                          labour_per_round=0.5 if rolling else 1.0)
+        manager.op_produce("a1", {"fish": 1.0})
+        manager.open_trading()
+        with pytest.raises(TradeError, match="production is trading, not open"):
+            manager.op_produce("a2", {"fish": 1.0})
+
+    # ...and the way a rolling island gets its next instalment is by the round
+    # coming round again, which reopens the stage properly.
     rolling = Manager(island=island, labour_per_round=0.5, rolling=True)
     rolling.op_produce("a1", {"fish": 1.0})
     rolling.open_trading()
     rolling.advance()
+    rolling.open_discovery()
+    rolling.open_production()
     assert rolling.op_produce("a1", {"grain": 1.0})["labour_left"] == 0.0
+    rolling.open_trading()
     rolling.check_conservation()
 
 
@@ -546,6 +560,7 @@ def test_a_rolling_island_actually_works_in_every_round(island):
 
     manager = Manager(island=island, labour_per_round=0.25, rolling=True)
     goods = manager.goods
+
     traders = {}
     for agent_id, state in manager.agents.items():
         trader = Trader(agent_id, state.index, island, "A", __import__("random").Random(1))
@@ -558,12 +573,17 @@ def test_a_rolling_island_actually_works_in_every_round(island):
     manager.open_trading()
     manager.advance()
     for _ in range(3):
+        # The round comes round again: a real production stage, opened and
+        # closed by the manager, exactly as Tier 2's rounds do.
+        manager.open_discovery()
+        manager.open_production()
         for agent_id, trader in traders.items():
             holdings = list(manager.agents[agent_id].holdings)
             reply = manager.dispatch(
                 agent_id, {"op": "produce",
                            "plan": trader.production_instalment(holdings, floor)})
             assert reply.get("ok"), reply
+        manager.open_trading()
         manager.advance()
     for state in manager.agents.values():
         assert state.spent == pytest.approx(1.0, abs=1e-9)

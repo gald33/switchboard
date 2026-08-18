@@ -31,6 +31,49 @@ identical either way, so the two are directly comparable and the only thing
 varying is whether a commitment can be revised. That turns out to matter more
 than anything on the convention ladder — see *Irreversibility* below.
 
+## The round
+
+Every round is the same four stages, each with a deadline the **manager**
+enforces rather than the agents observing:
+
+| | stage | what is accepted |
+|---|---|---|
+| 1 | **discovery** | talk. Neither labour nor trades. |
+| 2 | **production** | this round's instalment of labour, and nothing else. |
+| 3 | **deal** | talk again. Still no trades. |
+| 4 | **trading** | offers, in two passes — everyone proposes, then everyone answers. |
+
+`discovery -> production -> [deal] -> trading -> discovery ...`, and each
+transition has exactly one legal predecessor, so a stage cannot be re-entered or
+taken out of order. Only `deal` is skippable, because Tier 1's scripted agents
+genuinely have no such stage — their price discovery happens in process, through
+a floor the manager never sees.
+
+**Two talking stages per round, not one**, and they are different conversations.
+In stage 1 an agent is guessing what it will hold and can still change *what it
+makes*; by stage 3 it knows, and so does everyone else, so terms can be agreed
+against real inventory instead of intent. The previous shape put all the talking
+up front with the whole production decision behind it, which made every later
+word a negotiation about goods nobody could change.
+
+**The trade stage keeps both passes.** With one turn per agent, roughly half of
+all offers cannot be answered until the following round, and a three-tick expiry
+gives a proposal one or two real chances at being seen.
+
+Two things fall out of this structure rather than being fixed by it. Rolling
+labour is native — one instalment per round, in a stage that exists for it —
+and the tick collision that used to eat the whole first trading round's
+instalment cannot arise, because production and trading are separate stages with
+the clock moving between rounds. That bug cost one live run **14% of its total
+labour**, and it read in the results as agents declining to work.
+
+Agents can read the whole public floor at any time via `history`, which is a
+**tool call rather than something pasted into every turn note**. Each agent holds
+one session for the entire island, so its own past is already in context and
+costs nothing to keep; re-sending the shared floor every turn would grow with the
+square of the run. Fetching on demand keeps the cached prefix append-only, which
+is what makes a long island affordable.
+
 ## The manager
 
 One state machine, reached over Switchboard messages, is the only thing that can

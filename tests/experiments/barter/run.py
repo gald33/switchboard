@@ -182,16 +182,23 @@ def run_island(
         holdings = {a: list(manager.agents[a].holdings) for a in traders}
 
         # A rolling island works a little more each round, against what it now
-        # holds rather than against what it hoped for. Skipped entirely at one
-        # instalment, so the one-shot path is byte-for-byte the run it always
-        # was and old results still reproduce.
+        # holds rather than against what it hoped for -- and it does so in a
+        # real production stage, opened and closed by the manager, exactly as
+        # Tier 2's rounds do. Tier 1 has no talking stages, because its price
+        # discovery happens in process through a floor the manager never sees,
+        # but the commit/trade cycle is now the same one in both tiers.
+        # Skipped entirely at one instalment, so the one-shot path is
+        # byte-for-byte the run it always was and old results still reproduce.
         if instalments > 1:
+            manager.open_discovery()
+            manager.open_production()
             for agent_id in order:
                 if manager.agents[agent_id].spent >= 1.0 - 1e-9:
                     continue
                 call(agent_id, "produce",
                      plan=traders[agent_id].production_instalment(holdings[agent_id], floor))
                 holdings[agent_id] = list(manager.agents[agent_id].holdings)
+            manager.open_trading()
             manager.check_conservation()
 
         for agent_id in order:

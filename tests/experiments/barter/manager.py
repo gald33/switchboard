@@ -120,11 +120,21 @@ class Manager:
     """
 
     island: Island
-    #: ``discovery`` accepts neither labour plans nor trades — it is time to talk
-    #: before anything is committed; ``production`` accepts labour plans;
-    #: ``trading`` accepts trades; ``closed`` accepts neither. The manager owns
-    #: the phase because a phase agents could advance is a phase one agent can
-    #: advance early.
+    #: The round is a cycle of four stages and the manager owns which one is
+    #: open, because a phase agents could advance is a phase one agent can
+    #: advance early:
+    #:
+    #:     discovery -> production -> [deal] -> trading -> discovery ...
+    #:
+    #: ``discovery`` and ``deal`` accept neither labour plans nor trades; they
+    #: are the two talking stages, and they are distinct phases rather than one
+    #: repeated because they are different conversations — before committing
+    #: labour an agent is guessing what it will hold, and after committing it
+    #: knows. ``production`` accepts labour plans, ``trading`` accepts trades,
+    #: ``closed`` accepts neither. Only ``deal`` may be skipped, and only
+    #: because Tier 1's agents genuinely have no such stage — every other
+    #: transition has exactly one legal predecessor, so a stage cannot be
+    #: re-entered or taken out of order.
     #:
     #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
     #: themselves. Production was committed in the first round, before any agent
@@ -281,8 +291,11 @@ class Manager:
         is a round it chose not to work, which is a choice it is allowed to make
         badly.
         """
-        allowed = self.phase == "production" or (self.rolling and self.phase == "trading")
-        if not allowed:
+        # No exception for rolling any more. Every round has its own production
+        # stage, so labour never needs to be committed during trading -- and an
+        # allowance that let it would make the stage deadline advisory rather
+        # than real.
+        if self.phase != "production":
             raise TradeError(f"production is {self.phase}, not open")
         state = self._agent(agent_id)
         if state.last_spent_tick == self.tick:
@@ -450,32 +463,67 @@ class Manager:
                 expired.append(trade.id)
         return expired
 
-    def open_production(self) -> None:
-        """Close deliberation, let labour be committed.
+    def open_discovery(self) -> None:
+        """Open the round's first talk stage. Nothing may be committed.
 
-        Only reachable from ``discovery``. Production remains a one-shot
-        decision — what changes is that agents have had rounds to talk, quote
-        and read a board before making it, rather than making it into silence.
+        Reachable from ``trading`` — the end of the previous round — or from
+        the initial state. That is the whole cycle: every round deliberates
+        before it commits.
+        """
+        if self.phase not in ("trading", "discovery"):
+            raise TradeError(f"cannot open discovery from {self.phase}")
+        self.phase = "discovery"
+
+    def open_production(self) -> None:
+        """Close deliberation, let this round's labour be committed.
+
+        Only reachable from ``discovery``, so labour is never committed in a
+        round that had no chance to talk first. Deliberation preceding
+        manufacture is the whole reason this phase exists — the first paid runs
+        produced before anyone had spoken and no convention could describe a
+        world whose one irreversible decision was already behind it.
         """
         if self.phase != "discovery":
             raise TradeError(f"cannot open production from {self.phase}")
         self.phase = "production"
 
-    def open_trading(self) -> None:
-        """Close production, open the floor. Agents that never produced get
-        their autarky-optimal plan rather than nothing, so a silent agent shows
-        up as *not trading* rather than as a starved one — two different
-        failures that would otherwise be impossible to tell apart."""
+    def open_deal(self) -> None:
+        """The round's second talk stage: labour spent, nothing swapped yet.
+
+        A separate phase from ``discovery`` rather than a return to it, because
+        the two are different conversations. Before producing an agent is
+        guessing what it will hold; here it knows, and so does everybody else,
+        which is the first moment terms can be agreed against real inventory
+        rather than intent.
+
+        Optional. Tier 1's scripted agents do all their price discovery in
+        process, through a floor the manager never sees, so their rounds go
+        straight from producing to trading — and making them call a stage they
+        do not have would be a lie told to keep an invariant tidy.
+        """
         if self.phase != "production":
+            raise TradeError(f"cannot open the deal stage from {self.phase}")
+        self.phase = "deal"
+
+    def open_trading(self) -> None:
+        """Close the talking, open the floor.
+
+        An agent that has never worked at all -- not this round, but in the
+        whole run -- is given its autarky-optimal plan for one instalment, so
+        that "never spoke" shows up as not having specialised rather than as
+        starvation. Those are two very different failures and would otherwise
+        be impossible to tell apart. It fires only for an agent still at zero,
+        so an agent that worked once and then skipped a round keeps its skipped
+        round as the choice it was.
+        """
+        if self.phase not in ("deal", "production"):
             raise TradeError(f"cannot open trading from {self.phase}")
         for state in self.agents.values():
-            if not state.produced:
-                # A silent agent gets its autarky-optimal plan for one
-                # instalment rather than nothing, so "never spoke" shows up as
-                # not having specialised rather than as starvation — two very
-                # different failures that would otherwise be indistinguishable.
+            if state.spent <= 1e-12:
                 plan = {g: state.alpha[i] for i, g in enumerate(self.goods)}
+                was, self.phase = self.phase, "production"
                 self.op_produce(state.agent_id, plan)
+                self.phase = was
         self.phase = "trading"
 
     def close(self) -> None:
