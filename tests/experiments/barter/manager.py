@@ -132,17 +132,18 @@ class Manager:
     #: open, because a phase agents could advance is a phase one agent can
     #: advance early:
     #:
-    #:     discovery -> production -> [deal] -> trading -> discovery ...
+    #:     discovery -> production -> [deal] -> trading -> [resolve]
+    #:                                              -> trading -> discovery ...
     #:
-    #: ``discovery`` and ``deal`` accept neither labour plans nor trades; they
-    #: are the two talking stages, and they are distinct phases rather than one
-    #: repeated because they are different conversations — before committing
-    #: labour an agent is guessing what it will hold, and after committing it
-    #: knows. ``production`` accepts labour plans, ``trading`` accepts trades,
-    #: ``closed`` accepts neither. Only ``deal`` may be skipped, and only
-    #: because Tier 1's agents genuinely have no such stage — every other
-    #: transition has exactly one legal predecessor, so a stage cannot be
-    #: re-entered or taken out of order.
+    #: ``discovery``, ``deal`` and ``resolve`` accept neither labour plans nor
+    #: trades. They are three distinct talking stages rather than one repeated,
+    #: because they are three different conversations: before committing labour
+    #: an agent is guessing what it will hold, after committing it knows, and
+    #: after offering it has escrow on the table and a collision to settle with
+    #: somebody. ``production`` accepts labour plans, ``trading`` accepts trades,
+    #: ``closed`` accepts neither. ``deal`` and ``resolve`` may be skipped by a
+    #: run that has no such stage; every other transition has exactly one legal
+    #: predecessor, so a stage cannot be re-entered or taken out of order.
     #:
     #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
     #: themselves. Production was committed in the first round, before any agent
@@ -563,15 +564,38 @@ class Manager:
         so an agent that worked once and then skipped a round keeps its skipped
         round as the choice it was.
         """
-        if self.phase not in ("deal", "production"):
+        if self.phase not in ("deal", "production", "resolve"):
             raise TradeError(f"cannot open trading from {self.phase}")
-        for state in self.agents.values():
+        # Reopening after the resolve stage is the same trading stage continuing,
+        # not a new one, so the never-worked fallback must not fire again -- it
+        # would hand an instalment to an agent in the middle of a trading stage,
+        # which is labour committed outside a production stage.
+        for state in ([] if self.phase == "resolve" else self.agents.values()):
             if state.spent <= 1e-12:
                 plan = {g: state.alpha[i] for i, g in enumerate(self.goods)}
                 was, self.phase = self.phase, "production"
                 self.op_produce(state.agent_id, plan)
                 self.phase = was
         self.phase = "trading"
+
+    def open_resolve(self) -> None:
+        """The round's third talk stage: offers are on the table, none settled.
+
+        This is the stage the crossing problem created. Offers escrow as they
+        are made, so by the end of the offer pass two agents may each be holding
+        the other's goods against mirror-image trades, and somebody has to give
+        way. Every route out of that -- approve one and cancel the other,
+        approve both and swap twice, cancel both and start again -- is a choice
+        the two of them have to make *the same way*, and there is no answer that
+        is right on its own merits. It is a pure tie-break, which makes it the
+        smallest possible instance of the thing this whole experiment is about.
+
+        Neither proposing nor approving is accepted here, so nobody can resolve
+        it by simply being quicker.
+        """
+        if self.phase != "trading":
+            raise TradeError(f"cannot open the resolve stage from {self.phase}")
+        self.phase = "resolve"
 
     def close(self) -> None:
         """Close the floor and return every outstanding escrow."""

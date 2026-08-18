@@ -847,3 +847,50 @@ def test_a_crossing_that_cannot_cover_bounces_rather_than_jamming(island):
     assert manager.summary()["crossings_resolved"] == {"one": 1}
     assert manager.op_state("a1")["escrowed"] == {}
     manager.check_conservation()
+
+
+def test_the_scripted_tiebreak_is_the_same_answer_from_either_side(island):
+    """The only property the rule needs. Not that it is fair, or efficient, or
+    that first-proposed deserves to win — just that two agents applying it to
+    the same pair name the same casualty, from information both of them have.
+
+    A rule that read anything private ("whoever needs it more") would be
+    computed differently by each side and would fail exactly when it mattered.
+    """
+    from barter.traders import gives_way
+
+    for pair in (["t1", "t2"], ["t2", "t1"], ["t9", "t10"], ["t10", "t9"]):
+        assert gives_way(pair) == gives_way(list(reversed(pair)))
+    # First proposed survives, and ids are compared as numbers rather than
+    # strings — "t10" beats "t9" only if you read them as text.
+    assert gives_way(["t9", "t10"]) == "t10"
+
+
+def test_scripted_agents_never_swap_twice_over_a_crossed_pair(island):
+    """What the shared rule buys, measured on real runs rather than argued.
+
+    Without it a crossing can end with both offers approved — the pair trading
+    twice because neither side backed out — which is a loss neither of them
+    chose and neither can undo. With it, both sides name the same doomed offer,
+    only its buyer can withdraw it, and exactly one action follows.
+    """
+    from barter.manager import Manager
+    import barter.run as R
+
+    original = R.Manager
+    for arm in ("A", "C", "D"):
+        seen = {}
+
+        class Spy(Manager):
+            def __post_init__(self) -> None:
+                super().__post_init__()
+                seen["manager"] = self
+
+        R.Manager = Spy
+        try:
+            R.run_island(draw_island(12, 5, seed=3), arm, seed=3, trade_rounds=30)
+        finally:
+            R.Manager = original
+        resolved = seen["manager"].summary()["crossings_resolved"]
+        assert seen["manager"].summary()["crossings"] > 0, arm
+        assert resolved.get("both", 0) == 0, f"arm {arm} swapped twice: {resolved}"

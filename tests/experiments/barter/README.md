@@ -49,24 +49,46 @@ enforces rather than the agents observing:
 | 1 | **discovery** | talk. Neither labour nor trades. |
 | 2 | **production** | this round's instalment of labour, and nothing else. |
 | 3 | **deal** | talk again. Still no trades. |
-| 4 | **trading** | offers, in two passes — everyone proposes, then everyone answers. |
+| 4 | **offer** | proposals. Each escrows its side as it is made. |
+| 5 | **resolve** | talk again. Nothing proposed, nothing approved. |
+| 6 | **settle** | approvals and withdrawals. |
 
-`discovery -> production -> [deal] -> trading -> discovery ...`, and each
-transition has exactly one legal predecessor, so a stage cannot be re-entered or
-taken out of order. Only `deal` is skippable, because Tier 1's scripted agents
-genuinely have no such stage — their price discovery happens in process, through
-a floor the manager never sees.
+`discovery -> production -> [deal] -> trading -> [resolve] -> trading ->
+discovery ...`, and each transition has exactly one legal predecessor, so a
+stage cannot be re-entered or taken out of order. `deal` and `resolve` are
+skippable by a run that has no such stage.
 
-**Two talking stages per round, not one**, and they are different conversations.
-In stage 1 an agent is guessing what it will hold and can still change *what it
-makes*; by stage 3 it knows, and so does everyone else, so terms can be agreed
-against real inventory instead of intent. The previous shape put all the talking
-up front with the whole production decision behind it, which made every later
-word a negotiation about goods nobody could change.
+**Three talking stages per round**, because they are three different
+conversations. In stage 1 an agent is guessing what it will hold and can still
+change *what it makes*; by stage 3 it knows, and so does everyone else, so terms
+can be agreed against real inventory instead of intent; by stage 5 it has escrow
+on the table and a specific collision to settle with a specific counterparty.
+The original shape put all the talking up front with the whole production
+decision behind it, which made every later word a negotiation about goods nobody
+could change.
 
-**The trade stage keeps both passes.** With one turn per agent, roughly half of
-all offers cannot be answered until the following round, and a three-tick expiry
-gives a proposal one or two real chances at being seen.
+**Stage 5 exists because of what stage 4 creates.** Offers escrow as they are
+made, so two agents who agreed a swap and both proposed it now hold mirror-image
+trades and one has to give way. Every route out — approve one and cancel the
+other, approve both and swap twice, cancel both and start again — needs the two
+of them to choose the *same* one, and **none is right on its own merits**. It is
+a pure tie-break, which makes it the smallest instance of the thing this whole
+experiment is about: the failure mode is not choosing badly but choosing
+differently. Two traders who both defer cancel both offers; two who both insist
+swap twice.
+
+**Scripted agents are handed a rule. Model agents are not.** Tier 1's traders
+apply *first proposed survives*, read off the trade ids, so both sides reach the
+same answer without saying anything — that is what makes them a benchmark rather
+than a coin flip, and it is not a claim that the rule is clever. Newest-survives
+would do exactly as well. A model island gets the stage and no rule, and whether
+it invents one *its counterparty also arrives at* is the measurement. Two
+switches separate the halves of that: `crossings` names the collision,
+`tiebreak` states a rule, and both default off.
+
+**Offering and answering stay separate passes.** With one turn per agent,
+roughly half of all offers cannot be answered until the following round, and a
+three-tick expiry gives a proposal one or two real chances at being seen.
 
 Two things fall out of this structure rather than being fixed by it. Rolling
 labour is native — one instalment per round, in a stage that exists for it —

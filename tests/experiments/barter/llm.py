@@ -191,6 +191,22 @@ swapping goods directly.
 Accept fish past the point of wanting it for itself. It can be spent again.
 """
 
+#: The tie-break, stated. Off by default and deliberately so: the scripted arms
+#: are *given* a shared rule, which is what makes them a benchmark, and the
+#: question for a model island is whether it arrives at one unaided — and whether
+#: its counterparty arrives at the same one.
+#:
+#: The rule named here is arbitrary and says so. That is the whole nature of the
+#: problem: newest-survives would work exactly as well, and the failure mode is
+#: not choosing badly but choosing differently. Two traders who both defer cancel
+#: both offers; two who both insist swap twice.
+TIEBREAK_BRIEF = """
+When you and another trader have each proposed the same swap, both sides are
+held in escrow and only one of the two offers should stand. Keep the one that
+was proposed first — the lower trade id — and withdraw the other. Which of the
+two survives does not matter. That you both pick the same one does.
+"""
+
 #: Everything the harness hands an agent, one switch at a time.
 #:
 #: The named arms below came first and were the wrong shape. Each was a bundle
@@ -294,6 +310,12 @@ class Telling:
     #: version of the question the whole ladder asks, and it defaults off
     #: because noticing unaided is the interesting outcome.
     crossings: bool = False
+    #: A tie-break rule for crossed offers, stated in words. The scripted arms
+    #: are handed one; this is what it costs to hand one to a model island, and
+    #: `crossings` against `tiebreak` separates *seeing* the collision from
+    #: *knowing what to do about it* — two things the same paragraph would
+    #: otherwise deliver together.
+    tiebreak: bool = False
 
     #: What each switch needs underneath it. These are not style rules: a board
     #: is denominated in fish and pins fish at 1, so a board without the
@@ -336,7 +358,7 @@ class Telling:
 _SWITCHES: tuple[str, ...] = (
     "channel", "numeraire", "board", "median", "deviation", "expiry",
     "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
-    "own_value", "own_score", "crossings",
+    "own_value", "own_score", "crossings", "tiebreak",
 )
 
 #: The named arms, as combinations. They are kept because the merged results are
@@ -839,8 +861,8 @@ def brief_for(island: Island, manager: Manager, agent_id: str,
     descriptions, which is what an affordance is. A test asserts it for
     ``told``/``built``, which is the pair the claim was originally made about.
 
-    Only ``numeraire``, ``money``, ``ruin_warning`` and ``rolling`` reach this
-    text at all; every other switch is a tool.
+    Only ``numeraire``, ``money``, ``tiebreak``, ``ruin_warning`` and
+    ``rolling`` reach this text at all; every other switch is a tool.
     """
     telling = telling_for(spec)
     text = BRIEF.format(
@@ -855,4 +877,6 @@ def brief_for(island: Island, manager: Manager, agent_id: str,
         text += NUMERAIRE_BRIEF
     if telling.money:
         text += MONEY_BRIEF
+    if telling.tiebreak:
+        text += TIEBREAK_BRIEF
     return text

@@ -18,7 +18,7 @@ from typing import Any
 
 from .economy import Efficiency, Gains, Island, autarky, capture, efficiency, gains
 from .manager import Manager, ManagerRPC, ManagerService
-from .traders import Floor, Trader, propose_for
+from .traders import Floor, Trader, gives_way, propose_for
 
 #: Rounds of price discovery before production closes. Arm C needs a few to
 #: converge; A and B ignore them, and are charged for them anyway so the arms
@@ -216,6 +216,23 @@ def run_island(
             reply = call(agent_id, "propose", seller=seller, give=give, want=want)
             if reply.get("ok"):
                 holdings[agent_id] = list(manager.agents[agent_id].holdings)
+
+        # The resolve stage. Offers are on the table and some of them cross --
+        # two agents holding mirror-image trades, each escrowed, one of which
+        # has to give way. Scripted agents apply a shared deterministic rule, so
+        # both sides reach the same answer without saying anything and exactly
+        # one of the pair is withdrawn. That is what makes them the benchmark a
+        # model arm is measured against, not a claim that the rule is clever.
+        manager.open_resolve()
+        for agent_id in order:
+            for pair in call(agent_id, "pending").get("crossed_pairs", []):
+                doomed = gives_way(pair)
+                # Only the buyer can withdraw its own offer, so naming the same
+                # doomed id on both sides still produces exactly one action.
+                if manager.trades[doomed].buyer == agent_id:
+                    call(agent_id, "cancel", trade_id=doomed)
+        manager.open_trading()
+        manager.check_conservation()
 
         # Approvals. A seller accepts only what raises its own utility, so every
         # settled trade is voluntary on both sides.

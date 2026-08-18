@@ -74,6 +74,27 @@ _PRICE_STEP = 0.35
 _HAGGLE = 0.03
 
 
+def gives_way(pair: list[str] | tuple[str, ...]) -> str:
+    """Which of two crossed offers is withdrawn. The scripted agents' tie-break.
+
+    The rule is *first proposed survives*, read off the trade ids, and the only
+    property that matters is that both parties compute the same answer from
+    information both of them have. Newest-survives would do exactly as well;
+    coin-flipping would not, and neither would "whoever feels strongest",
+    because the failure mode is not picking badly, it is picking *differently*.
+    Two agents who both defer cancel both offers; two who both insist swap
+    twice.
+
+    Handing this to the scripted arms is deliberate and it is not a claim that
+    the rule is clever. It is the control: deterministic agents are given a
+    tie-break so their crossings are resolved by convention rather than by
+    luck, which is what makes them a benchmark. A model agent gets the stage and
+    no rule, and whether it invents one — and whether its counterparty invents
+    the *same* one — is the measurement.
+    """
+    return max(pair, key=lambda t: int(str(t).lstrip("t") or 0))
+
+
 class Floor:
     """The public channel, or the absence of one.
 
