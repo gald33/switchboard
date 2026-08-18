@@ -56,6 +56,11 @@ class Outcome:
     proposed: int
     executed: int
     rejected: int
+    #: How many instalments the unit of labour was split into. 1 is the
+    #: one-shot bet placed before any price exists; more spreads the *same*
+    #: total labour across trading rounds, which moves neither the frontier nor
+    #: either benchmark, so the two are directly comparable.
+    instalments: int = 1
 
     def row(self) -> str:
         return (
@@ -104,11 +109,23 @@ def run_island(
     hub: Any = None,
     run: str = "barter",
     trade_rounds: int | None = None,
+    instalments: int = 1,
 ) -> Outcome:
-    """One island, one arm, start to finish."""
+    """One island, one arm, start to finish.
+
+    ``instalments`` is the labour-timing knob. At 1 the whole unit is committed
+    once, before any trade has happened, and a wrong bet stands for the rest of
+    the run. Above 1 the same unit is spent a slice at a time across the trading
+    rounds, so an agent can see what the market actually gave it and produce
+    against that. Nothing else changes: no extra messages, no extra prices, and
+    the frontier, autarky floor and exchange ceiling are all untouched.
+    """
     rounds = TRADE_ROUNDS if trade_rounds is None else trade_rounds
     rng = random.Random(seed * 1000 + ord(arm))
-    manager = Manager(island=island)
+    instalments = max(1, instalments)
+    manager = Manager(island=island,
+                      labour_per_round=1.0 / instalments,
+                      rolling=instalments > 1)
     goods = manager.goods
 
     floor = Floor(enabled=arm != "A")
@@ -146,12 +163,32 @@ def run_island(
     manager.check_conservation()
     manager.open_trading()
     manager.check_conservation()
+    if instalments > 1:
+        # The manager refuses two commitments in one tick, and the opening
+        # instalment was committed at tick 0. Without this the first trading
+        # round's instalment is rejected as "you have already worked this
+        # round", silently costing every rolling agent one slice of labour.
+        manager.advance()
 
     # --- the floor ----------------------------------------------------------
     order = list(traders)
     for _ in range(rounds):
         rng.shuffle(order)
         holdings = {a: list(manager.agents[a].holdings) for a in traders}
+
+        # A rolling island works a little more each round, against what it now
+        # holds rather than against what it hoped for. Skipped entirely at one
+        # instalment, so the one-shot path is byte-for-byte the run it always
+        # was and old results still reproduce.
+        if instalments > 1:
+            for agent_id in order:
+                if manager.agents[agent_id].spent >= 1.0 - 1e-9:
+                    continue
+                call(agent_id, "produce",
+                     plan=traders[agent_id].production_instalment(holdings[agent_id], floor))
+                holdings[agent_id] = list(manager.agents[agent_id].holdings)
+            manager.check_conservation()
+
         for agent_id in order:
             trader = traders[agent_id]
             offer = propose_for(trader, holdings[agent_id], list(traders.values()), holdings, rng)
@@ -183,11 +220,12 @@ def run_island(
     if service is not None:
         service.publish()
 
-    return score(island, manager, arm=arm, seed=seed, messages=floor.sent)
+    return score(island, manager, arm=arm, seed=seed, messages=floor.sent,
+                 instalments=instalments)
 
 
 def score(island: Island, manager: Manager, *, arm: str, seed: int,
-          messages: int = 0) -> Outcome:
+          messages: int = 0, instalments: int = 1) -> Outcome:
     """Turn a finished manager into an Outcome.
 
     Shared by both tiers rather than written twice. A Tier 2 island costs real
@@ -214,4 +252,5 @@ def score(island: Island, manager: Manager, *, arm: str, seed: int,
         messages=messages, proposed=summary["proposed"],
         executed=summary["executed"],
         rejected=summary["rejected"] + summary["expired"],
+        instalments=instalments,
     )

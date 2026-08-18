@@ -5,8 +5,9 @@ market to reach its Pareto frontier, run over a Switchboard hub with a manager
 that owns all the state.
 
 ```bash
-python tests/experiments/barter_experiment.py --islands 12 --rounds-sweep
+python tests/experiments/barter_experiment.py --islands 12 --rounds-sweep --labour-sweep
 python tests/experiments/barter_llm_experiment.py --arms told built  # costs money
+python tests/experiments/barter_llm_experiment.py --arms bound --without expiry
 pytest tests/test_barter.py tests/test_barter_llm.py -q            # the gates
 ```
 
@@ -19,9 +20,16 @@ is handed a specialty and comparative advantage has to emerge from the draw.
 Every agent has Cobb-Douglas tastes, so it wants *some of everything*: a good
 you hold none of makes your score zero no matter what else you have.
 
-One unit of labour, spent once. That budget is what makes this an economy rather
-than a free lunch — without it everyone maxes out every good and there is
-nothing to trade.
+One unit of labour. That budget is what makes this an economy rather than a free
+lunch — without it everyone maxes out every good and there is nothing to trade.
+
+**When** it is spent is a knob, not a constant. At one instalment it is a single
+irreversible bet placed before any price exists; sliced across the trading rounds
+it is the same unit spent a little at a time, against what the market has
+actually delivered. The frontier, the autarky floor and the exchange ceiling are
+identical either way, so the two are directly comparable and the only thing
+varying is whether a commitment can be revised. That turns out to matter more
+than anything on the convention ladder — see *Irreversibility* below.
 
 ## The manager
 
@@ -166,6 +174,64 @@ unchanged and still not a model. Four arms:
 `silent` and `free` never hear the words "price", "numeraire" or "money" — so a
 convention appearing in `free` was invented, not followed, and the Tier 1 ladder
 is what gives it a scale.
+
+### The arms are combinations, not primitives
+
+Every one of those names is a bundle, and that was a flaw. `built` added storage
+*and* aggregation in one step; `bound` added a deviation report *and* quote
+expiry. When a rung moved, the run could say the bundle mattered and could never
+say which half of it did — so every result was an attribution to a name rather
+than to a mechanism.
+
+So **everything told to an agent is now an independent switch**, and the named
+arms are combinations of them:
+
+| switch | what it hands over | where it lands |
+|---|---|---|
+| `channel` | `say` and `listen` | tools + one paragraph |
+| `numeraire` | fish is the unit of account | words |
+| `board` | `post_quote` validates, `read_quotes` returns everyone's latest | tools |
+| `median` | the board also reports the median per good | tools |
+| `deviation` | the board reports *your* distance from the median | tools |
+| `expiry` | quotes go stale unless renewed | tools |
+| `money` | accept the numeraire past wanting it | words |
+| `pay_tool` | `pay` sizes a money trade at the median and proposes it | tools |
+| `rolling` | labour is committed in instalments | the world, and the words that describe it |
+| `ruin_warning` | spell out that a zero holding scores zero | words |
+| `horizon` | how many rounds remain | turn note |
+| `labour_left` | how much labour you still have | turn note |
+
+```
+silent  →  (nothing)
+free    →  channel
+told    →  channel numeraire
+built   →  channel numeraire board median
+bound   →  … deviation expiry
+spend   →  … money
+paid    →  … pay_tool
+```
+
+Any of them can be flipped alone:
+
+```bash
+python tests/experiments/barter_llm_experiment.py --arms bound --without expiry
+python tests/experiments/barter_llm_experiment.py --arms built --with expiry
+```
+
+Neither of those has a name on the ladder, because neither is a rung — they are
+the differences *between* rungs, which is what an attribution needs and what a
+ladder of bundles cannot give. Switching one off takes its dependents with it (a
+board with no numeraire would be quoting on a scale nobody was told about), and
+the run record stores the **resolved** switch set, so an island always reports
+what it actually had rather than what was asked for.
+
+Three properties are gated rather than intended. Every preset is pinned switch by
+switch, so the six paid islands already banked still describe setups that exist.
+Turning an *affordance* on or off never moves a word of the system prompt — the
+claim the whole ladder rests on, now asserted over every tool switch instead of
+one pair of arms. And a rolling island is never told it spends its labour "once,
+at the start", which it was, for one paid run, while the manager underneath was
+accepting instalments.
 
 **`told` against `built` is the pair that matters, and they share a system prompt
 byte for byte** — a test asserts it. The only difference is whether the

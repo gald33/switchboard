@@ -68,7 +68,7 @@ ARM_NAMES = {"A": "silent", "B": "disclose", "C": "price", "D": "money"}
 
 
 def sweep(islands: int, *, agents: int, goods: int, seed0: int = 1,
-          rounds: int | None = None) -> dict:
+          rounds: int | None = None, instalments: int = 1) -> dict:
     rows: dict[str, list] = {arm: [] for arm in ARMS}
     floors, ceilings = [], []
     for step in range(islands):
@@ -78,10 +78,165 @@ def sweep(islands: int, *, agents: int, goods: int, seed0: int = 1,
         floors.append(efficiency(island, autarky_utils).lower)
         ceilings.append(exchange_ceiling(island).lower)
         for arm in ARMS:
-            rows[arm].append(run_island(island, arm, seed=seed, trade_rounds=rounds))
+            rows[arm].append(run_island(island, arm, seed=seed, trade_rounds=rounds,
+                                        instalments=instalments))
         print(f"  island {step + 1}/{islands} (seed {seed})", end="\r", file=sys.stderr)
     print(" " * 40, end="\r", file=sys.stderr)
     return {"rows": rows, "floors": floors, "ceilings": ceilings}
+
+
+#: Instalment counts for the labour-timing table. 1 is the one-shot bet; the
+#: largest is one instalment per round, so labour is still being committed when
+#: the last trade settles. Everything between traces how much responsiveness the
+#: gain actually needs.
+LABOUR_BUDGETS = (1, 2, 4, 16, 61)
+
+
+def labour_runs(islands: int, *, agents: int, goods: int, seed0: int = 1,
+                rounds: int | None = None) -> dict[int, dict]:
+    """One sweep per instalment count. Split out so the table and the figure
+    are computed from the same runs rather than from two separate ones."""
+    runs = {}
+    for count in LABOUR_BUDGETS:
+        runs[count] = sweep(islands, agents=agents, goods=goods, seed0=seed0,
+                            rounds=rounds, instalments=count)
+        print(f"  instalments {count} done", file=sys.stderr)
+    return runs
+
+
+def labour_json(runs: dict[int, dict], *, islands: int) -> dict:
+    """The same three views the table shows, as data.
+
+    All three, not just the flattering one. The median over unruined islands
+    moves partly because *which* islands are unruined moves; the common subset
+    fixes that and can be almost empty; scoring ruin at zero keeps every island
+    and is the only view where avoiding ruin and reaching the frontier are
+    weighed against each other. A figure drawn from one of them alone would be
+    making the choice on the reader's behalf.
+    """
+    common = {
+        arm: [i for i in range(islands)
+              if all(not runs[c]["rows"][arm][i].efficiency.ruined for c in LABOUR_BUDGETS)]
+        for arm in ARMS
+    }
+    out: dict = {"instalments": list(LABOUR_BUDGETS), "islands": islands, "arms": {}}
+    for arm in ARMS:
+        clean, net, same, ruin = [], [], [], []
+        for count in LABOUR_BUDGETS:
+            rows = runs[count]["rows"][arm]
+            unruined = [r.efficiency.lower for r in rows if not r.efficiency.ruined]
+            clean.append(statistics.median(unruined) if unruined else None)
+            net.append(statistics.median(
+                [0.0 if r.efficiency.ruined else r.efficiency.lower for r in rows]))
+            kept = [rows[i].efficiency.lower for i in common[arm]]
+            same.append(statistics.median(kept) if kept else None)
+            ruin.append(sum(1 for r in rows if r.efficiency.ruined))
+        out["arms"][arm] = {"name": ARM_NAMES[arm], "unruined_median": clean,
+                            "net_median": net, "same_islands_median": same,
+                            "same_islands_n": len(common[arm]), "ruined": ruin,
+                            "executed": [statistics.median(
+                                [r.executed for r in runs[c]["rows"][arm]])
+                                for c in LABOUR_BUDGETS]}
+    return out
+
+
+def labour_sweep(islands: int, *, agents: int, goods: int, seed0: int = 1,
+                 rounds: int | None = None, runs: dict[int, dict] | None = None) -> str:
+    """Trace each arm against how finely its labour is sliced.
+
+    This is the cheap version of a question the paid tier cannot afford to ask.
+    A one-shot production decision is a bet placed before any price exists, and
+    every arm on the ladder is trying to make that bet a better one — by
+    disclosing, by agreeing a price, by circulating money. Slicing the labour
+    attacks the same loss from the other side: it lets a wrong bet be *unwound*
+    rather than made well.
+
+    The two are not the same thing and the table separates them. If ruin falls
+    with instalments in the arms whose ruin no convention could fix, the loss
+    those arms were suffering was never about information at all — it was about
+    irreversibility. This is scripted, replicated and free, so it can be settled
+    before anyone buys a model island.
+    """
+    if runs is None:
+        runs = labour_runs(islands, agents=agents, goods=goods, seed0=seed0,
+                           rounds=rounds)
+
+    lines = [
+        "",
+        "Against labour timing",
+        "---------------------",
+        "Same total labour, committed in N instalments across the trading rounds.",
+        "",
+        f"{'INSTALS':>7}" + "".join(f"{arm + ' ' + ARM_NAMES[arm]:>18}" for arm in ARMS),
+    ]
+    for count in LABOUR_BUDGETS:
+        cells = []
+        for arm in ARMS:
+            rows = runs[count]["rows"][arm]
+            clean = [r.efficiency.lower for r in rows if not r.efficiency.ruined]
+            ruined = sum(1 for r in rows if r.efficiency.ruined)
+            med = f"{statistics.median(clean):.3f}" if clean else "  -  "
+            cells.append(f"{med} ruin {ruined}/{len(rows)}".rjust(18))
+        lines.append(f"{count:>7}" + "".join(cells))
+
+    # The row above is not a like-for-like comparison and must not be read as
+    # one. Ruined islands are excluded from the median, and *which* islands are
+    # ruined is the thing this table is varying — at one instalment arm C's
+    # median is over the four islands it did not wreck, and at sixty-one it is
+    # over all twelve. A number that improves because the hard cases dropped out
+    # and a number that improves because the arm improved look identical.
+    #
+    # So the same medians again, over only the islands unruined at *every*
+    # instalment count. Fewer islands, and an honest one.
+    lines += [
+        "",
+        "Over the islands unruined at every setting, so the rows compare like "
+        "with like:",
+        "",
+        f"{'INSTALS':>7}" + "".join(f"{arm + ' ' + ARM_NAMES[arm]:>18}" for arm in ARMS),
+    ]
+    common = {
+        arm: [i for i in range(islands)
+              if all(not runs[c]["rows"][arm][i].efficiency.ruined for c in LABOUR_BUDGETS)]
+        for arm in ARMS
+    }
+    for count in LABOUR_BUDGETS:
+        cells = []
+        for arm in ARMS:
+            rows = runs[count]["rows"][arm]
+            kept = [rows[i].efficiency.lower for i in common[arm]]
+            med = f"{statistics.median(kept):.3f}" if kept else "  -  "
+            cells.append(f"{med} n={len(kept)}".rjust(18))
+        lines.append(f"{count:>7}" + "".join(cells))
+    # And the number that actually settles the trade-off. Ruin is not excluded
+    # here, it is scored at the zero it literally is: an agent holding none of
+    # some good has zero Cobb-Douglas utility, so an island that wrecked one has
+    # a lower bound of zero and belongs in the comparison at zero. This is the
+    # one row that can be read as "which setting would you rather run", because
+    # it is the only one where avoiding ruin and reaching the frontier are being
+    # weighed against each other rather than reported apart.
+    lines += [
+        "",
+        "Scoring a ruined island at the zero it is, over all islands:",
+        "",
+        f"{'INSTALS':>7}" + "".join(f"{arm + ' ' + ARM_NAMES[arm]:>18}" for arm in ARMS),
+    ]
+    for count in LABOUR_BUDGETS:
+        cells = []
+        for arm in ARMS:
+            rows = runs[count]["rows"][arm]
+            scored = [0.0 if r.efficiency.ruined else r.efficiency.lower for r in rows]
+            cells.append(f"{statistics.median(scored):.3f}".rjust(18))
+        lines.append(f"{count:>7}" + "".join(cells))
+
+    lines += [
+        "",
+        "INSTALS 1 is the one-shot bet: all labour committed before any trade has",
+        "        happened. Above 1 the same unit is spent a slice per round, against",
+        "        what the market has actually delivered. No extra messages are sent",
+        "        and no extra prices are formed, so nothing but the timing varies.",
+    ]
+    return "\n".join(lines)
 
 
 #: Round budgets for the convergence table. Chosen to span from "barely enough
@@ -223,20 +378,32 @@ def main(argv: list[str] | None = None) -> int:
                         help="trading rounds per island (default: the module default)")
     parser.add_argument("--rounds-sweep", action="store_true",
                         help="also trace every arm against the round budget")
+    parser.add_argument("--instalments", type=int, default=1,
+                        help="split the unit of labour into N instalments across "
+                             "the trading rounds (1 = the one-shot bet)")
+    parser.add_argument("--labour-sweep", action="store_true",
+                        help="also trace every arm against how finely labour is sliced")
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args(argv)
 
     result = sweep(args.islands, agents=args.agents, goods=args.goods, seed0=args.seed,
-                   rounds=args.rounds)
+                   rounds=args.rounds, instalments=args.instalments)
     print(report(result, agents=args.agents, goods=args.goods, islands=args.islands))
     print(commentary(result))
     if args.rounds_sweep:
         print(rounds_sweep(args.islands, agents=args.agents, goods=args.goods,
                            seed0=args.seed))
+    labour = None
+    if args.labour_sweep:
+        labour = labour_runs(args.islands, agents=args.agents, goods=args.goods,
+                             seed0=args.seed, rounds=args.rounds)
+        print(labour_sweep(args.islands, agents=args.agents, goods=args.goods,
+                           seed0=args.seed, rounds=args.rounds, runs=labour))
 
     if args.json:
         args.json.write_text(json.dumps({
             "agents": args.agents, "goods": args.goods, "islands": args.islands,
+            "instalments": args.instalments,
             "floors": result["floors"], "ceilings": result["ceilings"],
             "arms": {
                 arm: [{
@@ -245,11 +412,16 @@ def main(argv: list[str] | None = None) -> int:
                     "ruined": list(r.efficiency.ruined), "worst_ratio": r.worst_ratio,
                     "executed": r.executed, "proposed": r.proposed,
                     "rejected": r.rejected, "messages": r.messages,
+                    "instalments": r.instalments,
                 } for r in result["rows"][arm]]
                 for arm in ARMS
             },
         }, indent=2))
         print(f"\nwrote {args.json}")
+        if labour is not None:
+            path = args.json.with_name(args.json.stem + "_labour.json")
+            path.write_text(json.dumps(labour_json(labour, islands=args.islands), indent=2))
+            print(f"wrote {path}")
     return 0
 
 

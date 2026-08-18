@@ -24,10 +24,17 @@ about anyone else it has to have been told, which is what puts the channel under
 test instead of the prompt.
 
 **Arms are tool surfaces, not instructions.** The prompt never suggests posting
-prices, choosing a numeraire, or using anything as money. Arm A simply has no
-channel tool; ``free`` has ``say`` and ``listen`` and nothing about what to put
-in them. If a convention appears in ``free`` it was invented, not followed — and
-the Tier 1 arms give it a scale to be measured against.
+prices, choosing a numeraire, or using anything as money. ``silent`` simply has
+no channel tool; ``free`` has ``say`` and ``listen`` and nothing about what to
+put in them. If a convention appears in ``free`` it was invented, not followed —
+and the Tier 1 arms give it a scale to be measured against.
+
+**Everything told is a switch.** The named arms below are combinations of
+``Telling`` fields, not primitives. Each rung of the ladder used to add two
+things at once — storage *and* aggregation, a deviation report *and* quote
+expiry — so a rung that moved could never say which half moved it. Any switch
+can now be flipped on its own, which is the difference between attributing a
+result to a mechanism and attributing it to a name.
 
 The ladder
 ----------
@@ -75,8 +82,8 @@ prints its spend. ``--model`` selects the tier; the harness is model-agnostic.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import Any, Iterable
 
 from .economy import Island
 from .manager import Manager, ManagerService
@@ -92,14 +99,9 @@ You are {agent_id}, a trader on an island with {n_others} other traders.
 There are {n_goods} goods: {goods}.
 
 Your score at the end is the product of your final holdings raised to your
-taste exponents — so a good you hold NONE of makes your score zero, however
-much of everything else you have. You want some of every good.
+taste exponents{ruin}
 
-You have one unit of labour. You spend it once, at the start, by calling
-`produce` with the fraction you put on each good. Your capacity for each good
-is how much you get for spending your whole unit on it, and it differs between
-goods and between traders. After that you cannot make anything more — the only
-way to change what you hold is to trade.
+{labour}
 
 Trading is two-phase and the manager is the only thing that can move goods:
   - you call `propose_trade` naming one other trader, what you give and what
@@ -111,6 +113,34 @@ Trading is two-phase and the manager is the only thing that can move goods:
 
 Quantities are never negative. You cannot offer what you do not hold.
 """
+
+#: The consequence of the scoring rule, spelled out. A separate switch because
+#: it is not the rule — it is an *inference from* the rule that we currently
+#: make on the agent's behalf, and "does a trader work out that a zero holding
+#: is fatal, or does it have to be told" is a question with an answer.
+RUIN_CLAUSE = """ — so a good you hold NONE of makes your score zero, however
+much of everything else you have. You want some of every good."""
+
+#: The labour paragraph, in the two worlds it can describe. Which one an agent
+#: gets is not a convention and not a hint: it is the world it is actually in,
+#: and telling a rolling agent it spends its labour "once, at the start" is
+#: simply false. That was live for one paid run, and the sentence agents read
+#: contradicted the manager they were calling.
+ONCE_LABOUR = """\
+You have one unit of labour. You spend it once, at the start, by calling
+`produce` with the fraction you put on each good. Your capacity for each good
+is how much you get for spending your whole unit on it, and it differs between
+goods and between traders. After that you cannot make anything more — the only
+way to change what you hold is to trade."""
+
+ROLLING_LABOUR = """\
+You have one unit of labour and you spend it in instalments: in each round you
+may call `produce` once, with the fraction of *that round's* instalment you put
+on each good. Your capacity for each good is how much you get for spending your
+whole unit on it, and it differs between goods and between traders. An
+instalment you do not spend is not carried over — it is a round you did not
+work — and once the unit is gone the only way to change what you hold is to
+trade."""
 
 CHANNEL_BRIEF = """
 You can also talk. `say` posts a message every trader sees; `listen` returns
@@ -161,73 +191,208 @@ swapping goods directly.
 Accept fish past the point of wanting it for itself. It can be spent again.
 """
 
-#: Arms, in order of how much is handed over. Named rather than lettered because
-#: the Tier 1 arms are lettered and mean different things — Tier 1's D is money,
-#: which is a different ladder.
+#: Everything the harness hands an agent, one switch at a time.
 #:
-#: The design rule every one of these obeys: **a tool may calculate or report,
-#: and may never commit anybody.** The quote board is a noticeboard; `pay` is a
-#: calculator that builds a trade at the going rate. Neither binds a
+#: The named arms below came first and were the wrong shape. Each was a bundle
+#: — ``bound`` added a deviation report *and* quote expiry in the same step,
+#: ``built`` added storage *and* aggregation — so when an arm moved, the run
+#: could say that the bundle mattered and could never say which part of it did.
+#: Every result on this ladder was therefore an attribution to a name rather
+#: than to a mechanism.
+#:
+#: So each thing told to an agent is now its own field, the arms are named
+#: combinations of them, and a switch can be flipped on its own. That is the
+#: only way "the median was the missing piece" or "obligation is what a
+#: convention needs from its substrate" can be a finding rather than a story
+#: about a bundle.
+#:
+#: The design rule every one of these still obeys: **a switch may calculate or
+#: report, and may never commit anybody.** The quote board is a noticeboard;
+#: ``pay`` is a calculator that builds a trade at the going rate. Neither binds a
 #: counterparty — the manager is the only thing in the experiment that moves a
 #: quantity, and it still knows nothing about prices. That is what keeps all of
 #: this a *convention with a calculator* rather than an exchange with rules, and
 #: it is why a standing-offer book is deliberately absent: a pre-committed offer
 #: would settle without its owner acting, which is a commitment mechanism and a
 #: different experiment.
-ARMS = ("silent", "free", "told", "built", "bound", "spend", "paid")
+@dataclass(frozen=True)
+class Telling:
+    """One island's information setup. Every field is independently switchable.
 
-#: How many manager ticks a quote stays on the board under ``bound``. Two means
-#: a quote survives the round it was posted and one more, so an agent that never
-#: comes back drops off rather than sitting there being read as current.
+    Fields fall into three kinds and it is worth keeping them apart:
+
+    * **Words.** ``numeraire``, ``money``, ``ruin_warning`` add a paragraph to
+      the system prompt and change nothing an agent can *do*.
+    * **Affordances.** ``channel``, ``board``, ``median``, ``deviation``,
+      ``expiry``, ``pay_tool`` change the tool surface. The prompt never
+      mentions them; a tool announces itself through its own description, which
+      is what makes "telling agents how to coordinate" and "building them
+      something to coordinate with" separable at all.
+    * **The world.** ``rolling`` is not a telling — it is whether the manager
+      actually lets labour be committed in instalments. It appears here only so
+      the prompt can describe the world truthfully, and setting it without
+      setting the manager's own flag would be a lie to the agent.
+
+    ``horizon`` and ``labour_left`` govern the turn note and are passed through
+    to ``flow.Notes``; they live here so that one object is the whole answer to
+    "what did this island's agents know".
+    """
+
+    #: `say` and `listen`. Without it an agent's only counterparty contact is a
+    #: trade proposal.
+    channel: bool = False
+    #: The numeraire convention, stated in words. Fish is the unit of account.
+    numeraire: bool = False
+    #: A structured quote board: `post_quote` validates, `read_quotes` returns
+    #: everyone's latest. Storage only — the aggregation is the next switch.
+    board: bool = False
+    #: The board also reports the median price per good. This is the step a
+    #: price convention actually needs and the step prose leaves each agent to
+    #: do in its head, which is where a shared price stops being shared.
+    median: bool = False
+    #: The board reports *your* distance from the median, per good, as a
+    #: multiple. The comparison every agent could have made and none did.
+    deviation: bool = False
+    #: Quotes go stale. Staying on the board becomes something you keep doing
+    #: rather than something you did once.
+    expiry: bool = False
+    #: The money clause: settle in the numeraire, and accept it past the point
+    #: of wanting it for itself.
+    money: bool = False
+    #: `pay`: a calculator that sizes a money trade at the board median and
+    #: proposes it. The seller still has to approve.
+    pay_tool: bool = False
+    #: Whether labour is actually committed in instalments. A fact, not a hint.
+    rolling: bool = False
+    #: Spell out that a zero holding scores zero.
+    ruin_warning: bool = True
+    #: Tell an agent how many rounds remain.
+    horizon: bool = True
+    #: Tell an agent how much labour it has left, in the turn note, rather than
+    #: leaving it to spend a tool call finding out.
+    labour_left: bool = True
+
+    #: What each switch needs underneath it. These are not style rules: a board
+    #: is denominated in fish and pins fish at 1, so a board without the
+    #: numeraire convention would be quoting on a scale nobody was told about,
+    #: and a `pay` tool without a median has no rate to price at. An island
+    #: built from an incoherent combination would still run and would produce a
+    #: number nobody could interpret, which is worse than a crash.
+    _REQUIRES = (
+        ("numeraire", ("channel", "board"), "somewhere to state a price"),
+        ("board", ("numeraire",), "a unit to quote in"),
+        ("median", ("board",), "quotes to aggregate"),
+        ("deviation", ("median",), "a median to deviate from"),
+        ("expiry", ("board",), "a board to expire from"),
+        ("money", ("numeraire",), "a numeraire to settle in"),
+        # Two rows rather than one: a tuple is satisfied by *any* of its
+        # entries, and `pay` needs both — a median to price at and the money
+        # clause that makes paying rather than swapping the thing to do.
+        ("pay_tool", ("median",), "a rate to pay at"),
+        ("pay_tool", ("money",), "a reason to pay rather than swap"),
+    )
+
+    def __post_init__(self) -> None:
+        for field_name, needs, why in self._REQUIRES:
+            if getattr(self, field_name) and not any(getattr(self, n) for n in needs):
+                raise ValueError(
+                    f"{field_name} needs {' or '.join(needs)}: {why}")
+
+    def switches(self) -> tuple[str, ...]:
+        """The switches that are on, in declaration order. The record's label."""
+        return tuple(name for name in _SWITCHES if getattr(self, name))
+
+    def to_notes(self) -> Any:
+        """The turn-note half of this setup, for ``flow.play``."""
+        from .flow import Notes
+
+        return Notes(horizon=self.horizon, labour_left=self.labour_left,
+                     rolling=self.rolling)
+
+
+_SWITCHES: tuple[str, ...] = (
+    "channel", "numeraire", "board", "median", "deviation", "expiry",
+    "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
+)
+
+#: The named arms, as combinations. They are kept because the merged results are
+#: reported under these names and a rung of the ladder should stay one word —
+#: but nothing reads a name any more, only the switches it stands for.
+PRESETS: dict[str, Telling] = {
+    "silent": Telling(),
+    "free": Telling(channel=True),
+    "told": Telling(channel=True, numeraire=True),
+    "built": Telling(channel=True, numeraire=True, board=True, median=True),
+    "bound": Telling(channel=True, numeraire=True, board=True, median=True,
+                     deviation=True, expiry=True),
+    "spend": Telling(channel=True, numeraire=True, board=True, median=True,
+                     deviation=True, expiry=True, money=True),
+    "paid": Telling(channel=True, numeraire=True, board=True, median=True,
+                    deviation=True, expiry=True, money=True, pay_tool=True),
+}
+
+ARMS = tuple(PRESETS)
+
+
+def telling_for(spec: str | Telling) -> Telling:
+    """A ``Telling`` from either a preset name or one already built."""
+    if isinstance(spec, Telling):
+        return spec
+    if spec not in PRESETS:
+        raise ValueError(f"unknown arm {spec!r}; expected one of {', '.join(ARMS)}")
+    return PRESETS[spec]
+
+
+def compose(base: str | Telling, *, on: Iterable[str] = (), off: Iterable[str] = ()) -> Telling:
+    """A preset with individual switches flipped.
+
+    This is the whole point of the refactor at the command line: ``bound``
+    without ``expiry`` isolates the deviation report, ``built`` with ``expiry``
+    isolates staleness, and neither has a name on the ladder because neither is
+    a rung — they are the differences *between* rungs, which is what an
+    attribution needs and what a ladder of bundles cannot give.
+    """
+    changes: dict[str, bool] = {}
+    for name in on:
+        _check_switch(name)
+        changes[name] = True
+    for name in off:
+        _check_switch(name)
+        changes[name] = False
+
+    # Turning a switch off takes its dependents with it. "An island with no
+    # quote board" cannot coherently still report a median, and refusing the
+    # request would only mean spelling out the same cascade by hand at the
+    # command line. Nothing is hidden by this: the record stores the resolved
+    # switch set, so what an island actually had is always what it says it had.
+    resolved = dict(changes)
+    fields = {name: changes.get(name, getattr(telling_for(base), name))
+              for name in _SWITCHES}
+    for _ in range(len(Telling._REQUIRES) + 1):
+        for name, needs, _why in Telling._REQUIRES:
+            if fields[name] and not any(fields[n] for n in needs):
+                if name in resolved and resolved[name]:
+                    raise ValueError(
+                        f"{name} was switched on but needs {' or '.join(needs)}, "
+                        "which this island does not have")
+                fields[name] = False
+    return replace(telling_for(base), **fields)
+
+
+def _check_switch(name: str) -> None:
+    if name not in _SWITCHES:
+        raise ValueError(f"unknown switch {name!r}; expected one of {', '.join(_SWITCHES)}")
+
+
+#: How many manager ticks a quote stays on the board when ``expiry`` is on. Two
+#: means a quote survives the round it was posted and one more, so an agent that
+#: never comes back drops off rather than sitting there being read as current.
 QUOTE_TTL_TICKS = 2
 
 #: Index of the numeraire in the goods tuple. Which good is arbitrary; that
 #: everyone uses the *same* one is the entire convention.
 NUMERAIRE_INDEX = 0
 
-
-def speaks(arm: str) -> bool:
-    return arm != "silent"
-
-
-def has_quote_board(arm: str) -> bool:
-    return arm in ("built", "bound", "spend", "paid")
-
-
-def uses_money(arm: str) -> bool:
-    """``spend`` and ``paid``: the numeraire is a medium of exchange too."""
-    return arm in ("spend", "paid")
-
-
-def has_pay_tool(arm: str) -> bool:
-    """``paid``: a calculator for money trades, not a commitment mechanism.
-
-    It looks up the going rate, does the arithmetic and constructs the offer.
-    The seller still has to approve it, exactly as for any other trade — an
-    affordance that settled by itself would destroy the voluntariness every
-    "nobody was made worse off" claim in this experiment rests on.
-    """
-    return arm == "paid"
-
-
-def obliges_revision(arm: str) -> bool:
-    """``bound``: the board pushes back instead of merely storing.
-
-    ``built`` answered the aggregation question and the answer was no — four
-    traders had a median in every reply and ended 27x apart on cloth, because a
-    number you are shown is not a number you act on. So ``bound`` changes what
-    the board *does* rather than what it holds, in the two smallest ways that
-    turn a display into a demand:
-
-    * it reports **your** price against the median, per good, as a deviation —
-      the comparison every agent could have made and none did;
-    * a quote **goes stale**, so staying on the board is something you have to
-      keep doing rather than something you did once.
-
-    Both are still only about quoting. Nothing obliges an agent to trade at any
-    price, and the manager remains ignorant of prices entirely.
-    """
-    return arm in ("bound", "spend", "paid")
 
 TURN = """\
 Round {round_no} of {rounds}. {phase_note}
@@ -249,9 +414,9 @@ class Wire:
     agent_id: str
     client: Any
     service: ManagerService
-    arm: str
+    telling: Telling
     floor_channel: str
-    #: Blackboard prefix for the `built` arm's quote board. One key per trader,
+    #: Blackboard prefix for the quote board. One key per trader,
     #: so a quote is a value anyone can read rather than a message somebody
     #: might have scrolled past.
     quote_prefix: str = ""
@@ -344,9 +509,10 @@ class Wire:
         # Fish is 1 by definition; storing anything else would let two traders
         # quote on different scales while appearing to agree.
         clean[self.goods[0]] = 1.0
-        # The tick is stored for every arm and only *read* under `bound`. One
-        # storage shape keeps the arms comparable: `built` must behave exactly
-        # as it did when its island was run, or the pair stops being a pair.
+        # The tick is stored whatever the switches say and only *read* when
+        # `expiry` is on. One storage shape keeps islands comparable: `built`
+        # must behave exactly as it did when its island was run, or the pair it
+        # forms with `bound` stops being a pair.
         self.client.board_set(f"{self.quote_prefix}{self.agent_id}",
                               {"prices": clean, "tick": self._tick()})
         self.quotes_posted += 1
@@ -380,41 +546,47 @@ class Wire:
         needs, and it is the step ``told`` leaves each agent to do in its head
         from prose — which is where a shared price stops being shared.
 
-        Under ``bound`` two things are added, and they are the whole difference
-        between the arms: stale quotes drop off, and the reply names *your*
-        distance from the median rather than leaving you to notice it. ``built``
-        gets exactly the reply it always got.
+        Three switches shape the reply and each is separable. ``median`` adds
+        the aggregate; ``expiry`` drops stale quotes and says whether yours is
+        still live; ``deviation`` names *your* distance from the median rather
+        than leaving you to notice it. ``built`` is median alone and ``bound``
+        is all three, so the arms are reproduced exactly — but the two switches
+        ``bound`` bundled can now be run apart, which is the only way to say
+        which of them did the work.
         """
         board = self._board()
-        if obliges_revision(self.arm):
+        if self.telling.expiry:
             now = self._tick()
             board = {who: (prices, tick) for who, (prices, tick) in board.items()
                      if now - tick < QUOTE_TTL_TICKS}
         quotes = {who: prices for who, (prices, _) in board.items()}
-        medians = {}
-        for good in self.goods:
-            values = [q[good] for q in quotes.values() if good in q]
-            if values:
-                medians[good] = self._median(values)
 
-        reply: dict[str, Any] = {"quotes": quotes, "median_price": medians,
-                                 "traders_quoting": len(quotes)}
-        if not obliges_revision(self.arm):
-            return reply
+        reply: dict[str, Any] = {"quotes": quotes}
+        medians: dict[str, float] = {}
+        if self.telling.median:
+            for good in self.goods:
+                values = [q[good] for q in quotes.values() if good in q]
+                if values:
+                    medians[good] = self._median(values)
+            reply["median_price"] = medians
+        reply["traders_quoting"] = len(quotes)
 
         mine = quotes.get(self.agent_id)
-        reply["your_quote"] = mine
-        reply["quote_is_live"] = mine is not None
-        if mine is None:
-            reply["notice"] = ("You have no live quote. Quotes expire after "
-                               f"{QUOTE_TTL_TICKS} rounds; post one to stay on the board.")
-        else:
-            # Ratio, not difference: prices span orders of magnitude here, and
-            # "3.2x the median" is the form an agent can act on.
-            reply["your_deviation_from_median"] = {
-                good: round(mine[good] / medians[good], 3)
-                for good in mine if medians.get(good)
-            }
+        if self.telling.expiry:
+            reply["quote_is_live"] = mine is not None
+            if mine is None:
+                reply["notice"] = ("You have no live quote. Quotes expire after "
+                                   f"{QUOTE_TTL_TICKS} rounds; post one to stay on "
+                                   "the board.")
+        if self.telling.deviation:
+            reply["your_quote"] = mine
+            if mine is not None:
+                # Ratio, not difference: prices span orders of magnitude here,
+                # and "3.2x the median" is the form an agent can act on.
+                reply["your_deviation_from_median"] = {
+                    good: round(mine[good] / medians[good], 3)
+                    for good in mine if medians.get(good)
+                }
         return reply
 
 
@@ -422,8 +594,8 @@ def build_tools(wire: Wire) -> Any:
     """The MCP server one agent sees. Tool text is the whole interface.
 
     Descriptions state mechanics and nothing strategic. A description that said
-    "post your prices" would be the convention, handed over, and arm B would
-    stop being an experiment.
+    "post your prices" would be the convention, handed over, and the island that
+    was supposed to invent one would stop being an experiment.
     """
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -465,8 +637,9 @@ def build_tools(wire: Wire) -> Any:
         return _text(await _off(lambda: wire.manager_call("cancel", trade_id=args.get("trade_id"))))
 
     tools = [my_state, produce, propose_trade, approve_trade, pending_trades, cancel_trade]
+    telling = wire.telling
 
-    if speaks(wire.arm):
+    if telling.channel:
         @tool("say", "Post a message all traders can read.", {"text": str})
         async def say(args: Any) -> dict[str, Any]:
             return _text(await _off(wire.post, str(args.get("text", ""))))
@@ -477,15 +650,15 @@ def build_tools(wire: Wire) -> Any:
 
         tools += [say, listen]
 
-    if has_quote_board(wire.arm):
+    if telling.board:
         # Descriptions state mechanics only, for the same reason as everything
         # else here. What the convention is comes from the brief, which every
-        # quoting arm has word for word; what these add is somewhere to put it.
-        # `bound`'s wording differs because its machinery differs — that is the
-        # affordance describing itself, which is the one place the arms are
-        # allowed to diverge.
+        # quoting island has word for word; what these add is somewhere to put
+        # it. The wording tracks the switches because the affordance is
+        # describing itself, which is the one place islands may diverge without
+        # the comparison becoming one about prompts.
         stale = (f" Quotes expire after {QUOTE_TTL_TICKS} rounds; re-post to stay "
-                 "on the board." if obliges_revision(wire.arm) else "")
+                 "on the board." if telling.expiry else "")
 
         @tool("post_quote",
               "Publish your prices on the shared quote board, in fish per unit. "
@@ -494,12 +667,20 @@ def build_tools(wire: Wire) -> Any:
         async def post_quote(args: Any) -> dict[str, Any]:
             return _text(await _off(wire.post_quote, args.get("prices")))
 
-        read_doc = ("The quote board: every trader's latest posted prices, and the "
-                    "median price for each good across everyone quoting.")
-        if obliges_revision(wire.arm):
+        read_doc = "The quote board: every trader's latest posted prices"
+        read_doc += (", and the median price for each good across everyone quoting."
+                     if telling.median else ".")
+        if telling.deviation and telling.expiry:
             read_doc += (" Also reports how far your own quote sits from the median "
                          "on each good, as a multiple, and whether your quote is "
-                         "still live. Expired quotes are not on the board.")
+                         "still live.")
+        elif telling.deviation:
+            read_doc += (" Also reports how far your own quote sits from the median "
+                         "on each good, as a multiple.")
+        elif telling.expiry:
+            read_doc += " Also reports whether your quote is still live."
+        if telling.expiry:
+            read_doc += " Expired quotes are not on the board."
 
         @tool("read_quotes", read_doc, {})
         async def read_quotes(_: Any) -> dict[str, Any]:
@@ -507,7 +688,7 @@ def build_tools(wire: Wire) -> Any:
 
         tools += [post_quote, read_quotes]
 
-    if has_pay_tool(wire.arm):
+    if telling.pay_tool:
         @tool("pay",
               "Offer to buy `qty` of `good` from one named trader, paying in "
               "fish at the quote board's median price. Works out the fish amount "
@@ -546,37 +727,44 @@ async def _off(fn: Any, *args: Any) -> Any:
     return await anyio.to_thread.run_sync(fn, *args)
 
 
-def tool_names(arm: str, agent_id: str) -> list[str]:
+def tool_names(spec: str | Telling, agent_id: str) -> list[str]:
+    telling = telling_for(spec)
     names = ["my_state", "produce", "propose_trade", "approve_trade",
              "pending_trades", "cancel_trade"]
-    if speaks(arm):
+    if telling.channel:
         names += ["say", "listen"]
-    if has_quote_board(arm):
+    if telling.board:
         names += ["post_quote", "read_quotes"]
-    if has_pay_tool(arm):
+    if telling.pay_tool:
         names += ["pay"]
     return [f"mcp__island-{agent_id}__{name}" for name in names]
 
 
-def brief_for(island: Island, manager: Manager, agent_id: str, arm: str) -> str:
+def brief_for(island: Island, manager: Manager, agent_id: str,
+              spec: str | Telling) -> str:
     """The system prompt for one agent.
 
-    ``told`` and ``built`` must return byte-identical text — the machinery is
-    the only thing separating them, and a stray sentence pointing at the quote
-    tools would turn the comparison into one about prompts again. The tools
-    announce themselves through their own descriptions, which is what an
-    affordance is.
+    Two islands whose only difference is an affordance must get byte-identical
+    text — the machinery is then the only thing separating them, and a stray
+    sentence pointing at the quote tools would turn the comparison into one
+    about prompts again. The tools announce themselves through their own
+    descriptions, which is what an affordance is. A test asserts it for
+    ``told``/``built``, which is the pair the claim was originally made about.
+
+    Only ``numeraire``, ``money``, ``ruin_warning`` and ``rolling`` reach this
+    text at all; every other switch is a tool.
     """
-    if arm not in ARMS:
-        raise ValueError(f"unknown arm {arm!r}; expected one of {', '.join(ARMS)}")
+    telling = telling_for(spec)
     text = BRIEF.format(
         agent_id=agent_id, n_others=island.n_agents - 1, n_goods=island.n_goods,
         goods=", ".join(manager.goods),
+        ruin=RUIN_CLAUSE if telling.ruin_warning else ".",
+        labour=ROLLING_LABOUR if telling.rolling else ONCE_LABOUR,
     )
-    if speaks(arm):
+    if telling.channel:
         text += CHANNEL_BRIEF
-    if arm in ("told", "built", "bound", "spend", "paid"):
+    if telling.numeraire:
         text += NUMERAIRE_BRIEF
-    if uses_money(arm):
+    if telling.money:
         text += MONEY_BRIEF
     return text

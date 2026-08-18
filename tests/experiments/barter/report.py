@@ -76,10 +76,12 @@ def price_rows(tier2: list[dict]) -> list[dict]:
     return out
 
 
-def build(sweep: dict, tier2: list[dict], islands: dict | None = None) -> str:
+def build(sweep: dict, tier2: list[dict], islands: dict | None = None,
+          labour: dict | None = None) -> str:
     payload = json.dumps({
         "sweep": sweep,
         "islands": islands or {},
+        "labour": labour or {},
         "prices": price_rows(tier2),
         "tier2": [{
             "arm": r["arm"],
@@ -336,6 +338,36 @@ TEMPLATE = r"""<title>Island Barter Frontier</title>
   </figure>
 
   <section class="col">
+    <h2>The ruin was never an information problem</h2>
+    <p>
+      Every arm on the ladder is trying to make one irreversible bet a better one. The
+      bet is production: labour is committed before any trade has happened, and nothing
+      afterwards can unwind it. Slicing that same unit of labour across the trading
+      rounds attacks the loss from the other side — it lets a wrong bet be
+      <i>revised</i> rather than made well. Nothing else changes: no extra messages, no
+      extra prices, and the frontier and both benchmarks stay exactly where they were.
+    </p>
+  </section>
+
+  <figure class="fig">
+    <h3>Ruin against how finely labour is sliced</h3>
+    <p class="cap">
+      <b>price</b>'s ruin — flat at 8 of 12 however long it ran, the result the whole
+      experiment turned on — goes to zero. So does <b>money</b>'s. Neither needed
+      anything said to anybody.
+    </p>
+    <div id="labour"></div>
+    <p class="fignote">
+      Three panels, one x-axis, because these are three different questions. The scissors
+      in the middle two are the finding: <b>net</b> efficiency rises because the zeros
+      disappear, while efficiency <b>on the islands that survived</b> falls, because an
+      agent that keeps re-aiming at what it is short of stops making what it is best at.
+      Slicing labour buys insurance and pays for it in specialisation. It is a trade-off,
+      not a free improvement, and the middle panel is there so it cannot be read as one.
+    </p>
+  </figure>
+
+  <section class="col">
     <h2>Models take the vocabulary and leave the substance</h2>
     <p>
       With the manager unchanged, language models were given the same island. Arms are
@@ -582,6 +614,82 @@ function sweep() {
     li.innerHTML = `<span class="swatch" style="background:${armColor(a)}"></span>${a} · ${DATA.series[a].name}`;
     leg.append(li);
   });
+}
+
+/* ---- irreversibility: the same labour, sliced ---- */
+function labour() {
+  const L = DATA.labour;
+  if (!L || !L.arms) return;
+  const counts = L.instalments, n = L.islands;
+  const W = 940, PH = 150, GAP = 46, ML = 52, MR = 104, MT = 14, MB = 34;
+  const H = MT + PH * 3 + GAP * 2 + MB + 14;
+  const lx = Math.log(counts[0]), hx = Math.log(counts[counts.length - 1]);
+  const X = c => ML + (Math.log(c) - lx) / (hx - lx) * (W - ML - MR);
+  const top2 = MT + PH + GAP, top3 = top2 + PH + GAP;
+  const yN = v => MT + PH - (v / 1.05) * PH;
+  const yU = v => top2 + PH - (v / 1.05) * PH;
+  const yR = v => top3 + PH - (v / n) * PH;
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Three panels sharing an x-axis of instalment count: net median efficiency scoring ruin at zero, median efficiency over islands where nobody was ruined, and islands with any ruin.' });
+
+  [[MT, yN, [0, 0.25, 0.5, 0.75, 1.0], v => v.toFixed(2), 'net median (ruin scored 0)'],
+   [top2, yU, [0, 0.25, 0.5, 0.75, 1.0], v => v.toFixed(2), 'median where nobody was ruined'],
+   [top3, yR, [0, Math.round(n / 2), n], v => String(v), 'islands with ruin (of ' + n + ')']
+  ].forEach(([top, y, ticks, fmt, label]) => {
+    ticks.forEach(t => {
+      svg.append(el('line', { x1: ML, y1: y(t), x2: W - MR, y2: y(t), class: 'grid' }));
+      const tx = el('text', { x: ML - 10, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' });
+      tx.textContent = fmt(t); svg.append(tx);
+    });
+    svg.append(el('line', { x1: ML, y1: top, x2: ML, y2: top + PH, class: 'axis' }));
+    const al = el('text', { x: ML, y: top - 4, class: 'alab' });
+    al.textContent = label; svg.append(al);
+  });
+
+  counts.forEach(c => {
+    const t = el('text', { x: X(c), y: H - 10, class: 'tick', 'text-anchor': 'middle' });
+    t.textContent = String(c); svg.append(t);
+  });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H + 6, class: 'alab', 'text-anchor': 'middle' });
+  xt.textContent = 'instalments the one unit of labour is split into (log)'; svg.append(xt);
+
+  const ends = [[], [], []];
+  DATA.arms.forEach(arm => {
+    const a = L.arms[arm], c = armColor(arm);
+    [[a.net_median, yN, 0], [a.unruined_median, yU, 1], [a.ruined, yR, 2]]
+      .forEach(([vals, y, panel]) => {
+        const pts = vals.map((v, i) => ({ v, i })).filter(p => p.v !== null);
+        if (pts.length > 1) {
+          svg.append(el('path', {
+            d: pts.map((p, k) => `${k ? 'L' : 'M'}${X(counts[p.i])},${y(p.v)}`).join(' '),
+            fill: 'none', stroke: c, 'stroke-width': 2,
+            'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+          ends[panel].push({ y: y(pts[pts.length - 1].v), c, arm });
+        }
+        pts.forEach(p => svg.append(el('circle',
+          { cx: X(counts[p.i]), cy: y(p.v), r: 4, fill: c, class: 'dot' })));
+      });
+  });
+  ends.forEach(group => declutter(group, 15).forEach(l => {
+    const t = el('text', { x: W - MR + 12, y: l.y + 4, class: 'endlab', fill: l.c });
+    t.textContent = `${l.arm} ${DATA.series[l.arm].name}`; svg.append(t);
+  }));
+
+  counts.forEach((c, i) => {
+    const half = (W - ML - MR) / (counts.length - 1) / 2;
+    const hit = el('rect', { x: X(c) - half, y: MT, width: half * 2, height: H - MT - MB, class: 'hit' });
+    const rows = DATA.arms.map(a => {
+      const r = L.arms[a];
+      const u = r.unruined_median[i] === null ? '—' : r.unruined_median[i].toFixed(3);
+      return `<div><span style="color:${armColor(a)}">■</span> ${a} ${DATA.series[a].name}
+              &nbsp;net ${r.net_median[i].toFixed(3)}&nbsp; unruined ${u}&nbsp; ruin ${r.ruined[i]}/${n}</div>`;
+    }).join('');
+    hit.addEventListener('mousemove', e => showTip(e, `<b>${c} instalment${c === 1 ? '' : 's'}</b>${rows}`));
+    hit.addEventListener('mouseleave', hideTip);
+    svg.append(hit);
+  });
+  document.getElementById('labour').append(svg);
 }
 
 /* ---- Tier 2 arms against the same reference points ---- */
@@ -880,7 +988,7 @@ function table() {
   document.getElementById('table').innerHTML = h + '</tbody></table>';
 }
 
-strip(); sweep(); islands(); worst(); volume(); tier2(); decomp(); prices(); table();
+strip(); sweep(); islands(); worst(); volume(); labour(); tier2(); decomp(); prices(); table();
 </script>
 """
 
@@ -891,11 +999,14 @@ def main() -> int:
     parser.add_argument("--tier2", type=Path, nargs="*", default=[])
     parser.add_argument("--islands", type=Path, default=None,
                         help="per-island Tier 1 results, for the distribution figures")
+    parser.add_argument("--labour", type=Path, default=None,
+                        help="the labour-timing sweep, for the irreversibility figure")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
     islands = json.loads(args.islands.read_text()) if args.islands else None
-    html = build(load_sweep(args.sweep), load_tier2(args.tier2), islands)
+    labour = json.loads(args.labour.read_text()) if args.labour else None
+    html = build(load_sweep(args.sweep), load_tier2(args.tier2), islands, labour)
     args.out.write_text(html)
     print(f"wrote {args.out} ({len(html):,} bytes)")
     return 0

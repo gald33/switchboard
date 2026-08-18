@@ -15,6 +15,11 @@ The shape, which is Tier 1's:
     discovery x D    talk, quote, read — the manager accepts nothing
     produce   x 1    labour committed, now with something to go on
     trade     x T    two passes: everyone offers, then everyone answers
+
+What the turn note says is not fixed here. Every sentence an agent is handed is
+one switch on ``Notes``, because a sentence that is always present is a sentence
+whose contribution can never be measured — see ``barter/llm.py`` for the same
+rule applied to the system prompt and the tool surface.
 """
 
 from __future__ import annotations
@@ -46,6 +51,52 @@ class Budgets:
     produce: int = 8
     offer: int = 14
     settle: int = 8
+
+
+@dataclass
+class Notes:
+    """What the turn note tells an agent, one switch per thing told.
+
+    The turn note is the second channel into an agent, after the system prompt,
+    and it had accumulated the same problem: several distinct pieces of
+    information welded into one paragraph that was either present or absent as a
+    block. A run could then say that agents did better with rolling labour, and
+    could not say whether that was the *mechanism* — labour actually being
+    spendable later — or the *sentence* telling them so.
+
+    So each is separate. ``rolling`` is the mechanism and lives in the manager;
+    the fields around it are only what the agent is told about the world it is
+    already in, and any of them can be switched off while the world stays put.
+    """
+
+    #: "N round(s) remain after this one." A horizon to plan against. Off, an
+    #: agent knows the game ends but not when, which is the difference between
+    #: a deadline and an open-ended one.
+    horizon: bool = True
+    #: "You have X of your one unit of labour left." Under rolling labour this
+    #: is the single most decision-relevant number an agent holds, and until now
+    #: it was only reachable by spending a tool call on ``my_state`` — which
+    #: made "did rolling labour help" partly a question about whether agents
+    #: bothered to look.
+    labour_left: bool = True
+    #: Whether labour actually rolls. Not a telling but a fact about the world,
+    #: kept here so the prose can match it. Setting this without the manager's
+    #: own ``rolling`` would be telling agents something untrue.
+    rolling: bool = False
+    #: How much labour one agent has left, 0..1. Injected rather than read,
+    #: because this module must not know what a ``Manager`` is.
+    labour: Callable[[str], float] | None = None
+
+    def horizon_note(self, left: int) -> str:
+        return f"{left} round(s) remain after this one." if self.horizon else ""
+
+    def labour_note(self, agent_id: str) -> str:
+        if not self.labour_left or self.labour is None:
+            return ""
+        left = self.labour(agent_id)
+        if left <= 1e-9:
+            return "Your labour is fully committed."
+        return f"You have {left:.2f} of your one unit of labour still to spend."
 
 
 @dataclass
@@ -81,20 +132,32 @@ async def play(
     budgets: Budgets | None = None,
     drain: Callable[[], Any] | None = None,
     total_label: int | None = None,
-    rolling: bool = False,
+    notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
 ) -> Played:
     """Run one island's order of play. Returns the transcript and diagnostics."""
     budgets = budgets or Budgets()
+    notes = notes or Notes()
     played = Played()
     order = list(manager.agents)
     total = total_label if total_label is not None else discovery + 1 + rounds
     round_no = 0
+    rolling = notes.rolling
 
-    async def pass_over(label: str, note: str, budget: int) -> None:
+    async def pass_over(label: str, base: str, budget: int, *, left: int | None = None) -> None:
+        """One turn each, in a shuffled order.
+
+        The note is assembled per agent rather than per pass, because the one
+        thing that differs between agents in the same round — how much labour
+        each has left — is exactly the thing worth telling them.
+        """
         nonlocal round_no
         rng.shuffle(order)
         for agent_id in order:
+            parts = [base, notes.labour_note(agent_id) if rolling else ""]
+            if left is not None:
+                parts.append(notes.horizon_note(left))
+            note = " ".join(part for part in parts if part)
             said = await take_turn(agent_id, round_no=round_no, label=label,
                                    note=note, budget=budget)
             played.transcript.append({"round": round_no, "pass": label,
@@ -139,21 +202,25 @@ async def play(
     manager.check_conservation()
     manager.open_trading()
     manager.check_conservation()
+    if rolling:
+        # The manager refuses two commitments in one tick and the opening
+        # instalment was committed at this one. Without this the first trading
+        # round's `produce` comes back "you have already worked this round",
+        # quietly costing every agent a slice of labour and making the arm look
+        # like a failure of nerve rather than of plumbing.
+        manager.advance()
 
     for _ in range(rounds):
         round_no += 1
         left = total - round_no
         await pass_over(
             "offer",
-            ("Trading is open, and you still have labour to spend — `produce` "
-             "once more this round if you want to, and `my_state` shows how much "
-             "is left. " if rolling else "Trading is open. ")
-            + f"{left} round(s) remain after this one.",
-            budgets.offer)
+            ("Trading is open, and you can still `produce` once more this round "
+             "if you want to. " if rolling else "Trading is open. "),
+            budgets.offer, left=left)
         await pass_over("settle",
-                        "Same round, second pass: answer what is waiting on you. "
-                        f"{left} round(s) remain after this one.",
-                        budgets.settle)
+                        "Same round, second pass: answer what is waiting on you.",
+                        budgets.settle, left=left)
         manager.advance()
         manager.check_conservation()
 
