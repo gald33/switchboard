@@ -1,0 +1,113 @@
+"""An id the hub minted, that the CLI would not accept.
+
+Agent ids are blinded to base64url, whose alphabet includes `-`, so about one
+id in sixty-six begins with one. `switchboard dm -yLAoQ63KcM86gn3wjgD3w hi`
+then died on `unrecognized arguments` — and that id came from `switchboard
+agents`, which the skill tells every agent to copy from. The tool refused a
+value it generated and told you to use.
+
+It surfaced as a 1-in-66 CI failure rather than as a bug report, which is the
+part worth dwelling on: a peer you cannot address is indistinguishable from a
+peer who is not there, and the documented response to a peer who is not there
+is to stop waiting and do something else. Nobody would have filed this.
+
+`--` always worked. These are about not having to know that.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from switchboard.cli import _escape_dash_leading_positionals as escape
+from switchboard.cli import build_parser, main
+from switchboard.crypto import WorkspaceCipher, generate_key
+from switchboard.testing import BASE_URL, hub
+
+WS = "dash-ws"
+
+
+@pytest.fixture
+def parser():
+    return build_parser()
+
+
+def test_about_one_agent_id_in_sixty_six_starts_with_a_dash():
+    """The premise, measured rather than asserted. If blinding ever stopped
+    using base64url this whole file could go — and it should not quietly stay
+    as decoration that tests nothing."""
+    leading = sum(
+        WorkspaceCipher.from_key(generate_key(), "w").blind(f"a{i}", "agent")
+        .startswith("-")
+        for i in range(400)
+    )
+    assert leading, "no blinded id in 400 began with '-' — is the alphabet still base64url?"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["dm", "-yLAoQ63KcM86gn3wjgD3w", "hi"],
+     ["dm", "--", "-yLAoQ63KcM86gn3wjgD3w", "hi"]),
+    (["board", "get", "-abc"], ["board", "get", "--", "-abc"]),
+    (["claim", "-abc"], ["claim", "--", "-abc"]),
+    # Global flags before the subcommand, which is where the first attempt at
+    # this stopped walking and silently did nothing.
+    (["--json", "claim", "-abc"], ["--json", "claim", "--", "-abc"]),
+    (["--url", "http://x", "-w", "ws", "dm", "-abc", "hi"],
+     ["--url", "http://x", "-w", "ws", "dm", "--", "-abc", "hi"]),
+    # A workspace whose name spells a subcommand. The value of a flag is not a
+    # subcommand, and reading it as one would escape the wrong token.
+    (["-w", "claim", "dm", "-abc", "hi"], ["-w", "claim", "dm", "--", "-abc", "hi"]),
+])
+def test_a_dash_leading_positional_is_escaped(parser, argv, expected):
+    assert escape(parser, argv) == expected
+
+
+@pytest.mark.parametrize("argv", [
+    # A real flag, and a value that merely looks like one. `-m` takes it.
+    ["claim", "x", "-m", "-a dashed note"],
+    ["board", "list", "--prefix", "-weird"],
+    ["board", "list", "--prefix=-weird"],
+    # `-` on its own is the stdin sentinel, not a positional to protect.
+    ["say", "chan", "-"],
+    ["dm", "bob", "-"],
+    ["board", "set", "k", "-"],
+    # Nothing to do.
+    ["dm", "bob", "hi"], ["agents"], ["dm", "-h"], ["--help"], ["--version"], [],
+])
+def test_everything_else_is_left_exactly_alone(parser, argv):
+    """The risk of this fix is not that it fails to fire — it is that it fires
+    where it should not and eats a flag."""
+    assert escape(parser, argv) == argv
+
+
+def test_an_explicit_double_dash_is_never_second_guessed(parser):
+    argv = ["dm", "--", "-abc", "-still-a-body"]
+    assert escape(parser, argv) == argv
+
+
+def test_a_dm_reaches_a_peer_whose_id_begins_with_a_dash(capsys, monkeypatch):
+    """End to end, with the id forced rather than waited for. The bug is one
+    run in sixty-six, so a test that used a random id would report success
+    sixty-five times for every time it checked anything."""
+    import switchboard.cli as cli_module
+
+    key = generate_key()
+    with hub(workspace=WS, key=key) as handle:
+        monkeypatch.setattr(cli_module, "Client", handle.client_class())
+        monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv("SWITCHBOARD_KEY", key)
+
+        # Find a peer name whose blinded id actually starts with '-', rather
+        # than asserting about a hypothetical one.
+        cipher = WorkspaceCipher.from_key(key, WS)
+        name = next(n for n in (f"bob{i}" for i in range(500))
+                    if cipher.blind(n, "agent").startswith("-"))
+        bob = handle.client(name, agent_id=name)
+        bob.register(name=name)
+        assert bob.agent_id.startswith("-")
+
+        monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+        assert main(["--url", BASE_URL, "-w", WS, "dm", bob.agent_id, "hello"]) == 0
+
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" not in err
+    assert "nobody on the roster" not in err, "escaped, but addressed to the wrong id"

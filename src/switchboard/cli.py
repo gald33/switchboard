@@ -4155,9 +4155,81 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _escape_dash_leading_positionals(
+    parser: argparse.ArgumentParser, argv: Sequence[str],
+) -> list[str]:
+    """Insert ``--`` before a positional that argparse would read as a flag.
+
+    The hub mints agent ids as base64url, whose alphabet includes ``-``, so
+    about one id in sixty-six begins with one. `switchboard dm -yLAoQ63… hi`
+    then dies on `unrecognized arguments`, and the id came from `switchboard
+    agents` — the tool refusing a value it generated and told you to use. It
+    surfaced as a 1-in-66 CI failure long before anyone would have reported it
+    as a bug, because a peer you cannot address looks like a peer who is not
+    there.
+
+    Deterministic rather than clever: walk the resolved subcommand's own
+    option strings, skip the values of flags that take one, and escape the
+    first token that starts with ``-`` and is not an option this subcommand
+    knows. So `claim x -m "-a dashed note"` is untouched (`-m` is real, and
+    the dashed text is its value), while `board get -abc` is escaped.
+
+    Writing `--` by hand still works, and is still what a shell user should
+    reach for. This only means they no longer have to know that.
+    """
+    args = list(argv)
+    if "--" in args:
+        return args
+
+    def subparsers_of(p: argparse.ArgumentParser) -> dict[str, Any]:
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices
+        return {}
+
+    # Walk down to the subcommand actually being run — stepping over the global
+    # flags that may precede it (`--json claim …`) and over their values, since
+    # a value is allowed to spell a subcommand name (`-w claim`).
+    index, current, depth = 0, parser, 0
+    while index < len(args):
+        choices = subparsers_of(current)
+        token = args[index]
+        if token in choices:
+            current, depth = choices[token], depth + 1
+            index += 1
+            continue
+        if token in current._option_string_actions:
+            action = current._option_string_actions[token]
+            index += 2 if action.nargs != 0 else 1
+            continue
+        if token.startswith("--") and "=" in token:
+            index += 1
+            continue
+        break
+    if not depth:
+        return args  # no subcommand yet; nothing positional to protect
+
+    options = set(current._option_string_actions)
+    while index < len(args):
+        token = args[index]
+        if token in options:
+            action = current._option_string_actions[token]
+            index += 2 if action.nargs != 0 else 1
+            continue
+        if token.startswith("--") and "=" in token and token.split("=", 1)[0] in options:
+            index += 1
+            continue
+        if token.startswith("-") and len(token) > 1:
+            return args[:index] + ["--"] + args[index:]
+        index += 1
+    return args
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = parser.parse_args(_escape_dash_leading_positionals(parser, argv))
     try:
         return args.func(args)
     except LeaseHeld as exc:
