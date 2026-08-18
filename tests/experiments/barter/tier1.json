@@ -2,6 +2,7 @@
   "agents": 12,
   "goods": 5,
   "islands": 12,
+  "instalments": 1,
   "floors": [
     0.31640317240349886,
     0.3480421768950582,
@@ -47,7 +48,8 @@
         "executed": 140,
         "proposed": 466,
         "rejected": 326,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 2,
@@ -64,7 +66,8 @@
         "executed": 182,
         "proposed": 511,
         "rejected": 329,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 3,
@@ -81,7 +84,8 @@
         "executed": 113,
         "proposed": 470,
         "rejected": 357,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 4,
@@ -98,7 +102,8 @@
         "executed": 146,
         "proposed": 483,
         "rejected": 337,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 5,
@@ -115,7 +120,8 @@
         "executed": 129,
         "proposed": 415,
         "rejected": 286,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 6,
@@ -132,7 +138,8 @@
         "executed": 157,
         "proposed": 484,
         "rejected": 327,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 7,
@@ -149,7 +156,8 @@
         "executed": 128,
         "proposed": 354,
         "rejected": 226,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 8,
@@ -166,7 +174,8 @@
         "executed": 107,
         "proposed": 366,
         "rejected": 259,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 9,
@@ -183,7 +192,8 @@
         "executed": 73,
         "proposed": 305,
         "rejected": 232,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 10,
@@ -200,7 +210,8 @@
         "executed": 96,
         "proposed": 400,
         "rejected": 304,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 11,
@@ -217,7 +228,8 @@
         "executed": 144,
         "proposed": 426,
         "rejected": 282,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       },
       {
         "seed": 12,
@@ -234,7 +246,8 @@
         "executed": 77,
         "proposed": 338,
         "rejected": 261,
-        "messages": 0
+        "messages": 0,
+        "instalments": 1
       }
     ],
     "B": [
@@ -253,7 +266,8 @@
         "executed": 5,
         "proposed": 720,
         "rejected": 715,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 2,
@@ -270,7 +284,8 @@
         "executed": 26,
         "proposed": 720,
         "rejected": 694,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 3,
@@ -287,7 +302,8 @@
         "executed": 22,
         "proposed": 720,
         "rejected": 698,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 4,
@@ -304,7 +320,8 @@
         "executed": 23,
         "proposed": 720,
         "rejected": 697,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 5,
@@ -321,7 +338,8 @@
         "executed": 2,
         "proposed": 720,
         "rejected": 718,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 6,
@@ -338,7 +356,8 @@
         "executed": 8,
         "proposed": 720,
         "rejected": 712,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 7,
@@ -355,7 +374,8 @@
         "executed": 31,
         "proposed": 720,
         "rejected": 689,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 8,
@@ -372,7 +392,8 @@
         "executed": 30,
         "proposed": 720,
         "rejected": 690,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 9,
@@ -389,7 +410,8 @@
         "executed": 14,
         "proposed": 720,
         "rejected": 706,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 10,
@@ -406,7 +428,8 @@
         "executed": 10,
         "proposed": 720,
         "rejected": 710,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 11,
@@ -423,7 +446,8 @@
         "executed": 29,
         "proposed": 720,
         "rejected": 691,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 12,
@@ -440,7 +464,8 @@
         "executed": 14,
         "proposed": 720,
         "rejected": 706,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       }
     ],
     "C": [
@@ -459,7 +484,8 @@
         "executed": 211,
         "proposed": 688,
         "rejected": 477,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 2,
@@ -476,7 +502,8 @@
         "executed": 168,
         "proposed": 720,
         "rejected": 552,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 3,
@@ -498,7 +525,8 @@
         "executed": 51,
         "proposed": 460,
         "rejected": 409,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 4,
@@ -518,7 +546,8 @@
         "executed": 83,
         "proposed": 719,
         "rejected": 636,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 5,
@@ -537,7 +566,8 @@
         "executed": 65,
         "proposed": 279,
         "rejected": 214,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 6,
@@ -556,7 +586,8 @@
         "executed": 134,
         "proposed": 663,
         "rejected": 529,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 7,
@@ -575,7 +606,8 @@
         "executed": 92,
         "proposed": 337,
         "rejected": 245,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 8,
@@ -597,7 +629,8 @@
         "executed": 48,
         "proposed": 158,
         "rejected": 110,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 9,
@@ -614,7 +647,8 @@
         "executed": 181,
         "proposed": 716,
         "rejected": 535,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 10,
@@ -631,7 +665,8 @@
         "executed": 189,
         "proposed": 669,
         "rejected": 480,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 11,
@@ -652,7 +687,8 @@
         "executed": 64,
         "proposed": 275,
         "rejected": 211,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 12,
@@ -673,7 +709,8 @@
         "executed": 90,
         "proposed": 330,
         "rejected": 240,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       }
     ],
     "D": [
@@ -692,7 +729,8 @@
         "executed": 229,
         "proposed": 720,
         "rejected": 491,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 2,
@@ -709,7 +747,8 @@
         "executed": 235,
         "proposed": 720,
         "rejected": 485,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 3,
@@ -728,7 +767,8 @@
         "executed": 197,
         "proposed": 720,
         "rejected": 523,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 4,
@@ -745,7 +785,8 @@
         "executed": 260,
         "proposed": 720,
         "rejected": 460,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 5,
@@ -767,7 +808,8 @@
         "executed": 151,
         "proposed": 720,
         "rejected": 569,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 6,
@@ -789,7 +831,8 @@
         "executed": 158,
         "proposed": 720,
         "rejected": 562,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 7,
@@ -808,7 +851,8 @@
         "executed": 194,
         "proposed": 689,
         "rejected": 495,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 8,
@@ -827,7 +871,8 @@
         "executed": 176,
         "proposed": 720,
         "rejected": 544,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 9,
@@ -846,7 +891,8 @@
         "executed": 218,
         "proposed": 720,
         "rejected": 502,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 10,
@@ -866,7 +912,8 @@
         "executed": 203,
         "proposed": 720,
         "rejected": 517,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 11,
@@ -883,7 +930,8 @@
         "executed": 221,
         "proposed": 720,
         "rejected": 499,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       },
       {
         "seed": 12,
@@ -900,7 +948,8 @@
         "executed": 183,
         "proposed": 720,
         "rejected": 537,
-        "messages": 360
+        "messages": 360,
+        "instalments": 1
       }
     ]
   }

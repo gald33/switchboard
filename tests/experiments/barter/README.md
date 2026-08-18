@@ -615,5 +615,5 @@ are alongside this file as `tier2_seed1_*.json`.
 | `llm.py` | the model-facing tool surface, and `Telling` — every switch there is |
 | `analysis.py` | reading prices back out of prose or off the board, and the trajectory |
 | `report.py` | the findings page, built from the run records so the charts cannot drift |
-| `tier1*.json` | the scripted results the page is drawn from — all three written by one command |
+| `tier1.json` `tier1_rounds.json` `tier1_labour.json` | the scripted results the page is drawn from, all three written by one command |
 | `tier2_seed1_*.json` | the raw record of each paid island |
