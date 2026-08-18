@@ -834,7 +834,8 @@ def test_every_named_arm_is_a_combination_of_switches_and_nothing_more(island):
     """
     from barter.llm import ARMS, PRESETS, telling_for
 
-    assert PRESETS["silent"].switches() == ("ruin_warning", "horizon", "labour_left")
+    assert PRESETS["silent"].switches() == (
+        "ruin_warning", "horizon", "labour_left", "own_value", "own_score")
     assert "channel" in PRESETS["free"].switches()
     assert not PRESETS["free"].numeraire
     assert PRESETS["told"].numeraire and not PRESETS["told"].board
@@ -1010,3 +1011,39 @@ def test_a_rolling_tier_two_island_can_work_in_its_very_first_trading_round(isla
     for state in manager.agents.values():
         assert state.spent == pytest.approx(1.0, abs=1e-9)
     manager.check_conservation()
+
+
+def test_the_calculators_in_my_state_are_switches_too(island):
+    """`my_state` hands over two things that are not facts about the world.
+
+    `value_per_unit` is the marginal rate an agent would otherwise have to work
+    out from its own exponents and holdings — most of what a trader needs to
+    price a swap, computed for it. `utility` is its live score. Both were handed
+    over silently in every arm, which made each prompt look more austere than
+    the island actually was. The filtering happens in the tool surface and not
+    in the manager: the manager is the pure state machine both tiers share and
+    must not know what an island was told.
+    """
+    from barter.llm import compose
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service = ManagerService(handle.client("manager"), manager, run="calc")
+        service.claim()
+
+        def wire_for(telling):
+            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
+                        telling=telling, floor_channel="barter/calc/floor",
+                        quote_prefix="barter/calc/quote/", goods=tuple(manager.goods))
+
+        full = wire_for(telling_for("free")).state()
+        assert "value_per_unit" in full and "utility" in full
+
+        quiet = wire_for(compose("free", off=["own_value", "own_score"])).state()
+        assert "value_per_unit" not in quiet and "utility" not in quiet
+        # ...and nothing else went with them. Capacities, tastes and holdings are
+        # the world, not a hint about it.
+        assert set(full) - set(quiet) == {"value_per_unit", "utility"}
+
+        # The manager itself is untouched — it answered in full both times.
+        assert "value_per_unit" in manager.op_state("a1")

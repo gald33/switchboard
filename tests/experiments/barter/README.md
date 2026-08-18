@@ -200,6 +200,8 @@ arms are combinations of them:
 | `ruin_warning` | spell out that a zero holding scores zero | words |
 | `horizon` | how many rounds remain | turn note |
 | `labour_left` | how much labour you still have | turn note |
+| `own_value` | `my_state` works out what one more of each good is worth to you | tool reply |
+| `own_score` | `my_state` reports your live score | tool reply |
 
 ```
 silent  →  (nothing)

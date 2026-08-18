@@ -271,6 +271,17 @@ class Telling:
     #: Tell an agent how much labour it has left, in the turn note, rather than
     #: leaving it to spend a tool call finding out.
     labour_left: bool = True
+    #: `my_state` reports `value_per_unit`: what one more of each good is worth
+    #: to you right now. This is a calculator, and a substantive one — it is the
+    #: marginal rate an agent would otherwise have to work out from its own
+    #: exponents and holdings, and it is most of what a trader needs to price a
+    #: swap. Handing it over silently made every arm's prompt look more austere
+    #: than the island actually was.
+    own_value: bool = True
+    #: `my_state` reports your current score. Cheap to compute and impossible to
+    #: unsee: an agent watching a number go up is playing a different game from
+    #: one that only knows the rule.
+    own_score: bool = True
 
     #: What each switch needs underneath it. These are not style rules: a board
     #: is denominated in fish and pins fish at 1, so a board without the
@@ -313,6 +324,7 @@ class Telling:
 _SWITCHES: tuple[str, ...] = (
     "channel", "numeraire", "board", "median", "deviation", "expiry",
     "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
+    "own_value", "own_score",
 )
 
 #: The named arms, as combinations. They are kept because the merged results are
@@ -435,6 +447,22 @@ class Wire:
                 self.calls.append({"op": op, "ok": body.get("ok")})
                 return body
         return {"ok": False, "error": "manager did not reply"}
+
+    def state(self) -> dict[str, Any]:
+        """This agent's own state, minus anything the switches do not hand over.
+
+        The filtering is here rather than in the manager on purpose. The manager
+        is the pure state machine both tiers share and it must not know what an
+        island was told — it answers what it knows, and this decides what is
+        passed on. That keeps "what an agent could see" a property of the
+        experiment's setup rather than of its bookkeeping.
+        """
+        reply = self.manager_call("state")
+        if not self.telling.own_value:
+            reply.pop("value_per_unit", None)
+        if not self.telling.own_score:
+            reply.pop("utility", None)
+        return reply
 
     def post(self, text: str) -> dict[str, Any]:
         self.said.append(text)
@@ -599,10 +627,15 @@ def build_tools(wire: Wire) -> Any:
     """
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
-    @tool("my_state", "Your capacities, tastes, holdings and current score. "
-                      "Nobody else's — this is private to you.", {})
+    telling = wire.telling
+
+    state_doc = "Your capacities, tastes and holdings"
+    state_doc += (", and current score." if telling.own_score else ".")
+    state_doc += " Nobody else's — this is private to you."
+
+    @tool("my_state", state_doc, {})
     async def my_state(_: Any) -> dict[str, Any]:
-        return _text(await _off(wire.manager_call, "state"))
+        return _text(await _off(wire.state))
 
     @tool("produce",
           "Spend your one unit of labour. Pass shares per good, each >= 0, "
@@ -637,7 +670,6 @@ def build_tools(wire: Wire) -> Any:
         return _text(await _off(lambda: wire.manager_call("cancel", trade_id=args.get("trade_id"))))
 
     tools = [my_state, produce, propose_trade, approve_trade, pending_trades, cancel_trade]
-    telling = wire.telling
 
     if telling.channel:
         @tool("say", "Post a message all traders can read.", {"text": str})
