@@ -24,9 +24,12 @@ import json
 import pytest
 
 from switchboard.cli import main
+from switchboard.client import Identity
 from switchboard.crypto import generate_key
 from switchboard.holds import HOLDS_PREFIX
+from switchboard.mcp_server import Bridge, handle_request
 from switchboard.testing import BASE_URL, hub
+from switchboard.timing import TimingModel
 
 WS = "declare-ws"
 RESOURCE = "src/parser.py"
@@ -284,21 +287,41 @@ def test_a_declaration_that_will_not_write_is_not_a_silent_no_op(
 # `cli.py` leaves half the audience where it started.
 
 
-@pytest.fixture
-def bridge_pair(monkeypatch):
-    """Two bridges on one workspace, which is the situation the bug needs."""
-    from tests.test_mcp import make_bridge
+def _bridge(handle, who):
+    """One bridge, built by hand.
 
+    Deliberately not imported from `test_mcp.py`. Cross-importing test modules
+    works under `python -m pytest`, which puts the working directory on
+    `sys.path`, and fails under bare `pytest`, which does not — so it passes
+    locally and 404s in CI, which is how this arrived. Twelve duplicated lines
+    cost less than a test that only runs one of the two ways it is invoked.
+    """
+    bridge = Bridge.__new__(Bridge)
+    bridge.config = handle.client_config(agent_id=who)
+    bridge.identity = Identity(agent_id=who, name=who, kind="local",
+                               branch=f"feat/{who}", meta={})
+    bridge.client = handle.client(who, agent_id=who)
+    bridge.timing = TimingModel(":memory:")
+    bridge._registered = False
+    return bridge
+
+
+@pytest.fixture
+def bridge_pair():
+    """Two bridges on one workspace, which is the situation the bug needs."""
     key = generate_key()
     with hub(workspace="declare-mcp", key=key) as handle:
-        yield handle, (lambda who: make_bridge(handle, who))
+        yield handle, (lambda who: _bridge(handle, who))
 
 
 def _mcp(bridge, name, **kw):
-    from tests.test_mcp import call
-
-    payload, is_error = call(bridge, name, **kw)
-    assert not is_error, payload
+    response = handle_request(bridge, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": name, "arguments": kw},
+    })
+    result = response["result"]
+    payload = json.loads(result["content"][0]["text"])
+    assert not result.get("isError", False), payload
     return payload
 
 
