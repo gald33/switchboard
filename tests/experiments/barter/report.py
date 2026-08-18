@@ -5,8 +5,16 @@ in by hand, because a figure transcribed once is a figure that goes stale the
 next time an arm runs — and this project has already had to retract a claim it
 had written down confidently.
 
-    python tests/experiments/barter/report.py --sweep sweep.json \
+    python tests/experiments/barter_experiment.py --islands 12 \
+        --rounds-sweep --labour-sweep --json tests/experiments/barter/tier1.json
+    python tests/experiments/barter/report.py --sweep tier1_rounds.json \
+        --islands tier1.json --labour tier1_labour.json \
         --tier2 tier2_seed1_*.json --out report.html
+
+Every input here is written by that first command, from the same run. That was
+not true until recently: the round-budget figure — the main one on the page —
+was drawn from a file no committed script could produce, which is this
+docstring's own warning happening to this docstring.
 
 The charts are hand-built inline SVG. Two rules they obey, both from hard-won
 places: the round-budget figure is **two panels sharing an x-axis, never a dual
@@ -54,9 +62,35 @@ def load_tier2(paths: list[Path]) -> list[dict]:
     return rows
 
 
-def build(sweep: dict, tier2: list[dict]) -> str:
+def price_rows(tier2: list[dict]) -> list[dict]:
+    """Per-good price disagreement per arm — the number the quoting arms turn on.
+
+    Computed here from the records rather than transcribed, and through the same
+    ``analysis`` functions the tables use, so the figure and the prose cannot
+    disagree with each other.
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from barter.analysis import price_spread, quoted_prices
+
+    out = []
+    for record in tier2:
+        vectors, source = quoted_prices(record)
+        spread = price_spread(vectors)
+        if spread:
+            out.append({"arm": record["arm"], "source": source,
+                        "spread": {g: round(v, 2) for g, v in spread.items()},
+                        "quoting": len(vectors)})
+    return out
+
+
+def build(sweep: dict, tier2: list[dict], islands: dict | None = None,
+          labour: dict | None = None) -> str:
     payload = json.dumps({
         "sweep": sweep,
+        "islands": islands or {},
+        "labour": labour or {},
+        "prices": price_rows(tier2),
         "tier2": [{
             "arm": r["arm"],
             "efficiency": None if r.get("ruined") else r["efficiency"][0],
@@ -260,6 +294,87 @@ TEMPLATE = r"""<title>Island Barter Frontier</title>
     </details>
   </figure>
 
+  <figure class="fig">
+    <h3>Every island, not the median</h3>
+    <p class="cap">
+      The same twelve islands at 60 rounds, one dot each. <b>silent</b> and
+      <b>disclose</b> land in a tight band and never ruin anyone. <b>price</b> is
+      bimodal — it either reaches the frontier or destroys the island, with almost
+      nothing in between. <b>money</b> spreads across the upper range and still ruins
+      more than half. A median reports none of that.
+    </p>
+    <div id="islands"></div>
+    <p class="fignote">
+      Ruined islands carry no efficiency, so they are drawn on their own row rather than
+      placed at zero. The reference lines are the same autarky floor and exchange ceiling
+      as above.
+    </p>
+  </figure>
+
+  <figure class="fig">
+    <h3>Who ends up worse off than never trading</h3>
+    <p class="cap">
+      Worst single agent on each island, as a multiple of what it would have had alone.
+      Below <span class="num">1.0</span> means taking part hurt somebody. Voluntary trade
+      cannot do that on its own — only a production bet on a price that did not arrive can.
+    </p>
+    <div id="worst"></div>
+    <p class="fignote">
+      <b>disclose</b> hurts somebody on <b>12 of 12</b> islands — not on average, on every
+      one. That is the cost of talking without an agreed way to read what is said, and it
+      is invisible in an efficiency median. <b>silent</b> is the mirror image at
+      <b>0 of 12</b>: it produces its autarky bundle and settles only what both sides
+      scored as a gain, so it is the safe arm as well as the mediocre one. <b>money</b>
+      hurts somebody on 2 of its 5 surviving islands. Ruined islands are excluded — their
+      worst agent is zero by definition.
+    </p>
+  </figure>
+
+  <figure class="fig">
+    <h3>What money costs to run</h3>
+    <p class="cap">
+      Median settled trades per island. <b>money</b> buys its robustness with volume:
+      twice <b>price</b>'s settlements by round 60 and four times by round 240, because
+      every exchange becomes two trades through the numeraire instead of one swap.
+    </p>
+    <div id="volume"></div>
+    <p class="fignote">
+      <b>price</b> flatlines at 91 trades from round 60 onward — the same budget at which
+      its ruin rate stops falling. It is not trading slowly by then; it has stopped
+      entirely, because the trades it still needs are ones no counterparty wants.
+    </p>
+  </figure>
+
+  <section class="col">
+    <h2>The ruin was never an information problem</h2>
+    <p>
+      Every arm on the ladder is trying to make one irreversible bet a better one. The
+      bet is production: labour is committed before any trade has happened, and nothing
+      afterwards can unwind it. Slicing that same unit of labour across the trading
+      rounds attacks the loss from the other side — it lets a wrong bet be
+      <i>revised</i> rather than made well. Nothing else changes: no extra messages, no
+      extra prices, and the frontier and both benchmarks stay exactly where they were.
+    </p>
+  </section>
+
+  <figure class="fig">
+    <h3>Ruin against how finely labour is sliced</h3>
+    <p class="cap">
+      <b>price</b>'s ruin — flat at 8 of 12 however long it ran, the result the whole
+      experiment turned on — goes to zero. So does <b>money</b>'s. Neither needed
+      anything said to anybody.
+    </p>
+    <div id="labour"></div>
+    <p class="fignote">
+      Three panels, one x-axis, because these are three different questions. The scissors
+      in the middle two are the finding: <b>net</b> efficiency rises because the zeros
+      disappear, while efficiency <b>on the islands that survived</b> falls, because an
+      agent that keeps re-aiming at what it is short of stops making what it is best at.
+      Slicing labour buys insurance and pays for it in specialisation. It is a trade-off,
+      not a free improvement, and the middle panel is there so it cannot be read as one.
+    </p>
+  </figure>
+
   <section class="col">
     <h2>Models take the vocabulary and leave the substance</h2>
     <p>
@@ -308,6 +423,39 @@ TEMPLATE = r"""<title>Island Barter Frontier</title>
       One island per arm, one seed, Haiku 4.5. Marked as single observations because that
       is what they are. Arms where an agent finished with nothing are shown as ruin rather
       than as a low score.
+    </p>
+  </figure>
+
+  <figure class="fig">
+    <h3>They all traded well and all produced the same</h3>
+    <p class="cap">
+      Efficiency against how well each arm allocated <em>what it chose to make</em>. The
+      diagonal is what an arm would score if it produced its autarky bundle and traded
+      that perfectly. Every arm sits on it — so the differences between them are entirely
+      about swapping, and none of them ever changed what was made.
+    </p>
+    <div id="decomp"></div>
+    <p class="fignote">
+      Implied production quality is efficiency ÷ own-plan: 0.407, 0.410, 0.410 and 0.422
+      across the four scoreable arms, against an exchange ceiling of 0.413. Four arms
+      agreeing that tightly is the most robust thing in this section, and it is what
+      prompted the flow fix — production was being committed before anybody had spoken.
+    </p>
+  </figure>
+
+  <figure class="fig">
+    <h3>The number the quoting arms turn on</h3>
+    <p class="cap">
+      How far apart traders' prices finished, per good — the ratio of the highest quote to
+      the lowest. <span class="num">1×</span> would be a genuinely shared price. Nothing
+      reached it except the good the board pins by definition.
+    </p>
+    <div id="prices"></div>
+    <p class="fignote">
+      Log scale. <b>told</b> keeps its prices in prose, so they are read back out of the
+      transcript the way a counterparty would have to; the other arms have a board.
+      <b>fish</b> is the numeraire and is fixed at 1 by the machinery, which is why it is
+      the only good every trader agrees on.
     </p>
   </figure>
 
@@ -398,7 +546,7 @@ function strip() {
 function sweep() {
   const W = 940, PH = 210, GAP = 54, ML = 52, MR = 96, MT = 14, MB = 34;
   const s = DATA.sweep, budgets = s.budgets;
-  const H = MT + PH + GAP + PH + MB + 14;
+  const H = MT + PH + GAP + PH + MB + 34;
   const lx = Math.log(budgets[0]), hx = Math.log(budgets[budgets.length - 1]);
   const X = b => ML + (Math.log(b) - lx) / (hx - lx) * (W - ML - MR);
   const yE = v => MT + PH - ((v - 0.3) / (1.05 - 0.3)) * PH;
@@ -422,10 +570,10 @@ function sweep() {
   });
 
   budgets.forEach(b => {
-    const t = el('text', { x: X(b), y: H - 10, class: 'tick', 'text-anchor': 'middle' });
+    const t = el('text', { x: X(b), y: H - 28, class: 'tick', 'text-anchor': 'middle' });
     t.textContent = String(b); svg.append(t);
   });
-  const xt = el('text', { x: (ML + W - MR) / 2, y: H + 6, class: 'alab', 'text-anchor': 'middle' });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H - 8, class: 'alab', 'text-anchor': 'middle' });
   xt.textContent = 'trading rounds (log)'; svg.append(xt);
 
   const effLabels = [], ruinLabels = [];
@@ -476,6 +624,82 @@ function sweep() {
   });
 }
 
+/* ---- irreversibility: the same labour, sliced ---- */
+function labour() {
+  const L = DATA.labour;
+  if (!L || !L.arms) return;
+  const counts = L.instalments, n = L.islands;
+  const W = 940, PH = 150, GAP = 46, ML = 52, MR = 104, MT = 14, MB = 34;
+  const H = MT + PH * 3 + GAP * 2 + MB + 34;
+  const lx = Math.log(counts[0]), hx = Math.log(counts[counts.length - 1]);
+  const X = c => ML + (Math.log(c) - lx) / (hx - lx) * (W - ML - MR);
+  const top2 = MT + PH + GAP, top3 = top2 + PH + GAP;
+  const yN = v => MT + PH - (v / 1.05) * PH;
+  const yU = v => top2 + PH - (v / 1.05) * PH;
+  const yR = v => top3 + PH - (v / n) * PH;
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Three panels sharing an x-axis of instalment count: net median efficiency scoring ruin at zero, median efficiency over islands where nobody was ruined, and islands with any ruin.' });
+
+  [[MT, yN, [0, 0.25, 0.5, 0.75, 1.0], v => v.toFixed(2), 'net median (ruin scored 0)'],
+   [top2, yU, [0, 0.25, 0.5, 0.75, 1.0], v => v.toFixed(2), 'median where nobody was ruined'],
+   [top3, yR, [0, Math.round(n / 2), n], v => String(v), 'islands with ruin (of ' + n + ')']
+  ].forEach(([top, y, ticks, fmt, label]) => {
+    ticks.forEach(t => {
+      svg.append(el('line', { x1: ML, y1: y(t), x2: W - MR, y2: y(t), class: 'grid' }));
+      const tx = el('text', { x: ML - 10, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' });
+      tx.textContent = fmt(t); svg.append(tx);
+    });
+    svg.append(el('line', { x1: ML, y1: top, x2: ML, y2: top + PH, class: 'axis' }));
+    const al = el('text', { x: ML, y: top - 4, class: 'alab' });
+    al.textContent = label; svg.append(al);
+  });
+
+  counts.forEach(c => {
+    const t = el('text', { x: X(c), y: H - 28, class: 'tick', 'text-anchor': 'middle' });
+    t.textContent = String(c); svg.append(t);
+  });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H - 8, class: 'alab', 'text-anchor': 'middle' });
+  xt.textContent = 'instalments the one unit of labour is split into (log)'; svg.append(xt);
+
+  const ends = [[], [], []];
+  DATA.arms.forEach(arm => {
+    const a = L.arms[arm], c = armColor(arm);
+    [[a.net_median, yN, 0], [a.unruined_median, yU, 1], [a.ruined, yR, 2]]
+      .forEach(([vals, y, panel]) => {
+        const pts = vals.map((v, i) => ({ v, i })).filter(p => p.v !== null);
+        if (pts.length > 1) {
+          svg.append(el('path', {
+            d: pts.map((p, k) => `${k ? 'L' : 'M'}${X(counts[p.i])},${y(p.v)}`).join(' '),
+            fill: 'none', stroke: c, 'stroke-width': 2,
+            'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+          ends[panel].push({ y: y(pts[pts.length - 1].v), c, arm });
+        }
+        pts.forEach(p => svg.append(el('circle',
+          { cx: X(counts[p.i]), cy: y(p.v), r: 4, fill: c, class: 'dot' })));
+      });
+  });
+  ends.forEach(group => declutter(group, 15).forEach(l => {
+    const t = el('text', { x: W - MR + 12, y: l.y + 4, class: 'endlab', fill: l.c });
+    t.textContent = `${l.arm} ${DATA.series[l.arm].name}`; svg.append(t);
+  }));
+
+  counts.forEach((c, i) => {
+    const half = (W - ML - MR) / (counts.length - 1) / 2;
+    const hit = el('rect', { x: X(c) - half, y: MT, width: half * 2, height: H - MT - MB, class: 'hit' });
+    const rows = DATA.arms.map(a => {
+      const r = L.arms[a];
+      const u = r.unruined_median[i] === null ? '—' : r.unruined_median[i].toFixed(3);
+      return `<div><span style="color:${armColor(a)}">■</span> ${a} ${DATA.series[a].name}
+              &nbsp;net ${r.net_median[i].toFixed(3)}&nbsp; unruined ${u}&nbsp; ruin ${r.ruined[i]}/${n}</div>`;
+    }).join('');
+    hit.addEventListener('mousemove', e => showTip(e, `<b>${c} instalment${c === 1 ? '' : 's'}</b>${rows}`));
+    hit.addEventListener('mouseleave', hideTip);
+    svg.append(hit);
+  });
+  document.getElementById('labour').append(svg);
+}
+
 /* ---- Tier 2 arms against the same reference points ---- */
 function tier2() {
   if (!DATA.tier2.length) return;
@@ -520,6 +744,241 @@ function tier2() {
   document.getElementById('tier2').append(svg);
 }
 
+
+/* ---- every island as a dot, because the median was the problem ---- */
+function islands() {
+  const isl = DATA.islands; if (!isl.arms) return;
+  const W = 940, rowH = 62, ML = 96, MR = 152, TOP = 14;
+  const H = DATA.arms.length * rowH + 46;
+  const X = v => ML + v * (W - ML - MR);
+  const floor = DATA.sweep.floor, ceiling = DATA.sweep.ceiling;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Efficiency of each of twelve islands, per arm' });
+
+  [[floor, 'autarky', 0], [ceiling, 'exchange ceiling', 15], [1, 'frontier', 0]]
+    .forEach(([v, label, drop]) => {
+      svg.append(el('line', { x1: X(v), y1: TOP - 6, x2: X(v),
+                              y2: DATA.arms.length * rowH + 6 + drop, class: 'axis' }));
+      const t = el('text', { x: X(v), y: DATA.arms.length * rowH + 22 + drop,
+                             class: 'bandlab', 'text-anchor': v === 1 ? 'end' : 'middle' });
+      t.textContent = `${label} ${v.toFixed(3)}`; svg.append(t);
+    });
+
+  DATA.arms.forEach((arm, i) => {
+    const y = TOP + 18 + i * rowH, c = armColor(arm), rows = isl.arms[arm];
+    const name = el('text', { x: ML - 14, y: y + 4, class: 'endlab', 'text-anchor': 'end', fill: c });
+    name.textContent = `${arm} ${DATA.series[arm].name}`; svg.append(name);
+
+    const clean = rows.filter(r => !r.ruined.length);
+    const ruined = rows.length - clean.length;
+    // Jitter is deterministic in the island's own seed, so the picture is the
+    // same every time the page is built.
+    clean.forEach(r => {
+      const jitter = ((r.seed * 37) % 11 - 5) * 1.6;
+      const dot = el('circle', { cx: X(r.efficiency[0]), cy: y + jitter, r: 5,
+                                 fill: c, opacity: 0.72, class: 'dot' });
+      dot.addEventListener('mousemove', e => showTip(e,
+        `<b>${arm} ${DATA.series[arm].name}</b> · island ${r.seed}` +
+        `<div>efficiency ${r.efficiency[0].toFixed(3)}</div>` +
+        `<div>of its own plan ${r.own_plan[0].toFixed(3)}</div>` +
+        `<div>settled ${r.executed}/${r.proposed}</div>`));
+      dot.addEventListener('mouseleave', hideTip);
+      svg.append(dot);
+    });
+    if (ruined) {
+      const t = el('text', { x: W - MR + 12, y: y + 4, class: 'endlab', fill: cssv('--critical') });
+      t.textContent = `${ruined}/12 ruined`; svg.append(t);
+    } else {
+      const t = el('text', { x: W - MR + 12, y: y + 4, class: 'endlab', fill: cssv('--ink-3') });
+      t.textContent = 'none ruined'; svg.append(t);
+    }
+  });
+  document.getElementById('islands').append(svg);
+}
+
+/* ---- who got hurt: worst agent vs its own autarky ---- */
+function worst() {
+  const isl = DATA.islands; if (!isl.arms) return;
+  const W = 940, rowH = 54, ML = 96, MR = 60, TOP = 16;
+  const H = DATA.arms.length * rowH + 44;
+  const lo = 0, hi = 1.8;
+  const X = v => ML + (Math.min(v, hi) - lo) / (hi - lo) * (W - ML - MR);
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Worst agent per island as a multiple of its autarky utility' });
+
+  [0.5, 1.0, 1.5].forEach(v => {
+    const crit = v === 1.0;
+    svg.append(el('line', { x1: X(v), y1: TOP - 8, x2: X(v), y2: DATA.arms.length * rowH + 4,
+                            stroke: crit ? cssv('--critical') : cssv('--hair'),
+                            'stroke-width': crit ? 1.5 : 1 }));
+    const t = el('text', { x: X(v), y: DATA.arms.length * rowH + 22, class: 'bandlab',
+                           'text-anchor': 'middle', fill: crit ? cssv('--critical') : cssv('--ink-3') });
+    t.textContent = v.toFixed(1); svg.append(t);
+  });
+
+  DATA.arms.forEach((arm, i) => {
+    const y = TOP + 14 + i * rowH, c = armColor(arm);
+    const name = el('text', { x: ML - 14, y: y + 4, class: 'endlab', 'text-anchor': 'end', fill: c });
+    name.textContent = `${arm} ${DATA.series[arm].name}`; svg.append(name);
+    isl.arms[arm].filter(r => !r.ruined.length).forEach(r => {
+      const jitter = ((r.seed * 29) % 9 - 4) * 1.7;
+      const hurt = r.worst_ratio < 1;
+      const dot = el('circle', { cx: X(r.worst_ratio), cy: y + jitter, r: 5,
+                                 fill: hurt ? cssv('--critical') : c,
+                                 opacity: hurt ? 0.85 : 0.6, class: 'dot' });
+      dot.addEventListener('mousemove', e => showTip(e,
+        `<b>${arm} ${DATA.series[arm].name}</b> · island ${r.seed}` +
+        `<div>worst agent ${r.worst_ratio.toFixed(2)}× autarky</div>` +
+        (hurt ? '<div style="color:' + cssv('--critical') + '">made worse off</div>' : '')));
+      dot.addEventListener('mouseleave', hideTip);
+      svg.append(dot);
+    });
+  });
+  document.getElementById('worst').append(svg);
+}
+
+/* ---- settlement volume: what money costs to run ---- */
+function volume() {
+  const W = 940, H = 250, ML = 52, MR = 96, MT = 18, MB = 44;
+  const budgets = DATA.sweep.budgets;
+  const lx = Math.log(budgets[0]), hx = Math.log(budgets[budgets.length - 1]);
+  const X = b => ML + (Math.log(b) - lx) / (hx - lx) * (W - ML - MR);
+  const peak = Math.max(...DATA.arms.flatMap(a => DATA.sweep.arms[a].map(r => r.executed)));
+  const Y = v => H - MB - (v / peak) * (H - MB - MT);
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Median settled trades per island against the round budget' });
+
+  [0, peak / 2, peak].forEach(v => {
+    svg.append(el('line', { x1: ML, y1: Y(v), x2: W - MR, y2: Y(v), class: 'grid' }));
+    const t = el('text', { x: ML - 10, y: Y(v) + 4, class: 'tick', 'text-anchor': 'end' });
+    t.textContent = Math.round(v); svg.append(t);
+  });
+  const al = el('text', { x: ML, y: MT - 4, class: 'alab' });
+  al.textContent = 'median settled trades'; svg.append(al);
+  budgets.forEach(b => {
+    const t = el('text', { x: X(b), y: H - MB + 20, class: 'tick', 'text-anchor': 'middle' });
+    t.textContent = String(b); svg.append(t);
+  });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H - 8, class: 'alab', 'text-anchor': 'middle' });
+  xt.textContent = 'trading rounds (log)'; svg.append(xt);
+
+  const labels = [];
+  DATA.arms.forEach(arm => {
+    const rows = DATA.sweep.arms[arm], c = armColor(arm);
+    svg.append(el('path', { d: rows.map((r, i) => `${i ? 'L' : 'M'}${X(r.budget)},${Y(r.executed)}`).join(' '),
+                            fill: 'none', stroke: c, 'stroke-width': 2,
+                            'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    rows.forEach(r => svg.append(el('circle', { cx: X(r.budget), cy: Y(r.executed), r: 4, fill: c, class: 'dot' })));
+    labels.push({ y: Y(rows[rows.length - 1].executed), c, arm });
+  });
+  declutter(labels, 15).forEach(l => {
+    const t = el('text', { x: W - MR + 12, y: l.y + 4, class: 'endlab', fill: l.c });
+    t.textContent = `${l.arm} ${DATA.series[l.arm].name}`; svg.append(t);
+  });
+  document.getElementById('volume').append(svg);
+}
+
+/* ---- decomposition: efficiency against exchange quality ---- */
+function decomp() {
+  const rows = DATA.tier2.filter(r => r.efficiency !== null && r.own_plan !== null);
+  if (!rows.length) return;
+  const W = 940, H = 380, ML = 62, MR = 30, MT = 20, MB = 52;
+  const X = v => ML + (v - 0.5) / 0.55 * (W - ML - MR);
+  const Y = v => H - MB - (v - 0.2) / 0.35 * (H - MB - MT);
+  const ceiling = rows[0].ceiling;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Efficiency against own-plan quality, with the exchange-ceiling diagonal' });
+
+  [0.6, 0.7, 0.8, 0.9, 1.0].forEach(v => {
+    svg.append(el('line', { x1: X(v), y1: MT, x2: X(v), y2: H - MB, class: 'grid' }));
+    const t = el('text', { x: X(v), y: H - MB + 20, class: 'tick', 'text-anchor': 'middle' });
+    t.textContent = v.toFixed(1); svg.append(t);
+  });
+  [0.25, 0.3, 0.35, 0.4, 0.45, 0.5].forEach(v => {
+    svg.append(el('line', { x1: ML, y1: Y(v), x2: W - MR, y2: Y(v), class: 'grid' }));
+    const t = el('text', { x: ML - 10, y: Y(v) + 4, class: 'tick', 'text-anchor': 'end' });
+    t.textContent = v.toFixed(2); svg.append(t);
+  });
+
+  // The iso-line: what you score if you produce autarky and trade that well.
+  svg.append(el('path', { d: `M${X(0.55)},${Y(0.55 * ceiling)} L${X(1.0)},${Y(1.0 * ceiling)}`,
+                          stroke: cssv('--ink-3'), 'stroke-width': 1.5, fill: 'none', opacity: 0.6 }));
+  const iso = el('text', { x: X(0.99), y: Y(0.99 * ceiling) - 10, class: 'bandlab', 'text-anchor': 'end' });
+  iso.textContent = 'produced its autarky bundle'; svg.append(iso);
+
+  const xl = el('text', { x: (ML + W - MR) / 2, y: H - 12, class: 'alab', 'text-anchor': 'middle' });
+  xl.textContent = 'fraction of the best allocation of what it made'; svg.append(xl);
+  const yl = el('text', { x: ML, y: MT - 6, class: 'alab' });
+  yl.textContent = 'efficiency'; svg.append(yl);
+
+  rows.forEach(r => {
+    const c = cssv('--accent');
+    svg.append(el('circle', { cx: X(r.own_plan), cy: Y(r.efficiency), r: 6, fill: c, class: 'dot' }));
+    const t = el('text', { x: X(r.own_plan), y: Y(r.efficiency) - 14, class: 'endlab',
+                           'text-anchor': 'middle', fill: cssv('--ink-2') });
+    t.textContent = r.arm; svg.append(t);
+    const hit = el('circle', { cx: X(r.own_plan), cy: Y(r.efficiency), r: 16, class: 'hit' });
+    hit.addEventListener('mousemove', e => showTip(e,
+      `<b>${r.arm}</b><div>efficiency ${r.efficiency.toFixed(3)}</div>` +
+      `<div>of its own plan ${r.own_plan.toFixed(3)}</div>` +
+      `<div>implied production ${(r.efficiency / r.own_plan).toFixed(3)}</div>`));
+    hit.addEventListener('mouseleave', hideTip);
+    svg.append(hit);
+  });
+  document.getElementById('decomp').append(svg);
+}
+
+/* ---- price disagreement per good, per arm (log) ---- */
+function prices() {
+  const rows = DATA.prices; if (!rows.length) return;
+  const goods = ['fish', 'grain', 'cloth', 'timber', 'salt'];
+  const W = 940, rowH = 46, ML = 108, MR = 40, TOP = 22;
+  const H = rows.length * rowH + 50;
+  const hi = 40;
+  const X = v => ML + Math.log(Math.max(v, 1)) / Math.log(hi) * (W - ML - MR);
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img',
+    'aria-label': 'Price disagreement per good for each model arm, log scale' });
+
+  [1, 2, 5, 10, 20, 40].forEach(v => {
+    svg.append(el('line', { x1: X(v), y1: TOP - 10, x2: X(v), y2: rows.length * rowH + 8, class: 'grid' }));
+    const t = el('text', { x: X(v), y: rows.length * rowH + 26, class: 'tick', 'text-anchor': 'middle' });
+    t.textContent = v + '×'; svg.append(t);
+  });
+  const one = el('text', { x: X(1), y: TOP - 16, class: 'bandlab', 'text-anchor': 'start' });
+  one.textContent = 'agreed'; svg.append(one);
+
+  rows.forEach((r, i) => {
+    const y = TOP + 6 + i * rowH;
+    const name = el('text', { x: ML - 14, y: y + 4, class: 'endlab', 'text-anchor': 'end',
+                              fill: cssv('--ink-2') });
+    name.textContent = r.arm; svg.append(name);
+    const src = el('text', { x: ML - 14, y: y + 18, class: 'bandlab', 'text-anchor': 'end' });
+    src.textContent = r.source; svg.append(src);
+    const vals = goods.filter(g => r.spread[g] !== undefined).map(g => r.spread[g]);
+    if (vals.length > 1) {
+      svg.append(el('line', { x1: X(Math.min(...vals)), y1: y, x2: X(Math.max(...vals)), y2: y,
+                              stroke: cssv('--rule'), 'stroke-width': 2 }));
+    }
+    goods.forEach((g, gi) => {
+      const v = r.spread[g]; if (v === undefined) return;
+      const c = gi === 0 ? cssv('--ink-3') : cssv('--accent');
+      const dot = el('circle', { cx: X(v), cy: y, r: 5, fill: c,
+                                 opacity: gi === 0 ? 0.55 : 0.8, class: 'dot' });
+      dot.addEventListener('mousemove', e => showTip(e,
+        `<b>${r.arm}</b> · ${g}<div>${v}× between the highest and lowest quote</div>` +
+        `<div>${r.quoting} trader(s) quoting</div>`));
+      dot.addEventListener('mouseleave', hideTip);
+      svg.append(dot);
+      if (v >= 10) {
+        const t = el('text', { x: X(v), y: y - 12, class: 'bandlab', 'text-anchor': 'middle',
+                               fill: cssv('--critical') });
+        t.textContent = `${g} ${v}×`; svg.append(t);
+      }
+    });
+  });
+  document.getElementById('prices').append(svg);
+}
+
 /* ---- table view: every plotted value, reachable without color ---- */
 function table() {
   const s = DATA.sweep;
@@ -537,19 +996,26 @@ function table() {
   document.getElementById('table').innerHTML = h + '</tbody></table>';
 }
 
-strip(); sweep(); tier2(); table();
+strip(); sweep(); islands(); worst(); volume(); labour(); tier2(); decomp(); prices(); table();
 </script>
 """
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--sweep", type=Path, required=True)
+    parser.add_argument("--sweep", type=Path, required=True,
+                        help="the round-budget sweep (`..._rounds.json`)")
     parser.add_argument("--tier2", type=Path, nargs="*", default=[])
+    parser.add_argument("--islands", type=Path, default=None,
+                        help="per-island Tier 1 results, for the distribution figures")
+    parser.add_argument("--labour", type=Path, default=None,
+                        help="the labour-timing sweep, for the irreversibility figure")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    html = build(load_sweep(args.sweep), load_tier2(args.tier2))
+    islands = json.loads(args.islands.read_text()) if args.islands else None
+    labour = json.loads(args.labour.read_text()) if args.labour else None
+    html = build(load_sweep(args.sweep), load_tier2(args.tier2), islands, labour)
     args.out.write_text(html)
     print(f"wrote {args.out} ({len(html):,} bytes)")
     return 0

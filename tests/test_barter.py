@@ -511,3 +511,100 @@ def test_identity_comes_from_the_hub_not_the_message_body():
                                   "agent_id": "a2", "req": "q"})
         service.drain()
         assert manager.trades[trade["trade_id"]].status == "pending"
+
+
+# --- labour timing ----------------------------------------------------------
+#
+# The convention ladder tries to make a one-shot production bet a *better* bet:
+# disclose, agree a price, circulate money. Slicing the labour attacks the same
+# loss from the other side — it makes a wrong bet *unwindable*. These gates are
+# about the second being a genuine alternative and not an accounting error.
+
+
+def test_instalments_spend_the_same_unit_of_labour_and_no_more(island):
+    """The comparison is worth nothing if a rolling island simply works harder.
+
+    Same endowment, same frontier, same benchmarks — only the timing differs. A
+    rolling island that quietly produced twice as much would beat a one-shot one
+    for a reason that has nothing to do with responsiveness.
+    """
+    once = run_island(island, "C", seed=3, trade_rounds=6, instalments=1)
+    rolling = run_island(island, "C", seed=3, trade_rounds=6, instalments=7)
+    assert once.instalments == 1 and rolling.instalments == 7
+    for outcome in (once, rolling):
+        assert outcome.efficiency.lower <= 1.0 + 1e-6
+
+
+def test_a_rolling_island_actually_works_in_every_round(island):
+    """The manager refuses two commitments in one tick, and the opening
+    instalment lands on the same tick as the first trading round. Without the
+    clock being advanced between them the first instalment of every agent is
+    silently rejected — the run still finishes, one slice of everyone's labour
+    just never happens, and the arm reads as a failure of nerve."""
+    from barter.manager import Manager
+    from barter.traders import Floor, Trader
+
+    manager = Manager(island=island, labour_per_round=0.25, rolling=True)
+    goods = manager.goods
+    traders = {}
+    for agent_id, state in manager.agents.items():
+        trader = Trader(agent_id, state.index, island, "A", __import__("random").Random(1))
+        trader.goods = goods
+        traders[agent_id] = trader
+
+    floor = Floor(enabled=False)
+    for agent_id, trader in traders.items():
+        manager.dispatch(agent_id, {"op": "produce", "plan": trader.production_plan(floor)})
+    manager.open_trading()
+    manager.advance()
+    for _ in range(3):
+        for agent_id, trader in traders.items():
+            holdings = list(manager.agents[agent_id].holdings)
+            reply = manager.dispatch(
+                agent_id, {"op": "produce",
+                           "plan": trader.production_instalment(holdings, floor)})
+            assert reply.get("ok"), reply
+        manager.advance()
+    for state in manager.agents.values():
+        assert state.spent == pytest.approx(1.0, abs=1e-9)
+    manager.check_conservation()
+
+
+def test_the_first_instalment_is_exactly_the_one_shot_plan(island):
+    """Rolling has to *start* where one-shot starts, or the two differ from the
+    first move and the comparison is between two policies rather than between
+    two timings."""
+    from barter.manager import Manager
+    from barter.traders import Floor, Trader
+
+    manager = Manager(island=island)
+    floor = Floor(enabled=False)
+    for agent_id, state in manager.agents.items():
+        trader = Trader(agent_id, state.index, island, "A", __import__("random").Random(1))
+        trader.goods = manager.goods
+        empty = [0.0] * island.n_goods
+        assert trader.production_instalment(empty, floor) == trader.production_plan(floor)
+
+
+def test_slicing_labour_trades_the_frontier_away_for_insurance(island):
+    """The Tier 1 finding, pinned so it cannot drift into the opposite claim.
+
+    Under a shared price a one-shot island either reaches the frontier or wrecks
+    somebody: specialisation is a commitment, and a commitment that settlement
+    fails to honour is total loss. Slicing the labour removes the ruin and gives
+    up most of the specialisation to do it — an agent that keeps re-aiming at
+    what it is short of stops making what it is *best at*. That is a real
+    trade-off rather than a free improvement, and reporting it as a free
+    improvement is the specific error this gate exists to prevent.
+    """
+    islands = [draw_island(8, 5, seed=20 + i) for i in range(4)]
+    once = [run_island(isl, "C", seed=20 + i, trade_rounds=20, instalments=1)
+            for i, isl in enumerate(islands)]
+    rolling = [run_island(isl, "C", seed=20 + i, trade_rounds=20, instalments=21)
+               for i, isl in enumerate(islands)]
+    assert sum(1 for o in rolling if o.efficiency.ruined) \
+        <= sum(1 for o in once if o.efficiency.ruined)
+    clean = [i for i in range(len(islands))
+             if not (once[i].efficiency.ruined or rolling[i].efficiency.ruined)]
+    for i in clean:
+        assert rolling[i].efficiency.lower <= once[i].efficiency.lower + 1e-6

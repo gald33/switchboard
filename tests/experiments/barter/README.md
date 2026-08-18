@@ -5,8 +5,9 @@ market to reach its Pareto frontier, run over a Switchboard hub with a manager
 that owns all the state.
 
 ```bash
-python tests/experiments/barter_experiment.py --islands 12 --rounds-sweep
+python tests/experiments/barter_experiment.py --islands 12 --rounds-sweep --labour-sweep
 python tests/experiments/barter_llm_experiment.py --arms told built  # costs money
+python tests/experiments/barter_llm_experiment.py --arms bound --without expiry
 pytest tests/test_barter.py tests/test_barter_llm.py -q            # the gates
 ```
 
@@ -19,9 +20,16 @@ is handed a specialty and comparative advantage has to emerge from the draw.
 Every agent has Cobb-Douglas tastes, so it wants *some of everything*: a good
 you hold none of makes your score zero no matter what else you have.
 
-One unit of labour, spent once. That budget is what makes this an economy rather
-than a free lunch — without it everyone maxes out every good and there is
-nothing to trade.
+One unit of labour. That budget is what makes this an economy rather than a free
+lunch — without it everyone maxes out every good and there is nothing to trade.
+
+**When** it is spent is a knob, not a constant. At one instalment it is a single
+irreversible bet placed before any price exists; sliced across the trading rounds
+it is the same unit spent a little at a time, against what the market has
+actually delivered. The frontier, the autarky floor and the exchange ceiling are
+identical either way, so the two are directly comparable and the only thing
+varying is whether a commitment can be revised. That turns out to matter more
+than anything on the convention ladder — see *Irreversibility* below.
 
 ## The manager
 
@@ -142,6 +150,75 @@ would have decided the result by picking the budget.
 Money buys robustness and charges for it in transaction volume: arm D settles
 roughly twice as many trades as arm C to get there.
 
+## Irreversibility: the ruin was never an information problem
+
+Every rung of the ladder above is trying to make one irreversible bet a *better*
+bet. The bet is production: labour is committed before any trade has happened,
+and nothing afterwards can unwind it. **Slicing the same unit of labour across
+the trading rounds attacks the loss from the other side** — it lets a wrong bet
+be revised. Nothing else changes: no extra messages are sent, no extra prices
+are formed, and the frontier and both benchmarks stay exactly where they were.
+
+```
+INSTALS          A silent        B disclose           C price           D money
+      1   0.474 ruin 0/12   0.455 ruin 0/12   0.999 ruin 8/12   0.831 ruin 7/12
+      2   0.339 ruin 0/12   0.456 ruin 0/12   0.664 ruin 9/12   0.686 ruin 7/12
+      4   0.520 ruin 0/12   0.424 ruin 0/12   0.624 ruin 7/12   0.508 ruin 7/12
+     16   0.578 ruin 0/12   0.433 ruin 0/12   0.526 ruin 1/12   0.525 ruin 1/12
+     61   0.684 ruin 0/12   0.416 ruin 0/12   0.504 ruin 0/12   0.468 ruin 0/12
+```
+
+**Arm C's ruin — flat at 8/12 however long it ran, the result the whole
+experiment turned on — goes to zero.** So does arm D's. Neither needed anything
+said to anybody. Arm D's clause exists precisely to dissolve the double
+coincidence of wants, and it needs two hundred and forty rounds to get ruin down
+to 3/12; sixteen instalments of labour take both arms to 1/12 in sixty.
+
+**And it is a scissors, not a free win.** Efficiency on the islands that survive
+falls by about as much as ruin does, because an agent that keeps re-aiming at
+what it is short of stops making what it is best at. Both halves are printed,
+plus a third view that weighs them against each other by scoring a ruined island
+at the zero it literally is:
+
+```
+INSTALS          A silent        B disclose           C price           D money
+      1             0.474             0.455             0.000             0.000
+      4             0.520             0.424             0.000             0.000
+     16             0.578             0.433             0.513             0.497
+     61             0.684             0.416             0.504             0.468
+```
+
+Read the zeros carefully: **under a shared price the median island is a ruined
+island** until labour can be revised. That is what arm C's celebrated 0.999
+was hiding — it is a median over the four islands the arm did not wreck.
+
+Two things this table does not say, and one it says by accident:
+
+* **It is not "more slicing is always better".** Arm A drops from 0.474 to 0.339
+  at *two* instalments before climbing to 0.684 at sixty-one. A coarse instalment
+  is a worse bet than the one-shot spread, because it commits half the labour to
+  a single good; only fine slicing smooths back out.
+* **Arm A is partly a policy improvement, not only a timing one.** Its rolling
+  rule — make whatever raises utility fastest per unit of labour — is simply
+  better than the alpha split once trade exists. The comparison is honest about
+  the world (a rolling world admits better policies) and it is not purely about
+  timing for that arm.
+* **By the third view, silence wins everywhere.** Once production can be revised,
+  no rung of the convention ladder beats an agent that says nothing and produces
+  greedily against what it is short of. The conventions bought specialisation,
+  and specialisation is what irreversibility made dangerous.
+
+The second and third rows of the printed table are guardrails rather than
+results. The median over unruined islands is taken over a subset that this sweep
+is itself moving, so a number can improve because the hard cases dropped out.
+The "same islands at every setting" view fixes that and, for arm C, is empty —
+which is itself the finding, stated honestly rather than papered over.
+
+The choice of rolling policy does not drive any of this. An alternative rule that
+keeps specialising and only re-ranks away from goods the market would not take
+gives 0.504 against 0.508 at sixty-one instalments, and identical medians on the
+common subset.
+
 ## What Tier 1 cannot tell you
 
 These policies are written, so this tier **cannot discover that communication
@@ -166,6 +243,66 @@ unchanged and still not a model. Four arms:
 `silent` and `free` never hear the words "price", "numeraire" or "money" — so a
 convention appearing in `free` was invented, not followed, and the Tier 1 ladder
 is what gives it a scale.
+
+### The arms are combinations, not primitives
+
+Every one of those names is a bundle, and that was a flaw. `built` added storage
+*and* aggregation in one step; `bound` added a deviation report *and* quote
+expiry. When a rung moved, the run could say the bundle mattered and could never
+say which half of it did — so every result was an attribution to a name rather
+than to a mechanism.
+
+So **everything told to an agent is now an independent switch**, and the named
+arms are combinations of them:
+
+| switch | what it hands over | where it lands |
+|---|---|---|
+| `channel` | `say` and `listen` | tools + one paragraph |
+| `numeraire` | fish is the unit of account | words |
+| `board` | `post_quote` validates, `read_quotes` returns everyone's latest | tools |
+| `median` | the board also reports the median per good | tools |
+| `deviation` | the board reports *your* distance from the median | tools |
+| `expiry` | quotes go stale unless renewed | tools |
+| `money` | accept the numeraire past wanting it | words |
+| `pay_tool` | `pay` sizes a money trade at the median and proposes it | tools |
+| `rolling` | labour is committed in instalments | the world, and the words that describe it |
+| `ruin_warning` | spell out that a zero holding scores zero | words |
+| `horizon` | how many rounds remain | turn note |
+| `labour_left` | how much labour you still have | turn note |
+| `own_value` | `my_state` works out what one more of each good is worth to you | tool reply |
+| `own_score` | `my_state` reports your live score | tool reply |
+
+```
+silent  →  (nothing)
+free    →  channel
+told    →  channel numeraire
+built   →  channel numeraire board median
+bound   →  … deviation expiry
+spend   →  … money
+paid    →  … pay_tool
+```
+
+Any of them can be flipped alone:
+
+```bash
+python tests/experiments/barter_llm_experiment.py --arms bound --without expiry
+python tests/experiments/barter_llm_experiment.py --arms built --with expiry
+```
+
+Neither of those has a name on the ladder, because neither is a rung — they are
+the differences *between* rungs, which is what an attribution needs and what a
+ladder of bundles cannot give. Switching one off takes its dependents with it (a
+board with no numeraire would be quoting on a scale nobody was told about), and
+the run record stores the **resolved** switch set, so an island always reports
+what it actually had rather than what was asked for.
+
+Three properties are gated rather than intended. Every preset is pinned switch by
+switch, so the six paid islands already banked still describe setups that exist.
+Turning an *affordance* on or off never moves a word of the system prompt — the
+claim the whole ladder rests on, now asserted over every tool switch instead of
+one pair of arms. And a rolling island is never told it spends its labour "once,
+at the start", which it was, for one paid run, while the manager underneath was
+accepting instalments.
 
 **`told` against `built` is the pair that matters, and they share a system prompt
 byte for byte** — a test asserts it. The only difference is whether the
@@ -474,4 +611,9 @@ are alongside this file as `tier2_seed1_*.json`.
 | `manager.py` | the state machine and its Switchboard service |
 | `traders.py` | the four scripted policies |
 | `run.py` | one island end to end, over either transport |
-| `llm.py` | the model-facing tool surface |
+| `flow.py` | the order of play, with nothing in it that knows about models |
+| `llm.py` | the model-facing tool surface, and `Telling` — every switch there is |
+| `analysis.py` | reading prices back out of prose or off the board, and the trajectory |
+| `report.py` | the findings page, built from the run records so the charts cannot drift |
+| `tier1.json` `tier1_rounds.json` `tier1_labour.json` | the scripted results the page is drawn from, all three written by one command |
+| `tier2_seed1_*.json` | the raw record of each paid island |

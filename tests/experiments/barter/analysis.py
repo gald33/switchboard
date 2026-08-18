@@ -175,11 +175,42 @@ def snapshot(island: Any, manager: Any, prices: dict[str, float] | None,
         "holding_nothing": len(scored.ruined),
         "price_agreement": _price_agreement(prices),
         "specialisation": (round(s, 4) if (s := specialisation(
-            island, shares, prices or {}, goods)) is not None else None),
+            island, shares, consensus(prices), goods)) is not None else None),
         "concentration": (round(c, 4) if (c := concentration(shares)) is not None else None),
         "labour_spent": round(sum(st.spent for st in ordered) / len(ordered), 4),
         "settled": settled,
     }
+
+
+def consensus(prices: Any) -> dict[str, float]:
+    """One price vector from whatever shape arrived.
+
+    A board is one vector per trader and a settled convention is a single
+    vector; ``specialisation`` needs exactly one, so a board is collapsed to its
+    per-good median — the same number the ``bound`` machinery shows agents.
+
+    This exists because the collapse was missing. ``snapshot`` handed the board
+    straight through, ``specialisation`` looked up goods in a dict keyed by
+    agent, found none, and returned ``None`` every round. The trajectory came
+    back with an empty specialisation column and no error, which is the quiet
+    kind of wrong: a run that costs money and reports nothing about the one
+    thing it was built to measure.
+    """
+    if not prices:
+        return {}
+    if not isinstance(next(iter(prices.values())), dict):
+        return dict(prices)
+    goods: dict[str, list[float]] = {}
+    for vector in prices.values():
+        for good, value in vector.items():
+            goods.setdefault(good, []).append(float(value))
+    out = {}
+    for good, values in goods.items():
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        out[good] = (ordered[mid] if len(ordered) % 2
+                     else (ordered[mid - 1] + ordered[mid]) / 2)
+    return out
 
 
 def _price_agreement(prices: Any) -> float | None:

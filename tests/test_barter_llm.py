@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
 
 from barter.economy import draw_island  # noqa: E402
-from barter.llm import Wire, brief_for, tool_names  # noqa: E402
+from barter.llm import Wire, brief_for, telling_for, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
 
 from switchboard.testing import hub  # noqa: E402
@@ -39,7 +39,7 @@ def _wired(handle, manager, arm, run="llm"):
     service.claim()
     wires = {
         agent_id: Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
-                       arm=arm, floor_channel=f"barter/{run}/floor",
+                       telling=telling_for(arm), floor_channel=f"barter/{run}/floor",
                        quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
         for agent_id in manager.agents
     }
@@ -435,12 +435,12 @@ def test_every_offer_gets_a_settle_pass_in_its_own_round(island):
     assert any(t.status == "executed" for t in manager.trades.values())
 
 
-def _notes_for(island, rolling):
+def _notes_for(island, rolling, **switches):
     """Every note the flow shows an agent, for one labour mode."""
     import random
 
     import anyio
-    from barter.flow import play
+    from barter.flow import Notes, play
 
     manager = Manager(island=island, phase="discovery",
                       labour_per_round=0.5 if rolling else 1.0, rolling=rolling)
@@ -452,8 +452,11 @@ def _notes_for(island, rolling):
             manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
         return ""
 
+    setup = Notes(rolling=rolling,
+                  labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent),
+                  **switches)
     anyio.run(lambda: play(manager, take_turn, discovery=1, rounds=1,
-                           rng=random.Random(0), rolling=rolling))
+                           rng=random.Random(0), notes=setup))
     return " ".join(notes).lower()
 
 
@@ -468,6 +471,33 @@ def test_the_notes_never_promise_the_wrong_labour_rule(island):
     assert "instalment" in rolling and "labour once" not in rolling
     # ...and rolling has to actually tell them the option is still open later.
     assert "produce` once more" in rolling
+
+
+def test_every_sentence_in_the_turn_note_can_be_switched_off(island):
+    """A sentence that is always present is a sentence nobody can attribute.
+
+    Rolling labour was measured once with the remaining balance reachable only
+    through `my_state`, which made "did responsiveness help" partly a question
+    about whether agents bothered to look it up. Telling them outright is the
+    obvious fix and it is also a *second* change riding along with the first —
+    so it is its own switch, and so is the horizon it sits next to.
+    """
+    full = _notes_for(island, rolling=True, horizon=True, labour_left=True)
+    assert "labour still to spend" in full or "fully committed" in full
+    assert "round(s) remain" in full
+
+    without_labour = _notes_for(island, rolling=True, labour_left=False)
+    assert "still to spend" not in without_labour
+    assert "round(s) remain" in without_labour
+
+    without_horizon = _notes_for(island, rolling=True, horizon=False)
+    assert "round(s) remain" not in without_horizon
+    assert "still to spend" in without_horizon or "fully committed" in without_horizon
+
+    # The balance is a real number off the manager, not a fixed phrase: an agent
+    # that has worked one instalment of two has half a unit left, and a note
+    # that said "1.00" all game would be worse than saying nothing.
+    assert "0.50" in full
 
 
 def test_each_phase_gets_its_own_turn_budget(island):
@@ -673,6 +703,35 @@ def test_a_snapshot_reports_not_yet_scoreable_rather_than_zero(island):
     assert scored["labour_spent"] == pytest.approx(1.0)
 
 
+def test_a_board_is_collapsed_to_one_vector_before_specialisation(island):
+    """`specialisation` needs a single price vector; a board is one per trader.
+
+    Without the collapse it looked goods up in a dict keyed by agent, found
+    none, and returned None every round — an empty column in the trajectory and
+    no error anywhere. That is the failure mode this whole experiment keeps
+    hitting: a paid run that reports nothing about the thing it measures.
+    """
+    from barter.analysis import consensus, snapshot, specialisation
+
+    board = {"a1": {"fish": 1.0, "cloth": 15.0}, "a2": {"fish": 1.0, "cloth": 8.0}}
+    assert consensus(board) == {"fish": 1.0, "cloth": 11.5}
+    # A flat vector passes through untouched.
+    assert consensus({"fish": 1.0, "cloth": 3.0}) == {"fish": 1.0, "cloth": 3.0}
+    assert consensus({}) == {}
+
+    goods = tuple(island.good_ids())
+    shares = [[1.0] + [0.0] * 4 for _ in range(island.n_agents)]
+    assert specialisation(island, shares, board, goods) is None       # unusable shape
+    assert specialisation(island, shares, consensus(board), goods) is not None
+
+    manager = Manager(island=island)
+    for agent_id, state in manager.agents.items():
+        manager.op_produce(agent_id, {g: state.alpha[i]
+                                      for i, g in enumerate(manager.goods)})
+    row = snapshot(island, manager, board, round_no=1, label="produce")
+    assert row["specialisation"] is not None
+
+
 def test_a_snapshot_takes_prices_from_a_board_or_from_one_vector(island):
     """Boards are per-agent and a settled convention is one vector. Both have to
     land on the same `price_agreement` axis or the trajectory is not a line."""
@@ -755,3 +814,236 @@ def test_a_bad_quote_is_answered_not_stored(island):
         for bad in ({}, {"grain": -1}, {"grain": "cheap"}, {"unobtainium": 2}, {"grain": 0}):
             assert "error" in wires["a1"].post_quote(bad)
         assert wires["a1"].read_quotes()["traders_quoting"] == 0
+
+
+# --- the switches -----------------------------------------------------------
+#
+# The named arms came first and were the wrong shape: each rung of the ladder
+# added two things at once, so a rung that moved could never say which half
+# moved it. These gates are about the fix — that every thing told to an agent is
+# separable, that the presets still reproduce the runs already banked, and that
+# a combination nobody could interpret is refused rather than quietly run.
+
+
+def test_every_named_arm_is_a_combination_of_switches_and_nothing_more(island):
+    """The ladder must survive the refactor exactly, or the banked runs are lost.
+
+    Six paid islands were run under these names. If a preset now means something
+    slightly different, every one of those records is a measurement of a setup
+    that no longer exists — so the presets are pinned here switch by switch.
+    """
+    from barter.llm import ARMS, PRESETS, telling_for
+
+    assert PRESETS["silent"].switches() == (
+        "ruin_warning", "horizon", "labour_left", "own_value", "own_score")
+    assert "channel" in PRESETS["free"].switches()
+    assert not PRESETS["free"].numeraire
+    assert PRESETS["told"].numeraire and not PRESETS["told"].board
+    assert PRESETS["built"].board and PRESETS["built"].median
+    assert not (PRESETS["built"].deviation or PRESETS["built"].expiry)
+    assert PRESETS["bound"].deviation and PRESETS["bound"].expiry
+    assert PRESETS["spend"].money and not PRESETS["spend"].pay_tool
+    assert PRESETS["paid"].pay_tool
+
+    # Each rung adds to the one below it and takes nothing away. A ladder whose
+    # rungs subtracted would not be a ladder.
+    for lower, upper in zip(ARMS, ARMS[1:], strict=False):
+        below, above = set(telling_for(lower).switches()), set(telling_for(upper).switches())
+        assert below <= above, f"{upper} drops {below - above} from {lower}"
+
+
+def test_a_combination_nobody_could_interpret_is_refused(island):
+    """Not tidiness. A board is denominated in fish and pins fish at 1, so a
+    board with no numeraire convention quotes on a scale nobody was told about;
+    a `pay` tool with no median has no rate to price at. Either would run
+    happily and produce a number that means nothing, which is worse than a
+    crash."""
+    from barter.llm import Telling
+
+    for bad in ({"board": True}, {"median": True}, {"deviation": True},
+                {"expiry": True}, {"money": True}, {"pay_tool": True},
+                {"numeraire": True}):
+        with pytest.raises(ValueError):
+            Telling(**bad)
+
+    # ...and the deviation report specifically needs a median under it, not just
+    # a board, because it is a ratio to one.
+    with pytest.raises(ValueError):
+        Telling(channel=True, numeraire=True, board=True, deviation=True)
+
+
+def test_the_bundle_bound_shipped_as_one_step_can_be_run_apart(island):
+    """`bound` added a deviation report *and* quote expiry together, and its
+    result could only ever be attributed to the pair. This is the whole point of
+    the refactor: either half can now be run alone."""
+    from barter.llm import compose
+
+    deviation_only = compose("bound", off=["expiry"])
+    assert deviation_only.deviation and not deviation_only.expiry
+    stale_only = compose("built", on=["expiry"])
+    assert stale_only.expiry and not stale_only.deviation
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service = ManagerService(handle.client("manager"), manager, run="sw")
+        service.claim()
+
+        def wire_for(telling):
+            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
+                        telling=telling, floor_channel="barter/sw/floor",
+                        quote_prefix="barter/sw/quote/", goods=tuple(manager.goods))
+
+        wire_for(deviation_only).post_quote({"grain": 2.0})
+        assert "your_deviation_from_median" in wire_for(deviation_only).read_quotes()
+        assert "quote_is_live" not in wire_for(deviation_only).read_quotes()
+
+        stale = wire_for(stale_only).read_quotes()
+        assert "quote_is_live" in stale
+        assert "your_deviation_from_median" not in stale
+
+        # And aggregation off means no median at all — the switch `built` bundled
+        # with mere storage.
+        bare = wire_for(compose("built", off=["median"])).read_quotes()
+        assert "median_price" not in bare and bare["traders_quoting"] == 1
+
+
+def test_switching_an_affordance_never_moves_a_word_of_the_prompt(island):
+    """The claim the whole ladder rests on, now stated over every tool switch
+    rather than over one pair of arms. If turning the median on changed the
+    prompt, "machinery beats instruction" would be a claim about wording."""
+    from barter.llm import compose
+
+    manager = Manager(island=island)
+    base = brief_for(island, manager, "a1", "paid")
+    for switch in ("board", "median", "deviation", "expiry", "pay_tool", "channel"):
+        flipped = compose("paid", off=[switch])
+        if switch == "channel":
+            continue  # `channel` is an affordance *and* a paragraph; see below
+        assert brief_for(island, manager, "a1", flipped) == base, switch
+
+
+def test_the_word_switches_each_remove_exactly_their_own_paragraph(island):
+    from barter.llm import CHANNEL_BRIEF, MONEY_BRIEF, NUMERAIRE_BRIEF, RUIN_CLAUSE, compose
+
+    manager = Manager(island=island)
+    full = brief_for(island, manager, "a1", "paid")
+    assert all(part in full for part in (CHANNEL_BRIEF, NUMERAIRE_BRIEF, MONEY_BRIEF))
+
+    no_money = compose("paid", off=["money", "pay_tool"])
+    assert MONEY_BRIEF not in brief_for(island, manager, "a1", no_money)
+    assert CHANNEL_BRIEF not in brief_for(island, manager, "a1", compose("paid", off=["channel"]))
+
+    # The ruin clause is an *inference from* the scoring rule that we make on the
+    # agent's behalf. Switching it off must leave the rule itself standing.
+    quiet = brief_for(island, manager, "a1", compose("paid", off=["ruin_warning"]))
+    assert RUIN_CLAUSE not in quiet
+    assert "product of your final holdings raised to your" in quiet
+
+
+def test_a_rolling_island_is_never_told_it_spends_its_labour_once(island):
+    """A live bug rather than a hypothetical: the brief said "You spend it once,
+    at the start" while the manager was accepting instalments, so every rolling
+    agent read a sentence its own tools contradicted."""
+    from barter.llm import compose
+
+    manager = Manager(island=island)
+    once = brief_for(island, manager, "a1", "told")
+    rolling = brief_for(island, manager, "a1", compose("told", on=["rolling"]))
+    assert "spend it once, at the start" in once
+    assert "spend it once, at the start" not in rolling
+    assert "instalments" in rolling
+    assert "not carried over" in rolling
+    # The rest of the world is unchanged — this is a switch, not a rewrite.
+    assert rolling.count("propose_trade") == once.count("propose_trade")
+
+
+def test_switching_a_switch_off_takes_its_dependents_with_it(island):
+    """`--without board` has to mean "no board", not a crash naming three more
+    switches to spell out. The cascade is safe to make implicit only because
+    the run record stores the *resolved* switch set, so an island always
+    reports what it actually had rather than what was asked for."""
+    from barter.llm import compose
+
+    bare = compose("paid", off=["board"])
+    assert not any((bare.board, bare.median, bare.deviation, bare.expiry, bare.pay_tool))
+    # Words are not affordances: dropping the machinery leaves the convention
+    # stated, which is exactly the `told` rung.
+    assert bare.numeraire and bare.money
+
+    # Asking for a switch and removing what it stands on is a contradiction, not
+    # a cascade, and has to be said out loud.
+    with pytest.raises(ValueError, match="was switched on"):
+        compose("built", on=["pay_tool"], off=["money"])
+
+
+def test_a_rolling_tier_two_island_can_work_in_its_very_first_trading_round(island):
+    """The same tick collision as Tier 1's, at the flow level.
+
+    An agent that calls `produce` in the first trading round is asking to work
+    on the tick its opening instalment already used, and the manager refuses two
+    commitments in one tick. The flow advances the clock across the boundary; if
+    it stops doing so the run still completes and every agent silently loses a
+    slice of labour, which reads in the results as agents declining to work.
+    """
+    import random
+
+    import anyio
+    from barter.flow import Notes, play
+
+    rounds = 3
+    manager = Manager(island=island, phase="discovery", rolling=True,
+                      labour_per_round=1.0 / (1 + rounds))
+    refused = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        if label in ("produce", "offer"):
+            reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+            if not reply.get("ok"):
+                refused.append((round_no, label, agent_id, reply.get("error")))
+        return ""
+
+    notes = Notes(rolling=True,
+                  labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent))
+    anyio.run(lambda: play(manager, take_turn, discovery=1, rounds=rounds,
+                           rng=random.Random(0), notes=notes))
+
+    assert refused == [], refused
+    for state in manager.agents.values():
+        assert state.spent == pytest.approx(1.0, abs=1e-9)
+    manager.check_conservation()
+
+
+def test_the_calculators_in_my_state_are_switches_too(island):
+    """`my_state` hands over two things that are not facts about the world.
+
+    `value_per_unit` is the marginal rate an agent would otherwise have to work
+    out from its own exponents and holdings — most of what a trader needs to
+    price a swap, computed for it. `utility` is its live score. Both were handed
+    over silently in every arm, which made each prompt look more austere than
+    the island actually was. The filtering happens in the tool surface and not
+    in the manager: the manager is the pure state machine both tiers share and
+    must not know what an island was told.
+    """
+    from barter.llm import compose
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service = ManagerService(handle.client("manager"), manager, run="calc")
+        service.claim()
+
+        def wire_for(telling):
+            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
+                        telling=telling, floor_channel="barter/calc/floor",
+                        quote_prefix="barter/calc/quote/", goods=tuple(manager.goods))
+
+        full = wire_for(telling_for("free")).state()
+        assert "value_per_unit" in full and "utility" in full
+
+        quiet = wire_for(compose("free", off=["own_value", "own_score"])).state()
+        assert "value_per_unit" not in quiet and "utility" not in quiet
+        # ...and nothing else went with them. Capacities, tastes and holdings are
+        # the world, not a hint about it.
+        assert set(full) - set(quiet) == {"value_per_unit", "utility"}
+
+        # The manager itself is untouched — it answered in full both times.
+        assert "value_per_unit" in manager.op_state("a1")

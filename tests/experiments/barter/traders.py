@@ -246,6 +246,48 @@ class Trader:
             return plan
         return {self.goods[best]: 1.0}
 
+    def production_instalment(self, holdings: list[float], floor: Floor) -> dict[str, float]:
+        """How to split *this round's* instalment, given what I already hold.
+
+        The one-shot plan is a bet placed before any goods exist: it can only be
+        read off tastes and a believed price. An instalment is placed after some
+        trading has happened, so there is a second thing to read — what the
+        market actually gave you. That is the entire content of rolling labour
+        in Tier 1, and it is deliberately the *only* difference: no extra
+        messages are sent and no extra prices are formed, so a rolling island
+        differs from a one-shot one in when labour is committed and in nothing
+        else. Anything the comparison shows is about timing.
+
+        Before anything has been produced there is nothing to learn from, so the
+        first instalment is exactly the one-shot plan — which is what makes
+        "rolling with one instalment" identical to "once" rather than merely
+        similar. After that:
+
+        * with a price, make the most valuable thing you are still short of, and
+          fall back to the most valuable thing you can make if you are short of
+          nothing. Producing more of what the market has already handed you is
+          the specific loss a one-shot bet has no way to avoid.
+        * without one, make whatever raises utility fastest per unit of labour,
+          ``capacity[g] * du/dx[g]``. That is the best a silent agent can do and
+          it needs nobody's cooperation — and because it is greedy toward the
+          same optimum, many small instalments of it approach the alpha split
+          the one-shot silent plan names outright.
+        """
+        if sum(holdings) <= 1e-9:
+            return self.production_plan(floor)
+
+        if self.arm == "A":
+            gain = [self.capacity[g] * self.alpha[g] / max(holdings[g], 1e-9)
+                    for g in range(self.k)]
+            return {self.goods[max(range(self.k), key=lambda g: gain[g])]: 1.0}
+
+        price = self.price if self.arm in ("C", "D") else self._own_price
+        _, gap = self.wants(holdings)
+        short = [g for g in range(self.k) if gap[g] > 1e-6]
+        pool = short or list(range(self.k))
+        best = max(pool, key=lambda g: price[g] * self.capacity[g])
+        return {self.goods[best]: 1.0}
+
     # --- trading ------------------------------------------------------------
 
     def wants(self, holdings: list[float]) -> tuple[list[float], list[float]]:
