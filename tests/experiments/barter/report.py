@@ -538,7 +538,7 @@ function strip() {
 function sweep() {
   const W = 940, PH = 210, GAP = 54, ML = 52, MR = 96, MT = 14, MB = 34;
   const s = DATA.sweep, budgets = s.budgets;
-  const H = MT + PH + GAP + PH + MB + 14;
+  const H = MT + PH + GAP + PH + MB + 34;
   const lx = Math.log(budgets[0]), hx = Math.log(budgets[budgets.length - 1]);
   const X = b => ML + (Math.log(b) - lx) / (hx - lx) * (W - ML - MR);
   const yE = v => MT + PH - ((v - 0.3) / (1.05 - 0.3)) * PH;
@@ -562,10 +562,10 @@ function sweep() {
   });
 
   budgets.forEach(b => {
-    const t = el('text', { x: X(b), y: H - 10, class: 'tick', 'text-anchor': 'middle' });
+    const t = el('text', { x: X(b), y: H - 28, class: 'tick', 'text-anchor': 'middle' });
     t.textContent = String(b); svg.append(t);
   });
-  const xt = el('text', { x: (ML + W - MR) / 2, y: H + 6, class: 'alab', 'text-anchor': 'middle' });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H - 8, class: 'alab', 'text-anchor': 'middle' });
   xt.textContent = 'trading rounds (log)'; svg.append(xt);
 
   const effLabels = [], ruinLabels = [];
@@ -622,7 +622,7 @@ function labour() {
   if (!L || !L.arms) return;
   const counts = L.instalments, n = L.islands;
   const W = 940, PH = 150, GAP = 46, ML = 52, MR = 104, MT = 14, MB = 34;
-  const H = MT + PH * 3 + GAP * 2 + MB + 14;
+  const H = MT + PH * 3 + GAP * 2 + MB + 34;
   const lx = Math.log(counts[0]), hx = Math.log(counts[counts.length - 1]);
   const X = c => ML + (Math.log(c) - lx) / (hx - lx) * (W - ML - MR);
   const top2 = MT + PH + GAP, top3 = top2 + PH + GAP;
@@ -648,10 +648,10 @@ function labour() {
   });
 
   counts.forEach(c => {
-    const t = el('text', { x: X(c), y: H - 10, class: 'tick', 'text-anchor': 'middle' });
+    const t = el('text', { x: X(c), y: H - 28, class: 'tick', 'text-anchor': 'middle' });
     t.textContent = String(c); svg.append(t);
   });
-  const xt = el('text', { x: (ML + W - MR) / 2, y: H + 6, class: 'alab', 'text-anchor': 'middle' });
+  const xt = el('text', { x: (ML + W - MR) / 2, y: H - 8, class: 'alab', 'text-anchor': 'middle' });
   xt.textContent = 'instalments the one unit of labour is split into (log)'; svg.append(xt);
 
   const ends = [[], [], []];
