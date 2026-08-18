@@ -236,12 +236,19 @@ async def play(
         manager.open_trading()
         await pass_over(
             "offer",
-            "Stage 4 of 4, trading, first pass: make your offers.",
+            "Stage 4 of 4, trading, first pass: make your offers. You may make "
+            "as many as you like, but each one escrows your side the moment you "
+            "propose it — the goods are out of your hands until the offer "
+            "settles, expires or you `cancel_trade` it — so offering the same "
+            "goods twice is offering goods you no longer have.",
             budgets.offer)
         await pass_over(
             "settle",
             "Stage 4 of 4, trading, second pass: answer what is waiting on "
-            "you. Anything still open when this stage closes expires.",
+            "you. If you and a counterparty each proposed the same swap, both "
+            "sides are escrowed and approving both trades it twice — approve "
+            "one and cancel the other. Anything still open when this stage "
+            "closes expires.",
             budgets.settle)
 
         manager.advance()

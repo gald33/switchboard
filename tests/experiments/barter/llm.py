@@ -286,6 +286,14 @@ class Telling:
     #: unsee: an agent watching a number go up is playing a different game from
     #: one that only knows the rule.
     own_score: bool = True
+    #: `pending_trades` points out when you and a counterparty have both
+    #: proposed the same swap, so both sides sit escrowed and approving both
+    #: would trade twice. The information is already in the reply — both trades
+    #: are listed, one in each direction — so this switch is purely whether the
+    #: collision is *named* or left to be noticed. That is the cheapest possible
+    #: version of the question the whole ladder asks, and it defaults off
+    #: because noticing unaided is the interesting outcome.
+    crossings: bool = False
 
     #: What each switch needs underneath it. These are not style rules: a board
     #: is denominated in fish and pins fish at 1, so a board without the
@@ -328,7 +336,7 @@ class Telling:
 _SWITCHES: tuple[str, ...] = (
     "channel", "numeraire", "board", "median", "deviation", "expiry",
     "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
-    "own_value", "own_score",
+    "own_value", "own_score", "crossings",
 )
 
 #: The named arms, as combinations. They are kept because the merged results are
@@ -466,6 +474,19 @@ class Wire:
             reply.pop("value_per_unit", None)
         if not self.telling.own_score:
             reply.pop("utility", None)
+        return reply
+
+    def pending(self) -> dict[str, Any]:
+        """Open trades, minus the collision flag unless this island was given it.
+
+        Both halves of a crossing are already in the reply — one under
+        ``your_open_offers`` and one under ``awaiting_your_approval`` — so what
+        the switch withholds is the *naming*, not the facts. An agent can always
+        work it out; the question is whether it does.
+        """
+        reply = self.manager_call("pending")
+        if not self.telling.crossings:
+            reply.pop("crossed_pairs", None)
         return reply
 
     def post(self, text: str) -> dict[str, Any]:
@@ -684,9 +705,14 @@ def build_tools(wire: Wire) -> Any:
         trade_id = args.get("trade_id")
         return _text(await _off(lambda: wire.manager_call("approve", trade_id=trade_id)))
 
-    @tool("pending_trades", "Offers waiting on your approval, and your own open offers.", {})
+    pending_doc = "Offers waiting on your approval, and your own open offers."
+    if telling.crossings:
+        pending_doc += (" Also flags pairs where you and a counterparty have "
+                        "each proposed the same swap, so both are escrowed.")
+
+    @tool("pending_trades", pending_doc, {})
     async def pending_trades(_: Any) -> dict[str, Any]:
-        return _text(await _off(wire.manager_call, "pending"))
+        return _text(await _off(wire.pending))
 
     @tool("cancel_trade", "Withdraw one of your own open offers and release its escrow.",
           {"trade_id": str})

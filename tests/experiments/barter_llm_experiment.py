@@ -384,6 +384,11 @@ def render(result: dict) -> str:
            if result.get("gain_ratios") else ""),
         f"  trades           {summary['executed']} settled of {summary['proposed']} proposed"
         f"  ({summary['rejected']} rejected, {summary['expired']} expired)",
+        f"  crossed offers   {summary.get('crossings', 0)} pair(s) where both sides "
+        f"proposed the same swap: {summary.get('crossings_resolved') or 'none'}",
+        f"  labour unclaimed {sum((summary.get('idle_labour') or {}).values()):.3f} of "
+        f"{len(summary.get('idle_labour') or {})} unit(s) — plans that summed to "
+        f"less than 1, which is not carried over",
         f"  flow             {result['flow']['discovery']} lead-in + "
         f"{result['flow']['trade_rounds']} rounds of "
         f"plan/produce/deal/tradex2, labour "

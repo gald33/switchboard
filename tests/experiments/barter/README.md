@@ -23,6 +23,14 @@ you hold none of makes your score zero no matter what else you have.
 One unit of labour. That budget is what makes this an economy rather than a free
 lunch — without it everyone maxes out every good and there is nothing to trade.
 
+Labour that is offered and not claimed is **recorded and not carried**. A plan
+is a split of *this round's* instalment, so fractions summing to less than 1
+leave the remainder unworked, and the next round's instalment is the same size
+however little of the last one was taken. That is tracked per agent because a
+live run finished having spent 0.67 of its labour and nothing in the record
+could say whether agents had declined to work or had simply handed in vectors
+that summed short — opposite findings that looked identical.
+
 **When** it is spent is a knob, not a constant. At one instalment it is a single
 irreversible bet placed before any price exists; sliced across the trading rounds
 it is the same unit spent a little at a time, against what the market has
@@ -73,6 +81,49 @@ one session for the entire island, so its own past is already in context and
 costs nothing to keep; re-sending the shared floor every turn would grow with the
 square of the run. Fetching on demand keeps the cached prefix append-only, which
 is what makes a long island affordable.
+
+## Offers collide, and nothing resolves that for you
+
+An agent may make as many offers as it likes in the trading stage, and **each
+escrows its side the moment it is proposed**. So two agents who agree a swap in
+the deal stage and both go on to propose it end up with two live trades, twice
+the goods locked up, and a decision neither planned for: approve one and cancel
+the other, or approve both and swap twice.
+
+The manager names the collision and does nothing about it — no matching, no
+cancelling the second, no refusing the proposal. It is the only thing that can
+move a quantity, so a manager that quietly resolved collisions would be doing
+the convention's job and the run would be measuring the manager instead.
+
+Whether agents are *told* about a collision is a switch (`crossings`, off by
+default). Both halves are in the reply either way — one under
+`your_open_offers`, one under `awaiting_your_approval` — so the switch controls
+the naming, not the facts. Noticing unaided is the interesting outcome.
+
+They are common, and the arms differ sharply in how many they generate:
+
+```
+arm        crossings   both   one  neither
+A silent          64      1    20       43
+B disclose       116      0     5       111
+C price           18      0     9         9
+D money          128      5    36        87
+```
+
+**A shared price produces six times fewer.** Arm C picks the counterparty with
+the mirror position and offers at the agreed rate, so it is aiming rather than
+casting about; money generates the most because it alternates buying and selling
+against whoever has cash. `both` — the pair swapping twice because neither side
+backed out — stays rare.
+
+One property worth knowing, because it is not obvious and was not what I
+expected. When a crossing is over the same goods, each side may have escrowed
+the very thing the other's offer asks for, so the first approval fails. That
+looks like a deadlock and is not: **a failed approval returns the offer**,
+releasing that escrow, which leaves the other side able to settle. A crossing
+costs at most one of the two trades. The alternative — leaving a doomed offer
+sitting on its escrow until it times out — would turn every mis-sized crossing
+into a stall of several rounds.
 
 ## The manager
 

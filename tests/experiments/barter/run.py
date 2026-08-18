@@ -65,6 +65,12 @@ class Outcome:
     #: total labour across trading rounds, which moves neither the frontier nor
     #: either benchmark, so the two are directly comparable.
     instalments: int = 1
+    #: Labour offered and never claimed, summed over agents. Non-zero only when
+    #: an agent hands in a plan whose fractions sum to less than 1 — scripted
+    #: policies never do, so this is a Tier 2 measure living in a shared record.
+    idle: float = 0.0
+    #: Offers that crossed: both agents proposing the same swap, both escrowed.
+    crossings: int = 0
 
     def row(self) -> str:
         return (
@@ -266,4 +272,6 @@ def score(island: Island, manager: Manager, *, arm: str, seed: int,
         executed=summary["executed"],
         rejected=summary["rejected"] + summary["expired"],
         instalments=instalments,
+        idle=sum(summary["idle_labour"].values()),
+        crossings=summary["crossings"],
     )
