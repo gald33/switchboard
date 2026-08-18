@@ -5,8 +5,16 @@ in by hand, because a figure transcribed once is a figure that goes stale the
 next time an arm runs — and this project has already had to retract a claim it
 had written down confidently.
 
-    python tests/experiments/barter/report.py --sweep sweep.json \
+    python tests/experiments/barter_experiment.py --islands 12 \
+        --rounds-sweep --labour-sweep --json tests/experiments/barter/tier1.json
+    python tests/experiments/barter/report.py --sweep tier1_rounds.json \
+        --islands tier1.json --labour tier1_labour.json \
         --tier2 tier2_seed1_*.json --out report.html
+
+Every input here is written by that first command, from the same run. That was
+not true until recently: the round-budget figure — the main one on the page —
+was drawn from a file no committed script could produce, which is this
+docstring's own warning happening to this docstring.
 
 The charts are hand-built inline SVG. Two rules they obey, both from hard-won
 places: the round-budget figure is **two panels sharing an x-axis, never a dual
@@ -995,7 +1003,8 @@ strip(); sweep(); islands(); worst(); volume(); labour(); tier2(); decomp(); pri
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--sweep", type=Path, required=True)
+    parser.add_argument("--sweep", type=Path, required=True,
+                        help="the round-budget sweep (`..._rounds.json`)")
     parser.add_argument("--tier2", type=Path, nargs="*", default=[])
     parser.add_argument("--islands", type=Path, default=None,
                         help="per-island Tier 1 results, for the distribution figures")

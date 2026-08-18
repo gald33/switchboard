@@ -244,7 +244,49 @@ def labour_sweep(islands: int, *, agents: int, goods: int, seed0: int = 1,
 ROUND_BUDGETS = (15, 30, 60, 120, 240)
 
 
-def rounds_sweep(islands: int, *, agents: int, goods: int, seed0: int = 1) -> str:
+def rounds_runs(islands: int, *, agents: int, goods: int, seed0: int = 1) -> dict[int, dict]:
+    """One sweep per round budget, kept so the table and the figure share runs."""
+    runs = {}
+    for budget in ROUND_BUDGETS:
+        runs[budget] = sweep(islands, agents=agents, goods=goods, seed0=seed0,
+                             rounds=budget)
+        print(f"  rounds {budget} done", file=sys.stderr)
+    return runs
+
+
+def rounds_json(runs: dict[int, dict]) -> dict:
+    """The round-budget sweep, in the shape the report reads.
+
+    This existed only as printed text, so the page's main figure was drawn from
+    a file no committed script could produce — which is the exact hazard the
+    report module warns about in its own docstring, one level up. A figure whose
+    input cannot be regenerated is a figure that goes stale silently.
+    """
+    first = runs[ROUND_BUDGETS[0]]
+    out: dict = {"budgets": list(ROUND_BUDGETS), "islands": len(first["floors"]),
+                 "floors": first["floors"], "ceilings": first["ceilings"], "arms": {}}
+    for arm in ARMS:
+        rows = []
+        for budget in ROUND_BUDGETS:
+            got = runs[budget]["rows"][arm]
+            clean = [r for r in got if not r.efficiency.ruined]
+            effs = [r.efficiency.lower for r in clean]
+            rows.append({
+                "budget": budget,
+                "median": statistics.median(effs) if effs else None,
+                "lo": min(effs) if effs else None,
+                "hi": max(effs) if effs else None,
+                "ruined": sum(1 for r in got if r.efficiency.ruined),
+                "n": len(got),
+                "executed": statistics.median([r.executed for r in got]),
+                "worst": min((r.worst_ratio for r in clean), default=None),
+            })
+        out["arms"][arm] = rows
+    return out
+
+
+def rounds_sweep(islands: int, *, agents: int, goods: int, seed0: int = 1,
+                 runs: dict[int, dict] | None = None) -> str:
     """Trace each arm against the trading-round budget.
 
     The single most important thing this table shows is *which failures heal
@@ -262,17 +304,17 @@ def rounds_sweep(islands: int, *, agents: int, goods: int, seed0: int = 1) -> st
         "",
         f"{'ROUNDS':>7}" + "".join(f"{arm + ' ' + ARM_NAMES[arm]:>18}" for arm in ARMS),
     ]
+    if runs is None:
+        runs = rounds_runs(islands, agents=agents, goods=goods, seed0=seed0)
     for budget in ROUND_BUDGETS:
-        result = sweep(islands, agents=agents, goods=goods, seed0=seed0, rounds=budget)
         cells = []
         for arm in ARMS:
-            rows = result["rows"][arm]
+            rows = runs[budget]["rows"][arm]
             clean = [r.efficiency.lower for r in rows if not r.efficiency.ruined]
             ruined = sum(1 for r in rows if r.efficiency.ruined)
             med = f"{statistics.median(clean):.3f}" if clean else "  -  "
             cells.append(f"{med} ruin {ruined}/{len(rows)}".rjust(18))
         lines.append(f"{budget:>7}" + "".join(cells))
-        print(f"  rounds {budget} done", file=sys.stderr)
     return "\n".join(lines)
 
 
@@ -390,9 +432,12 @@ def main(argv: list[str] | None = None) -> int:
                    rounds=args.rounds, instalments=args.instalments)
     print(report(result, agents=args.agents, goods=args.goods, islands=args.islands))
     print(commentary(result))
+    budgets = None
     if args.rounds_sweep:
+        budgets = rounds_runs(args.islands, agents=args.agents, goods=args.goods,
+                              seed0=args.seed)
         print(rounds_sweep(args.islands, agents=args.agents, goods=args.goods,
-                           seed0=args.seed))
+                           seed0=args.seed, runs=budgets))
     labour = None
     if args.labour_sweep:
         labour = labour_runs(args.islands, agents=args.agents, goods=args.goods,
@@ -418,9 +463,13 @@ def main(argv: list[str] | None = None) -> int:
             },
         }, indent=2))
         print(f"\nwrote {args.json}")
-        if labour is not None:
-            path = args.json.with_name(args.json.stem + "_labour.json")
-            path.write_text(json.dumps(labour_json(labour, islands=args.islands), indent=2))
+        for name, data in (("_rounds", rounds_json(budgets) if budgets else None),
+                           ("_labour", labour_json(labour, islands=args.islands)
+                            if labour else None)):
+            if data is None:
+                continue
+            path = args.json.with_name(args.json.stem + name + ".json")
+            path.write_text(json.dumps(data, indent=2))
             print(f"wrote {path}")
     return 0
 

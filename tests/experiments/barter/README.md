@@ -150,6 +150,75 @@ would have decided the result by picking the budget.
 Money buys robustness and charges for it in transaction volume: arm D settles
 roughly twice as many trades as arm C to get there.
 
+## Irreversibility: the ruin was never an information problem
+
+Every rung of the ladder above is trying to make one irreversible bet a *better*
+bet. The bet is production: labour is committed before any trade has happened,
+and nothing afterwards can unwind it. **Slicing the same unit of labour across
+the trading rounds attacks the loss from the other side** — it lets a wrong bet
+be revised. Nothing else changes: no extra messages are sent, no extra prices
+are formed, and the frontier and both benchmarks stay exactly where they were.
+
+```
+INSTALS          A silent        B disclose           C price           D money
+      1   0.474 ruin 0/12   0.455 ruin 0/12   0.999 ruin 8/12   0.831 ruin 7/12
+      2   0.339 ruin 0/12   0.456 ruin 0/12   0.664 ruin 9/12   0.686 ruin 7/12
+      4   0.520 ruin 0/12   0.424 ruin 0/12   0.624 ruin 7/12   0.508 ruin 7/12
+     16   0.578 ruin 0/12   0.433 ruin 0/12   0.526 ruin 1/12   0.525 ruin 1/12
+     61   0.684 ruin 0/12   0.416 ruin 0/12   0.504 ruin 0/12   0.468 ruin 0/12
+```
+
+**Arm C's ruin — flat at 8/12 however long it ran, the result the whole
+experiment turned on — goes to zero.** So does arm D's. Neither needed anything
+said to anybody. Arm D's clause exists precisely to dissolve the double
+coincidence of wants, and it needs two hundred and forty rounds to get ruin down
+to 3/12; sixteen instalments of labour take both arms to 1/12 in sixty.
+
+**And it is a scissors, not a free win.** Efficiency on the islands that survive
+falls by about as much as ruin does, because an agent that keeps re-aiming at
+what it is short of stops making what it is best at. Both halves are printed,
+plus a third view that weighs them against each other by scoring a ruined island
+at the zero it literally is:
+
+```
+INSTALS          A silent        B disclose           C price           D money
+      1             0.474             0.455             0.000             0.000
+      4             0.520             0.424             0.000             0.000
+     16             0.578             0.433             0.513             0.497
+     61             0.684             0.416             0.504             0.468
+```
+
+Read the zeros carefully: **under a shared price the median island is a ruined
+island** until labour can be revised. That is what arm C's celebrated 0.999
+was hiding — it is a median over the four islands the arm did not wreck.
+
+Two things this table does not say, and one it says by accident:
+
+* **It is not "more slicing is always better".** Arm A drops from 0.474 to 0.339
+  at *two* instalments before climbing to 0.684 at sixty-one. A coarse instalment
+  is a worse bet than the one-shot spread, because it commits half the labour to
+  a single good; only fine slicing smooths back out.
+* **Arm A is partly a policy improvement, not only a timing one.** Its rolling
+  rule — make whatever raises utility fastest per unit of labour — is simply
+  better than the alpha split once trade exists. The comparison is honest about
+  the world (a rolling world admits better policies) and it is not purely about
+  timing for that arm.
+* **By the third view, silence wins everywhere.** Once production can be revised,
+  no rung of the convention ladder beats an agent that says nothing and produces
+  greedily against what it is short of. The conventions bought specialisation,
+  and specialisation is what irreversibility made dangerous.
+
+The second and third rows of the printed table are guardrails rather than
+results. The median over unruined islands is taken over a subset that this sweep
+is itself moving, so a number can improve because the hard cases dropped out.
+The "same islands at every setting" view fixes that and, for arm C, is empty —
+which is itself the finding, stated honestly rather than papered over.
+
+The choice of rolling policy does not drive any of this. An alternative rule that
+keeps specialising and only re-ranks away from goods the market would not take
+gives 0.504 against 0.508 at sixty-one instalments, and identical medians on the
+common subset.
+
 ## What Tier 1 cannot tell you
 
 These policies are written, so this tier **cannot discover that communication
@@ -542,4 +611,9 @@ are alongside this file as `tier2_seed1_*.json`.
 | `manager.py` | the state machine and its Switchboard service |
 | `traders.py` | the four scripted policies |
 | `run.py` | one island end to end, over either transport |
-| `llm.py` | the model-facing tool surface |
+| `flow.py` | the order of play, with nothing in it that knows about models |
+| `llm.py` | the model-facing tool surface, and `Telling` — every switch there is |
+| `analysis.py` | reading prices back out of prose or off the board, and the trajectory |
+| `report.py` | the findings page, built from the run records so the charts cannot drift |
+| `tier1*.json` | the scripted results the page is drawn from — all three written by one command |
+| `tier2_seed1_*.json` | the raw record of each paid island |
