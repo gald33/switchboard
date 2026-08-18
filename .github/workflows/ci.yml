@@ -143,6 +143,14 @@ jobs:
   # success is the failure being fixed.
   browser:
     runs-on: ubuntu-latest
+    # The only job here that installs system packages, and the only one that
+    # has hung. On #138 `playwright install --with-deps` sat in apt for 71
+    # minutes; GitHub's default job timeout is six HOURS, so nothing would have
+    # said so until the afternoon was gone, and the PR reads as `unstable` —
+    # not red, not green — the whole time. Ten minutes is roughly five times
+    # the step's normal cost, so it bounds the hang without failing a slow
+    # mirror.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

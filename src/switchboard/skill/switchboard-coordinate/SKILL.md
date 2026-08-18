@@ -178,7 +178,21 @@ Three things follow from that, and they matter more than the command:
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
   number you took, a plan you abandoned.
-- **When you finish or abandon a piece of work**, `release` the claim.
+- **If the resource is yours for longer than this turn**, add `--declare`
+  (`declare=true` on MCP). A claim lapses in minutes on purpose — renewal is a
+  side effect of `checkin`, so it says "a live process is writing this", not
+  "this is mine". `--declare` also writes `coord/holds/<resource>` on the
+  blackboard, which lasts a day, and anyone who claims that resource is shown
+  it. They are **warned, not blocked**: a declaration left behind by a session
+  that died must never make a file permanently unclaimable.
+- **Read the warning if you get one.** `claim` printing `declared — …` means
+  somebody means to keep this past their own turn. You still hold the lease.
+  Decide deliberately: ask them, or take it knowing you were told.
+- **When you finish or abandon a piece of work**, `release` the claim. That
+  clears your own declaration too — a standing "mine" with nobody behind it is
+  the leaked claim this project exists to prevent. It never clears somebody
+  else's, not even with `--force`: force breaks a *lease*, which is a claim
+  about a live process and can be wrong, and says nothing about intent.
 - **For handoffs**, put the detail on the blackboard with `board_set` and
   mention the key in a message — messages are for signals, the blackboard is
   for payloads. See "The handoff convention" below for the key shapes that
@@ -332,6 +346,7 @@ without having read who wrote it:
 | What an agent is doing right now | `coord/status/<agent-id>` | `coord/status/cloud-feat-orders-abc123` |
 | A finished handoff payload | `coord/reports/<task>` | `coord/reports/migration-0142` |
 | Why you are in the room at all | `coord/agents/<agent-id>` | written for you by `arrive` |
+| A resource that is yours past this turn | `coord/holds/<resource>` | written for you by `claim --declare` |
 
 **2a. Address peers by what the roster says, never by a name you were given.**
 

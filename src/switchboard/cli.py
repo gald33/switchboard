@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, drill, invite, rendezvous, rooms
+from . import __version__, drill, holds, invite, rendezvous, rooms
 from .client import (
     Client,
     Identity,
@@ -1471,6 +1471,17 @@ def cmd_agents(args: argparse.Namespace) -> int:
 def cmd_claim(args: argparse.Namespace) -> int:
     fmt = Fmt(_use_color(sys.stdout))
     with _make_client(args) as hub:
+        standing = holds.declared_hold(hub, args.resource)
+        if standing and not args.json:
+            print(
+                f"{fmt.yellow('declared')} — {holds.holder(standing)} says: "
+                f"{str(standing.get('intent') or 'no reason given')[:70]}\n"
+                f"  That is a standing declaration on the board, not a lease, so it "
+                f"does not stop you — it is the thing a lease cannot say: somebody "
+                f"means to keep this past their current turn. Check with them, or "
+                f"go ahead knowing you were told.",
+                file=sys.stderr,
+            )
         try:
             lease = hub.acquire(args.resource, note=args.note, ttl=args.ttl)
         except LeaseHeld as exc:
@@ -1482,18 +1493,42 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
             return EXIT_CONFLICT
+        declared = False
+        if args.declare:
+            try:
+                holds.declare(hub, args.resource, intent=args.note or "",
+                              since=lease.get("acquired_at"))
+                declared = True
+            except SwitchboardError as exc:
+                # The enforced half succeeded, so this is not a failed claim and
+                # must not be reported as one. It IS a claim quieter than you
+                # asked for, which you have to hear about.
+                if not args.json:
+                    print(fmt.yellow(f"claimed, but the declaration did not stick: {exc}"),
+                          file=sys.stderr)
     if args.json:
-        _print_json({"acquired": True, **lease})
+        _print_json({"acquired": True, "declared": declared,
+                     "standing_hold": standing, **lease})
     elif not args.quiet:
         print(fmt.green(f"claimed {lease['resource']} for {_dur(lease['expires_in'])}"))
+        if declared:
+            print(f"declared at {holds.HOLDS_PREFIX}{args.resource} — outlives the lease by "
+                  f"design, so `release` it when you are actually done")
     return EXIT_OK
 
 
 def cmd_release(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         released = hub.release(args.resource, force=args.force)
+        # And drop your own declaration. It outlives the lease by a day; the
+        # work did not, and a standing hold with nobody behind it is exactly
+        # the litter this is meant to prevent rather than create.
+        #
+        # Your own only — see `holds.clear_own_declaration` for why force does
+        # not reach this far.
+        cleared = holds.clear_own_declaration(hub, args.resource)
     if args.json:
-        _print_json({"released": released})
+        _print_json({"released": released, "declaration_cleared": cleared})
     elif not args.quiet:
         print(f"released {args.resource}" if released else f"no lease on {args.resource}")
     return EXIT_OK
@@ -3984,6 +4019,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("resource")
     p.add_argument("-m", "--note", help="why you want it")
     p.add_argument("--ttl", type=float, help="seconds (default 900)")
+    p.add_argument(
+        "--declare", action="store_true",
+        help="also record a standing claim on the board, which outlives this "
+             "lease (a day, unless you release it). Use it when the resource is "
+             "yours across turns rather than for the next few minutes — a lease "
+             "cannot say that, because renewal is a heartbeat side effect and it "
+             "lapses the moment you stop. Anyone claiming it is warned, not "
+             "blocked.",
+    )
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("release", help="drop a lease")
@@ -4111,9 +4155,81 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _escape_dash_leading_positionals(
+    parser: argparse.ArgumentParser, argv: Sequence[str],
+) -> list[str]:
+    """Insert ``--`` before a positional that argparse would read as a flag.
+
+    The hub mints agent ids as base64url, whose alphabet includes ``-``, so
+    about one id in sixty-six begins with one. `switchboard dm -yLAoQ63… hi`
+    then dies on `unrecognized arguments`, and the id came from `switchboard
+    agents` — the tool refusing a value it generated and told you to use. It
+    surfaced as a 1-in-66 CI failure long before anyone would have reported it
+    as a bug, because a peer you cannot address looks like a peer who is not
+    there.
+
+    Deterministic rather than clever: walk the resolved subcommand's own
+    option strings, skip the values of flags that take one, and escape the
+    first token that starts with ``-`` and is not an option this subcommand
+    knows. So `claim x -m "-a dashed note"` is untouched (`-m` is real, and
+    the dashed text is its value), while `board get -abc` is escaped.
+
+    Writing `--` by hand still works, and is still what a shell user should
+    reach for. This only means they no longer have to know that.
+    """
+    args = list(argv)
+    if "--" in args:
+        return args
+
+    def subparsers_of(p: argparse.ArgumentParser) -> dict[str, Any]:
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices
+        return {}
+
+    # Walk down to the subcommand actually being run — stepping over the global
+    # flags that may precede it (`--json claim …`) and over their values, since
+    # a value is allowed to spell a subcommand name (`-w claim`).
+    index, current, depth = 0, parser, 0
+    while index < len(args):
+        choices = subparsers_of(current)
+        token = args[index]
+        if token in choices:
+            current, depth = choices[token], depth + 1
+            index += 1
+            continue
+        if token in current._option_string_actions:
+            action = current._option_string_actions[token]
+            index += 2 if action.nargs != 0 else 1
+            continue
+        if token.startswith("--") and "=" in token:
+            index += 1
+            continue
+        break
+    if not depth:
+        return args  # no subcommand yet; nothing positional to protect
+
+    options = set(current._option_string_actions)
+    while index < len(args):
+        token = args[index]
+        if token in options:
+            action = current._option_string_actions[token]
+            index += 2 if action.nargs != 0 else 1
+            continue
+        if token.startswith("--") and "=" in token and token.split("=", 1)[0] in options:
+            index += 1
+            continue
+        if token.startswith("-") and len(token) > 1:
+            return args[:index] + ["--"] + args[index:]
+        index += 1
+    return args
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = parser.parse_args(_escape_dash_leading_positionals(parser, argv))
     try:
         return args.func(args)
     except LeaseHeld as exc:
