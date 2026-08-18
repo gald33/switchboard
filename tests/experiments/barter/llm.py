@@ -228,14 +228,18 @@ class Telling:
       mentions them; a tool announces itself through its own description, which
       is what makes "telling agents how to coordinate" and "building them
       something to coordinate with" separable at all.
+    * **Replies.** ``own_value`` and ``own_score`` decide what ``my_state``
+      passes on, and ``horizon`` and ``labour_left`` what the turn note says.
+      Neither changes the world; both change what an agent has to work out for
+      itself, which is the same kind of help a tool gives and was the easiest
+      kind to hand over without noticing.
     * **The world.** ``rolling`` is not a telling — it is whether the manager
       actually lets labour be committed in instalments. It appears here only so
       the prompt can describe the world truthfully, and setting it without
       setting the manager's own flag would be a lie to the agent.
 
-    ``horizon`` and ``labour_left`` govern the turn note and are passed through
-    to ``flow.Notes``; they live here so that one object is the whole answer to
-    "what did this island's agents know".
+    All of it in one object, so that "what did this island's agents know" has a
+    single answer that a run record can store.
     """
 
     #: `say` and `listen`. Without it an agent's only counterparty contact is a
