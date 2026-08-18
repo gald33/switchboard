@@ -186,7 +186,8 @@ def test_the_silent_arm_has_no_channel_tool_at_all(island):
     talkative = tool_names("free", "a1")
     assert not any(name.endswith(("__say", "__listen")) for name in silent)
     assert set(talkative) - set(silent) == {
-        "mcp__island-a1__say", "mcp__island-a1__listen"}
+        "mcp__island-a1__say", "mcp__island-a1__listen",
+        "mcp__island-a1__history"}
 
 
 def test_the_unguided_briefs_never_hand_over_a_convention(island):
@@ -390,26 +391,38 @@ def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
     import anyio
     from barter.analysis import snapshot
     played = anyio.run(lambda: play(
-        manager, take_turn, discovery=discovery, rounds=rounds,
+        manager, take_turn, lead_in=discovery, rounds=rounds,
         rng=random.Random(0), budgets=Budgets(),
         on_round=lambda round_no, label: (
             snapshot(island, manager, None, round_no=round_no, label=label)
-            if label in ("talk", "produce", "settle") else None)))
+            if label in ("talk", "plan", "produce", "settle") else None)))
     return manager, played, log
 
 
-def test_the_order_of_play_deliberates_then_produces_then_trades(island):
-    manager, played, log = _scripted_island(island, discovery=2, rounds=3)
+def test_every_round_deliberates_produces_deliberates_again_then_trades(island):
+    """The round is a cycle, not a preamble followed by a market.
 
-    labels = [entry["label"] for entry in log]
+    Talking twice per round is the point: before producing an agent is guessing
+    what it will hold and can still change what it makes, and after producing it
+    knows, so terms can be agreed against real inventory. The previous shape put
+    all the talking up front with the whole production decision behind it, which
+    made every later word a negotiation about goods nobody could change.
+    """
+    manager, played, log = _scripted_island(island, discovery=0, rounds=3)
+
     n = island.n_agents
-    # Two talk rounds, one produce round, then three trade rounds of two passes.
-    assert labels[:2 * n] == ["talk"] * (2 * n)
-    assert labels[2 * n:3 * n] == ["produce"] * n
-    assert labels[3 * n:] == (["offer"] * n + ["settle"] * n) * 3
+    labels = [entry["label"] for entry in log]
+    one_round = (["plan"] * n + ["produce"] * n + ["deal"] * n
+                 + ["offer"] * n + ["settle"] * n)
+    assert labels == one_round * 3
 
-    # ...and during every talk turn the manager really did refuse everything.
-    assert {e["phase"] for e in log if e["label"] == "talk"} == {"discovery"}
+    # Each stage really was open only in its own phase — the manager enforces
+    # the deadline, the agents are not merely asked to observe it.
+    seen = {}
+    for entry in log:
+        seen.setdefault(entry["label"], set()).add(entry["phase"])
+    assert seen == {"plan": {"discovery"}, "produce": {"production"},
+                    "deal": {"deal"}, "offer": {"trading"}, "settle": {"trading"}}
     assert manager.phase == "closed"
     manager.check_conservation()
 
@@ -455,8 +468,8 @@ def _notes_for(island, rolling, **switches):
     setup = Notes(rolling=rolling,
                   labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent),
                   **switches)
-    anyio.run(lambda: play(manager, take_turn, discovery=1, rounds=1,
-                           rng=random.Random(0), notes=setup))
+    anyio.run(lambda: play(manager, take_turn, rounds=2, rng=random.Random(0),
+                           notes=setup))
     return " ".join(notes).lower()
 
 
@@ -465,12 +478,16 @@ def test_the_notes_never_promise_the_wrong_labour_rule(island):
     plans for the wrong game. `once` must never invite a second `produce`, and
     `rolling` must never call the decision final."""
     once = _notes_for(island, rolling=False)
-    assert "labour once" in once and "instalment" not in once
+    assert "instalment" not in once
+    assert "only stage in which `produce` is accepted" in once
 
     rolling = _notes_for(island, rolling=True)
-    assert "instalment" in rolling and "labour once" not in rolling
-    # ...and rolling has to actually tell them the option is still open later.
-    assert "produce` once more" in rolling
+    assert "instalment" in rolling
+    # Use-it-or-lose-it has to be said out loud, because it is the rule that
+    # costs an agent something it cannot get back. A run once lost a third of
+    # its labour to share vectors that summed short, with nothing in the note
+    # saying the remainder would not wait.
+    assert "not carried over" in rolling and "sum to 1" in rolling
 
 
 def test_every_sentence_in_the_turn_note_can_be_switched_off(island):
@@ -508,7 +525,8 @@ def test_each_phase_gets_its_own_turn_budget(island):
 
     _, _, log = _scripted_island(island, discovery=1, rounds=1)
     got = {e["label"]: e["budget"] for e in log}
-    assert got == {"talk": Budgets().talk, "produce": Budgets().produce,
+    assert got == {"talk": Budgets().talk, "plan": Budgets().talk,
+                   "deal": Budgets().talk, "produce": Budgets().produce,
                    "offer": Budgets().offer, "settle": Budgets().settle}
 
 
@@ -751,10 +769,12 @@ def test_the_trajectory_is_recorded_once_per_round(island):
     snapshotting mid-round would read a half-applied state."""
     manager, played, _ = _scripted_island(island, discovery=2, rounds=3)
     labels = [row["label"] for row in played.trajectory]
-    assert labels == ["talk", "talk", "produce"] + ["settle"] * 3
-    assert [row["round"] for row in played.trajectory] == [1, 2, 3, 4, 5, 6]
-    # Labour is fully committed at the produce round and stays put under `once`.
-    assert played.trajectory[2]["labour_spent"] == pytest.approx(1.0)
+    # Two lead-in talk rounds, then three rounds each snapshotted twice: after
+    # the planning stage and after the round settles.
+    assert labels == ["talk", "talk"] + ["plan", "produce", "settle"] * 3
+    assert [row["round"] for row in played.trajectory] == [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]
+    # Labour is fully committed in the first production stage under `once`.
+    assert played.trajectory[3]["labour_spent"] == pytest.approx(1.0)
 
 
 def test_price_spread_says_how_far_apart_the_traders_are():
@@ -976,14 +996,19 @@ def test_switching_a_switch_off_takes_its_dependents_with_it(island):
         compose("built", on=["pay_tool"], off=["money"])
 
 
-def test_a_rolling_tier_two_island_can_work_in_its_very_first_trading_round(island):
-    """The same tick collision as Tier 1's, at the flow level.
+def test_a_rolling_island_spends_every_instalment_it_is_offered(island):
+    """The tick collision is now impossible by construction, not by a fix.
 
-    An agent that calls `produce` in the first trading round is asking to work
-    on the tick its opening instalment already used, and the manager refuses two
-    commitments in one tick. The flow advances the clock across the boundary; if
-    it stops doing so the run still completes and every agent silently loses a
-    slice of labour, which reads in the results as agents declining to work.
+    Under the old shape the produce pass and the first trading round shared a
+    tick, so every agent's first attempt to work during trading came back "you
+    have already worked this round" — one whole instalment of the island's
+    labour, thrown away by the clock rather than by any decision. A run lost
+    14% of its labour that way and it read in the results as agents declining
+    to work.
+
+    Now production is its own stage in every round, so an instalment can only
+    be lost by an agent choosing to lose it. This asserts the guarantee
+    directly: work every stage and you finish having spent exactly one unit.
     """
     import random
 
@@ -992,22 +1017,29 @@ def test_a_rolling_tier_two_island_can_work_in_its_very_first_trading_round(isla
 
     rounds = 3
     manager = Manager(island=island, phase="discovery", rolling=True,
-                      labour_per_round=1.0 / (1 + rounds))
-    refused = []
+                      labour_per_round=1.0 / rounds)
+    refused, out_of_stage = [], []
 
     async def take_turn(agent_id, *, round_no, label, note, budget):
-        if label in ("produce", "offer"):
+        if label == "produce":
             reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
             if not reply.get("ok"):
                 refused.append((round_no, label, agent_id, reply.get("error")))
+        elif label == "offer":
+            # ...and the deadline is real: the stage is over, so this is refused
+            # however eager the agent is. That is the manager enforcing it, not
+            # the agent observing it.
+            reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+            out_of_stage.append(reply.get("ok"))
         return ""
 
     notes = Notes(rolling=True,
                   labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent))
-    anyio.run(lambda: play(manager, take_turn, discovery=1, rounds=rounds,
+    anyio.run(lambda: play(manager, take_turn, rounds=rounds,
                            rng=random.Random(0), notes=notes))
 
     assert refused == [], refused
+    assert out_of_stage and not any(out_of_stage)
     for state in manager.agents.values():
         assert state.spent == pytest.approx(1.0, abs=1e-9)
     manager.check_conservation()

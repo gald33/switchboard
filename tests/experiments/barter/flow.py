@@ -10,11 +10,29 @@ to exercise is a loop nobody exercises.
 order of play runs against a scripted stand-in in milliseconds. What remains in
 the runner is the part that genuinely needs a model.
 
-The shape, which is Tier 1's:
+The shape. Every round is the same four stages, each with a deadline the
+manager enforces rather than the agents observing:
 
-    discovery x D    talk, quote, read — the manager accepts nothing
-    produce   x 1    labour committed, now with something to go on
-    trade     x T    two passes: everyone offers, then everyone answers
+    1  discovery   talk. Nothing may be committed.
+    2  produce     this round's instalment of labour.
+    3  deal        talk again — now everyone knows what everyone holds.
+    4  trade       two passes: everyone offers, then everyone answers.
+
+Two stages of talk per round rather than one, because they are different
+conversations. In stage 1 an agent is guessing what it will hold and can still
+coordinate *what to make*; by stage 3 it knows, and so does everyone else, so
+terms can be agreed against real inventory instead of intent. The previous shape
+had all the talking up front and the whole production decision behind it, which
+made every later word a negotiation about goods nobody could change.
+
+The trade stage keeps its two passes. That is not decoration: with one turn per
+agent, roughly half of all offers cannot be answered until the following round,
+and a three-tick expiry gives a proposal one or two real chances at being seen.
+Collapsing it would re-introduce a bug this file already paid for once.
+
+Labour is spent per round by construction here, so the tick collision that used
+to eat the first trading round's instalment cannot arise — production and
+trading are separate stages, and the clock moves between rounds.
 
 What the turn note says is not fixed here. Every sentence an agent is handed is
 one switch on ``Notes``, because a sentence that is always present is a sentence
@@ -126,37 +144,37 @@ async def play(
     manager: Any,
     take_turn: TakeTurn,
     *,
-    discovery: int,
     rounds: int,
     rng: random.Random,
+    lead_in: int = 0,
     budgets: Budgets | None = None,
     drain: Callable[[], Any] | None = None,
-    total_label: int | None = None,
     notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
 ) -> Played:
-    """Run one island's order of play. Returns the transcript and diagnostics."""
+    """Run one island's order of play. Returns the transcript and diagnostics.
+
+    ``lead_in`` prepends talk-only rounds before the first production stage, for
+    runs that want deliberation before any commitment at all. It defaults to
+    none, because every round already opens with a talk stage.
+    """
     budgets = budgets or Budgets()
     notes = notes or Notes()
     played = Played()
     order = list(manager.agents)
-    total = total_label if total_label is not None else discovery + 1 + rounds
     round_no = 0
-    rolling = notes.rolling
 
-    async def pass_over(label: str, base: str, budget: int, *, left: int | None = None) -> None:
+    async def pass_over(label: str, base: str, budget: int) -> None:
         """One turn each, in a shuffled order.
 
         The note is assembled per agent rather than per pass, because the one
         thing that differs between agents in the same round — how much labour
         each has left — is exactly the thing worth telling them.
         """
-        nonlocal round_no
         rng.shuffle(order)
         for agent_id in order:
-            parts = [base, notes.labour_note(agent_id) if rolling else ""]
-            if left is not None:
-                parts.append(notes.horizon_note(left))
+            parts = [base, notes.labour_note(agent_id) if notes.rolling else ""]
+            parts.append(notes.horizon_note(rounds - round_no))
             note = " ".join(part for part in parts if part)
             said = await take_turn(agent_id, round_no=round_no, label=label,
                                    note=note, budget=budget)
@@ -174,53 +192,58 @@ async def play(
             if row is not None:
                 played.trajectory.append(row)
 
-    for _ in range(discovery):
-        round_no += 1
+    for _ in range(lead_in):
+        manager.open_discovery()
         await pass_over(
             "talk",
-            f"Nothing is committed yet. Production opens in "
-            f"{discovery - round_no + 1} round(s), and "
-            + ("you spend your labour in instalments from then on, so you can "
-               "revise as you learn. " if rolling else "you spend your labour once. ")
-            + "Use this time however you think best.",
-            budgets.talk,
-        )
-
-    round_no += 1
-    if manager.phase == "discovery":
-        manager.open_production()
-    await pass_over(
-        "produce",
-        ("Production is open. You have a share of your labour to spend now and "
-         "more in each round that follows, so you can change your mind as you "
-         "learn. Trading opens next round."
-         if rolling else
-         "Production is open and this is the only round in which you can call "
-         "`produce`. Trading opens next round."),
-        budgets.produce,
-    )
-    manager.check_conservation()
-    manager.open_trading()
-    manager.check_conservation()
-    if rolling:
-        # The manager refuses two commitments in one tick and the opening
-        # instalment was committed at this one. Without this the first trading
-        # round's `produce` comes back "you have already worked this round",
-        # quietly costing every agent a slice of labour and making the arm look
-        # like a failure of nerve rather than of plumbing.
-        manager.advance()
+            "Nothing is committed yet and nothing can be. Production has not "
+            "opened. Use this time however you think best.",
+            budgets.talk)
 
     for _ in range(rounds):
         round_no += 1
-        left = total - round_no
+        manager.open_discovery()
+        await pass_over(
+            "plan",
+            "Stage 1 of 4, planning. Neither `produce` nor any trade is "
+            "accepted right now — production opens at the end of this stage, "
+            "and what you say here is the only thing that can change what "
+            "anyone makes.",
+            budgets.talk)
+
+        manager.open_production()
+        await pass_over(
+            "produce",
+            ("Stage 2 of 4, production. This is the only stage this round in "
+             "which `produce` is accepted, and this round's instalment is not "
+             "carried over — a share you do not spend now is a share nobody "
+             "works. Your split is a fraction of *this instalment*, so it "
+             "should sum to 1."
+             if notes.rolling else
+             "Stage 2 of 4, production. This is the only stage in which "
+             "`produce` is accepted. Your split should sum to 1."),
+            budgets.produce)
+        manager.check_conservation()
+
+        manager.open_deal()
+        await pass_over(
+            "deal",
+            "Stage 3 of 4, dealing. Labour is spent and everyone now knows "
+            "what they actually hold, but nothing has been swapped. Trades are "
+            "not accepted yet — this is the stage for agreeing terms.",
+            budgets.talk)
+
+        manager.open_trading()
         await pass_over(
             "offer",
-            ("Trading is open, and you can still `produce` once more this round "
-             "if you want to. " if rolling else "Trading is open. "),
-            budgets.offer, left=left)
-        await pass_over("settle",
-                        "Same round, second pass: answer what is waiting on you.",
-                        budgets.settle, left=left)
+            "Stage 4 of 4, trading, first pass: make your offers.",
+            budgets.offer)
+        await pass_over(
+            "settle",
+            "Stage 4 of 4, trading, second pass: answer what is waiting on "
+            "you. Anything still open when this stage closes expires.",
+            budgets.settle)
+
         manager.advance()
         manager.check_conservation()
 
