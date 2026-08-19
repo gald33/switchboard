@@ -1213,7 +1213,54 @@ def test_the_session_budget_is_computed_from_the_round_not_guessed(island):
     from barter_llm_experiment import turns_needed
 
     budgets = Budgets()
-    assert turns_needed(8, 0, budgets) > 2 * 240
+    # The property, not a magnitude: the figure must exceed the old hand-set
+    # 240 for the default island and must move with the round count. Pinning a
+    # multiple instead tied this gate to whatever the tool budgets happened to
+    # be, and it broke the moment they were trimmed — which is the budgets
+    # doing their job, not the sizing being wrong.
+    assert turns_needed(8, 0, budgets) > 240
     assert turns_needed(8, 0, budgets) > turns_needed(4, 0, budgets)
     # ...and it never drops below the old floor for a very short island.
     assert turns_needed(1, 0, budgets) >= 240
+
+
+def test_a_concurrent_stage_gives_every_agent_the_same_turn(island):
+    """Six stages of one agent at a time is most of an island's wall clock, and
+    they are waiting on each other for nothing: a stage should cost the slowest
+    agent, not the sum of all of them.
+
+    The thing that must not change is what the manager sees. Agents act on
+    different threads now, so two can be inside `dispatch` at once, both moving
+    goods — conservation is the assertion that says they did not corrupt each
+    other, and it is checked at every stage boundary by `play` itself.
+    """
+    import random
+
+    import anyio
+    from barter.flow import Notes, play
+
+    started, finished = [], []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        started.append(agent_id)
+        # Every agent parks here. Sequentially this deadlocks the assertion
+        # below; concurrently they all arrive before any of them leaves.
+        await anyio.sleep(0.01)
+        finished.append(agent_id)
+        if label == "produce":
+            manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        return f"{agent_id}"
+
+    manager = Manager(island=island, phase="discovery")
+    played = anyio.run(lambda: play(
+        manager, take_turn, rounds=1, rng=random.Random(0),
+        notes=Notes(), concurrent=True))
+
+    n = island.n_agents
+    # Every agent of the first stage started before any of them finished.
+    assert started[:n] == sorted(started[:n], key=started.index)
+    assert set(started[:n]) == set(manager.agents)
+    # ...and the transcript still reads one row per agent per stage, in order.
+    assert len(played.transcript) == n * 6
+    manager.check_conservation()
+    assert manager.phase == "closed"

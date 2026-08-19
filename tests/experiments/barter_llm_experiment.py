@@ -211,6 +211,7 @@ async def run_llm_island(
     max_turns: int | None = None,
     verbose: bool,
     discovery: int = 3,
+    concurrent: bool = True,
 ) -> dict:
     """One island. ``telling`` is the whole information setup; ``arm`` only names it.
 
@@ -321,7 +322,8 @@ async def run_llm_island(
             notes.labour = lambda who: max(0.0, 1.0 - manager.agents[who].spent)
             played = await play(manager, take_turn, rounds=rounds, lead_in=discovery,
                                 rng=rng, budgets=budgets, drain=service.drain,
-                                notes=notes, on_round=observe)
+                                notes=notes, on_round=observe,
+                                concurrent=concurrent)
         finally:
             for trader in traders.values():
                 await trader.close()
@@ -474,6 +476,10 @@ def main(argv: list[str] | None = None) -> int:
                              "computed from the round shape and the tool budgets")
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--sequential", action="store_true",
+                        help="one agent at a time within a stage. Slower by the "
+                             "agent count, and the only mode where an agent can "
+                             "see what others did earlier in the same stage")
     parser.add_argument("--compare", nargs="+", type=Path, default=None,
                         help="compare finished run records instead of running anything")
     args = parser.parse_args(argv)
@@ -499,8 +505,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(args.arms)} arm(s) x {args.islands} island(s) x {args.agents} agents "
           f"x {args.rounds} rounds x 6 stages = {passes} model turns",
           file=sys.stderr)
-    print(f"  roughly ${passes * 0.069:.0f} and {passes / 60:.1f}h at the rate a "
-          f"measured island ran at\n", file=sys.stderr)
+    stages = len(args.arms) * args.islands * (args.rounds * 6 + args.discovery)
+    wall = passes if args.sequential else stages
+    print(f"  roughly ${passes * 0.069:.0f}; wall clock ~{wall / 60:.1f}h "
+          f"({'sequential' if args.sequential else 'concurrent'})\n", file=sys.stderr)
 
     results = []
     for arm in args.arms:
@@ -515,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
                 agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
                 verbose=args.verbose, discovery=args.discovery,
+                concurrent=not args.sequential,
             ))
             results.append(result)
             print(render(result), flush=True)

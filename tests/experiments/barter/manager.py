@@ -46,6 +46,7 @@ release is the half that gets dropped, so nothing should depend on it happening.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -189,6 +190,14 @@ class Manager:
     #: escrow creates rather than solves, and counting it is the only way to say
     #: whether a convention helps agents avoid it.
     crossings: list[dict[str, Any]] = field(default_factory=list)
+    #: Serialises agent requests. Agents within a stage act concurrently -- six
+    #: stages of waiting per round is most of an island's wall clock, and they
+    #: are waiting on each other for no reason -- so two of them can be inside
+    #: `dispatch` at once, on different threads, both moving goods. Every
+    #: mutation goes through `dispatch`, so one lock there covers all of them.
+    #: Phase transitions are not locked: the flow makes them between stages,
+    #: when no agent is mid-request.
+    _lock: Any = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.agents:
@@ -678,6 +687,10 @@ class Manager:
         ``AssertionError`` and deliberately *do* escape.
         """
         op = str(request.get("op", ""))
+        with self._lock:
+            return self._dispatch(agent_id, request, op)
+
+    def _dispatch(self, agent_id: str, request: dict[str, Any], op: str) -> dict[str, Any]:
         try:
             if op == "state":
                 result = self.op_state(agent_id)
@@ -723,6 +736,11 @@ class ManagerService:
         self.publish_ledger = publish_ledger
         self.lease_ttl = lease_ttl
         self.served = 0
+        # Concurrent agents each pump this between sending and collecting, so
+        # two drains can run at once and race on the inbox cursor -- a reply
+        # read by the wrong drain is a reply lost, and the agent waiting for it
+        # simply times out.
+        self._drain_lock = threading.RLock()
 
     @property
     def ledger_channel(self) -> str:
@@ -761,6 +779,10 @@ class ManagerService:
         body: an agent cannot claim to be another agent by writing a name into
         its own message, so the named-seller rule on approvals actually holds.
         """
+        with self._drain_lock:
+            return self._drain(wait=wait, limit=limit)
+
+    def _drain(self, *, wait: float = 0.0, limit: int = 200) -> int:
         served = 0
         for message in self.client.inbox(wait=wait, limit=limit):
             body = message.get("body")

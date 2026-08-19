@@ -80,10 +80,10 @@ class Budgets:
     close to cost-neutral.
     """
 
-    talk: int = 8
-    produce: int = 8
-    offer: int = 14
-    settle: int = 8
+    talk: int = 3
+    produce: int = 3
+    offer: int = 6
+    settle: int = 4
 
 
 @dataclass
@@ -166,12 +166,21 @@ async def play(
     drain: Callable[[], Any] | None = None,
     notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
+    concurrent: bool = False,
 ) -> Played:
     """Run one island's order of play. Returns the transcript and diagnostics.
 
     ``lead_in`` prepends talk-only rounds before the first production stage, for
     runs that want deliberation before any commitment at all. It defaults to
     none, because every round already opens with a talk stage.
+
+    ``concurrent`` lets every agent in a stage act at once. Six stages of one
+    agent at a time is most of an island's wall clock and they are waiting on
+    each other for nothing — a stage costs the *slowest* agent rather than the
+    sum of all of them. It is off by default because it is not free: sequential
+    agents later in a stage can see what earlier ones did, and concurrent ones
+    cannot. That makes it a different experiment, and arguably a more honest
+    one, since simultaneity is where coordination is actually hard.
     """
     budgets = budgets or Budgets()
     notes = notes or Notes()
@@ -187,18 +196,40 @@ async def play(
         each has left — is exactly the thing worth telling them.
         """
         rng.shuffle(order)
-        for agent_id in order:
+
+        def note_for(agent_id: str) -> str:
             parts = [base, notes.labour_note(agent_id) if notes.rolling else ""]
             parts.append(notes.horizon_note(rounds - round_no))
-            note = " ".join(part for part in parts if part)
-            said = await take_turn(agent_id, round_no=round_no, label=label,
-                                   note=note, budget=budget)
+            return " ".join(part for part in parts if part)
+
+        spoke: dict[str, str] = {}
+
+        async def one(agent_id: str) -> None:
+            spoke[agent_id] = await take_turn(
+                agent_id, round_no=round_no, label=label,
+                note=note_for(agent_id), budget=budget)
+
+        if concurrent:
+            import anyio
+
+            async with anyio.create_task_group() as group:
+                for agent_id in order:
+                    group.start_soon(one, agent_id)
+        else:
+            for agent_id in order:
+                await one(agent_id)
+
+        # Transcript in the shuffled order either way, so a concurrent island
+        # reads like a sequential one. `seen_by` is recorded once the stage is
+        # over rather than after each turn: with everyone acting at once there
+        # is no "already open when I acted", and every agent did have its chance
+        # at everything still pending when the stage closed.
+        for agent_id in order:
             played.transcript.append({"round": round_no, "pass": label,
-                                      "agent": agent_id, "text": said})
-            # Record *after* the turn: an agent that proposed to itself during
-            # this turn has still had its chance to answer what was already open.
-            for trade in manager.trades.values():
-                if trade.status == "pending":
+                                      "agent": agent_id, "text": spoke.get(agent_id, "")})
+        for trade in manager.trades.values():
+            if trade.status == "pending":
+                for agent_id in order:
                     played.seen_by.setdefault(trade.id, set()).add(agent_id)
         if drain is not None:
             drain()
