@@ -443,10 +443,14 @@ def render(result: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--arms", nargs="+", default=["told", "built"], choices=list(ARMS))
-    parser.add_argument("--agents", type=int, default=5)
+    parser.add_argument("--agents", type=int, default=4)
     parser.add_argument("--goods", type=int, default=5)
-    parser.add_argument("--rounds", type=int, default=8,
-                        help="trading rounds (each is a propose pass and a settle pass)")
+    parser.add_argument("--rounds", type=int, default=3,
+                        help="rounds, each of six stages. Short by default: a round "
+                             "is six model turns per agent now, not two, so the "
+                             "island got 2.4x more expensive when the stages were "
+                             "added and the old default of 8 quietly meant a "
+                             "four-hour, $16 island")
     parser.add_argument("--labour", choices=["once", "rolling"], default="once",
                         help="one-shot commitment, or the same total labour in "
                              "instalments across rounds")
@@ -484,6 +488,19 @@ def main(argv: list[str] | None = None) -> int:
     # `--labour rolling` is a switch like any other; it keeps its own flag only
     # because it is also a fact about the manager rather than only a sentence.
     switch_on = list(args.switch_on) + (["rolling"] if args.labour == "rolling" else [])
+
+    # Say what it will cost before spending it. The per-pass figure is measured
+    # from a real island (48 passes, $3.32, seed 41) rather than guessed, and the
+    # arithmetic is printed because getting it wrong is expensive in a way that
+    # nothing else here is: a full ladder at the old defaults is 1680 passes and
+    # nobody should discover that afterwards.
+    passes = len(args.arms) * args.islands * args.agents * (
+        args.rounds * 6 + args.discovery)
+    print(f"{len(args.arms)} arm(s) x {args.islands} island(s) x {args.agents} agents "
+          f"x {args.rounds} rounds x 6 stages = {passes} model turns",
+          file=sys.stderr)
+    print(f"  roughly ${passes * 0.069:.0f} and {passes / 60:.1f}h at the rate a "
+          f"measured island ran at\n", file=sys.stderr)
 
     results = []
     for arm in args.arms:
