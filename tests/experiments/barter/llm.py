@@ -310,6 +310,15 @@ class Telling:
     #: version of the question the whole ladder asks, and it defaults off
     #: because noticing unaided is the interesting outcome.
     crossings: bool = False
+    #: `propose_trade` carries a free-text `note` that the seller reads. A
+    #: directed, escrow-costing channel to one counterparty is a genuinely
+    #: different affordance from a broadcast one, so it is its own switch — and
+    #: `silent` must not have it. It did: the arm whose whole point is having no
+    #: way to communicate shipped with a 200-character line to anybody it
+    #: proposed to, and the gate asserting "no `say`, no `listen`" walked
+    #: straight past it. `silent` + `trade_note` is now a real arm rather than
+    #: an accident: is a costly, private, one-to-one channel enough?
+    trade_note: bool = False
     #: A tie-break rule for crossed offers, stated in words. The scripted arms
     #: are handed one; this is what it costs to hand one to a model island, and
     #: `crossings` against `tiebreak` separates *seeing* the collision from
@@ -358,7 +367,7 @@ class Telling:
 _SWITCHES: tuple[str, ...] = (
     "channel", "numeraire", "board", "median", "deviation", "expiry",
     "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
-    "own_value", "own_score", "crossings", "tiebreak",
+    "own_value", "own_score", "crossings", "tiebreak", "trade_note",
 )
 
 #: The named arms, as combinations. They are kept because the merged results are
@@ -366,15 +375,17 @@ _SWITCHES: tuple[str, ...] = (
 #: but nothing reads a name any more, only the switches it stands for.
 PRESETS: dict[str, Telling] = {
     "silent": Telling(),
-    "free": Telling(channel=True),
-    "told": Telling(channel=True, numeraire=True),
-    "built": Telling(channel=True, numeraire=True, board=True, median=True),
+    "free": Telling(channel=True, trade_note=True),
+    "told": Telling(channel=True, numeraire=True, trade_note=True),
+    "built": Telling(channel=True, numeraire=True, board=True, median=True,
+                     trade_note=True),
     "bound": Telling(channel=True, numeraire=True, board=True, median=True,
-                     deviation=True, expiry=True),
+                     deviation=True, expiry=True, trade_note=True),
     "spend": Telling(channel=True, numeraire=True, board=True, median=True,
-                     deviation=True, expiry=True, money=True),
+                     deviation=True, expiry=True, money=True, trade_note=True),
     "paid": Telling(channel=True, numeraire=True, board=True, median=True,
-                    deviation=True, expiry=True, money=True, pay_tool=True),
+                    deviation=True, expiry=True, money=True, pay_tool=True,
+                    trade_note=True),
 }
 
 ARMS = tuple(PRESETS)
@@ -686,13 +697,26 @@ class Wire:
 
 
 def build_tools(wire: Wire) -> Any:
-    """The MCP server one agent sees. Tool text is the whole interface.
+    """The MCP server one agent sees, wrapping :func:`build_tool_list`."""
+    from claude_agent_sdk import create_sdk_mcp_server
+
+    return create_sdk_mcp_server(name=f"island-{wire.agent_id}",
+                                 tools=build_tool_list(wire))
+
+
+def build_tool_list(wire: Wire) -> list[Any]:
+    """The tools one agent gets. Tool text is the whole interface.
+
+    Split from the server so the surface can be *read* — the server hides its
+    schemas behind an async handler, and "does a silent island offer any way to
+    send free text" is a question a gate has to be able to ask. It could not,
+    which is how `propose_trade`\'s note stayed a channel in the no-channel arm.
 
     Descriptions state mechanics and nothing strategic. A description that said
     "post your prices" would be the convention, handed over, and the island that
     was supposed to invent one would stop being an experiment.
     """
-    from claude_agent_sdk import create_sdk_mcp_server, tool
+    from claude_agent_sdk import tool
 
     telling = wire.telling
 
@@ -704,22 +728,41 @@ def build_tools(wire: Wire) -> Any:
     async def my_state(_: Any) -> dict[str, Any]:
         return _text(await _off(wire.state))
 
-    @tool("produce",
-          "Spend your one unit of labour. Pass shares per good, each >= 0, "
-          "summing to at most 1. You may only do this once.",
-          {"plan": dict})
+    # Switch-aware, because the fixed wording was false half the time. It said
+    # "you may only do this once" to rolling agents whose brief, two layers up,
+    # correctly told them they spend in instalments — the same contradiction
+    # that was fixed in the system prompt and missed here, one level down.
+    produce_doc = ("Spend this round's instalment of labour. Pass shares per "
+                   "good, each >= 0, summing to at most 1 — they are fractions "
+                   "of *this instalment*, and what you do not claim is not "
+                   "carried over. Once per round."
+                   if telling.rolling else
+                   "Spend your one unit of labour. Pass shares per good, each "
+                   ">= 0, summing to at most 1. You may only do this once.")
+
+    @tool("produce", produce_doc, {"plan": dict})
     async def produce(args: Any) -> dict[str, Any]:
         return _text(await _off(lambda: wire.manager_call("produce", plan=args.get("plan"))))
 
-    @tool("propose_trade",
-          "Offer a trade to one named trader. `give` is what you hand over and "
-          "is escrowed immediately; `want` is what you are asking for. Returns "
-          "a trade id. Nothing settles until that trader approves the id.",
-          {"seller": str, "give": dict, "want": dict, "note": str})
+    propose_doc = ("Offer a trade to one named trader. `give` is what you hand "
+                   "over and is escrowed immediately; `want` is what you are "
+                   "asking for. Returns a trade id. Nothing settles until that "
+                   "trader approves the id.")
+    propose_args: dict[str, Any] = {"seller": str, "give": dict, "want": dict}
+    if telling.trade_note:
+        propose_doc += " `note` is free text the seller will see."
+        propose_args["note"] = str
+
+    @tool("propose_trade", propose_doc, propose_args)
     async def propose_trade(args: Any) -> dict[str, Any]:
+        # Dropped rather than merely undocumented when the switch is off. An
+        # argument absent from the schema can still be sent by a determined
+        # caller, and this is the one field whose whole significance is that it
+        # reaches another agent.
+        note = args.get("note", "") if telling.trade_note else ""
         return _text(await _off(lambda: wire.manager_call(
             "propose", seller=args.get("seller"), give=args.get("give"),
-            want=args.get("want"), note=args.get("note", ""))))
+            want=args.get("want"), note=note)))
 
     @tool("approve_trade", "Settle a trade that was offered to you, by its id.",
           {"trade_id": str})
@@ -811,7 +854,7 @@ def build_tools(wire: Wire) -> Any:
 
         tools += [pay]
 
-    return create_sdk_mcp_server(name=f"island-{wire.agent_id}", tools=tools)
+    return tools
 
 
 def _text(payload: Any) -> dict[str, Any]:

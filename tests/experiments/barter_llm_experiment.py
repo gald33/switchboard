@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from barter.analysis import render as render_comparison  # noqa: E402
 from barter.analysis import snapshot, trajectory_table  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
-from barter.flow import play  # noqa: E402
+from barter.flow import Budgets, play  # noqa: E402
 from barter.llm import (  # noqa: E402
     ARMS,
     TURN,
@@ -179,6 +179,26 @@ class Trader:
         return "\n".join(said)
 
 
+def turns_needed(rounds: int, lead_in: int, budgets: Any) -> int:
+    """A session budget sized from the flow rather than guessed at.
+
+    ``max_turns`` is session-wide and an agent now takes six turns per round,
+    each allowed a budget of tool calls that each cost a turn of their own. It
+    was last set by hand when a round was two passes; the round is now six, so
+    the figure was roughly half of what the island asks for and agents would
+    have gone quiet somewhere in the back half. Computing it means the next
+    change to the order of play cannot silently outgrow it.
+
+    The headroom is deliberate. Running out is not an error an agent can see
+    coming — its turn simply ends — and the goods it moved before that are
+    real, so a run that hits the cap produces a half-island nobody can
+    distinguish from an island of agents who stopped bothering.
+    """
+    per_round = (3 * budgets.talk + budgets.produce + budgets.offer
+                 + budgets.settle + 6)
+    return max(240, int(1.5 * (per_round * rounds + lead_in * (budgets.talk + 1))))
+
+
 async def run_llm_island(
     *,
     arm: str,
@@ -188,7 +208,7 @@ async def run_llm_island(
     rounds: int,
     seed: int,
     model: str,
-    max_turns: int = 240,
+    max_turns: int | None = None,
     verbose: bool,
     discovery: int = 3,
 ) -> dict:
@@ -216,6 +236,9 @@ async def run_llm_island(
     )
     rng = random.Random(seed)
     run = f"llm{seed}{arm}"
+    budgets = Budgets()
+    if max_turns is None:
+        max_turns = turns_needed(rounds, discovery, budgets)
 
     with hub() as handle:
         service = ManagerService(handle.client("manager"), manager, run=run)
@@ -297,8 +320,8 @@ async def run_llm_island(
             notes = telling.to_notes()
             notes.labour = lambda who: max(0.0, 1.0 - manager.agents[who].spent)
             played = await play(manager, take_turn, rounds=rounds, lead_in=discovery,
-                                rng=rng, drain=service.drain, notes=notes,
-                                on_round=observe)
+                                rng=rng, budgets=budgets, drain=service.drain,
+                                notes=notes, on_round=observe)
         finally:
             for trader in traders.values():
                 await trader.close()
@@ -441,9 +464,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--islands", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--max-turns", type=int, default=240,
+    parser.add_argument("--max-turns", type=int, default=None,
                         help="turns for the whole session, not per round — an agent "
-                             "holds one session for the entire island")
+                             "holds one session for the entire island. Default is "
+                             "computed from the round shape and the tool budgets")
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--compare", nargs="+", type=Path, default=None,

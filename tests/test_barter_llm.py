@@ -1121,3 +1121,99 @@ def test_the_stated_tiebreak_admits_that_the_rule_itself_is_arbitrary(island):
     text = " ".join(TIEBREAK_BRIEF.split())
     assert "does not matter" in text
     assert "both pick the same one" in text
+
+
+def test_the_silent_arm_has_no_way_to_send_text_at_all(island):
+    """Silence has to mean silence, and it did not.
+
+    The existing gate checks that `say` and `listen` are absent, and
+    `propose_trade` walked straight past it: it carried a free-text `note` that
+    the manager stores and hands to the seller in `pending_trades`. Every arm
+    had it, including the one whose entire purpose is having no way to
+    communicate — a directed, escrow-costing, 200-character channel to anybody
+    you propose to. `silent` against `free` is the comparison that establishes
+    whether communication helps at all, and it was not measuring that.
+
+    So the note is its own switch now. `silent` + `trade_note` becomes a real
+    arm rather than an accident: is a costly, private, one-to-one channel
+    enough, when a free public one is not?
+    """
+    from barter.llm import build_tool_list, telling_for
+
+    for arm, expected in (("silent", False), ("free", True)):
+        assert telling_for(arm).trade_note is expected
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "silent")
+        schemas = {t.name: t.input_schema for t in build_tool_list(wires["a1"])}
+        assert "note" not in schemas["propose_trade"], schemas["propose_trade"]
+
+        # ...and nothing else on a silent island takes free text either. The
+        # string arguments a silent island may legitimately have are all
+        # *identifiers* — an agent id, a trade id, a good name — every one of
+        # which the manager validates against a closed set, so none can carry a
+        # message. Anything else that is a string is a channel, and listing the
+        # exceptions by name means a new one has to be argued for rather than
+        # arriving unnoticed, which is exactly how `note` did.
+        identifiers = {"seller", "trade_id", "good"}
+        for name, schema in schemas.items():
+            text = [k for k, v in schema.items() if v is str and k not in identifiers]
+            assert not text, f"{name} accepts free text: {text}"
+
+
+def test_a_dropped_note_is_dropped_and_not_merely_undocumented(island):
+    """An argument missing from the schema can still be sent. This is the one
+    field whose whole significance is that it reaches another agent, so the
+    handler discards it rather than trusting the schema to keep it out."""
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
+    manager.open_trading()
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "silent", run="quiet")
+        reply = wires["a1"].manager_call(
+            "propose", seller="a2", give={"fish": 0.01}, want={"grain": 0.01},
+            note="")
+        assert reply.get("ok")
+        assert manager.trades[reply["trade_id"]].note == ""
+
+
+def test_the_produce_tool_never_contradicts_the_labour_rule(island):
+    """The same bug as the brief's, one layer down and missed when that was
+    fixed: a fixed description telling rolling agents "you may only do this
+    once" while their system prompt correctly said they spend in instalments,
+    and while the manager accepted one call per round."""
+    from barter.llm import build_tool_list, compose
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "told", run="doc")
+        wires["a1"].telling = compose("told", on=["rolling"])
+        rolling = {t.name: t.description for t in build_tool_list(wires["a1"])}
+        wires["a1"].telling = compose("told")
+        once = {t.name: t.description for t in build_tool_list(wires["a1"])}
+
+    assert "only do this once" in once["produce"]
+    assert "only do this once" not in rolling["produce"]
+    assert "once per round" in rolling["produce"].lower()
+    assert "not carried over" in rolling["produce"]
+
+
+def test_the_session_budget_is_computed_from_the_round_not_guessed(island):
+    """It was a hand-set 240, chosen when a round was two passes. The round is
+    six now, so the island asked for roughly three times what agents had and
+    they would have gone quiet somewhere in the back half — with no error, since
+    running out just ends a turn. Computing it means the next change to the
+    order of play cannot silently outgrow it."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
+    from barter.flow import Budgets
+    from barter_llm_experiment import turns_needed
+
+    budgets = Budgets()
+    assert turns_needed(8, 0, budgets) > 2 * 240
+    assert turns_needed(8, 0, budgets) > turns_needed(4, 0, budgets)
+    # ...and it never drops below the old floor for a very short island.
+    assert turns_needed(1, 0, budgets) >= 240
