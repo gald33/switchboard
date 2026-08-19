@@ -124,10 +124,21 @@ class Agenda:
         return sum(self.windows)
 
     def rows(self) -> list[dict[str, Any]]:
-        """Every window of the run, with the time it opens and what it opens."""
-        opens = ["talk, and `produce`",
-                 "...and `propose_trade`, and withdraw your own offers",
-                 "...and `approve_trade`"]
+        """Every window of the run, with the time it opens and what it opens.
+
+        One window means nothing is staged: everything is open for the whole
+        round. The staging was there so traders could deliberate before
+        committing, and the measurements said they do not deliberate separately
+        -- the offers *are* the negotiation, and a ladder that withholds
+        offering withholds the negotiating.
+        """
+        if len(self.windows) == 1:
+            opens = ["talk, `produce`, `propose_trade`, `approve_trade`, "
+                     "`cancel_trade` — everything, for the whole round"]
+        else:
+            opens = ["talk, and `produce`",
+                     "...and `propose_trade`, and withdraw your own offers",
+                     "...and `approve_trade`"]
         out = []
         for round_no in range(1, self.rounds + 1):
             at = self.starts_at + (round_no - 1) * self.round_seconds

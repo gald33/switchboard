@@ -225,6 +225,7 @@ async def run_llm_island(
     window: float | tuple[float, ...] = 60.0,
     sweep_every: float = 1.0,
     muster: Muster | None = None,
+    staged: bool = True,
 ) -> dict:
     """One island. ``telling`` is the whole information setup; ``arm`` only names it.
 
@@ -363,7 +364,7 @@ async def run_llm_island(
                 played = await play(manager, take_turn, rounds=rounds,
                                     rng=rng, window=window, budgets=budgets,
                                     notes=notes, on_round=observe,
-                                    muster=muster)
+                                    muster=muster, staged=staged)
         finally:
             for trader in traders.values():
                 await trader.close()
@@ -395,12 +396,13 @@ async def run_llm_island(
         quotes_posted=sum(w.quotes_posted for w in wires.values()),
         sweeps=sweeps, sweep_errors=sweep_errors, transcript=transcript,
         rounds=rounds, window=window, sweep_every=sweep_every, muster=muster,
-        rolling=rolling, instalments=instalments)
+        staged=staged, rolling=rolling, instalments=instalments)
 
 
 def record_for(*, island, manager, played, telling, arm, seed, model, cost,
                floor, quotes, quotes_posted, sweeps, sweep_errors, transcript,
-               rounds, window, sweep_every, muster, rolling, instalments) -> dict:
+               rounds, window, sweep_every, muster, staged, rolling,
+               instalments) -> dict:
     """Everything one island leaves behind, as one dict.
 
     A function rather than a tail of ``run_llm_island`` because this is the
@@ -454,7 +456,8 @@ def record_for(*, island, manager, played, telling, arm, seed, model, cost,
         # how long agents get before the next capability opens, and `sweep_every`
         # is the granularity at which their orders are ordered against each
         # other. Two runs at different values are not the same market.
-        "flow": {"trade_rounds": rounds, "windows": 3,
+        "flow": {"trade_rounds": rounds, "windows": 3 if staged else 1,
+                 "staged": staged,
                  "window_seconds": (list(window) if isinstance(window, (list, tuple))
                                     else [window] * 3),
                  "sweep_every": sweep_every,
@@ -479,6 +482,12 @@ def record_for(*, island, manager, played, telling, arm, seed, model, cost,
         "sweep_errors": sweep_errors,
         "transcript": transcript,
     }
+
+
+def _stage_note(result: dict) -> str:
+    if result["flow"].get("staged", True):
+        return "windows (produce / +offer / +settle)"
+    return "unstaged - everything open throughout"
 
 
 def _plan_note(result: dict) -> str:
@@ -514,8 +523,8 @@ def render(result: dict) -> str:
         f"{len(summary.get('idle_labour') or {})} unit(s) — plans that summed to "
         f"less than 1, which is not carried over",
         f"  flow             {result['flow']['trade_rounds']} rounds of "
-        f"{'/'.join(f'{w:g}' for w in result['flow']['window_seconds'])}s windows "
-        f"(produce / +offer / +settle), swept every "
+        f"{'/'.join(f'{w:g}' for w in result['flow']['window_seconds'])}s "
+        f"{_stage_note(result)}, swept every "
         f"{result['flow']['sweep_every']:g}s, labour "
         f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
         f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
@@ -572,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
                              "outlived the window it began in. This is the time "
                              "pressure and it is a market parameter: two runs at "
                              "different windows are not the same market")
+    parser.add_argument("--no-stages", action="store_true",
+                        help="open everything for the whole round instead of "
+                             "staging produce / offer / settle. The staging was "
+                             "there so traders could deliberate before "
+                             "committing; the runs say they do not deliberate "
+                             "separately -- the offers are the negotiation")
     parser.add_argument("--muster", action="store_true",
                         help="post the full schedule in absolute times and wait "
                              "for every trader to acknowledge it before anything "
@@ -649,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                 sweep_every=args.sweep_every,
                 muster=(Muster(lead=args.muster_lead,
                                ack_within=args.muster_ack) if args.muster else None),
+                staged=not args.no_stages,
             ))
             results.append(result)
             print(render(result), flush=True)

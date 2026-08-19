@@ -235,6 +235,7 @@ async def play(
     notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
     muster: Muster | None = None,
+    staged: bool = True,
 ) -> Played:
     """Run one island. Returns the transcript and diagnostics.
 
@@ -246,6 +247,18 @@ async def play(
     before anything opens. Without it the island simply begins, which is how it
     used to work and is the thing that made a settle window an agent could miss
     entirely without ever being told it existed.
+
+    ``staged`` is whether the round opens in three windows or all at once. The
+    staging existed so traders could deliberate before committing — offer only
+    after everyone had made something, settle only after offers existed. What
+    the runs showed is that they do not deliberate separately: the offers *are*
+    the negotiation, so withholding offering withholds the negotiating. Worse,
+    a turn now spans windows, and an action decided inside one is judged
+    against whatever is open when it is swept — a trader announced on the floor
+    that it had approved a trade the manager had refused as early, and never
+    got another turn to find out. Unstaged, everything is open for the whole
+    round and reality does the gating: nobody can approve what was never
+    proposed, and nobody can offer what they do not hold.
     """
     import anyio
 
@@ -255,10 +268,17 @@ async def play(
     # tests want and what the runner used to do; a triple sizes them to the job,
     # which is what the measurements asked for -- a production turn ran 18-33
     # seconds and a trading turn 68-169, against windows that were all sixty.
-    windows = ((float(window),) * 3 if isinstance(window, (int, float))
-               else tuple(float(w) for w in window))
-    if len(windows) != 3:
+    if isinstance(window, (int, float)):
+        windows = (float(window),) if not staged else (float(window),) * 3
+    else:
+        windows = tuple(float(w) for w in window)
+    if staged and len(windows) != 3:
         raise ValueError("window must be one number or three, one per window")
+    if not staged:
+        # Unstaged is one window, however the durations arrived: an island that
+        # opens everything at once has one deadline, and three names for the
+        # same span would be three ways to describe nothing.
+        windows = (sum(windows),)
 
     budgets = budgets or Budgets()
     notes = notes or Notes()
@@ -269,10 +289,26 @@ async def play(
     reached: set[tuple[int, int, str]] = set()
 
     def budget_for(level: int) -> int:
+        if not staged:
+            # One window has to hold the whole job, so it gets the whole budget
+            # rather than the settle window's share of it.
+            return budgets.produce + budgets.offer + budgets.settle
         return {LEVEL_PRODUCE: budgets.produce, LEVEL_OFFER: budgets.offer,
                 LEVEL_SETTLE: budgets.settle}[level]
 
+    def label_for(level: int) -> str:
+        return manager.phase if staged else "open"
+
     def note_for(agent_id: str, level: int) -> str:
+        if not staged:
+            opens = ("Everything is open for the whole of this round: talk, "
+                     "`produce`, offer, withdraw, approve. Nothing opens later "
+                     "and nothing closes early. Anything still unapproved when "
+                     "the round ends expires.")
+            parts = [opens, notes.rule_note(),
+                     notes.labour_note(agent_id) if notes.rolling else "",
+                     notes.horizon_note(rounds - round_no)]
+            return " ".join(part for part in parts if part)
         opens = {
             LEVEL_PRODUCE: "Window 1 of 3. You can talk and you can `produce`. "
                            "Proposing opens next window, approving the one after.",
@@ -311,7 +347,7 @@ async def play(
                 played.held_back += 1
                 break
             level = manager.level
-            label = manager.phase
+            label = label_for(level)
             reached.add((round_no, level, agent_id))
             taken += 1
             began = anyio.current_time()
@@ -366,13 +402,14 @@ async def play(
 
     for _ in range(rounds):
         round_no += 1
-        manager.open(LEVEL_PRODUCE)
+        manager.open(LEVEL_SETTLE if not staged else LEVEL_PRODUCE)
         started = anyio.current_time()
         started_at = started
         ends_at = started + sum(windows)
         rng.shuffle(order)
         async with anyio.create_task_group() as group:
-            group.start_soon(clock, started)
+            if staged:
+                group.start_soon(clock, started)
             for agent_id in order:
                 group.start_soon(live, agent_id, ends_at)
         if drain is not None:
@@ -381,8 +418,9 @@ async def play(
         for trade in manager.trades.values():
             if trade.status == "pending":
                 played.seen_by.setdefault(trade.id, set()).update(order)
+        levels = (LEVEL_PRODUCE, LEVEL_OFFER, LEVEL_SETTLE) if staged else (LEVEL_SETTLE,)
         played.missed += sum(
-            1 for level in (LEVEL_PRODUCE, LEVEL_OFFER, LEVEL_SETTLE)
+            1 for level in levels
             for agent_id in order if (round_no, level, agent_id) not in reached)
         manager.next_round()
         manager.check_conservation()

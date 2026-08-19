@@ -1469,7 +1469,7 @@ def test_a_finished_island_can_be_written_up_without_a_model(island):
         cost=0.0, floor=[], quotes={"a1": {"fish": 1.0, "grain": 2.0}},
         quotes_posted=1, sweeps=7, sweep_errors=[], transcript=played.transcript,
         rounds=2, window=(0.02, 0.05, 0.05), sweep_every=1.0, muster=None,
-        rolling=False, instalments=1)
+        staged=True, rolling=False, instalments=1)
 
     # The clock is in the record, because two runs at different windows are not
     # the same market and a record that omitted it could not say so.
@@ -1800,3 +1800,79 @@ def test_the_windows_do_not_have_to_be_the_same_length(island):
     with pytest.raises(ValueError, match="one number or three"):
         anyio.run(lambda: play(manager, take_turn, rounds=1,
                                rng=random.Random(0), window=(1.0, 2.0)))
+
+
+def test_unstaged_opens_everything_for_the_whole_round(island):
+    """The staging was there so traders could deliberate before committing.
+
+    They do not deliberate separately. The offers *are* the negotiation, so a
+    ladder that withholds offering withholds the negotiating — and worse, a
+    turn now spans windows, so an action decided inside one is judged against
+    whatever is open when it is swept. A trader announced on the floor that it
+    had approved a trade the manager had refused as early, and never got
+    another turn to discover otherwise.
+
+    Unstaged, reality does the gating that the ladder was doing: nobody can
+    approve what was never proposed, and nobody can offer what they do not hold.
+    """
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island)
+    labels: list[str] = []
+    refusals: list[str] = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        labels.append(label)
+        assert "Everything is open for the whole of this round" in note
+        # Everything, from the very first turn, including approving.
+        state = manager.agents[agent_id]
+        plan = {g: state.alpha[i] for i, g in enumerate(manager.goods)}
+        for op in ({"op": "produce", "plan": plan},
+                   {"op": "propose", "seller": next(a for a in manager.agents
+                                                    if a != agent_id),
+                    "give": {"fish": 0.001}, "want": {"grain": 0.001}}):
+            reply = manager.dispatch(agent_id, op)
+            if not reply.get("ok") and "not open yet" in str(reply.get("error")):
+                refusals.append(str(reply["error"]))
+        waiting = manager.dispatch(agent_id, {"op": "pending"})
+        for trade in waiting.get("awaiting_your_approval", []):
+            reply = manager.dispatch(agent_id, {"op": "approve", "trade_id": trade["id"]})
+            if not reply.get("ok") and "not open yet" in str(reply.get("error")):
+                refusals.append(str(reply["error"]))
+        await anyio.sleep(0.005)
+        return ""
+
+    played = anyio.run(lambda: play(manager, take_turn, rounds=1,
+                                    rng=random.Random(0), window=0.15,
+                                    staged=False))
+
+    # One window, one name for it, and nothing was ever refused as early.
+    assert set(labels) == {"open"}
+    assert refusals == []
+    assert any(t.status == "executed" for t in manager.trades.values())
+    # ...and a missed window can only be the whole round now.
+    assert played.missed <= island.n_agents
+    manager.check_conservation()
+
+
+def test_an_unstaged_agenda_says_so(island):
+    """The schedule an agent reads has to match the island it is on. A
+    timetable promising that approving opens later, on an island where it is
+    already open, would be worse than no timetable."""
+    from barter.manager import Agenda
+
+    one = Agenda(version=1, posted_at=0.0, acks_by=90.0, starts_at=120.0,
+                 windows=(300.0,), rounds=1).public()
+    assert len(one["schedule"]) == 1
+    row = one["schedule"][0]
+    assert row["opens_at"] == 120.0 and row["closes_at"] == 420.0
+    assert "everything" in row["you_may"] and "`approve_trade`" in row["you_may"]
+    assert one["ends_at"] == 420.0
+
+    three = Agenda(version=1, posted_at=0.0, acks_by=90.0, starts_at=120.0,
+                   windows=(60.0, 150.0, 150.0), rounds=1).public()
+    assert len(three["schedule"]) == 3
+    assert "...and `approve_trade`" in three["schedule"][2]["you_may"]
