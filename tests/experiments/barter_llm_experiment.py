@@ -222,7 +222,7 @@ async def run_llm_island(
     model: str,
     max_turns: int | None = None,
     verbose: bool,
-    window: float = 60.0,
+    window: float | tuple[float, ...] = 60.0,
     sweep_every: float = 1.0,
     muster: Muster | None = None,
 ) -> dict:
@@ -454,7 +454,9 @@ def record_for(*, island, manager, played, telling, arm, seed, model, cost,
         # how long agents get before the next capability opens, and `sweep_every`
         # is the granularity at which their orders are ordered against each
         # other. Two runs at different values are not the same market.
-        "flow": {"trade_rounds": rounds, "windows": 3, "window_seconds": window,
+        "flow": {"trade_rounds": rounds, "windows": 3,
+                 "window_seconds": (list(window) if isinstance(window, (list, tuple))
+                                    else [window] * 3),
                  "sweep_every": sweep_every,
                  "muster": ({"lead": muster.lead, "ack_within": muster.ack_within,
                              "attempts": muster.attempts} if muster else None),
@@ -463,6 +465,11 @@ def record_for(*, island, manager, played, telling, arm, seed, model, cost,
         # Windows an agent never got into. The clock applying pressure, not the
         # agent deciding anything, and it must not be read as either.
         "missed_windows": played.missed,
+        # Turns the clock abandoned, and turns not started because the round
+        # could not have contained them. The first is the published schedule
+        # being kept; the second is not paying for a call that would be cut.
+        "turns_cut": played.cut,
+        "turns_held_back": played.held_back,
         # How long the island took to agree on when to start, and who never
         # turned up. A coordination result of its own, and the only thing that
         # separates "nobody was ready" from "nobody was asked".
@@ -506,8 +513,8 @@ def render(result: dict) -> str:
         f"  labour unclaimed {sum((summary.get('idle_labour') or {}).values()):.3f} of "
         f"{len(summary.get('idle_labour') or {})} unit(s) — plans that summed to "
         f"less than 1, which is not carried over",
-        f"  flow             {result['flow']['trade_rounds']} rounds of 3 x "
-        f"{result['flow']['window_seconds']:g}s windows "
+        f"  flow             {result['flow']['trade_rounds']} rounds of "
+        f"{'/'.join(f'{w:g}' for w in result['flow']['window_seconds'])}s windows "
         f"(produce / +offer / +settle), swept every "
         f"{result['flow']['sweep_every']:g}s, labour "
         f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
@@ -543,9 +550,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goods", type=int, default=5)
     parser.add_argument("--rounds", type=int, default=3,
                         help="rounds, each of three windows. Short by default: "
-                             "the wall clock is now exactly rounds x 3 x "
-                             "--window, so 3 rounds of 60s windows is a "
-                             "nine-minute island")
+                             "the wall clock is now exactly rounds x the sum of "
+                             "--window, so one round of 60/150/150 is a "
+                             "six-minute island")
     parser.add_argument("--labour", choices=["once", "rolling"], default="once",
                         help="one-shot commitment, or the same total labour in "
                              "instalments across rounds")
@@ -556,11 +563,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="turn these switches off. `--arms bound --without expiry` "
                              "isolates the deviation report from staleness, which no "
                              "rung of the ladder does on its own")
-    parser.add_argument("--window", type=float, default=60.0,
-                        help="seconds per window. A round is three of them, so "
-                             "the default is a three-minute round. This is the "
-                             "time pressure, and it is a market parameter: two "
-                             "runs at different windows are not the same market")
+    parser.add_argument("--window", type=float, nargs="+", default=[60.0, 150.0, 150.0],
+                        metavar="SECONDS",
+                        help="seconds per window: one number for all three, or "
+                             "three. Not equal by default -- a production turn "
+                             "was measured at 18-33s and a trading turn at "
+                             "68-169s, so equal windows meant every trading turn "
+                             "outlived the window it began in. This is the time "
+                             "pressure and it is a market parameter: two runs at "
+                             "different windows are not the same market")
     parser.add_argument("--muster", action="store_true",
                         help="post the full schedule in absolute times and wait "
                              "for every trader to acknowledge it before anything "
@@ -615,7 +626,9 @@ def main(argv: list[str] | None = None) -> int:
           file=sys.stderr)
     # Wall clock is the clock, exactly: agents run concurrently inside an island
     # and islands run one after another.
-    wall = islands * args.rounds * 3 * args.window
+    round_seconds = (sum(args.window) if len(args.window) > 1
+                     else args.window[0] * 3)
+    wall = islands * args.rounds * round_seconds
     print(f"  roughly ${low:.0f}-${high:.0f} (1-3 turns per window); "
           f"wall clock {wall / 60:.0f}m\n", file=sys.stderr)
 
@@ -631,7 +644,8 @@ def main(argv: list[str] | None = None) -> int:
                 arm=label, telling=telling,
                 agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
-                verbose=args.verbose, window=args.window,
+                verbose=args.verbose,
+                window=(args.window[0] if len(args.window) == 1 else tuple(args.window)),
                 sweep_every=args.sweep_every,
                 muster=(Muster(lead=args.muster_lead,
                                ack_within=args.muster_ack) if args.muster else None),

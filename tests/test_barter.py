@@ -1062,7 +1062,7 @@ def test_the_agenda_goes_out_on_all_four_primitives(island):
             handle.client(agent_id, register=True, kind="trader")
 
         manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
-                                   starts_at=120.0, window=60.0, rounds=1))
+                                   starts_at=120.0, windows=(60.0, 60.0, 60.0), rounds=1))
         board.sweep()
 
         reader = handle.client("reader")
@@ -1088,7 +1088,7 @@ def test_the_agenda_goes_out_on_all_four_primitives(island):
 
         # ...but a new version is announced, and drops the old acks.
         manager.post_agenda(Agenda(version=2, posted_at=90.0, acks_by=180.0,
-                                   starts_at=210.0, window=60.0, rounds=1))
+                                   starts_at=210.0, windows=(60.0, 60.0, 60.0), rounds=1))
         board.sweep()
         announced = reader.history("barter/ag/agenda", limit=10)
         assert [m["body"]["version"] for m in announced] == [1, 2]
@@ -1106,7 +1106,7 @@ def test_presence_and_silence_are_not_the_same_absence(island):
         board = BoardService(handle.client("manager"), manager, run="pr")
         handle.client("a1", register=True, kind="trader")
         manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
-                                   starts_at=120.0, window=60.0, rounds=1))
+                                   starts_at=120.0, windows=(60.0, 60.0, 60.0), rounds=1))
 
         assert board.roster() == ["a1"]
         assert not manager.all_acked()

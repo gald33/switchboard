@@ -111,8 +111,17 @@ class Agenda:
     #: gap is what makes the start a time everybody can be ready *for* rather
     #: than a time somebody is still agreeing to.
     starts_at: float
-    window: float
+    #: One duration per window, in seconds. Three of them, and deliberately not
+    #: all the same: a production turn was measured at 18-33 seconds and a
+    #: trading turn at 68-169, so equal windows meant every trading turn
+    #: outlived the window it began in. A window has to be wide enough for one
+    #: whole turn or it is not a window, it is an interruption.
+    windows: tuple[float, ...]
     rounds: int
+
+    @property
+    def round_seconds(self) -> float:
+        return sum(self.windows)
 
     def rows(self) -> list[dict[str, Any]]:
         """Every window of the run, with the time it opens and what it opens."""
@@ -121,20 +130,22 @@ class Agenda:
                  "...and `approve_trade`"]
         out = []
         for round_no in range(1, self.rounds + 1):
-            base = self.starts_at + (round_no - 1) * self.window * 3
+            at = self.starts_at + (round_no - 1) * self.round_seconds
             for slot, what in enumerate(opens):
                 out.append({"round": round_no, "window": slot + 1,
-                            "opens_at": round(base + slot * self.window, 1),
-                            "closes_at": round(base + (slot + 1) * self.window, 1),
-                            "you_may": what})
+                            "opens_at": round(at, 1),
+                            "closes_at": round(at + self.windows[slot], 1),
+                            "seconds": self.windows[slot], "you_may": what})
+                at += self.windows[slot]
         return out
 
     def public(self) -> dict[str, Any]:
         return {"version": self.version, "posted_at": round(self.posted_at, 1),
                 "acknowledge_by": round(self.acks_by, 1),
                 "starts_at": round(self.starts_at, 1),
-                "window_seconds": self.window, "rounds": self.rounds,
-                "schedule": self.rows()}
+                "window_seconds": list(self.windows),
+                "ends_at": round(self.starts_at + self.rounds * self.round_seconds, 1),
+                "rounds": self.rounds, "schedule": self.rows()}
 
 
 #: Proposals expire after this many manager ticks. A tick is one round of the
@@ -693,6 +704,43 @@ class Manager:
         return {"acknowledged": self.agenda.version,
                 "waiting_on": sorted(set(self.agents) - self.acked)}
 
+    def op_batch(self, agent_id: str, ops: Any) -> dict[str, Any]:
+        """Apply a list of requests as one, in order, under one lock.
+
+        This is what makes a turn cheap. An agent that wants to offer three
+        swaps was making three separate calls, each a write to the board, a
+        wait for the next sweep and a read back -- and between them the model
+        was thinking again. Measured, a trading turn took 68 to 169 seconds
+        against a sixty-second window, and most of that was the round trips
+        rather than the reasoning.
+
+        One call, one order, one sweep. The parts are applied in the order
+        given and each gets its own reply, so a batch where the second offer
+        cannot be covered still lands the first and the third -- a partial
+        result rather than an all-or-nothing that would make batching riskier
+        than not batching.
+
+        Atomic against *other agents*, because the whole batch runs inside the
+        manager's lock: nobody else can take the goods out from under part of
+        it.
+        """
+        if not isinstance(ops, list) or not ops:
+            raise TradeError('ops must be a non-empty list of requests')
+        if len(ops) > self.MAX_BATCH:
+            raise TradeError(f"at most {self.MAX_BATCH} requests in one call")
+        results = []
+        for item in ops:
+            if not isinstance(item, dict):
+                results.append({"ok": False, "error": "each request must be an object"})
+                continue
+            inner = str(item.get("op", ""))
+            if inner == "batch":
+                results.append({"ok": False, "error": "a batch cannot contain a batch"})
+                continue
+            results.append(self._dispatch(agent_id, item, inner))
+        return {"results": results,
+                "applied": sum(1 for r in results if r.get("ok"))}
+
     def close(self) -> None:
         """Close the floor and return every outstanding escrow.
 
@@ -776,7 +824,12 @@ class Manager:
 
     #: The whole agent-facing surface. Anything not here is not a thing an agent
     #: can do to the state, and that list being short is deliberate.
-    OPS = ("state", "produce", "propose", "approve", "cancel", "pending", "ack")
+    OPS = ("state", "produce", "propose", "approve", "cancel", "pending", "ack",
+           "batch")
+    #: Most requests in one batch. A bound rather than a policy: an agent that
+    #: sent ten thousand offers in one call would hold the lock for the rest of
+    #: the island.
+    MAX_BATCH = 24
 
     def dispatch(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Apply one request. Never raises for agent error — returns ``ok: False``.
@@ -809,6 +862,8 @@ class Manager:
                 result = self.op_pending(agent_id)
             elif op == "ack":
                 result = self.op_ack(agent_id, request.get("version"))
+            elif op == "batch":
+                result = self.op_batch(agent_id, request.get("ops"))
             else:
                 raise TradeError(f"unknown op {op!r}; try one of {', '.join(self.OPS)}")
         except TradeError as exc:

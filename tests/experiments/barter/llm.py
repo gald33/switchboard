@@ -574,6 +574,19 @@ class Wire:
                         "error": "your order has not been picked up yet; try again"}
             time.sleep(self.poll_every)
 
+    def manager_batch(self, ops: list[dict[str, Any]]) -> dict[str, Any]:
+        """Several requests as one order, one sweep, one wait.
+
+        The reason a turn was taking two minutes. Each separate call was a
+        write to the board, a wait for the next sweep and a read back, with the
+        model thinking again in between; three offers cost three of those. One
+        order costs one, and the manager applies the parts in order under its
+        own lock so nobody can take the goods out from under half of them.
+        """
+        if not ops:
+            return {"ok": False, "error": "nothing to do: the list was empty"}
+        return self.manager_call("batch", ops=ops)
+
     def state(self) -> dict[str, Any]:
         """This agent's own state, minus anything the switches do not hand over.
 
@@ -660,10 +673,16 @@ class Wire:
 
         numeraire = self.goods[NUMERAIRE_INDEX]
         fish = amount * medians[name] / max(medians.get(numeraire, 1.0), 1e-12)
-        reply = self.manager_call("propose", seller=str(seller),
-                                  give={numeraire: round(fish, 6)},
-                                  want={name: round(amount, 6)},
-                                  note=f"at the board median, {medians[name]:g} {numeraire}/{name}")
+        batched = self.manager_batch([{
+            "op": "propose", "seller": str(seller),
+            "give": {numeraire: round(fish, 6)},
+            "want": {name: round(amount, 6)},
+            "note": f"at the board median, {medians[name]:g} {numeraire}/{name}"}])
+        # `pay` buys one thing, so it hands back the one reply rather than a
+        # list of one. The batching is how the order reaches the manager, not
+        # something this tool's caller should have to unwrap.
+        results = batched.get("results") if isinstance(batched, dict) else None
+        reply = results[0] if isinstance(results, list) and results else batched
         return {"offered": {"pay": round(fish, 6), "for": round(amount, 6), "of": name},
                 "median_used": medians[name], "result": reply}
 
@@ -882,31 +901,43 @@ def build_tool_list(wire: Wire) -> list[Any]:
     async def produce(args: Any) -> dict[str, Any]:
         return _text(await _off(lambda: wire.manager_call("produce", plan=args.get("plan"))))
 
-    propose_doc = ("Offer a trade to one named trader. `give` is what you hand "
-                   "over and is escrowed immediately; `want` is what you are "
-                   "asking for. Returns a trade id. Nothing settles until that "
-                   "trader approves the id.")
-    propose_args: dict[str, Any] = {"seller": str, "give": dict, "want": dict}
+    propose_doc = ("Offer trades. `trades` is a list, and one call can offer as "
+                   "many as you like to as many traders as you like. For each: "
+                   "`seller` is who it is addressed to, `give` is what you hand "
+                   "over and is escrowed immediately, `want` is what you are "
+                   "asking for. You get a trade id back for each. Nothing "
+                   "settles until that trader approves the id. Offers that "
+                   "cannot be covered are refused individually — the rest of "
+                   "the list still stands.")
+    propose_item = "{seller, give, want}"
     if telling.trade_note:
         propose_doc += " `note` is free text the seller will see."
-        propose_args["note"] = str
+        propose_item = "{seller, give, want, note}"
+    propose_doc += f" Each entry is {propose_item}."
 
-    @tool("propose_trade", propose_doc, propose_args)
+    @tool("propose_trade", propose_doc, {"trades": list})
     async def propose_trade(args: Any) -> dict[str, Any]:
         # Dropped rather than merely undocumented when the switch is off. An
         # argument absent from the schema can still be sent by a determined
         # caller, and this is the one field whose whole significance is that it
         # reaches another agent.
-        note = args.get("note", "") if telling.trade_note else ""
-        return _text(await _off(lambda: wire.manager_call(
-            "propose", seller=args.get("seller"), give=args.get("give"),
-            want=args.get("want"), note=note)))
+        ops = []
+        for item in args.get("trades") or []:
+            if not isinstance(item, dict):
+                continue
+            ops.append({"op": "propose", "seller": item.get("seller"),
+                        "give": item.get("give"), "want": item.get("want"),
+                        "note": str(item.get("note", "")) if telling.trade_note else ""})
+        return _text(await _off(lambda: wire.manager_batch(ops)))
 
-    @tool("approve_trade", "Settle a trade that was offered to you, by its id.",
-          {"trade_id": str})
+    @tool("approve_trade",
+          "Settle trades that were offered to you. `trade_ids` is a list, so "
+          "one call can settle as many as you mean to. Each is answered "
+          "separately: one you cannot cover does not stop the others.",
+          {"trade_ids": list})
     async def approve_trade(args: Any) -> dict[str, Any]:
-        trade_id = args.get("trade_id")
-        return _text(await _off(lambda: wire.manager_call("approve", trade_id=trade_id)))
+        ops = [{"op": "approve", "trade_id": t} for t in (args.get("trade_ids") or [])]
+        return _text(await _off(lambda: wire.manager_batch(ops)))
 
     pending_doc = "Offers waiting on your approval, and your own open offers."
     if telling.crossings:
@@ -917,10 +948,13 @@ def build_tool_list(wire: Wire) -> list[Any]:
     async def pending_trades(_: Any) -> dict[str, Any]:
         return _text(await _off(wire.pending))
 
-    @tool("cancel_trade", "Withdraw one of your own open offers and release its escrow.",
-          {"trade_id": str})
+    @tool("cancel_trade",
+          "Withdraw your own open offers and release their escrow. "
+          "`trade_ids` is a list, so one call can withdraw several.",
+          {"trade_ids": list})
     async def cancel_trade(args: Any) -> dict[str, Any]:
-        return _text(await _off(lambda: wire.manager_call("cancel", trade_id=args.get("trade_id"))))
+        ops = [{"op": "cancel", "trade_id": t} for t in (args.get("trade_ids") or [])]
+        return _text(await _off(lambda: wire.manager_batch(ops)))
 
     @tool("ack", "Confirm you have read the posted schedule, by its version "
                  "number. Nothing opens until every trader has done this.",

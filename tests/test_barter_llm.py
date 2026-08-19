@@ -1468,12 +1468,12 @@ def test_a_finished_island_can_be_written_up_without_a_model(island):
         telling=telling_for("bound"), arm="bound", seed=4, model="none",
         cost=0.0, floor=[], quotes={"a1": {"fish": 1.0, "grain": 2.0}},
         quotes_posted=1, sweeps=7, sweep_errors=[], transcript=played.transcript,
-        rounds=2, window=0.02, sweep_every=1.0, muster=None,
+        rounds=2, window=(0.02, 0.05, 0.05), sweep_every=1.0, muster=None,
         rolling=False, instalments=1)
 
     # The clock is in the record, because two runs at different windows are not
     # the same market and a record that omitted it could not say so.
-    assert record["flow"]["window_seconds"] == 0.02
+    assert record["flow"]["window_seconds"] == [0.02, 0.05, 0.05]
     assert record["flow"]["sweep_every"] == 1.0
     assert record["missed_windows"] == played.missed
     assert record["sweeps"] == 7
@@ -1588,12 +1588,14 @@ def test_an_ack_of_a_withdrawn_schedule_is_refused(island):
 
     manager = Manager(island=island)
     manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
-                               starts_at=120.0, window=60.0, rounds=3))
+                               starts_at=120.0, windows=(60.0, 60.0, 60.0),
+                               rounds=3))
     assert manager.dispatch("a1", {"op": "ack", "version": 1})["ok"]
     assert manager.acked == {"a1"}
 
     manager.post_agenda(Agenda(version=2, posted_at=90.0, acks_by=180.0,
-                               starts_at=210.0, window=60.0, rounds=3))
+                               starts_at=210.0, windows=(60.0, 60.0, 60.0),
+                               rounds=3))
     # Re-posting drops the old acks: a1 agreed to times that are gone.
     assert manager.acked == set()
     stale = manager.dispatch("a1", {"op": "ack", "version": 1})
@@ -1619,7 +1621,8 @@ def test_the_schedule_and_the_time_are_readable_without_queueing_for_them(island
         board = BoardService(handle.client("manager"), manager, run="ag")
         board.now = lambda: 12.5
         manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
-                                   starts_at=120.0, window=60.0, rounds=2))
+                                   starts_at=120.0, windows=(60.0, 120.0, 120.0),
+                                   rounds=2))
         manager.dispatch("a1", {"op": "ack", "version": 1})
         board.sweep()
 
@@ -1632,6 +1635,168 @@ def test_the_schedule_and_the_time_are_readable_without_queueing_for_them(island
     schedule = reading["agenda"]["schedule"]
     assert len(schedule) == 6  # two rounds of three windows
     assert schedule[0]["opens_at"] == 120.0
-    assert schedule[-1]["closes_at"] == 120.0 + 6 * 60.0
+    # Unequal by design: a trading turn runs three to six times longer than a
+    # production one, so a round is 60 + 120 + 120 rather than three sixties.
+    assert [w["seconds"] for w in schedule[:3]] == [60.0, 120.0, 120.0]
+    assert schedule[-1]["closes_at"] == 120.0 + 2 * 300.0
     # The last window of each round is the one that settles.
     assert "approve_trade" in schedule[2]["you_may"]
+
+
+def test_one_call_offers_many_deals_and_a_bad_one_does_not_sink_the_rest(island):
+    """Why a turn took two minutes, and the fix.
+
+    Three offers meant three tool calls, each a write to the board, a wait for
+    the next sweep and a read back, with the model thinking again in between.
+    Measured, a trading turn ran 68 to 169 seconds against a sixty-second
+    window. One call, one order, one sweep.
+
+    Partial results are the part that makes it safe to use. If a batch were
+    all-or-nothing, an agent whose second offer overshot by a rounding error
+    would lose the two that were fine — and batching would be riskier than not
+    batching, which is not a tradeoff anybody should have to reason about.
+    """
+    manager = Manager(island=island)
+    with hub() as handle:
+        _, wires = _wired(handle, manager, "free")
+        for agent_id, state in manager.agents.items():
+            wires[agent_id].manager_call(
+                "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
+        manager.open(LEVEL_SETTLE)
+
+        reply = wires["a1"].manager_batch([
+            {"op": "propose", "seller": "a2", "give": {"fish": 0.01},
+             "want": {"grain": 0.005}},
+            {"op": "propose", "seller": "a3", "give": {"fish": 1e9},
+             "want": {"grain": 1.0}},
+            {"op": "propose", "seller": "a3", "give": {"fish": 0.01},
+             "want": {"cloth": 0.002}},
+        ])
+        assert reply["ok"] and reply["applied"] == 2
+        oks = [r["ok"] for r in reply["results"]]
+        assert oks == [True, False, True]
+        assert "cannot cover" in reply["results"][1]["error"]
+
+        # ...and one call settles many, the same way.
+        waiting = wires["a3"].pending()["awaiting_your_approval"]
+        settled = wires["a3"].manager_batch(
+            [{"op": "approve", "trade_id": t["id"]} for t in waiting])
+        assert settled["applied"] == len(waiting) >= 1
+    manager.check_conservation()
+
+
+def test_a_batch_cannot_smuggle_a_batch(island):
+    """A batch inside a batch is a recursion an agent should not be able to
+    start, and the bound on batch size would mean nothing if it could."""
+    manager = Manager(island=island)
+    reply = manager.dispatch("a1", {"op": "batch", "ops": [
+        {"op": "batch", "ops": [{"op": "state"}]}]})
+    assert reply["ok"] and reply["results"][0]["ok"] is False
+    assert "cannot contain a batch" in reply["results"][0]["error"]
+
+    too_many = manager.dispatch("a1", {"op": "batch",
+                                       "ops": [{"op": "state"}] * 100})
+    assert not too_many["ok"] and "at most" in too_many["error"]
+    assert not manager.dispatch("a1", {"op": "batch", "ops": []})["ok"]
+
+
+def test_the_round_ends_when_it_said_it_would(island):
+    """A schedule of exact times the harness does not keep is worse than none.
+
+    A turn still running at the published end used to be awaited, so one
+    measured round overran its announced end by 82 seconds — while agents that
+    had read that schedule were planning against it. Now the turn is abandoned
+    and counted.
+    """
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island)
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        # Far longer than the whole round, so every turn is still running when
+        # the published end arrives.
+        await anyio.sleep(10.0)
+        return "never finished"
+
+    started = None
+
+    async def run():
+        nonlocal started
+        started = anyio.current_time()
+        played = await play(manager, take_turn, rounds=1, rng=random.Random(0),
+                            window=0.05)
+        return played, anyio.current_time() - started
+
+    played, elapsed = anyio.run(run)
+    # Three windows of 0.05s, and the round is over at 0.15 whatever anyone is
+    # in the middle of.
+    assert elapsed < 1.0, elapsed
+    assert played.cut == island.n_agents
+    assert all(row.get("cut") for row in played.transcript)
+    manager.check_conservation()
+
+
+def test_a_turn_the_round_cannot_contain_is_not_started(island):
+    """Cutting a turn off costs a model call for a result nobody can use, so a
+    turn is only started when the agent's own pace says it will fit. Its own,
+    not an average: agents think at different speeds and a mean over them would
+    hold back the fast one and cut the slow one."""
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island)
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        await anyio.sleep(0.04)
+        return ""
+
+    played = anyio.run(lambda: play(manager, take_turn, rounds=1,
+                                    rng=random.Random(0), window=0.05))
+    # Turns run 0.04 against a 0.15 round, so after three of them there is not
+    # enough left for a fourth and the agent stops rather than being cut.
+    assert played.held_back >= 1
+    assert played.cut == 0
+    manager.check_conservation()
+
+
+def test_the_windows_do_not_have_to_be_the_same_length(island):
+    """They were all sixty seconds, and a production turn was measured at 18-33
+    while a trading turn ran 68-169. A window has to be wide enough for one
+    whole turn or it is not a window, it is an interruption."""
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island)
+    opened: list[tuple[str, float]] = []
+    start = None
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        opened.append((label, anyio.current_time() - start))
+        # Long enough that an agent cannot exhaust its per-round turn cap
+        # before the later windows open -- which would be the cap deciding the
+        # test rather than the window lengths.
+        await anyio.sleep(0.02)
+        return ""
+
+    async def run():
+        nonlocal start
+        start = anyio.current_time()
+        return await play(manager, take_turn, rounds=1, rng=random.Random(0),
+                          window=(0.05, 0.2, 0.1))
+
+    anyio.run(run)
+    first_offer = min(t for label, t in opened if label == "offer")
+    first_settle = min(t for label, t in opened if label == "settle")
+    assert 0.05 <= first_offer < 0.2
+    assert 0.25 <= first_settle < 0.35
+
+    with pytest.raises(ValueError, match="one number or three"):
+        anyio.run(lambda: play(manager, take_turn, rounds=1,
+                               rng=random.Random(0), window=(1.0, 2.0)))

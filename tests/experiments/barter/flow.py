@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 
 class TakeTurn(Protocol):
@@ -56,6 +56,11 @@ class Budgets:
     close to cost-neutral.
     """
 
+    #: A tool call is how an agent *batches*: `propose_trade` takes a list of
+    #: deals and `approve_trade` a list of ids, so one call offers or settles as
+    #: many as the agent means to. That is what makes a window only have to fit
+    #: one turn -- what fits in a turn is not one action, it is one whole
+    #: deliberation and everything it decided.
     talk: int = 3
     produce: int = 3
     offer: int = 6
@@ -186,6 +191,15 @@ class Played:
     #: this file.
     seen_by: dict[str, set[str]] = field(default_factory=dict)
     rounds_played: int = 0
+    #: Turns abandoned because the round hit its published end while they were
+    #: still running. The published schedule is only worth publishing if the
+    #: harness keeps to it, and before this a turn in flight held the island
+    #: open: one round overran its announced end by 82 seconds.
+    cut: int = 0
+    #: Turns not started because too little of the round was left to finish
+    #: one. A deliberate idle rather than a missed window -- starting a turn
+    #: that will certainly be cut spends money for a result nobody can use.
+    held_back: int = 0
     #: One row per schedule posted: its version, who acknowledged it, and
     #: whether it was the one the island ran on. How long an island took to
     #: agree on when to start is a coordination result in its own right.
@@ -215,7 +229,7 @@ async def play(
     *,
     rounds: int,
     rng: random.Random,
-    window: float = 60.0,
+    window: float | Sequence[float] = 60.0,
     budgets: Budgets | None = None,
     drain: Callable[[], Any] | None = None,
     notes: Notes | None = None,
@@ -236,6 +250,15 @@ async def play(
     import anyio
 
     from .manager import LEVEL_OFFER, LEVEL_PRODUCE, LEVEL_SETTLE, Agenda
+
+    # One duration per window. A scalar means all three the same, which is what
+    # tests want and what the runner used to do; a triple sizes them to the job,
+    # which is what the measurements asked for -- a production turn ran 18-33
+    # seconds and a trading turn 68-169, against windows that were all sixty.
+    windows = ((float(window),) * 3 if isinstance(window, (int, float))
+               else tuple(float(w) for w in window))
+    if len(windows) != 3:
+        raise ValueError("window must be one number or three, one per window")
 
     budgets = budgets or Budgets()
     notes = notes or Notes()
@@ -276,15 +299,41 @@ async def play(
         was about to do is late.
         """
         taken = 0
+        typical = 0.0
         while anyio.current_time() < ends_at and taken < budgets.turns_per_window * 3:
+            # Do not start a turn the round cannot contain. `typical` is the
+            # longest turn this agent has taken so far, so the estimate is its
+            # own pace rather than an average over agents that think at
+            # different speeds. Starting one anyway would spend a model call on
+            # a result that gets cut before it lands.
+            left = ends_at - anyio.current_time()
+            if typical and left < typical:
+                played.held_back += 1
+                break
             level = manager.level
             label = manager.phase
             reached.add((round_no, level, agent_id))
             taken += 1
             began = anyio.current_time()
-            said = await take_turn(agent_id, round_no=round_no, label=label,
-                                   note=note_for(agent_id, level),
-                                   budget=budget_for(level))
+            # The published end of the round is the published end of the round.
+            # A turn still running when it arrives is abandoned rather than
+            # awaited: a schedule of exact times that the harness itself does
+            # not keep is worse than no schedule, and this one overran its
+            # announced end by 82 seconds the first time it was measured.
+            said = ""
+            with anyio.move_on_after(max(0.0, ends_at - began)) as scope:
+                said = await take_turn(agent_id, round_no=round_no, label=label,
+                                       note=note_for(agent_id, level),
+                                       budget=budget_for(level))
+            if scope.cancelled_caught:
+                played.cut += 1
+                played.transcript.append({"round": round_no, "pass": label,
+                                          "agent": agent_id, "text": "",
+                                          "at": round(began - started_at, 2),
+                                          "took": round(anyio.current_time() - began, 2),
+                                          "cut": True})
+                break
+            typical = max(typical, anyio.current_time() - began)
             # The window the turn *started* in, not the one it finished in: a
             # turn that outlives its window is exactly the case being measured,
             # and labelling it by where it landed would hide that.
@@ -302,14 +351,16 @@ async def play(
 
     async def clock(started: float) -> None:
         """Raise what is open, on the wall clock, whatever the agents are doing."""
+        at = started
         for level in (LEVEL_OFFER, LEVEL_SETTLE):
-            await anyio.sleep_until(started + window * (level - 1))
+            at += windows[level - 2]
+            await anyio.sleep_until(at)
             manager.open(level)
             if drain is not None:
                 drain()
 
     if muster is not None:
-        await _muster(manager, take_turn, played, muster=muster, window=window,
+        await _muster(manager, take_turn, played, muster=muster, windows=windows,
                       rounds=rounds, budgets=budgets, drain=drain,
                       agenda_cls=Agenda)
 
@@ -318,7 +369,7 @@ async def play(
         manager.open(LEVEL_PRODUCE)
         started = anyio.current_time()
         started_at = started
-        ends_at = started + window * 3
+        ends_at = started + sum(windows)
         rng.shuffle(order)
         async with anyio.create_task_group() as group:
             group.start_soon(clock, started)
@@ -347,7 +398,7 @@ async def play(
 
 
 async def _muster(manager: Any, take_turn: TakeTurn, played: Played, *,
-                  muster: Muster, window: float, rounds: int,
+                  muster: Muster, windows: tuple[float, ...], rounds: int,
                   budgets: Budgets, drain: Callable[[], Any] | None,
                   agenda_cls: Any) -> None:
     """Post the schedule, collect acknowledgements, start when everyone has one.
@@ -367,7 +418,7 @@ async def _muster(manager: Any, take_turn: TakeTurn, played: Played, *,
         now = anyio.current_time() - origin
         agenda = manager.post_agenda(agenda_cls(
             version=attempt, posted_at=now, acks_by=now + muster.ack_within,
-            starts_at=now + muster.lead, window=window, rounds=rounds))
+            starts_at=now + muster.lead, windows=windows, rounds=rounds))
         if drain is not None:
             drain()
         deadline = origin + agenda.acks_by
