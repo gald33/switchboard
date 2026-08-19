@@ -719,3 +719,192 @@ def test_a_ruined_agent_scores_zero_in_the_ratios_rather_than_a_sentinel(island)
     shared = gains(island, wrecked)
     assert shared.ratios[1] == 0.0
     assert shared.below == 1 and shared.worst == 0.0
+
+
+# --- idle labour and crossed offers -----------------------------------------
+
+
+def test_unspent_labour_is_recorded_rather_than_quietly_lost(island):
+    """A plan is a split of *this instalment*, so fractions summing to less than
+    1 leave the remainder unworked — and it is not carried, so it is gone.
+
+    This is tracked because a live run finished having spent 0.67 of its labour
+    and nothing in the record could say whether agents had declined to work or
+    had simply handed in vectors that summed short. Those are opposite findings
+    about the agents and they looked identical in the data.
+    """
+    manager = Manager(island=island, rolling=True, labour_per_round=0.5)
+    reply = manager.op_produce("a1", {"fish": 0.3, "grain": 0.3})
+    assert reply["idle_labour"] == pytest.approx(0.5 * 0.4)
+    assert manager.agents["a1"].spent == pytest.approx(0.5 * 0.6)
+    assert manager.agents["a1"].idle == pytest.approx(0.5 * 0.4)
+
+    # It accumulates, and it is never carried forward: the second instalment is
+    # the same size as the first however little of the first was claimed.
+    manager.open_trading()
+    manager.advance()
+    manager.open_discovery()
+    manager.open_production()
+    second = manager.op_produce("a1", {"fish": 1.0})
+    assert second["produced"]["fish"] == pytest.approx(island.capacity[0][0] * 0.5, abs=1e-4)
+    assert manager.agents["a1"].idle == pytest.approx(0.5 * 0.4)
+    assert manager.op_state("a1")["idle_labour"] == pytest.approx(0.2)
+    manager.check_conservation()
+
+
+def test_a_crossed_pair_is_reported_and_nothing_is_done_about_it(island):
+    """Two agents who agree a swap and both propose it end up with two live
+    trades, twice the goods escrowed, and a decision neither planned for.
+
+    The manager names it and refuses to solve it — no matching, no cancelling
+    the second, no refusing the proposal. It is the only thing here that can
+    move a quantity, so a manager that quietly resolved collisions would be
+    doing the convention's job and the run would measure the manager instead.
+    """
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
+    manager.open_trading()
+
+    first = manager.op_propose("a1", "a2", {"fish": 0.02}, {"grain": 0.02})
+    assert "crosses" not in first
+    second = manager.op_propose("a2", "a1", {"grain": 0.02}, {"fish": 0.02})
+    assert second["crosses"] == first["trade_id"]
+    assert manager.summary()["crossings"] == 1
+
+    # Both are still open and both sides are escrowed — the manager did not pick.
+    assert manager.trades[first["trade_id"]].status == "pending"
+    assert manager.trades[second["trade_id"]].status == "pending"
+    assert manager.op_state("a1")["escrowed"] and manager.op_state("a2")["escrowed"]
+
+    # And each party can see the collision in the one place it looks before acting.
+    assert manager.op_pending("a1")["crossed_pairs"] == [
+        [first["trade_id"], second["trade_id"]]]
+
+    # Approving both really does swap twice, which is the outcome agents have to
+    # avoid for themselves.
+    manager.op_approve("a2", first["trade_id"])
+    manager.op_approve("a1", second["trade_id"])
+    assert manager.summary()["crossings_resolved"] == {"both": 1}
+    manager.check_conservation()
+
+
+def test_a_crossing_that_was_resolved_stops_being_reported_as_open(island):
+    """`crossed_pairs` is about live decisions. A pair where one side has been
+    cancelled is settled business and reporting it would be noise in the exact
+    place an agent is trying to decide something."""
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
+    manager.open_trading()
+    first = manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
+    manager.op_propose("a2", "a1", {"grain": 0.1}, {"fish": 0.1})
+    assert manager.op_pending("a1")["crossed_pairs"]
+
+    manager.op_cancel("a1", first["trade_id"])
+    assert manager.op_pending("a1")["crossed_pairs"] == []
+    # ...but the crossing still happened, and the record keeps it.
+    assert manager.summary()["crossings"] == 1
+    assert manager.summary()["crossings_resolved"] == {"neither": 1}
+    manager.check_conservation()
+
+
+def test_a_crossing_that_cannot_cover_bounces_rather_than_jamming(island):
+    """I expected this to deadlock. It does not, and the reason is worth a gate.
+
+    When two agents cross over the same goods, each may have escrowed the very
+    thing the other's offer asks it to hand over — so the first approval fails.
+    The tempting conclusion is that both sides are now stuck with their goods
+    locked up until expiry. They are not: a failed approval **returns the
+    offer**, releasing that escrow, which leaves the other side able to settle
+    after all. A crossing therefore costs at most one of the two trades.
+
+    That self-healing is a real property of escrow-at-propose-time and not an
+    obvious one — the alternative, leaving a doomed offer sitting on its escrow
+    until it times out, would turn every mis-sized crossing into a stall of a
+    few rounds. Worth asserting so it cannot be optimised away by someone who
+    reads the failure path as merely an error case.
+    """
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
+    manager.open_trading()
+
+    # Each side escrows more than half of the good it will be asked to hand
+    # over, so neither can cover the other out of what is left.
+    fish = manager.op_state("a1")["holdings"]["fish"] * 0.6
+    grain = manager.op_state("a2")["holdings"]["grain"] * 0.6
+    first = manager.op_propose("a1", "a2", {"fish": fish}, {"grain": grain})
+    second = manager.op_propose("a2", "a1", {"grain": grain}, {"fish": fish})
+    assert second["crosses"] == first["trade_id"]
+
+    with pytest.raises(TradeError, match="cannot cover this trade"):
+        manager.op_approve("a2", first["trade_id"])
+    # ...and that failure released a1's escrow, so the other half can proceed.
+    assert manager.trades[first["trade_id"]].status != "pending"
+    manager.op_approve("a1", second["trade_id"])
+
+    assert manager.summary()["crossings_resolved"] == {"one": 1}
+    assert manager.op_state("a1")["escrowed"] == {}
+    manager.check_conservation()
+
+
+def _played_island(island, arm, *, seed, trade_rounds):
+    """Run one Tier 1 island and hand back the manager it used.
+
+    ``run_island`` builds its own manager and returns only the score, so the
+    only way to inspect the state a run actually reached is to substitute the
+    class it constructs. Defined once here rather than inline in each test,
+    because a subclass closing over a loop variable is a bug waiting to be
+    written twice.
+    """
+    import barter.run as runner
+    from barter.manager import Manager
+
+    captured: dict[str, Manager] = {}
+
+    class Spy(Manager):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            captured["manager"] = self
+
+    original = runner.Manager
+    runner.Manager = Spy
+    try:
+        runner.run_island(island, arm, seed=seed, trade_rounds=trade_rounds)
+    finally:
+        runner.Manager = original
+    return captured["manager"]
+
+
+def test_the_scripted_tiebreak_is_the_same_answer_from_either_side(island):
+    """The only property the rule needs. Not that it is fair, or efficient, or
+    that first-proposed deserves to win — just that two agents applying it to
+    the same pair name the same casualty, from information both of them have.
+
+    A rule that read anything private ("whoever needs it more") would be
+    computed differently by each side and would fail exactly when it mattered.
+    """
+    from barter.traders import gives_way
+
+    for pair in (["t1", "t2"], ["t2", "t1"], ["t9", "t10"], ["t10", "t9"]):
+        assert gives_way(pair) == gives_way(list(reversed(pair)))
+    # First proposed survives, and ids are compared as numbers rather than
+    # strings — "t10" beats "t9" only if you read them as text.
+    assert gives_way(["t9", "t10"]) == "t10"
+
+
+def test_scripted_agents_never_swap_twice_over_a_crossed_pair(island):
+    """What the shared rule buys, measured on real runs rather than argued.
+
+    Without it a crossing can end with both offers approved — the pair trading
+    twice because neither side backed out — which is a loss neither of them
+    chose and neither can undo. With it, both sides name the same doomed offer,
+    only its buyer can withdraw it, and exactly one action follows.
+    """
+    for arm in ("A", "C", "D"):
+        summary = _played_island(draw_island(12, 5, seed=3), arm,
+                                 seed=3, trade_rounds=30).summary()
+        assert summary["crossings"] > 0, arm
+        assert summary["crossings_resolved"].get("both", 0) == 0, \
+            f"arm {arm} swapped twice: {summary['crossings_resolved']}"

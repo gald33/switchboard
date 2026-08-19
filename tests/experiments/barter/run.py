@@ -18,7 +18,7 @@ from typing import Any
 
 from .economy import Efficiency, Gains, Island, autarky, capture, efficiency, gains
 from .manager import Manager, ManagerRPC, ManagerService
-from .traders import Floor, Trader, propose_for
+from .traders import Floor, Trader, gives_way, propose_for
 
 #: Rounds of price discovery before production closes. Arm C needs a few to
 #: converge; A and B ignore them, and are charged for them anyway so the arms
@@ -65,6 +65,12 @@ class Outcome:
     #: total labour across trading rounds, which moves neither the frontier nor
     #: either benchmark, so the two are directly comparable.
     instalments: int = 1
+    #: Labour offered and never claimed, summed over agents. Non-zero only when
+    #: an agent hands in a plan whose fractions sum to less than 1 — scripted
+    #: policies never do, so this is a Tier 2 measure living in a shared record.
+    idle: float = 0.0
+    #: Offers that crossed: both agents proposing the same swap, both escrowed.
+    crossings: int = 0
 
     def row(self) -> str:
         return (
@@ -211,6 +217,23 @@ def run_island(
             if reply.get("ok"):
                 holdings[agent_id] = list(manager.agents[agent_id].holdings)
 
+        # The resolve stage. Offers are on the table and some of them cross --
+        # two agents holding mirror-image trades, each escrowed, one of which
+        # has to give way. Scripted agents apply a shared deterministic rule, so
+        # both sides reach the same answer without saying anything and exactly
+        # one of the pair is withdrawn. That is what makes them the benchmark a
+        # model arm is measured against, not a claim that the rule is clever.
+        manager.open_resolve()
+        for agent_id in order:
+            for pair in call(agent_id, "pending").get("crossed_pairs", []):
+                doomed = gives_way(pair)
+                # Only the buyer can withdraw its own offer, so naming the same
+                # doomed id on both sides still produces exactly one action.
+                if manager.trades[doomed].buyer == agent_id:
+                    call(agent_id, "cancel", trade_id=doomed)
+        manager.open_trading()
+        manager.check_conservation()
+
         # Approvals. A seller accepts only what raises its own utility, so every
         # settled trade is voluntary on both sides.
         for agent_id in order:
@@ -266,4 +289,6 @@ def score(island: Island, manager: Manager, *, arm: str, seed: int,
         executed=summary["executed"],
         rejected=summary["rejected"] + summary["expired"],
         instalments=instalments,
+        idle=sum(summary["idle_labour"].values()),
+        crossings=summary["crossings"],
     )

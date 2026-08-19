@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
 
 from barter.economy import draw_island  # noqa: E402
+from barter.llm import ARMS as ARMS_ALL  # noqa: E402
 from barter.llm import Wire, brief_for, telling_for, tool_names  # noqa: E402
 from barter.manager import Manager, ManagerService  # noqa: E402
 
@@ -413,7 +414,7 @@ def test_every_round_deliberates_produces_deliberates_again_then_trades(island):
     n = island.n_agents
     labels = [entry["label"] for entry in log]
     one_round = (["plan"] * n + ["produce"] * n + ["deal"] * n
-                 + ["offer"] * n + ["settle"] * n)
+                 + ["offer"] * n + ["resolve"] * n + ["settle"] * n)
     assert labels == one_round * 3
 
     # Each stage really was open only in its own phase — the manager enforces
@@ -422,7 +423,8 @@ def test_every_round_deliberates_produces_deliberates_again_then_trades(island):
     for entry in log:
         seen.setdefault(entry["label"], set()).add(entry["phase"])
     assert seen == {"plan": {"discovery"}, "produce": {"production"},
-                    "deal": {"deal"}, "offer": {"trading"}, "settle": {"trading"}}
+                    "deal": {"deal"}, "offer": {"trading"},
+                    "resolve": {"resolve"}, "settle": {"trading"}}
     assert manager.phase == "closed"
     manager.check_conservation()
 
@@ -526,7 +528,8 @@ def test_each_phase_gets_its_own_turn_budget(island):
     _, _, log = _scripted_island(island, discovery=1, rounds=1)
     got = {e["label"]: e["budget"] for e in log}
     assert got == {"talk": Budgets().talk, "plan": Budgets().talk,
-                   "deal": Budgets().talk, "produce": Budgets().produce,
+                   "deal": Budgets().talk, "resolve": Budgets().talk,
+                   "produce": Budgets().produce,
                    "offer": Budgets().offer, "settle": Budgets().settle}
 
 
@@ -1079,3 +1082,42 @@ def test_the_calculators_in_my_state_are_switches_too(island):
 
         # The manager itself is untouched — it answered in full both times.
         assert "value_per_unit" in manager.op_state("a1")
+
+
+def test_seeing_a_collision_and_knowing_what_to_do_are_separate_switches(island):
+    """`crossings` shows the pair; `tiebreak` says which one gives way.
+
+    They are separable on purpose. A trader that can see it has both proposed
+    and been proposed the same swap still has to decide who withdraws, and that
+    decision has no right answer on its merits — the failure mode is not
+    choosing badly but choosing *differently*, so it is a pure coordination
+    problem and the smallest one this experiment contains. Bundling the two
+    would make "the board helped" unattributable between noticing and knowing,
+    which is the mistake the whole switch refactor exists to prevent.
+    """
+    from barter.llm import TIEBREAK_BRIEF, compose
+
+    manager = Manager(island=island)
+    seeing = compose("built", on=["crossings"])
+    knowing = compose("built", on=["tiebreak"])
+
+    # Seeing is a tool change and must not move a word of the prompt.
+    assert brief_for(island, manager, "a1", seeing) == brief_for(island, manager, "a1", "built")
+    # Knowing is words, and only its own paragraph.
+    assert brief_for(island, manager, "a1", knowing) == (
+        brief_for(island, manager, "a1", "built") + TIEBREAK_BRIEF)
+    # Neither is on by default anywhere on the ladder.
+    for arm in ARMS_ALL:
+        assert not telling_for(arm).crossings and not telling_for(arm).tiebreak
+
+
+def test_the_stated_tiebreak_admits_that_the_rule_itself_is_arbitrary(island):
+    """If the brief argued that first-proposed is *better*, the arm would be
+    testing whether models accept an argument. It is testing whether they adopt
+    a convention, so the text has to say the choice does not matter and the
+    agreement does."""
+    from barter.llm import TIEBREAK_BRIEF
+
+    text = " ".join(TIEBREAK_BRIEF.split())
+    assert "does not matter" in text
+    assert "both pick the same one" in text

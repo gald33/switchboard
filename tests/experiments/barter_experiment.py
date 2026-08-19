@@ -478,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
                     # Tier 2 prices and costs nothing here.
                     "gain_ratios": [round(x, 5) for x in r.gains.ratios],
                     "below_autarky": r.gains.below,
+                    "idle_labour": round(r.idle, 5),
+                    "crossings": r.crossings,
                 } for r in result["rows"][arm]]
                 for arm in ARMS
             },

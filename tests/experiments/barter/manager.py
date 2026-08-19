@@ -101,6 +101,14 @@ class AgentState:
     shares: list[float] = field(default_factory=list)
     #: Labour committed so far, 0..1.
     spent: float = 0.0
+    #: Labour offered to this agent and never claimed, 0..1. An instalment is a
+    #: split of *this round's* share, so a plan whose fractions sum to less than
+    #: 1 leaves the remainder unworked -- and it is not carried, so it is gone.
+    #: Tracked because a run once finished having spent 0.67 of its labour and
+    #: nothing in the record could say whether agents had declined to work or
+    #: had simply handed in vectors that summed short. Those are opposite
+    #: findings and they looked identical.
+    idle: float = 0.0
     #: The tick of the most recent commitment, so labour cannot be spent twice
     #: in one round.
     last_spent_tick: int | None = None
@@ -124,17 +132,18 @@ class Manager:
     #: open, because a phase agents could advance is a phase one agent can
     #: advance early:
     #:
-    #:     discovery -> production -> [deal] -> trading -> discovery ...
+    #:     discovery -> production -> [deal] -> trading -> [resolve]
+    #:                                              -> trading -> discovery ...
     #:
-    #: ``discovery`` and ``deal`` accept neither labour plans nor trades; they
-    #: are the two talking stages, and they are distinct phases rather than one
-    #: repeated because they are different conversations — before committing
-    #: labour an agent is guessing what it will hold, and after committing it
-    #: knows. ``production`` accepts labour plans, ``trading`` accepts trades,
-    #: ``closed`` accepts neither. Only ``deal`` may be skipped, and only
-    #: because Tier 1's agents genuinely have no such stage — every other
-    #: transition has exactly one legal predecessor, so a stage cannot be
-    #: re-entered or taken out of order.
+    #: ``discovery``, ``deal`` and ``resolve`` accept neither labour plans nor
+    #: trades. They are three distinct talking stages rather than one repeated,
+    #: because they are three different conversations: before committing labour
+    #: an agent is guessing what it will hold, after committing it knows, and
+    #: after offering it has escrow on the table and a collision to settle with
+    #: somebody. ``production`` accepts labour plans, ``trading`` accepts trades,
+    #: ``closed`` accepts neither. ``deal`` and ``resolve`` may be skipped by a
+    #: run that has no such stage; every other transition has exactly one legal
+    #: predecessor, so a stage cannot be re-entered or taken out of order.
     #:
     #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
     #: themselves. Production was committed in the first round, before any agent
@@ -169,6 +178,17 @@ class Manager:
     #: Rejected requests, kept because "how often did agents propose something
     #: impossible" is a measure of how well a convention is working.
     rejections: list[dict[str, Any]] = field(default_factory=list)
+    #: Pairs of trade ids that were open in opposite directions between the same
+    #: two agents at the moment the second was proposed.
+    #:
+    #: Nothing stops an agent making several offers in a trading stage, and each
+    #: escrows the moment it is made -- so two agents who have agreed a swap and
+    #: both propose it end up with two live trades, twice the goods locked up,
+    #: and a decision neither of them planned for: approve one and cancel the
+    #: other, or approve both and swap twice. It is a coordination problem the
+    #: escrow creates rather than solves, and counting it is the only way to say
+    #: whether a convention helps agents avoid it.
+    crossings: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.agents:
@@ -261,6 +281,7 @@ class Manager:
             "value_per_unit": {g: round(rates[i], 4) for i, g in enumerate(self.goods)},
             "produced": state.produced,
             "labour_left": round(max(0.0, 1.0 - state.spent), 4),
+            "idle_labour": round(state.idle, 4),
             "escrowed": self._escrow_of(agent_id),
         }
 
@@ -331,12 +352,14 @@ class Manager:
             state.shares[g] += shares[g]
             state.holdings[g] += state.capacity[g] * shares[g]
         state.spent += instalment * total
+        state.idle += instalment * max(0.0, 1.0 - total)
         state.last_spent_tick = self.tick
         return {
             "produced": {g: round(state.capacity[i] * shares[i], 4)
                          for i, g in enumerate(self.goods)},
             "labour_left": round(max(0.0, 1.0 - state.spent), 4),
             "idle_labour": round(instalment * max(0.0, 1.0 - total), 4),
+            "idle_labour_total": round(state.idle, 4),
             "holdings": {g: round(state.holdings[i], 4) for i, g in enumerate(self.goods)},
         }
 
@@ -365,6 +388,10 @@ class Manager:
                 + (f" (escrowed in open proposals: {free})" if free else "")
             )
 
+        mirror = next(
+            (t for t in self.trades.values()
+             if t.status == "pending" and t.buyer == seller and t.seller == buyer),
+            None)
         trade = Trade(
             id=f"t{self._next_id}", buyer=buyer, seller=seller,
             give=give_bundle, want=want_bundle, note=str(note)[:200],
@@ -373,12 +400,25 @@ class Manager:
         self._next_id += 1
         self.trades[trade.id] = trade
         self._move(buyer_state, give_bundle, -1)  # into escrow
-        return {
+        reply = {
             "trade_id": trade.id,
             "escrowed": {g: round(q, 4) for g, q in give_bundle.items()},
             "expires_tick": trade.opened_tick + TRADE_TTL_TICKS,
             "note": "the seller must approve this id before anything settles",
         }
+        if mirror is not None:
+            # Recorded, and told to the buyer -- who can see both ends of it
+            # anyway, since one of the two is its own offer. The manager states
+            # the fact and does nothing about it: it will not match the pair,
+            # cancel either side, or refuse the second. Deciding is the agents'
+            # problem and watching them decide is the point.
+            self.crossings.append({"tick": self.tick, "pair": [mirror.id, trade.id],
+                                   "between": sorted([buyer, seller])})
+            reply["crosses"] = mirror.id
+            reply["crosses_note"] = (
+                f"{seller} already has an offer open to you ({mirror.id}), so both "
+                "sides are now escrowed. Approving both swaps twice.")
+        return reply
 
     def op_approve(self, seller: str, trade_id: str) -> dict[str, Any]:
         """Seller settles a trade by id. The only way goods change hands."""
@@ -439,7 +479,15 @@ class Manager:
                     if t.status == "pending" and t.seller == agent_id]
         mine = [t.public() for t in self.trades.values()
                 if t.status == "pending" and t.buyer == agent_id]
-        return {"awaiting_your_approval": awaiting, "your_open_offers": mine}
+        # Crossings the agent is party to, so "we both proposed the same swap"
+        # is visible in the one place an agent looks before acting. Behind a
+        # switch on the model-facing side: whether traders notice a collision
+        # unaided is exactly the sort of thing the ladder exists to measure.
+        crossed = [c["pair"] for c in self.crossings
+                   if agent_id in c["between"]
+                   and all(self.trades[t].status == "pending" for t in c["pair"])]
+        return {"awaiting_your_approval": awaiting, "your_open_offers": mine,
+                "crossed_pairs": crossed}
 
     def _settle(self, trade: Trade, status: str, reason: str) -> None:
         """Close a pending trade without executing it, returning the escrow."""
@@ -516,15 +564,38 @@ class Manager:
         so an agent that worked once and then skipped a round keeps its skipped
         round as the choice it was.
         """
-        if self.phase not in ("deal", "production"):
+        if self.phase not in ("deal", "production", "resolve"):
             raise TradeError(f"cannot open trading from {self.phase}")
-        for state in self.agents.values():
+        # Reopening after the resolve stage is the same trading stage continuing,
+        # not a new one, so the never-worked fallback must not fire again -- it
+        # would hand an instalment to an agent in the middle of a trading stage,
+        # which is labour committed outside a production stage.
+        for state in ([] if self.phase == "resolve" else self.agents.values()):
             if state.spent <= 1e-12:
                 plan = {g: state.alpha[i] for i, g in enumerate(self.goods)}
                 was, self.phase = self.phase, "production"
                 self.op_produce(state.agent_id, plan)
                 self.phase = was
         self.phase = "trading"
+
+    def open_resolve(self) -> None:
+        """The round's third talk stage: offers are on the table, none settled.
+
+        This is the stage the crossing problem created. Offers escrow as they
+        are made, so by the end of the offer pass two agents may each be holding
+        the other's goods against mirror-image trades, and somebody has to give
+        way. Every route out of that -- approve one and cancel the other,
+        approve both and swap twice, cancel both and start again -- is a choice
+        the two of them have to make *the same way*, and there is no answer that
+        is right on its own merits. It is a pure tie-break, which makes it the
+        smallest possible instance of the thing this whole experiment is about.
+
+        Neither proposing nor approving is accepted here, so nobody can resolve
+        it by simply being quicker.
+        """
+        if self.phase != "trading":
+            raise TradeError(f"cannot open the resolve stage from {self.phase}")
+        self.phase = "resolve"
 
     def close(self) -> None:
         """Close the floor and return every outstanding escrow."""
@@ -575,7 +646,22 @@ class Manager:
             "expired": sum(1 for t in self.trades.values() if t.status == "expired"),
             "rejected": sum(1 for t in self.trades.values() if t.status == "rejected"),
             "utilities": [round(u, 6) for u in self.utilities()],
+            "idle_labour": {a: round(s.idle, 4) for a, s in sorted(self.agents.items())},
+            "crossings": len(self.crossings),
+            # How each collision ended, which is the interesting half. "both"
+            # means the pair swapped twice -- nobody backed out -- and is the
+            # outcome a convention ought to prevent.
+            "crossings_resolved": self._crossing_outcomes(),
         }
+
+    def _crossing_outcomes(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for cross in self.crossings:
+            done = [self.trades[t].status for t in cross["pair"]]
+            executed = sum(1 for s in done if s == "executed")
+            key = ("both" if executed == 2 else "one" if executed == 1 else "neither")
+            out[key] = out.get(key, 0) + 1
+        return out
 
     # --- dispatch -----------------------------------------------------------
 

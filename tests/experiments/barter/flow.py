@@ -10,25 +10,40 @@ to exercise is a loop nobody exercises.
 order of play runs against a scripted stand-in in milliseconds. What remains in
 the runner is the part that genuinely needs a model.
 
-The shape. Every round is the same four stages, each with a deadline the
-manager enforces rather than the agents observing:
+The shape. Every round is the same six stages, each with a deadline the manager
+enforces rather than the agents observing:
 
     1  discovery   talk. Nothing may be committed.
     2  produce     this round's instalment of labour.
     3  deal        talk again — now everyone knows what everyone holds.
-    4  trade       two passes: everyone offers, then everyone answers.
+    4  offer       propose. Every offer escrows its side as it is made.
+    5  resolve     talk again — offers are on the table, none has settled, and
+                   some of them cross. Decide together which ones stand.
+    6  settle      approve what should stand, withdraw what should not.
 
-Two stages of talk per round rather than one, because they are different
-conversations. In stage 1 an agent is guessing what it will hold and can still
-coordinate *what to make*; by stage 3 it knows, and so does everyone else, so
-terms can be agreed against real inventory instead of intent. The previous shape
-had all the talking up front and the whole production decision behind it, which
-made every later word a negotiation about goods nobody could change.
+Three stages of talk per round, because they are three different conversations.
+In stage 1 an agent is guessing what it will hold and can still coordinate *what
+to make*; by stage 3 it knows, and so does everyone else, so terms can be agreed
+against real inventory instead of intent; by stage 5 it has escrow on the table
+and a collision to settle with somebody specific. The original shape had all the
+talking up front with the whole production decision behind it, which made every
+later word a negotiation about goods nobody could change.
 
-The trade stage keeps its two passes. That is not decoration: with one turn per
-agent, roughly half of all offers cannot be answered until the following round,
-and a three-tick expiry gives a proposal one or two real chances at being seen.
-Collapsing it would re-introduce a bug this file already paid for once.
+Stage 5 exists because of what stage 4 creates. Offers escrow as they are made,
+so two agents who agreed a swap and both proposed it now hold mirror-image
+trades and one has to give way. Every route out — approve one and cancel the
+other, approve both and swap twice, cancel both — needs the two of them to
+choose the *same* one, and none is right on its own merits. It is a pure
+tie-break, and the failure mode is not choosing badly but choosing differently.
+Scripted agents are handed a shared rule so their crossings resolve by
+convention; a model agent gets the stage and no rule, and whether it invents one
+its counterparty also arrives at is the measurement.
+
+Offering and answering stay separate passes. That is not decoration: with one
+turn per agent, roughly half of all offers cannot be answered until the
+following round, and a three-tick expiry gives a proposal one or two real
+chances at being seen. Collapsing them would re-introduce a bug this file
+already paid for once.
 
 Labour is spent per round by construction here, so the tick collision that used
 to eat the first trading round's instalment cannot arise — production and
@@ -205,7 +220,7 @@ async def play(
         manager.open_discovery()
         await pass_over(
             "plan",
-            "Stage 1 of 4, planning. Neither `produce` nor any trade is "
+            "Stage 1 of 6, planning. Neither `produce` nor any trade is "
             "accepted right now — production opens at the end of this stage, "
             "and what you say here is the only thing that can change what "
             "anyone makes.",
@@ -214,13 +229,13 @@ async def play(
         manager.open_production()
         await pass_over(
             "produce",
-            ("Stage 2 of 4, production. This is the only stage this round in "
+            ("Stage 2 of 6, production. This is the only stage this round in "
              "which `produce` is accepted, and this round's instalment is not "
              "carried over — a share you do not spend now is a share nobody "
              "works. Your split is a fraction of *this instalment*, so it "
              "should sum to 1."
              if notes.rolling else
-             "Stage 2 of 4, production. This is the only stage in which "
+             "Stage 2 of 6, production. This is the only stage in which "
              "`produce` is accepted. Your split should sum to 1."),
             budgets.produce)
         manager.check_conservation()
@@ -228,7 +243,7 @@ async def play(
         manager.open_deal()
         await pass_over(
             "deal",
-            "Stage 3 of 4, dealing. Labour is spent and everyone now knows "
+            "Stage 3 of 6, dealing. Labour is spent and everyone now knows "
             "what they actually hold, but nothing has been swapped. Trades are "
             "not accepted yet — this is the stage for agreeing terms.",
             budgets.talk)
@@ -236,12 +251,29 @@ async def play(
         manager.open_trading()
         await pass_over(
             "offer",
-            "Stage 4 of 4, trading, first pass: make your offers.",
+            "Stage 4 of 6, trading, first pass: make your offers. You may make "
+            "as many as you like, but each one escrows your side the moment you "
+            "propose it — the goods are out of your hands until the offer "
+            "settles, expires or you `cancel_trade` it — so offering the same "
+            "goods twice is offering goods you no longer have.",
             budgets.offer)
+        manager.open_resolve()
+        await pass_over(
+            "resolve",
+            "Stage 5 of 6, resolving. Every offer is on the table and none has "
+            "settled. Nothing can be proposed or approved right now — this "
+            "stage is only for working out, with the traders you are dealing "
+            "with, which of the offers on the table should stand and which "
+            "should be withdrawn.",
+            budgets.talk)
+
+        manager.open_trading()
         await pass_over(
             "settle",
-            "Stage 4 of 4, trading, second pass: answer what is waiting on "
-            "you. Anything still open when this stage closes expires.",
+            "Stage 6 of 6, trading, second pass: approve what should stand and "
+            "`cancel_trade` what should not. Anything still open when this "
+            "stage closes expires, and its escrow comes back then and not "
+            "before.",
             budgets.settle)
 
         manager.advance()
