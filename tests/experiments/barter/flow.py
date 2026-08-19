@@ -244,8 +244,9 @@ async def play(
         await pass_over(
             "deal",
             "Stage 3 of 6, dealing. Labour is spent and everyone now knows "
-            "what they actually hold, but nothing has been swapped. Trades are "
-            "not accepted yet — this is the stage for agreeing terms.",
+            "what they actually hold, but nothing has been swapped. "
+            "`propose_trade` is CLOSED and will be refused — this stage is for "
+            "agreeing terms in words, and the offers themselves come next.",
             budgets.talk)
 
         manager.open_trading()
