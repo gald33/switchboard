@@ -766,6 +766,37 @@ def build_tools(wire: Wire) -> Any:
                                  tools=build_tool_list(wire))
 
 
+def _tool_decorator() -> Any:
+    """``claude_agent_sdk.tool``, or a stand-in of the same shape.
+
+    The SDK is not installed in CI — it is a model client, and the offline gates
+    never call a model — and without this the two gates that read the tool
+    *surface* could not run there at all. Those are the gates that caught the
+    silent arm's free-text channel and the ``produce`` description contradicting
+    the labour rule, both of which shipped past every other check, so they are
+    exactly the ones worth running everywhere.
+
+    The decorator only packages four things: a name, a description, a schema and
+    a handler. Where the SDK is installed that packaging is the real one and
+    these gates read the real objects. Where it is not, this is the same four
+    fields under the same names — enough to inspect a surface and not enough to
+    serve it, which is correct, because ``build_tools`` still needs the SDK to
+    serve anything and there is no model to serve it to.
+    """
+    try:
+        from claude_agent_sdk import tool
+    except ModuleNotFoundError:
+        from types import SimpleNamespace
+
+        def tool(name: str, description: str, input_schema: Any) -> Any:
+            def wrap(handler: Any) -> Any:
+                return SimpleNamespace(name=name, description=description,
+                                       input_schema=input_schema, handler=handler)
+            return wrap
+
+    return tool
+
+
 def build_tool_list(wire: Wire) -> list[Any]:
     """The tools one agent gets. Tool text is the whole interface.
 
@@ -778,7 +809,7 @@ def build_tool_list(wire: Wire) -> list[Any]:
     "post your prices" would be the convention, handed over, and the island that
     was supposed to invent one would stop being an experiment.
     """
-    from claude_agent_sdk import tool
+    tool = _tool_decorator()
 
     telling = wire.telling
 

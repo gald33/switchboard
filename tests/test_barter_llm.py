@@ -1338,3 +1338,33 @@ def test_a_window_gives_every_agent_the_same_clock(island):
     assert {row["agent"] for row in played.transcript} == set(manager.agents)
     manager.check_conservation()
     assert manager.phase == "closed"
+
+
+def test_the_tool_surface_can_be_read_without_a_model_client(island):
+    """The gates that read the tool surface must run where no SDK is installed.
+
+    They are the ones that caught the silent arm's free-text channel and the
+    `produce` description contradicting the labour rule — both shipped past
+    every other check — and CI has no model client, so for a while they were the
+    two gates that only ever ran on a laptop.
+
+    The stand-in is only allowed to be a stand-in if it is the same shape as the
+    real thing, so this checks it against the SDK wherever the SDK is there to
+    check against.
+    """
+    from barter.llm import _tool_decorator, build_tool_list
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        wire = _wire(handle, manager, "a1", telling_for("built"))
+        real = build_tool_list(wire)
+
+        sdk = pytest.importorskip("claude_agent_sdk",
+                                  reason="no SDK here, so the stand-in is what ran")
+        assert _tool_decorator() is sdk.tool
+
+        made = _tool_decorator()("x", "does x", {"a": str})(lambda _: None)
+        for field in ("name", "description", "input_schema", "handler"):
+            assert hasattr(made, field), field
+        assert all(hasattr(t, "input_schema") and hasattr(t, "description")
+                   for t in real)
