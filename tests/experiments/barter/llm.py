@@ -510,6 +510,8 @@ class Wire:
     result_prefix: str = ""
     #: Where the sweep publishes the manager's logical clock.
     clock_key: str = ""
+    #: Where the sweep publishes the schedule.
+    agenda_key: str = ""
     #: Blackboard prefix for the quote board. One key per trader,
     #: so a quote is a value anyone can read rather than a message somebody
     #: might have scrolled past.
@@ -700,6 +702,22 @@ class Wire:
                               {"prices": clean, "tick": self._tick()})
         self.quotes_posted += 1
         return {"posted": clean}
+
+    def clock(self) -> dict[str, Any]:
+        """The run clock and the schedule, read straight off the board.
+
+        Not asked for through the order queue. "What time is it" and "when does
+        approving open" are facts about the world that every agent needs and
+        none should spend a round trip on -- and an agent that had to queue for
+        the time would be reading a time that had already passed.
+        """
+        clock = self.client.board_get(self.clock_key)
+        out: dict[str, Any] = dict(clock) if isinstance(clock, dict) else {}
+        if self.agenda_key:
+            agenda = self.client.board_get(self.agenda_key)
+            if isinstance(agenda, dict):
+                out["agenda"] = agenda
+        return out
 
     def _tick(self) -> int:
         """The manager's logical clock, read off the board.
@@ -899,7 +917,20 @@ def build_tool_list(wire: Wire) -> list[Any]:
     async def cancel_trade(args: Any) -> dict[str, Any]:
         return _text(await _off(lambda: wire.manager_call("cancel", trade_id=args.get("trade_id"))))
 
-    tools = [my_state, produce, propose_trade, approve_trade, pending_trades, cancel_trade]
+    @tool("ack", "Confirm you have read the posted schedule, by its version "
+                 "number. Nothing opens until every trader has done this.",
+          {"version": int})
+    async def ack(args: Any) -> dict[str, Any]:
+        return _text(await _off(lambda: wire.manager_call("ack",
+                                                          version=args.get("version"))))
+
+    @tool("clock", "What time it is on the run clock, and the schedule "
+                   "everything runs to.", {})
+    async def clock(_: Any) -> dict[str, Any]:
+        return _text(await _off(wire.clock))
+
+    tools = [my_state, produce, propose_trade, approve_trade, pending_trades,
+             cancel_trade, ack, clock]
 
     if telling.channel:
         @tool("say", "Post a message all traders can read.", {"text": str})
@@ -997,8 +1028,12 @@ async def _off(fn: Any, *args: Any) -> Any:
 
 def tool_names(spec: str | Telling, agent_id: str) -> list[str]:
     telling = telling_for(spec)
+    # `ack` and `clock` are in every arm. They are not a convention and not an
+    # affordance for coordinating -- they are how an agent finds out when the
+    # island is open, which every arm needs equally and which no arm should be
+    # measured on the absence of.
     names = ["my_state", "produce", "propose_trade", "approve_trade",
-             "pending_trades", "cancel_trade"]
+             "pending_trades", "cancel_trade", "ack", "clock"]
     if telling.channel:
         names += ["say", "listen", "history"]
     if telling.board:

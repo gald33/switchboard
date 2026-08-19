@@ -26,6 +26,7 @@ from barter.economy import draw_island  # noqa: E402
 from barter.llm import ARMS as ARMS_ALL  # noqa: E402
 from barter.llm import Wire, brief_for, telling_for, tool_names  # noqa: E402
 from barter.manager import (  # noqa: E402
+    LEVEL_PRODUCE,
     LEVEL_SETTLE,
     BoardService,
     Manager,
@@ -1467,7 +1468,8 @@ def test_a_finished_island_can_be_written_up_without_a_model(island):
         telling=telling_for("bound"), arm="bound", seed=4, model="none",
         cost=0.0, floor=[], quotes={"a1": {"fish": 1.0, "grain": 2.0}},
         quotes_posted=1, sweeps=7, sweep_errors=[], transcript=played.transcript,
-        rounds=2, window=0.02, sweep_every=1.0, rolling=False, instalments=1)
+        rounds=2, window=0.02, sweep_every=1.0, muster=None,
+        rolling=False, instalments=1)
 
     # The clock is in the record, because two runs at different windows are not
     # the same market and a record that omitted it could not say so.
@@ -1478,7 +1480,158 @@ def test_a_finished_island_can_be_written_up_without_a_model(island):
     # The quote board is the quotes, not the sweeper that shadowed it.
     assert record["quote_board"] == {"a1": {"fish": 1.0, "grain": 2.0}}
     assert record["switches"] == list(telling_for("bound").switches())
+    # Who never turned up is recorded even when it is nobody, because absent
+    # and "declined everything" score identically and are not the same result.
+    assert record["absent"] == [] and record["musters"] == []
 
     # And the renderer reads only what the record actually has.
     text = render(record)
     assert "bound" in text and "window" in text
+
+
+def test_nothing_opens_until_everyone_has_read_the_schedule(island):
+    """The muster, which is the fix for a failure that read as a bad result.
+
+    The island used to simply begin. An agent whose first turn started forty
+    seconds into a sixty-second window had no way to know it, and across seven
+    paid islands the settle window drew between one and five turns in total —
+    the arms that settled nothing were the arms whose agents never got a turn
+    inside it. That is the harness starting a race without firing a gun.
+
+    So the manager posts the whole timetable in absolute times and nothing
+    opens until every trader has acknowledged it.
+    """
+    import random
+
+    import anyio
+    from barter.flow import Muster, play
+
+    manager = Manager(island=island)
+    seen: list[str] = []
+    levels_during_muster: list[int] = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        seen.append(label)
+        if label == "muster":
+            levels_during_muster.append(manager.level)
+            # The schedule is in the note, in absolute times, before anything
+            # has opened -- which is the whole point of posting it.
+            assert "round 1 window 3" in note and "approve_trade" in note
+            version = manager.agenda.version
+            assert manager.dispatch(agent_id, {"op": "ack", "version": version})["ok"]
+        elif label == "produce":
+            manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        await anyio.sleep(0.005)
+        return ""
+
+    played = anyio.run(lambda: play(
+        manager, take_turn, rounds=1, rng=random.Random(0), window=0.05,
+        muster=Muster(lead=0.4, ack_within=0.3, attempts=2)))
+
+    assert "muster" in seen
+    # Nothing was open while the island was forming up.
+    assert set(levels_during_muster) == {LEVEL_PRODUCE}
+    assert played.musters and played.musters[-1]["acked"] == sorted(manager.agents)
+    assert played.absent == []
+    manager.check_conservation()
+
+
+def test_a_schedule_nobody_answered_is_posted_again_with_later_times(island):
+    """An agent that has not acknowledged is usually not refusing — it is still
+    inside a turn that began before the schedule existed. The fix for that is a
+    later start, not a longer wait, so the schedule is withdrawn and re-posted.
+
+    Acks of the withdrawn one are dropped. An island where two traders hold two
+    timetables has not started together in any sense that matters.
+    """
+    import random
+
+    import anyio
+    from barter.flow import Muster, play
+
+    manager = Manager(island=island)
+    versions: list[int] = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        if label == "muster":
+            versions.append(manager.agenda.version)
+            # Only a1 ever answers, so the muster runs out of attempts.
+            if agent_id == "a1":
+                manager.dispatch(agent_id, {"op": "ack",
+                                            "version": manager.agenda.version})
+        await anyio.sleep(0.005)
+        return ""
+
+    played = anyio.run(lambda: play(
+        manager, take_turn, rounds=1, rng=random.Random(0), window=0.05,
+        muster=Muster(lead=0.25, ack_within=0.15, attempts=3)))
+
+    # Three schedules posted, each with later times than the last.
+    assert [m["version"] for m in played.musters] == [1, 2, 3]
+    starts = [m["starts_at"] for m in played.musters]
+    assert starts == sorted(starts) and starts[0] < starts[-1]
+    assert max(versions) > 1
+    # It started anyway rather than hanging, and said who never turned up.
+    assert played.absent == sorted(set(manager.agents) - {"a1"})
+    assert played.rounds_played == 1
+
+
+def test_an_ack_of_a_withdrawn_schedule_is_refused(island):
+    """The version is checked rather than trusted.
+
+    An agent that read v1, thought for a while and acknowledged after v2 was
+    posted has agreed to times that no longer exist. Accepting it would start
+    the island with traders working from different clocks, which is exactly
+    what the muster is for.
+    """
+    from barter.manager import Agenda
+
+    manager = Manager(island=island)
+    manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
+                               starts_at=120.0, window=60.0, rounds=3))
+    assert manager.dispatch("a1", {"op": "ack", "version": 1})["ok"]
+    assert manager.acked == {"a1"}
+
+    manager.post_agenda(Agenda(version=2, posted_at=90.0, acks_by=180.0,
+                               starts_at=210.0, window=60.0, rounds=3))
+    # Re-posting drops the old acks: a1 agreed to times that are gone.
+    assert manager.acked == set()
+    stale = manager.dispatch("a1", {"op": "ack", "version": 1})
+    assert not stale["ok"] and "v2" in stale["error"]
+    assert manager.dispatch("a1", {"op": "ack", "version": 2})["ok"]
+    assert not manager.all_acked()
+
+    for agent_id in manager.agents:
+        manager.dispatch(agent_id, {"op": "ack", "version": 2})
+    assert manager.all_acked()
+
+
+def test_the_schedule_and_the_time_are_readable_without_queueing_for_them(island):
+    """"What time is it" must not go through the order board.
+
+    An agent that queued for the time would be handed a time that had already
+    passed, which on a schedule of absolute times is worse than no answer.
+    """
+    from barter.manager import Agenda, BoardService
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="ag")
+        board.now = lambda: 12.5
+        manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
+                                   starts_at=120.0, window=60.0, rounds=2))
+        manager.dispatch("a1", {"op": "ack", "version": 1})
+        board.sweep()
+
+        wire = _wire(handle, manager, "a1", telling_for("silent"), run="ag")
+        wire.clock_key, wire.agenda_key = board.clock, board.agenda_key
+        reading = wire.clock()
+
+    assert reading["now"] == 12.5
+    assert reading["agenda_version"] == 1 and reading["acked"] == ["a1"]
+    schedule = reading["agenda"]["schedule"]
+    assert len(schedule) == 6  # two rounds of three windows
+    assert schedule[0]["opens_at"] == 120.0
+    assert schedule[-1]["closes_at"] == 120.0 + 6 * 60.0
+    # The last window of each round is the one that settles.
+    assert "approve_trade" in schedule[2]["you_may"]

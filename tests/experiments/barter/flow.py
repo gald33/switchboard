@@ -139,6 +139,40 @@ class Notes:
 
 
 @dataclass
+class Muster:
+    """Getting everybody to the same start line before anything opens.
+
+    The island used to simply begin. Every agent found out what was open by
+    trying, and an agent whose first turn began forty seconds into a
+    sixty-second window had no way to know it — across seven islands the settle
+    window drew between one and five turns in total, and the arms that settled
+    nothing were the arms whose agents never got a turn inside it. That reads
+    as a coordination failure and is not one; it is the harness starting a race
+    without telling anybody when the gun goes.
+
+    So: the manager posts the whole timetable in absolute times, everyone
+    acknowledges it, and only then does anything open. The acknowledgement is
+    the part that matters. Publishing a schedule nobody has confirmed reading
+    would move the same problem one step back — the island would still start
+    with an agent mid-thought, and now with a timetable it had not looked at.
+    """
+
+    #: Seconds between posting a schedule and the island opening on it. Long
+    #: enough that an agent which acknowledges late is still ready in time.
+    lead: float = 120.0
+    #: Seconds an agent has to acknowledge before the schedule is re-posted.
+    #: Shorter than ``lead``, so the gap between the last ack and the start is
+    #: time everyone can be ready *for* rather than time somebody is still
+    #: agreeing to.
+    ack_within: float = 90.0
+    #: How many schedules to post before starting without the stragglers. Not
+    #: unbounded: an agent that never acknowledges anything would otherwise
+    #: hold the island open for ever, and "one trader never turned up" is a
+    #: result to record rather than a reason to hang.
+    attempts: int = 3
+
+
+@dataclass
 class Played:
     transcript: list[dict[str, Any]] = field(default_factory=list)
     #: One row per round: where the island stood after it. A trajectory rather
@@ -152,6 +186,14 @@ class Played:
     #: this file.
     seen_by: dict[str, set[str]] = field(default_factory=dict)
     rounds_played: int = 0
+    #: One row per schedule posted: its version, who acknowledged it, and
+    #: whether it was the one the island ran on. How long an island took to
+    #: agree on when to start is a coordination result in its own right.
+    musters: list[dict[str, Any]] = field(default_factory=list)
+    #: Agents that never acknowledged the schedule the island started on.
+    #: Distinct from anything they decided: a trader that never turned up is
+    #: not a trader that declined.
+    absent: list[str] = field(default_factory=list)
     #: How many (agent, window) pairs went by without that agent starting a
     #: single turn in that window. A slow agent whose turn straddles a whole
     #: window has missed it, and that is the clock applying pressure rather than
@@ -178,16 +220,22 @@ async def play(
     drain: Callable[[], Any] | None = None,
     notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
+    muster: Muster | None = None,
 ) -> Played:
     """Run one island. Returns the transcript and diagnostics.
 
     ``window`` is how long each of the three windows lasts, in seconds, so a
     round is three of them. Tests pass a tiny value and run the whole order of
     play in milliseconds; a real island passes sixty.
+
+    ``muster`` posts the timetable and waits for everyone to acknowledge it
+    before anything opens. Without it the island simply begins, which is how it
+    used to work and is the thing that made a settle window an agent could miss
+    entirely without ever being told it existed.
     """
     import anyio
 
-    from .manager import LEVEL_OFFER, LEVEL_PRODUCE, LEVEL_SETTLE
+    from .manager import LEVEL_OFFER, LEVEL_PRODUCE, LEVEL_SETTLE, Agenda
 
     budgets = budgets or Budgets()
     notes = notes or Notes()
@@ -217,6 +265,8 @@ async def play(
                  notes.horizon_note(rounds - round_no)]
         return " ".join(part for part in parts if part)
 
+    started_at = 0.0
+
     async def live(agent_id: str, ends_at: float) -> None:
         """One agent, acting for the whole round rather than taking a turn.
 
@@ -231,14 +281,24 @@ async def play(
             label = manager.phase
             reached.add((round_no, level, agent_id))
             taken += 1
+            began = anyio.current_time()
             said = await take_turn(agent_id, round_no=round_no, label=label,
                                    note=note_for(agent_id, level),
                                    budget=budget_for(level))
             # The window the turn *started* in, not the one it finished in: a
             # turn that outlives its window is exactly the case being measured,
             # and labelling it by where it landed would hide that.
+            #
+            # `at` and `took` are seconds from the start of the round. Agents
+            # run concurrently, so "how many turns started in the settle
+            # window" cannot on its own distinguish an agent that was busy from
+            # an agent that was waiting on somebody -- and those are a result
+            # about model latency and a bug in this file respectively. With a
+            # start and a duration per turn the overlap is readable directly.
             played.transcript.append({"round": round_no, "pass": label,
-                                      "agent": agent_id, "text": said})
+                                      "agent": agent_id, "text": said,
+                                      "at": round(began - started_at, 2),
+                                      "took": round(anyio.current_time() - began, 2)})
 
     async def clock(started: float) -> None:
         """Raise what is open, on the wall clock, whatever the agents are doing."""
@@ -248,10 +308,16 @@ async def play(
             if drain is not None:
                 drain()
 
+    if muster is not None:
+        await _muster(manager, take_turn, played, muster=muster, window=window,
+                      rounds=rounds, budgets=budgets, drain=drain,
+                      agenda_cls=Agenda)
+
     for _ in range(rounds):
         round_no += 1
         manager.open(LEVEL_PRODUCE)
         started = anyio.current_time()
+        started_at = started
         ends_at = started + window * 3
         rng.shuffle(order)
         async with anyio.create_task_group() as group:
@@ -278,3 +344,87 @@ async def play(
     manager.check_conservation()
     played.rounds_played = round_no
     return played
+
+
+async def _muster(manager: Any, take_turn: TakeTurn, played: Played, *,
+                  muster: Muster, window: float, rounds: int,
+                  budgets: Budgets, drain: Callable[[], Any] | None,
+                  agenda_cls: Any) -> None:
+    """Post the schedule, collect acknowledgements, start when everyone has one.
+
+    Re-posts on a short deadline rather than waiting indefinitely. An agent
+    that has not acknowledged by ``ack_within`` is not necessarily refusing —
+    it is more often still inside a turn that began before the schedule
+    existed — and the fix for that is a later start time, not a longer wait.
+    Each re-post is a fresh version with fresh times, and acks of the old one
+    are dropped, because an island where two agents hold two timetables has not
+    started together in any sense that matters.
+    """
+    import anyio
+
+    origin = anyio.current_time()
+    for attempt in range(1, muster.attempts + 1):
+        now = anyio.current_time() - origin
+        agenda = manager.post_agenda(agenda_cls(
+            version=attempt, posted_at=now, acks_by=now + muster.ack_within,
+            starts_at=now + muster.lead, window=window, rounds=rounds))
+        if drain is not None:
+            drain()
+        deadline = origin + agenda.acks_by
+
+        # `agenda` and `deadline` are bound as defaults rather than closed
+        # over: this runs once per attempt, and a closure over the loop
+        # variable would ask agents to acknowledge whichever schedule happened
+        # to be current when the coroutine finally ran.
+        async def ask(agent_id: str, agenda: Any = agenda,
+                      deadline: float = deadline) -> None:
+            """Keep asking one agent until it acks or the deadline passes."""
+            while anyio.current_time() < deadline and agent_id not in manager.acked:
+                said = await take_turn(
+                    agent_id, round_no=0, label="muster",
+                    note=_muster_note(agenda, manager),
+                    budget=budgets.talk)
+                played.transcript.append({"round": 0, "pass": "muster",
+                                          "agent": agent_id, "text": said,
+                                          "at": round(anyio.current_time() - origin, 2),
+                                          "took": 0.0})
+                if drain is not None:
+                    drain()
+
+        async with anyio.create_task_group() as group:
+            for agent_id in manager.agents:
+                group.start_soon(ask, agent_id)
+            await anyio.sleep_until(deadline)
+            group.cancel_scope.cancel()
+        if drain is not None:
+            drain()
+
+        acked = sorted(manager.acked)
+        played.musters.append({"version": attempt, "acked": acked,
+                               "of": len(manager.agents),
+                               "starts_at": round(agenda.starts_at, 1)})
+        if manager.all_acked() or attempt == muster.attempts:
+            played.absent = sorted(set(manager.agents) - manager.acked)
+            # Wait for the time that was announced, even when everybody
+            # acknowledged early. Starting sooner than the published schedule
+            # would make the times advisory, and the times are the whole point.
+            await anyio.sleep_until(origin + agenda.starts_at)
+            return
+
+
+def _muster_note(agenda: Any, manager: Any) -> str:
+    """What an agent is told while the island is forming up."""
+    rows = "\n".join(
+        f"  round {r['round']} window {r['window']}: "
+        f"t={r['opens_at']:g}s to t={r['closes_at']:g}s — {r['you_may']}"
+        for r in agenda.rows())
+    waiting = sorted(set(manager.agents) - manager.acked)
+    return (
+        f"Before the island opens. Here is the whole schedule, in seconds from "
+        f"now being t={agenda.posted_at:g}s. Nothing is open yet and nothing "
+        f"you do will move goods.\n\n{rows}\n\n"
+        f"Trading opens at t={agenda.starts_at:g}s and not before. Call `ack` "
+        f"with version {agenda.version} to confirm you have read this. If "
+        f"everyone has not acknowledged by t={agenda.acks_by:g}s the schedule "
+        f"is withdrawn and a new one posted with later times. "
+        f"Still to acknowledge: {', '.join(waiting) if waiting else 'nobody'}.")

@@ -76,6 +76,67 @@ LEVEL_PRODUCE = 1
 LEVEL_OFFER = 2
 LEVEL_SETTLE = 3
 
+
+@dataclass(frozen=True)
+class Agenda:
+    """The schedule, posted before anything opens, in absolute times.
+
+    The island used to simply begin, and every agent discovered what was open
+    by trying. That reads as a coordination failure and is not one: an agent
+    whose first turn started forty seconds into a sixty-second window had no
+    way to know it, because nothing had told it when anything was happening.
+    Across seven islands the settle window drew between one and five turns in
+    total -- fewer, several times, than there were agents -- and the arms that
+    settled nothing were the arms whose agents never got a turn inside it.
+
+    So the manager publishes the whole timetable first, in wall-clock seconds
+    from the start of the run, and nothing opens until every agent has said it
+    has read it. A trader that knows approving opens at t=180 and the round
+    ends at t=240 can keep its turn short at t=170 and spend it at t=185. One
+    that has to infer the schedule from refusals cannot.
+
+    ``version`` rises each time the schedule is re-posted. An ack names the
+    version it is acking, so an agent cannot acknowledge a timetable that has
+    since been replaced -- which is the whole content of "everyone starts
+    together".
+    """
+
+    version: int
+    #: Run-clock seconds. Everything below is on the same scale, so an agent
+    #: only ever needs one number -- "what time is it" -- to place itself.
+    posted_at: float
+    #: Acknowledge by this time or the schedule is re-posted.
+    acks_by: float
+    #: When round 1, window 1 opens. Deliberately later than ``acks_by``: the
+    #: gap is what makes the start a time everybody can be ready *for* rather
+    #: than a time somebody is still agreeing to.
+    starts_at: float
+    window: float
+    rounds: int
+
+    def rows(self) -> list[dict[str, Any]]:
+        """Every window of the run, with the time it opens and what it opens."""
+        opens = ["talk, and `produce`",
+                 "...and `propose_trade`, and withdraw your own offers",
+                 "...and `approve_trade`"]
+        out = []
+        for round_no in range(1, self.rounds + 1):
+            base = self.starts_at + (round_no - 1) * self.window * 3
+            for slot, what in enumerate(opens):
+                out.append({"round": round_no, "window": slot + 1,
+                            "opens_at": round(base + slot * self.window, 1),
+                            "closes_at": round(base + (slot + 1) * self.window, 1),
+                            "you_may": what})
+        return out
+
+    def public(self) -> dict[str, Any]:
+        return {"version": self.version, "posted_at": round(self.posted_at, 1),
+                "acknowledge_by": round(self.acks_by, 1),
+                "starts_at": round(self.starts_at, 1),
+                "window_seconds": self.window, "rounds": self.rounds,
+                "schedule": self.rows()}
+
+
 #: Proposals expire after this many manager ticks. A tick is one round of the
 #: run, not a wall-clock second: the experiment must be reproducible, so the
 #: manager owns a logical clock rather than reading the wall.
@@ -190,6 +251,16 @@ class Manager:
     #: ruin total. On, an agent produces a little, watches, and produces again.
     rolling: bool = False
     tick: int = 0
+    #: The schedule agents were given, or ``None`` before one is posted.
+    agenda: Agenda | None = None
+    #: Who has acknowledged the *current* agenda. Cleared whenever a new one is
+    #: posted, because an ack of a replaced timetable is not an ack of this one.
+    acked: set[str] = field(default_factory=set)
+    #: One row per agenda ever posted: how many acked it and who. The record of
+    #: how long an island took to agree on when to start, which is a
+    #: coordination result in its own right and the only thing that separates
+    #: "nobody was ready" from "nobody was asked".
+    musters: list[dict[str, Any]] = field(default_factory=list)
     agents: dict[str, AgentState] = field(default_factory=dict)
     trades: dict[str, Trade] = field(default_factory=dict)
     ledger: list[dict[str, Any]] = field(default_factory=list)
@@ -578,6 +649,50 @@ class Manager:
             self.level = LEVEL_PRODUCE
         return expired
 
+    def post_agenda(self, agenda: Agenda) -> Agenda:
+        """Publish a schedule and start collecting acknowledgements afresh.
+
+        Re-posting clears the acks rather than keeping them. An agent that
+        acked v1 has agreed to times that no longer exist, and carrying that
+        forward would let an island start with agents holding two different
+        timetables -- which is the exact failure the muster exists to prevent.
+        """
+        with self._lock:
+            if self.agenda is not None:
+                self.musters.append({"version": self.agenda.version,
+                                     "acked": sorted(self.acked),
+                                     "of": len(self.agents)})
+            self.agenda = agenda
+            self.acked = set()
+        return agenda
+
+    def all_acked(self) -> bool:
+        with self._lock:
+            return bool(self.agents) and set(self.agents) <= self.acked
+
+    def op_ack(self, agent_id: str, version: Any) -> dict[str, Any]:
+        """Acknowledge the current schedule.
+
+        The version is checked rather than trusted. An agent that read v1,
+        thought for a while and acked after v2 was posted has agreed to the
+        wrong times, and accepting it would start the island with agents
+        working from different clocks.
+        """
+        self._agent(agent_id)
+        if self.agenda is None:
+            raise TradeError("there is no agenda to acknowledge yet")
+        try:
+            said = int(version)
+        except (TypeError, ValueError):
+            raise TradeError("version must be the number on the agenda") from None
+        if said != self.agenda.version:
+            raise TradeError(
+                f"that is agenda v{said}; the current one is "
+                f"v{self.agenda.version} -- read it again and acknowledge that")
+        self.acked.add(agent_id)
+        return {"acknowledged": self.agenda.version,
+                "waiting_on": sorted(set(self.agents) - self.acked)}
+
     def close(self) -> None:
         """Close the floor and return every outstanding escrow.
 
@@ -661,7 +776,7 @@ class Manager:
 
     #: The whole agent-facing surface. Anything not here is not a thing an agent
     #: can do to the state, and that list being short is deliberate.
-    OPS = ("state", "produce", "propose", "approve", "cancel", "pending")
+    OPS = ("state", "produce", "propose", "approve", "cancel", "pending", "ack")
 
     def dispatch(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Apply one request. Never raises for agent error — returns ``ok: False``.
@@ -692,6 +807,8 @@ class Manager:
                 result = self.op_cancel(agent_id, str(request.get("trade_id", "")))
             elif op == "pending":
                 result = self.op_pending(agent_id)
+            elif op == "ack":
+                result = self.op_ack(agent_id, request.get("version"))
             else:
                 raise TradeError(f"unknown op {op!r}; try one of {', '.join(self.OPS)}")
         except TradeError as exc:
@@ -844,6 +961,14 @@ class BoardService:
         #: stale should not have to spend a round trip through the order queue
         #: to find out what round it is.
         self.clock = f"barter/{run}/clock"
+        #: Where the schedule is posted. Its own key rather than part of the
+        #: clock, because it changes once per muster and the clock changes
+        #: every sweep.
+        self.agenda_key = f"barter/{run}/agenda"
+        #: Run-clock seconds, injected because this module must not read a wall
+        #: clock -- the manager owns a logical clock and the flow owns the real
+        #: one, and an agent needs both on the same key to place itself.
+        self.now: Any = None
 
     # No lease of its own. The state lease belongs to whoever mirrors state --
     # `ManagerService.claim` -- and two holders of one lease is the failure it
@@ -852,9 +977,19 @@ class BoardService:
 
     def sweep(self, *, limit: int = 500) -> int:
         """Apply everything on the board. Returns how many orders were applied."""
-        self.client.board_set(self.clock, {"tick": self.manager.tick,
-                                           "level": self.manager.level,
-                                           "phase": self.manager.phase}, ttl=3600.0)
+        clock: dict[str, Any] = {"tick": self.manager.tick,
+                                 "level": self.manager.level,
+                                 "phase": self.manager.phase}
+        if self.now is not None:
+            # "What time is it" -- the one number an agent needs to place
+            # itself on a schedule of absolute times.
+            clock["now"] = round(float(self.now()), 1)
+        agenda = self.manager.agenda
+        if agenda is not None:
+            clock["agenda_version"] = agenda.version
+            clock["acked"] = sorted(self.manager.acked)
+            self.client.board_set(self.agenda_key, agenda.public(), ttl=3600.0)
+        self.client.board_set(self.clock, clock, ttl=3600.0)
         entries = [e for e in self.client.board_list(prefix=self.orders)
                    if isinstance(e.get("value"), dict)]
         # Write order, from the board's own timestamps, with the key breaking

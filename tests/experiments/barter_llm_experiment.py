@@ -63,6 +63,7 @@ import contextlib
 import json
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from barter.analysis import render as render_comparison  # noqa: E402
 from barter.analysis import snapshot, trajectory_table  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
-from barter.flow import Budgets, play  # noqa: E402
+from barter.flow import Budgets, Muster, play  # noqa: E402
 from barter.llm import (  # noqa: E402
     ARMS,
     TURN,
@@ -223,6 +224,7 @@ async def run_llm_island(
     verbose: bool,
     window: float = 60.0,
     sweep_every: float = 1.0,
+    muster: Muster | None = None,
 ) -> dict:
     """One island. ``telling`` is the whole information setup; ``arm`` only names it.
 
@@ -262,13 +264,18 @@ async def run_llm_island(
         # are settled by which write the board saw first.
         board = BoardService(handle.client("manager"), manager, run=run,
                              every=sweep_every)
+        # Run-clock seconds, so the schedule's absolute times and the "now" an
+        # agent reads are on one scale. `time.monotonic` rather than the wall,
+        # because the only thing anyone needs is elapsed.
+        _origin = time.monotonic()
+        board.now = lambda: time.monotonic() - _origin
 
         wires, traders = {}, {}
         for agent_id in manager.agents:
             wire = Wire(agent_id=agent_id, client=handle.client(agent_id),
                         telling=telling, floor_channel=f"barter/{run}/floor",
                         order_prefix=board.orders, result_prefix=board.results,
-                        clock_key=board.clock,
+                        clock_key=board.clock, agenda_key=board.agenda_key,
                         # Generous against the sweep interval: an order that has
                         # not been swept yet is not a refusal, and an agent told
                         # otherwise would report one that never happened.
@@ -347,7 +354,8 @@ async def run_llm_island(
             with board.sweeping():
                 played = await play(manager, take_turn, rounds=rounds,
                                     rng=rng, window=window, budgets=budgets,
-                                    notes=notes, on_round=observe)
+                                    notes=notes, on_round=observe,
+                                    muster=muster)
         finally:
             for trader in traders.values():
                 await trader.close()
@@ -378,13 +386,13 @@ async def run_llm_island(
         arm=arm, seed=seed, model=model, cost=cost, floor=floor, quotes=quotes,
         quotes_posted=sum(w.quotes_posted for w in wires.values()),
         sweeps=sweeps, sweep_errors=sweep_errors, transcript=transcript,
-        rounds=rounds, window=window, sweep_every=sweep_every,
+        rounds=rounds, window=window, sweep_every=sweep_every, muster=muster,
         rolling=rolling, instalments=instalments)
 
 
 def record_for(*, island, manager, played, telling, arm, seed, model, cost,
                floor, quotes, quotes_posted, sweeps, sweep_errors, transcript,
-               rounds, window, sweep_every, rolling, instalments) -> dict:
+               rounds, window, sweep_every, muster, rolling, instalments) -> dict:
     """Everything one island leaves behind, as one dict.
 
     A function rather than a tail of ``run_llm_island`` because this is the
@@ -440,11 +448,18 @@ def record_for(*, island, manager, played, telling, arm, seed, model, cost,
         # other. Two runs at different values are not the same market.
         "flow": {"trade_rounds": rounds, "windows": 3, "window_seconds": window,
                  "sweep_every": sweep_every,
+                 "muster": ({"lead": muster.lead, "ack_within": muster.ack_within,
+                             "attempts": muster.attempts} if muster else None),
                  "labour": "rolling" if rolling else "once",
                  "instalments": instalments},
         # Windows an agent never got into. The clock applying pressure, not the
         # agent deciding anything, and it must not be read as either.
         "missed_windows": played.missed,
+        # How long the island took to agree on when to start, and who never
+        # turned up. A coordination result of its own, and the only thing that
+        # separates "nobody was ready" from "nobody was asked".
+        "musters": played.musters,
+        "absent": played.absent,
         "sweeps": sweeps,
         "sweep_errors": sweep_errors,
         "transcript": transcript,
@@ -538,6 +553,16 @@ def main(argv: list[str] | None = None) -> int:
                              "the default is a three-minute round. This is the "
                              "time pressure, and it is a market parameter: two "
                              "runs at different windows are not the same market")
+    parser.add_argument("--muster", action="store_true",
+                        help="post the full schedule in absolute times and wait "
+                             "for every trader to acknowledge it before anything "
+                             "opens, so the island starts together rather than "
+                             "with agents mid-thought")
+    parser.add_argument("--muster-lead", type=float, default=120.0,
+                        help="seconds between posting a schedule and opening on it")
+    parser.add_argument("--muster-ack", type=float, default=90.0,
+                        help="seconds to acknowledge before the schedule is "
+                             "withdrawn and re-posted with later times")
     parser.add_argument("--sweep-every", type=float, default=1.0,
                         help="seconds between sweeps of the order board. The "
                              "granularity at which concurrent agents' orders "
@@ -600,6 +625,8 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
                 verbose=args.verbose, window=args.window,
                 sweep_every=args.sweep_every,
+                muster=(Muster(lead=args.muster_lead,
+                               ack_within=args.muster_ack) if args.muster else None),
             ))
             results.append(result)
             print(render(result), flush=True)
