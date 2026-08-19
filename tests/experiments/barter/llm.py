@@ -86,7 +86,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Iterable
 
 from .economy import Island
-from .manager import Manager, ManagerService
+from .manager import Manager
 
 #: Kept deliberately free of trading advice. It says what the world is, what
 #: the agent is scored on, and how settlement works — because an agent that
@@ -245,7 +245,8 @@ class Telling:
       is what makes "telling agents how to coordinate" and "building them
       something to coordinate with" separable at all.
     * **Replies.** ``own_value`` and ``own_score`` decide what ``my_state``
-      passes on, and ``horizon`` and ``labour_left`` what the turn note says.
+      passes on, and ``horizon``, ``labour_left`` and ``labour_rule`` what
+      the turn note says.
       Neither changes the world; both change what an agent has to work out for
       itself, which is the same kind of help a tool gives and was the easiest
       kind to hand over without noticing.
@@ -291,6 +292,11 @@ class Telling:
     #: Tell an agent how much labour it has left, in the turn note, rather than
     #: leaving it to spend a tool call finding out.
     labour_left: bool = True
+    #: State the labour rule in the turn note — once, or once per round, and
+    #: what happens to an instalment nobody claims. Separate from ``rolling``
+    #: because the mechanism and the sentence describing it are two changes, and
+    #: a run that moved both cannot say which one the agents responded to.
+    labour_rule: bool = True
     #: `my_state` reports `value_per_unit`: what one more of each good is worth
     #: to you right now. This is a calculator, and a substantive one — it is the
     #: marginal rate an agent would otherwise have to work out from its own
@@ -361,12 +367,13 @@ class Telling:
         from .flow import Notes
 
         return Notes(horizon=self.horizon, labour_left=self.labour_left,
-                     rolling=self.rolling)
+                     labour_rule=self.labour_rule, rolling=self.rolling)
 
 
 _SWITCHES: tuple[str, ...] = (
     "channel", "numeraire", "board", "median", "deviation", "expiry",
     "money", "pay_tool", "rolling", "ruin_warning", "horizon", "labour_left",
+    "labour_rule",
     "own_value", "own_score", "crossings", "tiebreak", "trade_note",
 )
 
@@ -454,7 +461,9 @@ NUMERAIRE_INDEX = 0
 TURN = """\
 Round {round_no} of {rounds}. {phase_note}
 
-Do what you think is best. When you are done for this round, stop.
+Everyone is acting at the same time, and the round ends on a clock rather than
+when you are finished. Do what you think is best now and then stop; you will be
+asked again while the round lasts.
 """
 
 
@@ -470,9 +479,15 @@ class Wire:
 
     agent_id: str
     client: Any
-    service: ManagerService
     telling: Telling
     floor_channel: str
+    #: Blackboard prefixes for the order queue. An agent writes what it wants
+    #: under ``{order_prefix}{agent}/{n}`` and reads the outcome back from
+    #: ``{result_prefix}{agent}/{n}``. Nothing here sends the manager a request.
+    order_prefix: str = ""
+    result_prefix: str = ""
+    #: Where the sweep publishes the manager's logical clock.
+    clock_key: str = ""
     #: Blackboard prefix for the quote board. One key per trader,
     #: so a quote is a value anyone can read rather than a message somebody
     #: might have scrolled past.
@@ -481,17 +496,57 @@ class Wire:
     calls: list[dict[str, Any]] = field(default_factory=list)
     said: list[str] = field(default_factory=list)
     quotes_posted: int = 0
+    #: How long to wait for a sweep to pick an order up, and how often to look.
+    #: Generous against the sweep interval, because an order that has not been
+    #: swept yet is not a refusal and must not be reported to the agent as one.
+    poll_every: float = 0.05
+    poll_for: float = 20.0
+    #: Offline tests only. They are single-threaded and have no sweeper thread,
+    #: so they pass one here and ``manager_call`` completes in-process. A real
+    #: run leaves this ``None``: an agent that drives the manager between
+    #: writing its order and reading the answer is blocking on the manager,
+    #: which is the pump the board exists to remove.
+    sweep_while_waiting: Any = None
     _cursor: int = 0
+    _orders: int = 0
 
     def manager_call(self, op: str, **kwargs: Any) -> dict[str, Any]:
-        self.client.send("manager", {"op": op, **kwargs})
-        self.service.drain()
-        for message in self.client.inbox(channels=[f"@{self.agent_id}"]):
-            body = message.get("body")
-            if isinstance(body, dict) and body.get("op") == op:
-                self.calls.append({"op": op, "ok": body.get("ok")})
-                return body
-        return {"ok": False, "error": "manager did not reply"}
+        """Write an order to the board and wait for the sweep to answer it.
+
+        Deliberately not a request to the manager. Every agent is live at once
+        against a hard clock, so nobody can afford to block the manager and
+        nobody here does: the write returns immediately and the wait is a poll
+        on this agent's own result key. What that costs is that an order is not
+        applied at the instant it is written — it is applied in the order the
+        board says the orders arrived, which is a real race with a real
+        tiebreak rather than an artefact of who was scheduled first.
+
+        The result key is deleted once read. It has served its purpose, and
+        leaving it would grow the board with one key per tool call.
+        """
+        import time
+
+        self._orders += 1
+        suffix = f"{self.agent_id}/{self._orders:04d}"
+        self.client.board_set(f"{self.order_prefix}{suffix}", {"op": op, **kwargs},
+                              ttl=3600.0)
+        deadline = time.monotonic() + self.poll_for
+        while True:
+            if self.sweep_while_waiting is not None:
+                self.sweep_while_waiting()
+            reply = self.client.board_get(f"{self.result_prefix}{suffix}")
+            if isinstance(reply, dict):
+                self.client.board_delete(f"{self.result_prefix}{suffix}")
+                self.calls.append({"op": op, "ok": reply.get("ok")})
+                return reply
+            if time.monotonic() >= deadline:
+                # Not "the manager refused you". An unswept order is the
+                # harness being slow, and an agent told otherwise would report
+                # a refusal that never happened.
+                self.calls.append({"op": op, "ok": None})
+                return {"ok": False, "op": op,
+                        "error": "your order has not been picked up yet; try again"}
+            time.sleep(self.poll_every)
 
     def state(self) -> dict[str, Any]:
         """This agent's own state, minus anything the switches do not hand over.
@@ -625,7 +680,14 @@ class Wire:
         return {"posted": clean}
 
     def _tick(self) -> int:
-        return int(self.service.manager.tick)
+        """The manager's logical clock, read off the board.
+
+        Not asked for through the order queue: "what round is it" is a fact
+        about the world that every agent needs and none of them should have to
+        spend a round trip on, so the sweep publishes it and anyone can read it.
+        """
+        clock = self.client.board_get(f"{self.clock_key}")
+        return int(clock.get("tick", 0)) if isinstance(clock, dict) else 0
 
     def _board(self) -> dict[str, tuple[dict[str, float], int]]:
         out: dict[str, tuple[dict[str, float], int]] = {}

@@ -29,6 +29,7 @@ from barter.manager import (  # noqa: E402
     LEVEL_OFFER,
     LEVEL_PRODUCE,
     LEVEL_SETTLE,
+    BoardService,
     Manager,
     ManagerRPC,
     ManagerService,
@@ -929,3 +930,111 @@ def test_scripted_agents_never_swap_twice_over_a_crossed_pair(island):
         assert summary["crossings"] > 0, arm
         assert summary["crossings_resolved"].get("both", 0) == 0, \
             f"arm {arm} swapped twice: {summary['crossings_resolved']}"
+
+
+# --- the manager as something you write to rather than call ------------------
+
+
+def test_orders_are_applied_in_the_order_the_board_says_they_arrived(island):
+    """Nothing sends the manager a request. Agents write to their own keyspace
+    and the sweep applies what it finds, in write order.
+
+    Which is where the concurrency is settled. Two live agents can want the same
+    goods at the same moment; the sweep applies them in the order the board says
+    they were written and whoever was second is refused. That is a real race
+    with a real tiebreak, rather than an artefact of who happened to be
+    scheduled first inside one manager call.
+    """
+    manager = Manager(island=island)
+    _produce_all(manager)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="b1")
+        a1 = handle.client("a1")
+        a1.board_set("barter/b1/order/a1/0001",
+                     {"op": "propose", "seller": "a2",
+                      "give": {"fish": 0.01}, "want": {"grain": 0.005}})
+        a1.board_set("barter/b1/order/a1/0002", {"op": "pending"})
+
+        assert board.sweep() == 2
+        first = a1.board_get("barter/b1/result/a1/0001")
+        assert first["ok"] and first["op"] == "propose"
+        # The second order saw the first one's effect, so it was applied after it.
+        assert a1.board_get("barter/b1/result/a1/0002")["your_open_offers"]
+
+        # Applied orders are gone from the board, which is what makes applying
+        # one twice impossible. A cursor would not: a crashed manager forgets
+        # its cursor and a board remembers what is still on it.
+        assert board.sweep() == 0
+        assert a1.board_list(prefix="barter/b1/order/") == []
+
+
+def test_an_order_cannot_claim_to_come_from_somebody_else(island):
+    """Identity is the hub's ``updated_by``, not anything inside the message.
+
+    An agent that could name itself in the body could spend another agent's
+    holdings, and every result in the experiment would be a result about that
+    instead.
+    """
+    manager = Manager(island=island)
+    _produce_all(manager)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="b2")
+        handle.client("a1").board_set(
+            "barter/b2/order/a1/0001",
+            {"op": "propose", "buyer": "a3", "agent_id": "a3", "seller": "a2",
+             "give": {"fish": 0.01}, "want": {"grain": 0.005}})
+        board.sweep()
+        trade = next(iter(manager.trades.values()))
+        assert trade.buyer == "a1"
+
+
+def test_the_sweep_publishes_a_clock_anyone_can_read(island):
+    """"What round is it" is a fact about the world that every agent needs, and
+    none of them should spend a round trip through the order queue on it."""
+    manager = Manager(island=island)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="b3")
+        board.sweep()
+        assert handle.client("reader").board_get("barter/b3/clock") == {
+            "tick": 0, "level": LEVEL_PRODUCE, "phase": "produce"}
+        manager.advance()
+        manager.open(LEVEL_SETTLE)
+        board.sweep()
+        clock = handle.client("reader").board_get("barter/b3/clock")
+        assert clock["tick"] == 1 and clock["phase"] == "settle"
+
+
+def test_the_sweeper_runs_on_its_own_thread_and_stops_with_the_block(island):
+    """The sweeper has to be something other than the agents, or it is the pump
+    again: an agent that drives the manager between writing its order and
+    reading the answer is blocking on the manager, which is what the board
+    removed. So it runs on its own interval whatever the agents are doing, and
+    an agent that writes an order and then stops thinking still gets it applied.
+    """
+    import time
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="b4",
+                             every=0.01)
+        a1 = handle.client("a1")
+        with board.sweeping():
+            a1.board_set("barter/b4/order/a1/0001",
+                         {"op": "produce", "plan": {"fish": 1.0}})
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                reply = a1.board_get("barter/b4/result/a1/0001")
+                if isinstance(reply, dict):
+                    break
+                time.sleep(0.005)
+            assert reply["ok"]
+        assert board.errors == []
+        assert manager.agents["a1"].produced
+
+        # An order written just before the block ended is still answered: the
+        # sweeper takes one last pass on the way out rather than leaving an
+        # agent waiting on a board nobody is reading.
+        a1.board_set("barter/b4/order/a1/0002", {"op": "pending"})
+        with board.sweeping():
+            pass
+        assert isinstance(a1.board_get("barter/b4/result/a1/0002"), dict)

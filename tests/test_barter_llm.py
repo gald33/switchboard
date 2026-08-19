@@ -25,7 +25,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
 from barter.economy import draw_island  # noqa: E402
 from barter.llm import ARMS as ARMS_ALL  # noqa: E402
 from barter.llm import Wire, brief_for, telling_for, tool_names  # noqa: E402
-from barter.manager import LEVEL_SETTLE, Manager, ManagerService  # noqa: E402
+from barter.manager import (  # noqa: E402
+    LEVEL_SETTLE,
+    BoardService,
+    Manager,
+    ManagerService,
+)
 
 from switchboard.testing import hub  # noqa: E402
 
@@ -35,15 +40,32 @@ def island():
     return draw_island(3, 5, seed=4)
 
 
+def _wire(handle, manager, agent_id, telling, run="llm", board=None):
+    """One agent's tool surface, wired to the board rather than to the manager.
+
+    Nothing sends the manager a request any more, so a test that exercises a
+    tool has to have something sweeping the board. These tests are
+    single-threaded, so the sweep happens from inside the wait — see
+    `Wire.sweep_while_waiting`, and `test_barter.py` for the threaded sweeper a
+    real run uses.
+    """
+    return Wire(agent_id=agent_id, client=handle.client(agent_id),
+                telling=telling, floor_channel=f"barter/{run}/floor",
+                order_prefix=f"barter/{run}/order/",
+                result_prefix=f"barter/{run}/result/",
+                clock_key=f"barter/{run}/clock",
+                quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods),
+                sweep_while_waiting=board.sweep if board is not None else None,
+                poll_every=0.0, poll_for=5.0)
+
+
 def _wired(handle, manager, arm, run="llm"):
     service = ManagerService(handle.client("manager"), manager, run=run)
     service.claim()
-    wires = {
-        agent_id: Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
-                       telling=telling_for(arm), floor_channel=f"barter/{run}/floor",
-                       quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
-        for agent_id in manager.agents
-    }
+    board = BoardService(handle.client("manager"), manager, run=run)
+    wires = {agent_id: _wire(handle, manager, agent_id, telling_for(arm),
+                             run=run, board=board)
+             for agent_id in manager.agents}
     return service, wires
 
 
@@ -308,6 +330,9 @@ def test_bound_lets_a_quote_go_stale(island):
 
         for _ in range(QUOTE_TTL_TICKS):
             manager.advance()
+        # The clock a quote is stamped against is the one on the board, not the
+        # one in this process: agents read it there and the sweep puts it there.
+        BoardService(handle.client("manager"), manager, run="llm").sweep()
 
         # a2 keeps its quote current; a1 does not and drops off.
         wires["a2"].post_quote({"cloth": 2.0})
@@ -902,7 +927,8 @@ def test_every_named_arm_is_a_combination_of_switches_and_nothing_more(island):
     from barter.llm import ARMS, PRESETS, telling_for
 
     assert PRESETS["silent"].switches() == (
-        "ruin_warning", "horizon", "labour_left", "own_value", "own_score")
+        "ruin_warning", "horizon", "labour_left", "labour_rule",
+        "own_value", "own_score")
     assert "channel" in PRESETS["free"].switches()
     assert not PRESETS["free"].numeraire
     assert PRESETS["told"].numeraire and not PRESETS["told"].board
@@ -956,9 +982,9 @@ def test_the_bundle_bound_shipped_as_one_step_can_be_run_apart(island):
         service.claim()
 
         def wire_for(telling):
-            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
-                        telling=telling, floor_channel="barter/sw/floor",
-                        quote_prefix="barter/sw/quote/", goods=tuple(manager.goods))
+            return _wire(handle, manager, "a1", telling, run="sw",
+                         board=BoardService(handle.client("manager"),
+                                            manager, run="sw"))
 
         wire_for(deviation_only).post_quote({"grain": 2.0})
         assert "your_deviation_from_median" in wire_for(deviation_only).read_quotes()
@@ -1112,9 +1138,9 @@ def test_the_calculators_in_my_state_are_switches_too(island):
         service.claim()
 
         def wire_for(telling):
-            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
-                        telling=telling, floor_channel="barter/calc/floor",
-                        quote_prefix="barter/calc/quote/", goods=tuple(manager.goods))
+            return _wire(handle, manager, "a1", telling, run="calc",
+                         board=BoardService(handle.client("manager"),
+                                            manager, run="calc"))
 
         full = wire_for(telling_for("free")).state()
         assert "value_per_unit" in full and "utility" in full

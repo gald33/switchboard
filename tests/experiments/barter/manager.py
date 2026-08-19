@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -152,35 +153,27 @@ class Manager:
     """
 
     island: Island
-    #: The round is a cycle of four stages and the manager owns which one is
-    #: open, because a phase agents could advance is a phase one agent can
-    #: advance early:
+    #: What is open right now, as one of ``LEVEL_PRODUCE``/``LEVEL_OFFER``/
+    #: ``LEVEL_SETTLE``. The manager owns it because a level agents could raise
+    #: is a level one agent can raise early.
     #:
-    #:     discovery -> production -> [deal] -> trading -> [resolve]
-    #:                                              -> trading -> discovery ...
+    #: It only ever rises within a round and resets with it, so a capability
+    #: cannot be withdrawn while the round is running and the deadline an agent
+    #: is planning against is the end of the round rather than the end of its
+    #: turn. The five exclusive stages this replaces had to grant and withdraw
+    #: each capability in the right order, and three of the five existed only to
+    #: deny actions during a conversation -- a job the wall clock in ``flow``
+    #: does better and with fewer moving parts.
     #:
-    #: ``discovery``, ``deal`` and ``resolve`` accept neither labour plans nor
-    #: trades. They are three distinct talking stages rather than one repeated,
-    #: because they are three different conversations: before committing labour
-    #: an agent is guessing what it will hold, after committing it knows, and
-    #: after offering it has escrow on the table and a collision to settle with
-    #: somebody. ``production`` accepts labour plans, ``trading`` accepts trades,
-    #: ``closed`` accepts neither. ``deal`` and ``resolve`` may be skipped by a
-    #: run that has no such stage; every other transition has exactly one legal
-    #: predecessor, so a stage cannot be re-entered or taken out of order.
-    #:
-    #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
-    #: themselves. Production was committed in the first round, before any agent
-    #: had said anything, so every convention on the ladder could only ever
-    #: describe the world after the one irreversible decision was behind it.
-    #: Implied production quality came out at ~0.41 in every arm — the exchange
-    #: ceiling — because no arm had the information to specialise, whatever it
-    #: had been told. Deliberation has to come before manufacturing or it cannot
-    #: plan for it.
-    #:
-    #: It defaults off. Tier 1 constructs its manager without it and starts in
-    #: ``production``, exactly as before, because its scripted agents do their
-    #: price discovery outside the manager entirely.
+    #: ``LEVEL_PRODUCE`` is where a round starts, and it is not a silent stage:
+    #: agents talk throughout, because talking never reaches the manager. That
+    #: matters because of a flaw the Tier 2 runs exposed in themselves.
+    #: Production used to be committed before any agent had said anything, so
+    #: every convention on the ladder could only describe the world after the
+    #: one irreversible decision was behind it -- implied production quality came
+    #: out at ~0.41 in every arm, the exchange ceiling, because no arm had the
+    #: information to specialise whatever it had been told. Deliberation has to
+    #: be able to happen before manufacturing or it cannot plan for it.
     level: int = LEVEL_PRODUCE
     #: Set once, at the end. A closed island accepts nothing at any level.
     finished: bool = False
@@ -828,20 +821,40 @@ class BoardService:
     cannot claim to be another agent by saying so.
     """
 
-    def __init__(self, client: Any, manager: Manager, *, run: str) -> None:
+    def __init__(self, client: Any, manager: Manager, *, run: str,
+                 every: float = 1.0) -> None:
         self.client = client
         self.manager = manager
         self.run = run
+        #: How often the sweep runs, in seconds. A market parameter and not an
+        #: implementation detail: it is the granularity at which orders are
+        #: ordered against each other, so two orders inside one interval are
+        #: settled by write time and two in different intervals are not
+        #: comparable at all. Recorded with the run for that reason.
+        self.every = every
         self.applied = 0
+        #: Anything the sweep itself threw. A sweeper that died would hang every
+        #: agent on the island silently, so it never dies -- it records and
+        #: carries on, and the record is here rather than in a log nobody reads.
+        self.errors: list[str] = []
         self.orders = f"barter/{run}/order/"
         self.results = f"barter/{run}/result/"
+        #: The manager's logical clock, readable by anyone. Published on every
+        #: sweep because an agent that needs to know whether a quote has gone
+        #: stale should not have to spend a round trip through the order queue
+        #: to find out what round it is.
+        self.clock = f"barter/{run}/clock"
 
-    def claim(self) -> None:
-        self.client.acquire(f"barter/{self.run}/state", note="authoritative state",
-                            ttl=900.0)
+    # No lease of its own. The state lease belongs to whoever mirrors state --
+    # `ManagerService.claim` -- and two holders of one lease is the failure it
+    # exists to prevent, so a sweeper that also claimed it would be racing the
+    # thing protecting it.
 
     def sweep(self, *, limit: int = 500) -> int:
         """Apply everything on the board. Returns how many orders were applied."""
+        self.client.board_set(self.clock, {"tick": self.manager.tick,
+                                           "level": self.manager.level,
+                                           "phase": self.manager.phase}, ttl=3600.0)
         entries = [e for e in self.client.board_list(prefix=self.orders)
                    if isinstance(e.get("value"), dict)]
         # Write order, from the board's own timestamps, with the key breaking
@@ -857,6 +870,43 @@ class BoardService:
             done += 1
         self.applied += done
         return done
+
+    @contextmanager
+    def sweeping(self) -> Any:
+        """Sweep on a thread of its own for the duration of the block.
+
+        The sweeper has to be something other than the agents, or it is the
+        pump again: an agent that drives the manager between writing its order
+        and reading the answer is blocking on the manager, which is exactly what
+        the board removed. So it runs on its own thread, on its own interval,
+        whatever the agents are doing -- and an agent that writes an order and
+        then stops thinking still gets it applied.
+
+        ``Manager`` takes its own lock, so a sweep landing while an agent is
+        mid-``dispatch`` is serialised rather than interleaved.
+        """
+        stop = threading.Event()
+
+        def loop() -> None:
+            while not stop.wait(self.every):
+                try:
+                    self.sweep()
+                except Exception as exc:  # noqa: BLE001 -- see `errors`
+                    self.errors.append(f"{type(exc).__name__}: {exc}")
+            # One last pass, so an order written just before the block ended is
+            # answered rather than left on the board with an agent waiting.
+            try:
+                self.sweep()
+            except Exception as exc:  # noqa: BLE001
+                self.errors.append(f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=loop, name=f"sweep-{self.run}", daemon=True)
+        thread.start()
+        try:
+            yield self
+        finally:
+            stop.set()
+            thread.join(timeout=30.0)
 
 
 class ManagerRPC:
