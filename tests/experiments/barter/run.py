@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .economy import Efficiency, Gains, Island, autarky, capture, efficiency, gains
-from .manager import Manager, ManagerRPC, ManagerService
+from .manager import (
+    LEVEL_OFFER,
+    LEVEL_SETTLE,
+    Manager,
+    ManagerRPC,
+    ManagerService,
+)
 from .traders import Floor, Trader, gives_way, propose_for
 
 #: Rounds of price discovery before production closes. Arm C needs a few to
@@ -172,7 +178,12 @@ def run_island(
     for agent_id, trader in traders.items():
         call(agent_id, "produce", plan=trader.production_plan(floor))
     manager.check_conservation()
-    manager.open_trading()
+    # Tier 1 has no wall clock: its agents are code and take no time, so
+    # everything is simply open. The windows exist to give *models* time to
+    # talk before committing, and scripted agents did their talking in process
+    # before the manager ever heard from them.
+    manager.open(LEVEL_OFFER)
+    manager.open(LEVEL_SETTLE)
     manager.check_conservation()
     if instalments > 1:
         # The manager refuses two commitments in one tick, and the opening
@@ -196,15 +207,12 @@ def run_island(
         # Skipped entirely at one instalment, so the one-shot path is
         # byte-for-byte the run it always was and old results still reproduce.
         if instalments > 1:
-            manager.open_discovery()
-            manager.open_production()
             for agent_id in order:
                 if manager.agents[agent_id].spent >= 1.0 - 1e-9:
                     continue
                 call(agent_id, "produce",
                      plan=traders[agent_id].production_instalment(holdings[agent_id], floor))
                 holdings[agent_id] = list(manager.agents[agent_id].holdings)
-            manager.open_trading()
             manager.check_conservation()
 
         for agent_id in order:
@@ -223,7 +231,6 @@ def run_island(
         # both sides reach the same answer without saying anything and exactly
         # one of the pair is withdrawn. That is what makes them the benchmark a
         # model arm is measured against, not a claim that the rule is clever.
-        manager.open_resolve()
         for agent_id in order:
             for pair in call(agent_id, "pending").get("crossed_pairs", []):
                 doomed = gives_way(pair)
@@ -231,7 +238,6 @@ def run_island(
                 # doomed id on both sides still produces exactly one action.
                 if manager.trades[doomed].buyer == agent_id:
                     call(agent_id, "cancel", trade_id=doomed)
-        manager.open_trading()
         manager.check_conservation()
 
         # Approvals. A seller accepts only what raises its own utility, so every
@@ -247,7 +253,11 @@ def run_island(
                 current = list(manager.agents[agent_id].holdings)
                 if trader.accepts(current, trade["give"], trade["want"]):
                     call(agent_id, "approve", trade_id=trade["id"])
-        manager.advance()
+        # A round ends: stale offers expire and the level drops back, which for
+        # a rolling island is what makes the next instalment a new round's.
+        manager.next_round()
+        manager.open(LEVEL_OFFER)
+        manager.open(LEVEL_SETTLE)
         manager.check_conservation()
 
     manager.close()

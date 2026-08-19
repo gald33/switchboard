@@ -25,7 +25,15 @@ from barter.economy import (  # noqa: E402
     utility,
     walras,
 )
-from barter.manager import Manager, ManagerRPC, ManagerService, TradeError  # noqa: E402
+from barter.manager import (  # noqa: E402
+    LEVEL_OFFER,
+    LEVEL_PRODUCE,
+    LEVEL_SETTLE,
+    Manager,
+    ManagerRPC,
+    ManagerService,
+    TradeError,
+)
 from barter.run import run_island  # noqa: E402
 
 from switchboard.testing import hub  # noqa: E402
@@ -44,7 +52,7 @@ def manager(island):
 def _produce_all(manager: Manager) -> None:
     for agent_id, state in manager.agents.items():
         manager.op_produce(agent_id, {g: state.alpha[i] for i, g in enumerate(manager.goods)})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
 
 
 # --- the manager's invariants ----------------------------------------------
@@ -133,46 +141,62 @@ def test_conservation_holds_through_a_whole_run(island):
         assert outcome.executed >= 0
 
 
-def test_discovery_comes_before_anything_is_committed(island):
-    """Deliberation has to precede manufacturing, or it cannot plan for it.
+def test_what_is_open_rises_through_the_round_and_never_falls(island):
+    """Each capability waits on the one before it having had time.
 
-    The Tier 2 runs exposed this in themselves: production was committed in the
-    first round, before anybody had spoken, so every convention on the ladder
-    could only describe the world after the one irreversible decision was
-    already behind it. Implied production quality came out at the exchange
-    ceiling in every arm — nobody specialised, because nobody could.
+    You cannot offer what nobody has made, and you cannot settle before offers
+    exist — so proposing opens after a window of talking and producing, and
+    approving after a window of offers. Within a round the level only rises: an
+    agent that acts late is late, but nothing it was already allowed to do is
+    taken away from it.
     """
-    manager = Manager(island=island, phase="discovery")
-    with pytest.raises(TradeError, match="production is discovery"):
-        manager.op_produce("a1", {"fish": 1.0})
-    with pytest.raises(TradeError, match="trading is discovery"):
-        manager.op_propose("a1", "a2", {"fish": 1.0}, {"grain": 1.0})
+    manager = Manager(island=island)
 
-    manager.open_production()
+    # Level 1: produce and talk. Talking never reaches the manager at all.
     assert manager.op_produce("a1", {"fish": 1.0})["produced"]["fish"] > 0
-    manager.open_trading()
+    with pytest.raises(TradeError, match="proposing is not open yet"):
+        manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
+
+    manager.open(LEVEL_OFFER)
+    manager.op_produce("a2", {"grain": 1.0})          # still open, all round
+    trade = manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
+    with pytest.raises(TradeError, match="approving is not open yet"):
+        manager.op_approve("a2", trade["trade_id"])
+    # ...but withdrawing opens with proposing, since it is the undo of one.
+    assert manager.op_cancel("a1", trade["trade_id"])["cancelled"]
+
+    manager.open(LEVEL_SETTLE)
+    again = manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
+    assert manager.op_approve("a2", again["trade_id"])["settled"] == again["trade_id"]
+
+    # Raising to a level already passed is a no-op, not a reopening.
+    manager.open(LEVEL_PRODUCE)
+    assert manager.level == LEVEL_SETTLE
     manager.check_conservation()
 
 
-def test_a_phase_cannot_be_skipped_or_replayed(island):
-    """The manager owns the phase, so no agent can advance it early — and the
-    operator cannot accidentally reopen one either."""
-    manager = Manager(island=island, phase="discovery")
-    with pytest.raises(TradeError, match="cannot open trading from discovery"):
-        manager.open_trading()
-    manager.open_production()
-    with pytest.raises(TradeError, match="cannot open production from production"):
-        manager.open_production()
-    manager.open_trading()
-    with pytest.raises(TradeError, match="cannot open production from trading"):
-        manager.open_production()
+def test_a_round_ends_by_dropping_back_to_the_first_window(island):
+    """Resetting is what makes a round a round: every one of them re-earns the
+    right to trade by spending a window on talking and producing first."""
+    manager = Manager(island=island)
+    manager.open(LEVEL_SETTLE)
+    manager.next_round()
+    assert manager.level == LEVEL_PRODUCE
+    with pytest.raises(TradeError, match="proposing is not open yet"):
+        manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
+    manager.check_conservation()
 
 
-def test_tier_one_still_starts_in_production(island):
-    """Tier 1 does its price discovery outside the manager entirely, so the new
-    phase defaults off and its runs are unchanged."""
-    assert Manager(island=island).phase == "production"
-
+def test_a_closed_island_accepts_nothing_at_any_level(island):
+    manager = Manager(island=island)
+    manager.open(LEVEL_SETTLE)
+    manager.close()
+    assert manager.phase == "closed"
+    for call in (lambda: manager.op_produce("a1", {"fish": 1.0}),
+                 lambda: manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1}),
+                 lambda: manager.open(LEVEL_SETTLE)):
+        with pytest.raises(TradeError):
+            call()
 
 def test_one_shot_labour_is_spent_once_and_cannot_be_unwound(manager):
     """The default: everything staked before any price exists.
@@ -242,24 +266,23 @@ def test_labour_stays_shut_during_trading_however_the_labour_rolls(island):
     would make the deadline advisory, and a deadline agents can work past is a
     deadline the manager is not enforcing.
     """
+    # Production no longer shuts at all: it is open in every window of every
+    # round, so an agent can revise what it makes in response to something it
+    # hears at the very end of a round. What still holds it to one instalment
+    # is the round itself -- once per round, not once per window.
     for rolling in (False, True):
         manager = Manager(island=island, rolling=rolling,
                           labour_per_round=0.5 if rolling else 1.0)
         manager.op_produce("a1", {"fish": 1.0})
-        manager.open_trading()
-        with pytest.raises(TradeError, match="production is trading, not open"):
-            manager.op_produce("a2", {"fish": 1.0})
+        manager.open(LEVEL_SETTLE)
+        with pytest.raises(TradeError, match="already worked this round"):
+            manager.op_produce("a1", {"fish": 1.0})
 
-    # ...and the way a rolling island gets its next instalment is by the round
-    # coming round again, which reopens the stage properly.
     rolling = Manager(island=island, labour_per_round=0.5, rolling=True)
     rolling.op_produce("a1", {"fish": 1.0})
-    rolling.open_trading()
-    rolling.advance()
-    rolling.open_discovery()
-    rolling.open_production()
+    rolling.open(LEVEL_SETTLE)
+    rolling.next_round()
     assert rolling.op_produce("a1", {"grain": 1.0})["labour_left"] == 0.0
-    rolling.open_trading()
     rolling.check_conservation()
 
 
@@ -472,7 +495,7 @@ def test_state_is_mirrored_to_the_blackboard():
 
         observer = handle.client("observer")
         header = observer.board_get("barter/r3/run")
-        assert header["phase"] == "trading"
+        assert header["phase"] == "settle"
         assert header["agents"] == sorted(manager.agents)
         assert observer.board_get("barter/r3/agent/a1")["produced"] is True
 
@@ -570,20 +593,19 @@ def test_a_rolling_island_actually_works_in_every_round(island):
     floor = Floor(enabled=False)
     for agent_id, trader in traders.items():
         manager.dispatch(agent_id, {"op": "produce", "plan": trader.production_plan(floor)})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
     manager.advance()
     for _ in range(3):
         # The round comes round again: a real production stage, opened and
         # closed by the manager, exactly as Tier 2's rounds do.
-        manager.open_discovery()
-        manager.open_production()
+        manager.next_round()
         for agent_id, trader in traders.items():
             holdings = list(manager.agents[agent_id].holdings)
             reply = manager.dispatch(
                 agent_id, {"op": "produce",
                            "plan": trader.production_instalment(holdings, floor)})
             assert reply.get("ok"), reply
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         manager.advance()
     for state in manager.agents.values():
         assert state.spent == pytest.approx(1.0, abs=1e-9)
@@ -741,10 +763,9 @@ def test_unspent_labour_is_recorded_rather_than_quietly_lost(island):
 
     # It accumulates, and it is never carried forward: the second instalment is
     # the same size as the first however little of the first was claimed.
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
     manager.advance()
-    manager.open_discovery()
-    manager.open_production()
+    manager.next_round()
     second = manager.op_produce("a1", {"fish": 1.0})
     assert second["produced"]["fish"] == pytest.approx(island.capacity[0][0] * 0.5, abs=1e-4)
     assert manager.agents["a1"].idle == pytest.approx(0.5 * 0.4)
@@ -764,7 +785,7 @@ def test_a_crossed_pair_is_reported_and_nothing_is_done_about_it(island):
     manager = Manager(island=island)
     for agent_id in manager.agents:
         manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
 
     first = manager.op_propose("a1", "a2", {"fish": 0.02}, {"grain": 0.02})
     assert "crosses" not in first
@@ -796,7 +817,7 @@ def test_a_crossing_that_was_resolved_stops_being_reported_as_open(island):
     manager = Manager(island=island)
     for agent_id in manager.agents:
         manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
     first = manager.op_propose("a1", "a2", {"fish": 0.1}, {"grain": 0.1})
     manager.op_propose("a2", "a1", {"grain": 0.1}, {"fish": 0.1})
     assert manager.op_pending("a1")["crossed_pairs"]
@@ -828,7 +849,7 @@ def test_a_crossing_that_cannot_cover_bounces_rather_than_jamming(island):
     manager = Manager(island=island)
     for agent_id in manager.agents:
         manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
 
     # Each side escrows more than half of the good it will be asked to hand
     # over, so neither can cover the other out of what is left.

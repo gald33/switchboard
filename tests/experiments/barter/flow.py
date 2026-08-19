@@ -1,58 +1,34 @@
 """The order of play, with nothing in it that knows about models.
 
-Extracted so it can be tested for free. The flow is where the last two design
-errors lived — production committed before anyone had spoken, and one turn per
-agent for both proposing and answering — and both were found by paying for a
-run and reading the wreckage afterwards. A loop that costs $2 and fifty minutes
-to exercise is a loop nobody exercises.
+Extracted so it can be tested for free. Every design error this experiment has
+had lived here — production committed before anyone had spoken, one turn per
+agent for both proposing and answering, a clock that ate an instalment — and
+every one was found by paying for a run and reading the wreckage. A loop that
+costs money and an hour to exercise is a loop nobody exercises.
 
 ``play`` takes a ``take_turn`` callable and never imports an SDK, so the whole
-order of play runs against a scripted stand-in in milliseconds. What remains in
-the runner is the part that genuinely needs a model.
+order of play runs against a scripted stand-in in milliseconds.
 
-The shape. Every round is the same six stages, each with a deadline the manager
-enforces rather than the agents observing:
+The round is a **wall clock**, not a sequence of turns. Every agent runs for the
+whole of it, continuously, doing as much as it can fit. What the manager accepts
+opens as the round goes and never closes inside it:
 
-    1  discovery   talk. Nothing may be committed.
-    2  produce     this round's instalment of labour.
-    3  deal        talk again — now everyone knows what everyone holds.
-    4  offer       propose. Every offer escrows its side as it is made.
-    5  resolve     talk again — offers are on the table, none has settled, and
-                   some of them cross. Decide together which ones stand.
-    6  settle      approve what should stand, withdraw what should not.
+    minute 1   talk, and commit this round's labour
+    minute 2   ...and propose, and withdraw your own proposals
+    minute 3   ...and approve
 
-Three stages of talk per round, because they are three different conversations.
-In stage 1 an agent is guessing what it will hold and can still coordinate *what
-to make*; by stage 3 it knows, and so does everyone else, so terms can be agreed
-against real inventory instead of intent; by stage 5 it has escrow on the table
-and a collision to settle with somebody specific. The original shape had all the
-talking up front with the whole production decision behind it, which made every
-later word a negotiation about goods nobody could change.
+Each capability waits on the one before it having had time: you cannot offer
+what nobody has made, and you cannot settle before offers exist.
 
-Stage 5 exists because of what stage 4 creates. Offers escrow as they are made,
-so two agents who agreed a swap and both proposed it now hold mirror-image
-trades and one has to give way. Every route out — approve one and cancel the
-other, approve both and swap twice, cancel both — needs the two of them to
-choose the *same* one, and none is right on its own merits. It is a pure
-tie-break, and the failure mode is not choosing badly but choosing differently.
-Scripted agents are handed a shared rule so their crossings resolve by
-convention; a model agent gets the stage and no rule, and whether it invents one
-its counterparty also arrives at is the measurement.
+Time-boxing rather than turn-boxing is what makes the deadline real. An agent
+still thinking when a window closes does not hold the round open, a fast agent
+gets more turns than a slow one, and an agent that misses a window has missed
+it. That variance is the first time pressure this experiment has had, and it is
+worth measuring rather than designing away.
 
-Offering and answering stay separate passes. That is not decoration: with one
-turn per agent, roughly half of all offers cannot be answered until the
-following round, and a three-tick expiry gives a proposal one or two real
-chances at being seen. Collapsing them would re-introduce a bug this file
-already paid for once.
-
-Labour is spent per round by construction here, so the tick collision that used
-to eat the first trading round's instalment cannot arise — production and
-trading are separate stages, and the clock moves between rounds.
-
-What the turn note says is not fixed here. Every sentence an agent is handed is
-one switch on ``Notes``, because a sentence that is always present is a sentence
-whose contribution can never be measured — see ``barter/llm.py`` for the same
-rule applied to the system prompt and the tool surface.
+Talking is at every level because talking never reaches the manager — it goes
+straight to the hub channel. The stages that used to gate it were only denying
+everything else, which is a job a clock does better and with fewer moving parts.
 """
 
 from __future__ import annotations
@@ -84,6 +60,13 @@ class Budgets:
     produce: int = 3
     offer: int = 6
     settle: int = 4
+    #: Most turns one agent may take in one window. The clock is the real
+    #: limit — a model turn takes most of a minute, so an agent gets one or two
+    #: — but a turn that returns instantly would otherwise spin the loop as
+    #: fast as the event loop allows. That is unbounded spend if an agent starts
+    #: erroring out quickly, and it is what a scripted stand-in does by nature:
+    #: one took seventeen thousand turns in a twenty-millisecond window.
+    turns_per_window: int = 8
 
 
 @dataclass
@@ -112,6 +95,11 @@ class Notes:
     #: made "did rolling labour help" partly a question about whether agents
     #: bothered to look.
     labour_left: bool = True
+    #: "`produce` is accepted once per round..." The rule the agent is planning
+    #: against. Off, the mechanism is unchanged and the agent has to discover
+    #: the shape of it by trying — which is a real difference in what agents do
+    #: and so has to be separable from the mechanism itself.
+    labour_rule: bool = True
     #: Whether labour actually rolls. Not a telling but a fact about the world,
     #: kept here so the prose can match it. Setting this without the manager's
     #: own ``rolling`` would be telling agents something untrue.
@@ -119,6 +107,24 @@ class Notes:
     #: How much labour one agent has left, 0..1. Injected rather than read,
     #: because this module must not know what a ``Manager`` is.
     labour: Callable[[str], float] | None = None
+
+    def rule_note(self) -> str:
+        """The labour rule, in the words of whichever game is actually running.
+
+        The two modes are different games and an agent told the wrong one plans
+        for the wrong game, so this reads off ``rolling`` rather than being set
+        alongside it.
+        """
+        if not self.labour_rule:
+            return ""
+        if self.rolling:
+            return ("`produce` is accepted once per round, and commits one "
+                    "instalment of your one unit of labour. Each instalment's "
+                    "shares must sum to 1, and an instalment you do not spend "
+                    "is not carried over.")
+        return ("`produce` is accepted once, and commits your whole unit of "
+                "labour in that one call, with shares that sum to 1. There is "
+                "no second call.")
 
     def horizon_note(self, left: int) -> str:
         return f"{left} round(s) remain after this one." if self.horizon else ""
@@ -146,6 +152,12 @@ class Played:
     #: this file.
     seen_by: dict[str, set[str]] = field(default_factory=dict)
     rounds_played: int = 0
+    #: How many (agent, window) pairs went by without that agent starting a
+    #: single turn in that window. A slow agent whose turn straddles a whole
+    #: window has missed it, and that is the clock applying pressure rather than
+    #: the agent deciding anything — counting it with refusals would credit the
+    #: harness's deadline to the agents' judgement.
+    missed: int = 0
 
     def expired_unseen(self, manager: Any) -> int:
         return sum(
@@ -161,155 +173,106 @@ async def play(
     *,
     rounds: int,
     rng: random.Random,
-    lead_in: int = 0,
+    window: float = 60.0,
     budgets: Budgets | None = None,
     drain: Callable[[], Any] | None = None,
     notes: Notes | None = None,
     on_round: Callable[[int, str], Any] | None = None,
-    concurrent: bool = False,
 ) -> Played:
-    """Run one island's order of play. Returns the transcript and diagnostics.
+    """Run one island. Returns the transcript and diagnostics.
 
-    ``lead_in`` prepends talk-only rounds before the first production stage, for
-    runs that want deliberation before any commitment at all. It defaults to
-    none, because every round already opens with a talk stage.
-
-    ``concurrent`` lets every agent in a stage act at once. Six stages of one
-    agent at a time is most of an island's wall clock and they are waiting on
-    each other for nothing — a stage costs the *slowest* agent rather than the
-    sum of all of them. It is off by default because it is not free: sequential
-    agents later in a stage can see what earlier ones did, and concurrent ones
-    cannot. That makes it a different experiment, and arguably a more honest
-    one, since simultaneity is where coordination is actually hard.
+    ``window`` is how long each of the three windows lasts, in seconds, so a
+    round is three of them. Tests pass a tiny value and run the whole order of
+    play in milliseconds; a real island passes sixty.
     """
+    import anyio
+
+    from .manager import LEVEL_OFFER, LEVEL_PRODUCE, LEVEL_SETTLE
+
     budgets = budgets or Budgets()
     notes = notes or Notes()
     played = Played()
     order = list(manager.agents)
     round_no = 0
+    #: (round, level, agent) for every window an agent actually got into.
+    reached: set[tuple[int, int, str]] = set()
 
-    async def pass_over(label: str, base: str, budget: int) -> None:
-        """One turn each, in a shuffled order.
+    def budget_for(level: int) -> int:
+        return {LEVEL_PRODUCE: budgets.produce, LEVEL_OFFER: budgets.offer,
+                LEVEL_SETTLE: budgets.settle}[level]
 
-        The note is assembled per agent rather than per pass, because the one
-        thing that differs between agents in the same round — how much labour
-        each has left — is exactly the thing worth telling them.
+    def note_for(agent_id: str, level: int) -> str:
+        opens = {
+            LEVEL_PRODUCE: "Window 1 of 3. You can talk and you can `produce`. "
+                           "Proposing opens next window, approving the one after.",
+            LEVEL_OFFER: "Window 2 of 3. Proposing is now open, and so is "
+                         "withdrawing your own offers. Nothing can be approved "
+                         "yet. You can still `produce` and still talk.",
+            LEVEL_SETTLE: "Window 3 of 3. Everything is open: approve what "
+                          "should stand, withdraw what should not. Anything "
+                          "left when the round ends expires.",
+        }[level]
+        parts = [opens, notes.rule_note(),
+                 notes.labour_note(agent_id) if notes.rolling else "",
+                 notes.horizon_note(rounds - round_no)]
+        return " ".join(part for part in parts if part)
+
+    async def live(agent_id: str, ends_at: float) -> None:
+        """One agent, acting for the whole round rather than taking a turn.
+
+        It keeps going until the clock says stop. A fast agent fits more in
+        than a slow one, and an agent whose turn is still running when the
+        round ends does not hold it open — the round is over and whatever it
+        was about to do is late.
         """
-        rng.shuffle(order)
-
-        def note_for(agent_id: str) -> str:
-            parts = [base, notes.labour_note(agent_id) if notes.rolling else ""]
-            parts.append(notes.horizon_note(rounds - round_no))
-            return " ".join(part for part in parts if part)
-
-        spoke: dict[str, str] = {}
-
-        async def one(agent_id: str) -> None:
-            spoke[agent_id] = await take_turn(
-                agent_id, round_no=round_no, label=label,
-                note=note_for(agent_id), budget=budget)
-
-        if concurrent:
-            import anyio
-
-            async with anyio.create_task_group() as group:
-                for agent_id in order:
-                    group.start_soon(one, agent_id)
-        else:
-            for agent_id in order:
-                await one(agent_id)
-
-        # Transcript in the shuffled order either way, so a concurrent island
-        # reads like a sequential one. `seen_by` is recorded once the stage is
-        # over rather than after each turn: with everyone acting at once there
-        # is no "already open when I acted", and every agent did have its chance
-        # at everything still pending when the stage closed.
-        for agent_id in order:
+        taken = 0
+        while anyio.current_time() < ends_at and taken < budgets.turns_per_window * 3:
+            level = manager.level
+            label = manager.phase
+            reached.add((round_no, level, agent_id))
+            taken += 1
+            said = await take_turn(agent_id, round_no=round_no, label=label,
+                                   note=note_for(agent_id, level),
+                                   budget=budget_for(level))
+            # The window the turn *started* in, not the one it finished in: a
+            # turn that outlives its window is exactly the case being measured,
+            # and labelling it by where it landed would hide that.
             played.transcript.append({"round": round_no, "pass": label,
-                                      "agent": agent_id, "text": spoke.get(agent_id, "")})
-        for trade in manager.trades.values():
-            if trade.status == "pending":
-                for agent_id in order:
-                    played.seen_by.setdefault(trade.id, set()).add(agent_id)
-        if drain is not None:
-            drain()
-        if on_round is not None:
-            row = on_round(round_no, label)
-            if row is not None:
-                played.trajectory.append(row)
+                                      "agent": agent_id, "text": said})
 
-    for _ in range(lead_in):
-        manager.open_discovery()
-        await pass_over(
-            "talk",
-            "Nothing is committed yet and nothing can be. Production has not "
-            "opened. Use this time however you think best.",
-            budgets.talk)
+    async def clock(started: float) -> None:
+        """Raise what is open, on the wall clock, whatever the agents are doing."""
+        for level in (LEVEL_OFFER, LEVEL_SETTLE):
+            await anyio.sleep_until(started + window * (level - 1))
+            manager.open(level)
+            if drain is not None:
+                drain()
 
     for _ in range(rounds):
         round_no += 1
-        manager.open_discovery()
-        await pass_over(
-            "plan",
-            "Stage 1 of 6, planning. Neither `produce` nor any trade is "
-            "accepted right now — production opens at the end of this stage, "
-            "and what you say here is the only thing that can change what "
-            "anyone makes.",
-            budgets.talk)
-
-        manager.open_production()
-        await pass_over(
-            "produce",
-            ("Stage 2 of 6, production. This is the only stage this round in "
-             "which `produce` is accepted, and this round's instalment is not "
-             "carried over — a share you do not spend now is a share nobody "
-             "works. Your split is a fraction of *this instalment*, so it "
-             "should sum to 1."
-             if notes.rolling else
-             "Stage 2 of 6, production. This is the only stage in which "
-             "`produce` is accepted. Your split should sum to 1."),
-            budgets.produce)
+        manager.open(LEVEL_PRODUCE)
+        started = anyio.current_time()
+        ends_at = started + window * 3
+        rng.shuffle(order)
+        async with anyio.create_task_group() as group:
+            group.start_soon(clock, started)
+            for agent_id in order:
+                group.start_soon(live, agent_id, ends_at)
+        if drain is not None:
+            drain()
+        # Everyone had every window, so anything still pending was seen by all.
+        for trade in manager.trades.values():
+            if trade.status == "pending":
+                played.seen_by.setdefault(trade.id, set()).update(order)
+        played.missed += sum(
+            1 for level in (LEVEL_PRODUCE, LEVEL_OFFER, LEVEL_SETTLE)
+            for agent_id in order if (round_no, level, agent_id) not in reached)
+        manager.next_round()
         manager.check_conservation()
-
-        manager.open_deal()
-        await pass_over(
-            "deal",
-            "Stage 3 of 6, dealing. Labour is spent and everyone now knows "
-            "what they actually hold, but nothing has been swapped. "
-            "`propose_trade` is CLOSED and will be refused — this stage is for "
-            "agreeing terms in words, and the offers themselves come next.",
-            budgets.talk)
-
-        manager.open_trading()
-        await pass_over(
-            "offer",
-            "Stage 4 of 6, trading, first pass: make your offers. You may make "
-            "as many as you like, but each one escrows your side the moment you "
-            "propose it — the goods are out of your hands until the offer "
-            "settles, expires or you `cancel_trade` it — so offering the same "
-            "goods twice is offering goods you no longer have.",
-            budgets.offer)
-        manager.open_resolve()
-        await pass_over(
-            "resolve",
-            "Stage 5 of 6, resolving. Every offer is on the table and none has "
-            "settled. Nothing can be proposed or approved right now — this "
-            "stage is only for working out, with the traders you are dealing "
-            "with, which of the offers on the table should stand and which "
-            "should be withdrawn.",
-            budgets.talk)
-
-        manager.open_trading()
-        await pass_over(
-            "settle",
-            "Stage 6 of 6, trading, second pass: approve what should stand and "
-            "`cancel_trade` what should not. Anything still open when this "
-            "stage closes expires, and its escrow comes back then and not "
-            "before.",
-            budgets.settle)
-
-        manager.advance()
-        manager.check_conservation()
+        if on_round is not None:
+            row = on_round(round_no, "round")
+            if row is not None:
+                played.trajectory.append(row)
 
     manager.close()
     manager.check_conservation()
