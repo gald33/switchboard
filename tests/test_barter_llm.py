@@ -25,7 +25,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
 from barter.economy import draw_island  # noqa: E402
 from barter.llm import ARMS as ARMS_ALL  # noqa: E402
 from barter.llm import Wire, brief_for, telling_for, tool_names  # noqa: E402
-from barter.manager import Manager, ManagerService  # noqa: E402
+from barter.manager import (  # noqa: E402
+    LEVEL_SETTLE,
+    BoardService,
+    Manager,
+    ManagerService,
+)
 
 from switchboard.testing import hub  # noqa: E402
 
@@ -35,15 +40,32 @@ def island():
     return draw_island(3, 5, seed=4)
 
 
+def _wire(handle, manager, agent_id, telling, run="llm", board=None):
+    """One agent's tool surface, wired to the board rather than to the manager.
+
+    Nothing sends the manager a request any more, so a test that exercises a
+    tool has to have something sweeping the board. These tests are
+    single-threaded, so the sweep happens from inside the wait — see
+    `Wire.sweep_while_waiting`, and `test_barter.py` for the threaded sweeper a
+    real run uses.
+    """
+    return Wire(agent_id=agent_id, client=handle.client(agent_id),
+                telling=telling, floor_channel=f"barter/{run}/floor",
+                order_prefix=f"barter/{run}/order/",
+                result_prefix=f"barter/{run}/result/",
+                clock_key=f"barter/{run}/clock",
+                quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods),
+                sweep_while_waiting=board.sweep if board is not None else None,
+                poll_every=0.0, poll_for=5.0)
+
+
 def _wired(handle, manager, arm, run="llm"):
     service = ManagerService(handle.client("manager"), manager, run=run)
     service.claim()
-    wires = {
-        agent_id: Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
-                       telling=telling_for(arm), floor_channel=f"barter/{run}/floor",
-                       quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
-        for agent_id in manager.agents
-    }
+    board = BoardService(handle.client("manager"), manager, run=run)
+    wires = {agent_id: _wire(handle, manager, agent_id, telling_for(arm),
+                             run=run, board=board)
+             for agent_id in manager.agents}
     return service, wires
 
 
@@ -73,7 +95,7 @@ def test_the_two_phase_trade_works_through_the_tool_surface(island):
         for agent_id, state in manager.agents.items():
             plan = {g: state.alpha[i] for i, g in enumerate(manager.goods)}
             assert wires[agent_id].manager_call("produce", plan=plan)["ok"]
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
 
         offered = wires["a1"].manager_call(
             "propose", seller="a2", give={"fish": 0.02}, want={"grain": 0.005})
@@ -96,7 +118,7 @@ def test_an_agent_cannot_approve_a_trade_addressed_to_someone_else(island):
         for agent_id, state in manager.agents.items():
             wires[agent_id].manager_call(
                 "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         offered = wires["a1"].manager_call(
             "propose", seller="a2", give={"fish": 0.02}, want={"grain": 0.005})
 
@@ -111,7 +133,7 @@ def test_a_model_error_is_answered_not_raised(island):
     manager = Manager(island=island)
     with hub() as handle:
         _, wires = _wired(handle, manager, "free")
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         for bad in (
             {"seller": "a2", "give": {"fish": -5}, "want": {"grain": 1}},
             {"seller": "a2", "give": {"unobtainium": 1}, "want": {"grain": 1}},
@@ -150,7 +172,7 @@ def test_a_finished_island_can_be_scored(island):
         for agent_id, state in manager.agents.items():
             wires[agent_id].manager_call(
                 "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         offered = wires["a1"].manager_call(
             "propose", seller="a2", give={"fish": 0.02}, want={"grain": 0.005})
         wires["a2"].manager_call("approve", trade_id=offered["trade_id"])
@@ -172,7 +194,7 @@ def test_a_ruined_island_still_scores_rather_than_raising(island):
     manager = Manager(island=island)
     for agent_id in manager.agents:
         manager.op_produce(agent_id, {"fish": 1.0})  # everyone makes only fish
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
     manager.close()
 
     outcome = score(island, manager, arm="silent", seed=4)
@@ -242,7 +264,7 @@ def test_the_convention_is_described_but_never_enforced(island):
         for agent_id, state in manager.agents.items():
             wires[agent_id].manager_call(
                 "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         # A wildly off-convention trade settles exactly like any other.
         offered = wires["a1"].manager_call(
             "propose", seller="a2", give={"fish": 0.05}, want={"grain": 0.0001})
@@ -308,6 +330,9 @@ def test_bound_lets_a_quote_go_stale(island):
 
         for _ in range(QUOTE_TTL_TICKS):
             manager.advance()
+        # The clock a quote is stamped against is the one on the board, not the
+        # one in this process: agents read it there and the sweep puts it there.
+        BoardService(handle.client("manager"), manager, run="llm").sweep()
 
         # a2 keeps its quote current; a1 does not and drops off.
         wires["a2"].post_quote({"cloth": 2.0})
@@ -358,7 +383,7 @@ def test_every_quoting_arm_shares_one_brief(island):
     assert tool_names("built", "a1") == tool_names("bound", "a1")
 
 
-def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
+def _scripted_island(island, *, rounds=3, plan=None, window=0.02):
     """Run the real order of play with a scripted stand-in for the model.
 
     No SDK, no network, milliseconds. This exists because both flow errors so
@@ -370,7 +395,7 @@ def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
 
     from barter.flow import Budgets, play
 
-    manager = Manager(island=island, phase="discovery")
+    manager = Manager(island=island)
     log = []
 
     async def take_turn(agent_id, *, round_no, label, note, budget):
@@ -387,65 +412,100 @@ def _scripted_island(island, *, discovery=2, rounds=3, plan=None):
             waiting = manager.dispatch(agent_id, {"op": "pending"})
             for trade in waiting.get("awaiting_your_approval", []):
                 manager.dispatch(agent_id, {"op": "approve", "trade_id": trade["id"]})
+        await anyio.sleep(window / 4)
         return f"{agent_id} did {label}"
 
     import anyio
     from barter.analysis import snapshot
     played = anyio.run(lambda: play(
-        manager, take_turn, lead_in=discovery, rounds=rounds,
+        manager, take_turn, rounds=rounds, window=window,
         rng=random.Random(0), budgets=Budgets(),
-        on_round=lambda round_no, label: (
-            snapshot(island, manager, None, round_no=round_no, label=label)
-            if label in ("talk", "plan", "produce", "settle") else None)))
+        on_round=lambda round_no, label: snapshot(
+            island, manager, None, round_no=round_no, label=label)))
     return manager, played, log
 
 
-def test_every_round_deliberates_produces_deliberates_again_then_trades(island):
-    """The round is a cycle, not a preamble followed by a market.
+def test_a_round_opens_what_it_opens_on_the_clock(island):
+    """The round is a wall clock, not a sequence of turns.
 
-    Talking twice per round is the point: before producing an agent is guessing
-    what it will hold and can still change what it makes, and after producing it
-    knows, so terms can be agreed against real inventory. The previous shape put
-    all the talking up front with the whole production decision behind it, which
-    made every later word a negotiation about goods nobody could change.
+    Every agent runs for the whole of it and what the manager accepts opens as
+    it goes: produce from the start, propose after a window, approve after two.
+    Each waits on the one before it having had time — you cannot offer what
+    nobody has made, and you cannot settle before offers exist.
     """
-    manager, played, log = _scripted_island(island, discovery=0, rounds=3)
+    import random
 
-    n = island.n_agents
-    labels = [entry["label"] for entry in log]
-    one_round = (["plan"] * n + ["produce"] * n + ["deal"] * n
-                 + ["offer"] * n + ["resolve"] * n + ["settle"] * n)
-    assert labels == one_round * 3
+    import anyio
+    from barter.flow import play
 
-    # Each stage really was open only in its own phase — the manager enforces
-    # the deadline, the agents are not merely asked to observe it.
-    seen = {}
-    for entry in log:
-        seen.setdefault(entry["label"], set()).add(entry["phase"])
-    assert seen == {"plan": {"discovery"}, "produce": {"production"},
-                    "deal": {"deal"}, "offer": {"trading"},
-                    "resolve": {"resolve"}, "settle": {"trading"}}
+    manager = Manager(island=island)
+    seen: list[tuple[int, str]] = []
+    refused: list[str] = []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        seen.append((round_no, label))
+        # Try the thing that only opens later, every single turn.
+        reply = manager.dispatch(agent_id, {
+            "op": "propose", "seller": next(a for a in manager.agents if a != agent_id),
+            "give": {"fish": 0.001}, "want": {"grain": 0.001}})
+        if not reply.get("ok"):
+            refused.append(label)
+        await anyio.sleep(0.01)
+        if label == "produce":
+            manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        return ""
+
+    anyio.run(lambda: play(manager, take_turn, rounds=1,
+                           rng=random.Random(0), window=0.05))
+
+    windows = {label for _, label in seen}
+    assert windows == {"produce", "offer", "settle"}, windows
+    # Proposing was refused in the first window and only there.
+    assert "produce" in refused
+    assert "offer" not in refused and "settle" not in refused
     assert manager.phase == "closed"
     manager.check_conservation()
 
 
-def test_nothing_can_be_committed_before_the_talking_is_done(island):
-    """The point of the discovery phase, asserted at the flow level rather than
-    trusted to the prompt: an eager agent that tries to produce during talk is
-    refused by the manager, not merely discouraged."""
-    manager = Manager(island=island, phase="discovery")
-    assert manager.dispatch("a1", {"op": "produce", "plan": {"fish": 1.0}})["ok"] is False
-    assert manager.dispatch("a1", {"op": "propose", "seller": "a2",
-                                   "give": {"fish": 1.0},
-                                   "want": {"grain": 1.0}})["ok"] is False
+def test_a_missed_window_is_the_clock_not_the_agent(island):
+    """An agent still thinking when a window closes does not hold it open.
+
+    That is the point of time-boxing, and it needs to stay distinguishable from
+    an agent proposing something impossible — one is the harness applying
+    pressure and the other is a result about the agent, and a run that counted
+    them together would credit the clock to the agents' judgement. So a window
+    an agent never got into is counted on its own axis and nowhere else.
+    """
+    import random
+
+    import anyio
+    from barter.flow import play
+
+    manager = Manager(island=island)
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        # Slower than the whole round, so each agent gets into the first
+        # window and sleeps through both of the others.
+        await anyio.sleep(0.1)
+        return ""
+
+    played = anyio.run(lambda: play(manager, take_turn, rounds=1,
+                                    rng=random.Random(0), window=0.02))
+    # Three windows each, one reached, so two missed apiece.
+    assert played.missed == island.n_agents * 2
+    # Nobody worked, so close() hands every agent its autarky plan rather than
+    # leaving it starved -- "never engaged" and "wiped out" are different
+    # failures and score identically without this.
+    assert all(state.spent > 0 for state in manager.agents.values())
+    manager.check_conservation()
 
 
 def test_every_offer_gets_a_settle_pass_in_its_own_round(island):
     """The second flow error: with one turn per agent, roughly half of all
     offers could not be answered until the following round, and a three-tick
-    expiry gave a proposal one or two real chances at being seen. Two passes
-    mean every offer is seen by its seller in the round it was made."""
-    manager, played, _ = _scripted_island(island, discovery=1, rounds=2)
+    expiry gave a proposal one or two real chances at being seen. The settle
+    window means every offer is seen by its seller in the round it was made."""
+    manager, played, _ = _scripted_island(island, rounds=2)
     assert played.expired_unseen(manager) == 0
     assert any(t.status == "executed" for t in manager.trades.values())
 
@@ -457,7 +517,7 @@ def _notes_for(island, rolling, **switches):
     import anyio
     from barter.flow import Notes, play
 
-    manager = Manager(island=island, phase="discovery",
+    manager = Manager(island=island,
                       labour_per_round=0.5 if rolling else 1.0, rolling=rolling)
     notes = []
 
@@ -465,13 +525,14 @@ def _notes_for(island, rolling, **switches):
         notes.append(note)
         if label == "produce":
             manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        await anyio.sleep(0.005)
         return ""
 
     setup = Notes(rolling=rolling,
                   labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent),
                   **switches)
     anyio.run(lambda: play(manager, take_turn, rounds=2, rng=random.Random(0),
-                           notes=setup))
+                           window=0.02, notes=setup))
     return " ".join(notes).lower()
 
 
@@ -481,10 +542,11 @@ def test_the_notes_never_promise_the_wrong_labour_rule(island):
     `rolling` must never call the decision final."""
     once = _notes_for(island, rolling=False)
     assert "instalment" not in once
-    assert "only stage in which `produce` is accepted" in once
+    assert "there is no second call" in once
 
     rolling = _notes_for(island, rolling=True)
     assert "instalment" in rolling
+    assert "no second call" not in rolling
     # Use-it-or-lose-it has to be said out loud, because it is the rule that
     # costs an agent something it cannot get back. A run once lost a third of
     # its labour to share vectors that summed short, with nothing in the note
@@ -499,11 +561,17 @@ def test_every_sentence_in_the_turn_note_can_be_switched_off(island):
     through `my_state`, which made "did responsiveness help" partly a question
     about whether agents bothered to look it up. Telling them outright is the
     obvious fix and it is also a *second* change riding along with the first —
-    so it is its own switch, and so is the horizon it sits next to.
+    so it is its own switch, and so is the horizon it sits next to, and so is
+    the rule they both describe.
+
+    What cannot be switched off is which window is open. That is not a telling
+    about the world, it is the world: an agent that does not know approving has
+    opened cannot approve, and an arm without it would be measuring the harness.
     """
     full = _notes_for(island, rolling=True, horizon=True, labour_left=True)
     assert "labour still to spend" in full or "fully committed" in full
     assert "round(s) remain" in full
+    assert "not carried over" in full
 
     without_labour = _notes_for(island, rolling=True, labour_left=False)
     assert "still to spend" not in without_labour
@@ -513,23 +581,29 @@ def test_every_sentence_in_the_turn_note_can_be_switched_off(island):
     assert "round(s) remain" not in without_horizon
     assert "still to spend" in without_horizon or "fully committed" in without_horizon
 
+    without_rule = _notes_for(island, rolling=True, labour_rule=False)
+    assert "not carried over" not in without_rule
+    assert "round(s) remain" in without_rule
+
+    # The window is structural and stays in all three.
+    for note in (full, without_labour, without_horizon, without_rule):
+        assert "window 1 of 3" in note
+
     # The balance is a real number off the manager, not a fixed phrase: an agent
     # that has worked one instalment of two has half a unit left, and a note
     # that said "1.00" all game would be worse than saying nothing.
     assert "0.50" in full
 
 
-def test_each_phase_gets_its_own_turn_budget(island):
-    """Budgets differ by phase because the phases are not the same size of job,
-    and a trading budget spent on every phase is most of what made the previous
-    flow expensive."""
+def test_each_window_gets_its_own_turn_budget(island):
+    """Budgets differ by window because the windows are not the same size of
+    job, and a trading budget spent on every one of them is most of what made
+    the previous flow expensive."""
     from barter.flow import Budgets
 
-    _, _, log = _scripted_island(island, discovery=1, rounds=1)
+    _, _, log = _scripted_island(island, rounds=1)
     got = {e["label"]: e["budget"] for e in log}
-    assert got == {"talk": Budgets().talk, "plan": Budgets().talk,
-                   "deal": Budgets().talk, "resolve": Budgets().talk,
-                   "produce": Budgets().produce,
+    assert got == {"produce": Budgets().produce,
                    "offer": Budgets().offer, "settle": Budgets().settle}
 
 
@@ -539,12 +613,11 @@ def test_a_flow_artefact_is_not_counted_as_a_refusal(island):
     considered and declined."""
     from barter.flow import Played
 
-    manager = Manager(island=island, phase="discovery")
-    manager.open_production()
+    manager = Manager(island=island)
     for agent_id, state in manager.agents.items():
         manager.op_produce(agent_id, {g: state.alpha[i]
                                       for i, g in enumerate(manager.goods)})
-    manager.open_trading()
+    manager.open(LEVEL_SETTLE)
     trade = manager.op_propose("a1", "a2", {"fish": 0.01}, {"grain": 0.005})
     for _ in range(4):
         manager.advance()
@@ -599,7 +672,7 @@ def test_pay_prices_at_the_median_and_still_needs_approval(island):
         for agent_id, state in manager.agents.items():
             wires[agent_id].manager_call(
                 "produce", plan={g: state.alpha[i] for i, g in enumerate(manager.goods)})
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
 
         for who, price in (("a1", 2.0), ("a2", 4.0), ("a3", 6.0)):
             wires[who].post_quote({"grain": price})
@@ -624,7 +697,7 @@ def test_pay_declines_when_there_is_no_price_to_pay(island):
     manager = Manager(island=island)
     with hub() as handle:
         _, wires = _wired(handle, manager, "paid")
-        manager.open_trading()
+        manager.open(LEVEL_SETTLE)
         assert "error" in wires["a1"].pay("a2", "grain", 1.0)
         wires["a2"].post_quote({"grain": 2.0})
         for bad in (0, -1, "lots"):
@@ -708,13 +781,11 @@ def test_a_snapshot_reports_not_yet_scoreable_rather_than_zero(island):
     is really just the goods arriving."""
     from barter.analysis import snapshot
 
-    manager = Manager(island=island, phase="discovery")
+    manager = Manager(island=island)
     row = snapshot(island, manager, None, round_no=1, label="talk")
     assert row["efficiency"] is None
     assert row["holding_nothing"] == island.n_agents
     assert row["labour_spent"] == 0.0
-
-    manager.open_production()
     for agent_id, state in manager.agents.items():
         manager.op_produce(agent_id, {g: state.alpha[i]
                                       for i, g in enumerate(manager.goods)})
@@ -768,16 +839,14 @@ def test_a_snapshot_takes_prices_from_a_board_or_from_one_vector(island):
 
 
 def test_the_trajectory_is_recorded_once_per_round(island):
-    """One row per round, after a pass that could have changed something —
-    snapshotting mid-round would read a half-applied state."""
-    manager, played, _ = _scripted_island(island, discovery=2, rounds=3)
-    labels = [row["label"] for row in played.trajectory]
-    # Two lead-in talk rounds, then three rounds each snapshotted twice: after
-    # the planning stage and after the round settles.
-    assert labels == ["talk", "talk"] + ["plan", "produce", "settle"] * 3
-    assert [row["round"] for row in played.trajectory] == [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]
-    # Labour is fully committed in the first production stage under `once`.
-    assert played.trajectory[3]["labour_spent"] == pytest.approx(1.0)
+    """One row per round, taken after the round has closed — snapshotting
+    mid-round would read a half-applied state, and there is no longer a stage
+    boundary inside a round to hang one on."""
+    manager, played, _ = _scripted_island(island, rounds=3)
+    assert [row["label"] for row in played.trajectory] == ["round"] * 3
+    assert [row["round"] for row in played.trajectory] == [1, 2, 3]
+    # Labour is fully committed by the end of the first round under `once`.
+    assert played.trajectory[0]["labour_spent"] == pytest.approx(1.0)
 
 
 def test_price_spread_says_how_far_apart_the_traders_are():
@@ -858,7 +927,8 @@ def test_every_named_arm_is_a_combination_of_switches_and_nothing_more(island):
     from barter.llm import ARMS, PRESETS, telling_for
 
     assert PRESETS["silent"].switches() == (
-        "ruin_warning", "horizon", "labour_left", "own_value", "own_score")
+        "ruin_warning", "horizon", "labour_left", "labour_rule",
+        "own_value", "own_score")
     assert "channel" in PRESETS["free"].switches()
     assert not PRESETS["free"].numeraire
     assert PRESETS["told"].numeraire and not PRESETS["told"].board
@@ -912,9 +982,9 @@ def test_the_bundle_bound_shipped_as_one_step_can_be_run_apart(island):
         service.claim()
 
         def wire_for(telling):
-            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
-                        telling=telling, floor_channel="barter/sw/floor",
-                        quote_prefix="barter/sw/quote/", goods=tuple(manager.goods))
+            return _wire(handle, manager, "a1", telling, run="sw",
+                         board=BoardService(handle.client("manager"),
+                                            manager, run="sw"))
 
         wire_for(deviation_only).post_quote({"grain": 2.0})
         assert "your_deviation_from_median" in wire_for(deviation_only).read_quotes()
@@ -1009,9 +1079,11 @@ def test_a_rolling_island_spends_every_instalment_it_is_offered(island):
     14% of its labour that way and it read in the results as agents declining
     to work.
 
-    Now production is its own stage in every round, so an instalment can only
-    be lost by an agent choosing to lose it. This asserts the guarantee
-    directly: work every stage and you finish having spent exactly one unit.
+    Now `produce` is open for the whole round, so an instalment can only be
+    lost by an agent choosing to lose it. This asserts the guarantee directly:
+    work in every round and you finish having spent exactly one unit. The
+    second half asserts the other edge of the same rule — the instalment is per
+    round, so a second `produce` inside one round is still refused.
     """
     import random
 
@@ -1019,30 +1091,29 @@ def test_a_rolling_island_spends_every_instalment_it_is_offered(island):
     from barter.flow import Notes, play
 
     rounds = 3
-    manager = Manager(island=island, phase="discovery", rolling=True,
+    manager = Manager(island=island, rolling=True,
                       labour_per_round=1.0 / rounds)
-    refused, out_of_stage = [], []
+    refused, twice = [], []
+    worked: set[tuple[int, str]] = set()
 
     async def take_turn(agent_id, *, round_no, label, note, budget):
-        if label == "produce":
-            reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
-            if not reply.get("ok"):
-                refused.append((round_no, label, agent_id, reply.get("error")))
-        elif label == "offer":
-            # ...and the deadline is real: the stage is over, so this is refused
-            # however eager the agent is. That is the manager enforcing it, not
-            # the agent observing it.
-            reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
-            out_of_stage.append(reply.get("ok"))
+        first = (round_no, agent_id) not in worked
+        worked.add((round_no, agent_id))
+        reply = manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        if first and not reply.get("ok"):
+            refused.append((round_no, label, agent_id, reply.get("error")))
+        if not first:
+            twice.append(reply.get("ok"))
+        await anyio.sleep(0.005)
         return ""
 
     notes = Notes(rolling=True,
                   labour=lambda who: max(0.0, 1.0 - manager.agents[who].spent))
     anyio.run(lambda: play(manager, take_turn, rounds=rounds,
-                           rng=random.Random(0), notes=notes))
+                           rng=random.Random(0), window=0.02, notes=notes))
 
     assert refused == [], refused
-    assert out_of_stage and not any(out_of_stage)
+    assert twice and not any(twice)
     for state in manager.agents.values():
         assert state.spent == pytest.approx(1.0, abs=1e-9)
     manager.check_conservation()
@@ -1067,9 +1138,9 @@ def test_the_calculators_in_my_state_are_switches_too(island):
         service.claim()
 
         def wire_for(telling):
-            return Wire(agent_id="a1", client=handle.client("a1"), service=service,
-                        telling=telling, floor_channel="barter/calc/floor",
-                        quote_prefix="barter/calc/quote/", goods=tuple(manager.goods))
+            return _wire(handle, manager, "a1", telling, run="calc",
+                         board=BoardService(handle.client("manager"),
+                                            manager, run="calc"))
 
         full = wire_for(telling_for("free")).state()
         assert "value_per_unit" in full and "utility" in full
@@ -1121,3 +1192,179 @@ def test_the_stated_tiebreak_admits_that_the_rule_itself_is_arbitrary(island):
     text = " ".join(TIEBREAK_BRIEF.split())
     assert "does not matter" in text
     assert "both pick the same one" in text
+
+
+def test_the_silent_arm_has_no_way_to_send_text_at_all(island):
+    """Silence has to mean silence, and it did not.
+
+    The existing gate checks that `say` and `listen` are absent, and
+    `propose_trade` walked straight past it: it carried a free-text `note` that
+    the manager stores and hands to the seller in `pending_trades`. Every arm
+    had it, including the one whose entire purpose is having no way to
+    communicate — a directed, escrow-costing, 200-character channel to anybody
+    you propose to. `silent` against `free` is the comparison that establishes
+    whether communication helps at all, and it was not measuring that.
+
+    So the note is its own switch now. `silent` + `trade_note` becomes a real
+    arm rather than an accident: is a costly, private, one-to-one channel
+    enough, when a free public one is not?
+    """
+    from barter.llm import build_tool_list, telling_for
+
+    for arm, expected in (("silent", False), ("free", True)):
+        assert telling_for(arm).trade_note is expected
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "silent")
+        schemas = {t.name: t.input_schema for t in build_tool_list(wires["a1"])}
+        assert "note" not in schemas["propose_trade"], schemas["propose_trade"]
+
+        # ...and nothing else on a silent island takes free text either. The
+        # string arguments a silent island may legitimately have are all
+        # *identifiers* — an agent id, a trade id, a good name — every one of
+        # which the manager validates against a closed set, so none can carry a
+        # message. Anything else that is a string is a channel, and listing the
+        # exceptions by name means a new one has to be argued for rather than
+        # arriving unnoticed, which is exactly how `note` did.
+        identifiers = {"seller", "trade_id", "good"}
+        for name, schema in schemas.items():
+            text = [k for k, v in schema.items() if v is str and k not in identifiers]
+            assert not text, f"{name} accepts free text: {text}"
+
+
+def test_a_dropped_note_is_dropped_and_not_merely_undocumented(island):
+    """An argument missing from the schema can still be sent. This is the one
+    field whose whole significance is that it reaches another agent, so the
+    handler discards it rather than trusting the schema to keep it out."""
+    manager = Manager(island=island)
+    for agent_id in manager.agents:
+        manager.op_produce(agent_id, {"fish": 0.5, "grain": 0.5})
+    manager.open(LEVEL_SETTLE)
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "silent", run="quiet")
+        reply = wires["a1"].manager_call(
+            "propose", seller="a2", give={"fish": 0.01}, want={"grain": 0.01},
+            note="")
+        assert reply.get("ok")
+        assert manager.trades[reply["trade_id"]].note == ""
+
+
+def test_the_produce_tool_never_contradicts_the_labour_rule(island):
+    """The same bug as the brief's, one layer down and missed when that was
+    fixed: a fixed description telling rolling agents "you may only do this
+    once" while their system prompt correctly said they spend in instalments,
+    and while the manager accepted one call per round."""
+    from barter.llm import build_tool_list, compose
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        service, wires = _wired(handle, manager, "told", run="doc")
+        wires["a1"].telling = compose("told", on=["rolling"])
+        rolling = {t.name: t.description for t in build_tool_list(wires["a1"])}
+        wires["a1"].telling = compose("told")
+        once = {t.name: t.description for t in build_tool_list(wires["a1"])}
+
+    assert "only do this once" in once["produce"]
+    assert "only do this once" not in rolling["produce"]
+    assert "once per round" in rolling["produce"].lower()
+    assert "not carried over" in rolling["produce"]
+
+
+def test_the_session_budget_is_computed_from_the_round_not_guessed(island):
+    """It was a hand-set 240, chosen when a round was two passes. The round is
+    six now, so the island asked for roughly three times what agents had and
+    they would have gone quiet somewhere in the back half — with no error, since
+    running out just ends a turn. Computing it means the next change to the
+    order of play cannot silently outgrow it."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
+    from barter.flow import Budgets
+    from barter_llm_experiment import turns_needed
+
+    budgets = Budgets()
+    # The property, not a magnitude: the figure must exceed the old hand-set
+    # 240 for the default island and must move with the round count. Pinning a
+    # multiple instead tied this gate to whatever the tool budgets happened to
+    # be, and it broke the moment they were trimmed — which is the budgets
+    # doing their job, not the sizing being wrong.
+    assert turns_needed(8, 0, budgets) > 240
+    assert turns_needed(8, 0, budgets) > turns_needed(4, 0, budgets)
+    # ...and it never drops below the old floor for a very short island.
+    assert turns_needed(1, 0, budgets) >= 240
+
+
+def test_a_window_gives_every_agent_the_same_clock(island):
+    """Turn-taking is most of an island's wall clock, and agents wait on each
+    other for nothing: a window should cost the slowest agent, not the sum of
+    all of them.
+
+    The thing that must not change is what the manager sees. Agents act on
+    different tasks now, so two can be inside `dispatch` at once, both moving
+    goods — conservation is the assertion that says they did not corrupt each
+    other, and it is checked at every round boundary by `play` itself.
+    """
+    import random
+
+    import anyio
+    from barter.flow import Notes, play
+
+    started, finished = [], []
+
+    async def take_turn(agent_id, *, round_no, label, note, budget):
+        started.append(agent_id)
+        # Every agent parks here. Sequentially this deadlocks the assertion
+        # below; concurrently they all arrive before any of them leaves.
+        await anyio.sleep(0.02)
+        finished.append(agent_id)
+        if label == "produce":
+            manager.dispatch(agent_id, {"op": "produce", "plan": {"fish": 1.0}})
+        return f"{agent_id}"
+
+    manager = Manager(island=island)
+    played = anyio.run(lambda: play(
+        manager, take_turn, rounds=1, rng=random.Random(0), window=0.1,
+        notes=Notes()))
+
+    n = island.n_agents
+    # Every agent started before any of them finished.
+    assert set(started[:n]) == set(manager.agents)
+    assert set(finished[:n]) == set(manager.agents)
+    # Nobody was starved of a window, and the transcript holds every turn
+    # anybody took rather than one row per agent per stage.
+    assert played.missed == 0
+    assert len(played.transcript) >= n * 3
+    assert {row["agent"] for row in played.transcript} == set(manager.agents)
+    manager.check_conservation()
+    assert manager.phase == "closed"
+
+
+def test_the_tool_surface_can_be_read_without_a_model_client(island):
+    """The gates that read the tool surface must run where no SDK is installed.
+
+    They are the ones that caught the silent arm's free-text channel and the
+    `produce` description contradicting the labour rule — both shipped past
+    every other check — and CI has no model client, so for a while they were the
+    two gates that only ever ran on a laptop.
+
+    The stand-in is only allowed to be a stand-in if it is the same shape as the
+    real thing, so this checks it against the SDK wherever the SDK is there to
+    check against.
+    """
+    from barter.llm import _tool_decorator, build_tool_list
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        wire = _wire(handle, manager, "a1", telling_for("built"))
+        real = build_tool_list(wire)
+
+        sdk = pytest.importorskip("claude_agent_sdk",
+                                  reason="no SDK here, so the stand-in is what ran")
+        assert _tool_decorator() is sdk.tool
+
+        made = _tool_decorator()("x", "does x", {"a": str})(lambda _: None)
+        for field in ("name", "description", "input_schema", "handler"):
+            assert hasattr(made, field), field
+        assert all(hasattr(t, "input_schema") and hasattr(t, "description")
+                   for t in real)

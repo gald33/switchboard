@@ -46,10 +46,35 @@ release is the half that gets dropped, so nothing should depend on it happening.
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from .economy import GOOD_NAMES, Island, mrs, utility
+
+#: What is open, as a level that only rises within a round and resets with it.
+#:
+#: The five-phase chain this replaces -- discovery, production, deal, trading,
+#: resolve -- was a sequence of *exclusive* states, so opening one closed the
+#: last, and every capability had to be granted and withdrawn in the right
+#: order. Three of those five existed only to deny actions during a
+#: conversation, which is a thing a wall clock does better.
+#:
+#: Permissions now open and never close inside a round:
+#:
+#:     1  talk, and commit this round's labour
+#:     2  ...and propose, and withdraw your own proposals
+#:     3  ...and approve
+#:
+#: Each waits on the one before it having had time: you cannot offer what
+#: nobody has made, and you cannot settle before offers exist. Talking is at
+#: every level because talking never reaches the manager at all -- it goes
+#: straight to the hub channel -- so the manager was never gating it, and the
+#: stages that pretended to were only denying everything else.
+LEVEL_PRODUCE = 1
+LEVEL_OFFER = 2
+LEVEL_SETTLE = 3
 
 #: Proposals expire after this many manager ticks. A tick is one round of the
 #: run, not a wall-clock second: the experiment must be reproducible, so the
@@ -128,36 +153,30 @@ class Manager:
     """
 
     island: Island
-    #: The round is a cycle of four stages and the manager owns which one is
-    #: open, because a phase agents could advance is a phase one agent can
-    #: advance early:
+    #: What is open right now, as one of ``LEVEL_PRODUCE``/``LEVEL_OFFER``/
+    #: ``LEVEL_SETTLE``. The manager owns it because a level agents could raise
+    #: is a level one agent can raise early.
     #:
-    #:     discovery -> production -> [deal] -> trading -> [resolve]
-    #:                                              -> trading -> discovery ...
+    #: It only ever rises within a round and resets with it, so a capability
+    #: cannot be withdrawn while the round is running and the deadline an agent
+    #: is planning against is the end of the round rather than the end of its
+    #: turn. The five exclusive stages this replaces had to grant and withdraw
+    #: each capability in the right order, and three of the five existed only to
+    #: deny actions during a conversation -- a job the wall clock in ``flow``
+    #: does better and with fewer moving parts.
     #:
-    #: ``discovery``, ``deal`` and ``resolve`` accept neither labour plans nor
-    #: trades. They are three distinct talking stages rather than one repeated,
-    #: because they are three different conversations: before committing labour
-    #: an agent is guessing what it will hold, after committing it knows, and
-    #: after offering it has escrow on the table and a collision to settle with
-    #: somebody. ``production`` accepts labour plans, ``trading`` accepts trades,
-    #: ``closed`` accepts neither. ``deal`` and ``resolve`` may be skipped by a
-    #: run that has no such stage; every other transition has exactly one legal
-    #: predecessor, so a stage cannot be re-entered or taken out of order.
-    #:
-    #: ``discovery`` exists because of a flaw the Tier 2 runs exposed in
-    #: themselves. Production was committed in the first round, before any agent
-    #: had said anything, so every convention on the ladder could only ever
-    #: describe the world after the one irreversible decision was behind it.
-    #: Implied production quality came out at ~0.41 in every arm — the exchange
-    #: ceiling — because no arm had the information to specialise, whatever it
-    #: had been told. Deliberation has to come before manufacturing or it cannot
-    #: plan for it.
-    #:
-    #: It defaults off. Tier 1 constructs its manager without it and starts in
-    #: ``production``, exactly as before, because its scripted agents do their
-    #: price discovery outside the manager entirely.
-    phase: str = "production"
+    #: ``LEVEL_PRODUCE`` is where a round starts, and it is not a silent stage:
+    #: agents talk throughout, because talking never reaches the manager. That
+    #: matters because of a flaw the Tier 2 runs exposed in themselves.
+    #: Production used to be committed before any agent had said anything, so
+    #: every convention on the ladder could only describe the world after the
+    #: one irreversible decision was behind it -- implied production quality came
+    #: out at ~0.41 in every arm, the exchange ceiling, because no arm had the
+    #: information to specialise whatever it had been told. Deliberation has to
+    #: be able to happen before manufacturing or it cannot plan for it.
+    level: int = LEVEL_PRODUCE
+    #: Set once, at the end. A closed island accepts nothing at any level.
+    finished: bool = False
     #: How much of an agent's single unit of labour one ``produce`` call may
     #: commit. 1.0 is the original one-shot bet. Smaller spreads the *same* total
     #: labour over instalments, which leaves the frontier, the autarky floor and
@@ -189,6 +208,14 @@ class Manager:
     #: escrow creates rather than solves, and counting it is the only way to say
     #: whether a convention helps agents avoid it.
     crossings: list[dict[str, Any]] = field(default_factory=list)
+    #: Serialises agent requests. Agents within a stage act concurrently -- six
+    #: stages of waiting per round is most of an island's wall clock, and they
+    #: are waiting on each other for no reason -- so two of them can be inside
+    #: `dispatch` at once, on different threads, both moving goods. Every
+    #: mutation goes through `dispatch`, so one lock there covers all of them.
+    #: Phase transitions are not locked: the flow makes them between stages,
+    #: when no agent is mid-request.
+    _lock: Any = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.agents:
@@ -201,6 +228,13 @@ class Manager:
                 )
 
     # --- helpers ------------------------------------------------------------
+
+    @property
+    def phase(self) -> str:
+        """The level, named. Records and analysis read this."""
+        if self.finished:
+            return "closed"
+        return {LEVEL_PRODUCE: "produce", LEVEL_OFFER: "offer"}.get(self.level, "settle")
 
     @property
     def goods(self) -> list[str]:
@@ -316,8 +350,8 @@ class Manager:
         # stage, so labour never needs to be committed during trading -- and an
         # allowance that let it would make the stage deadline advisory rather
         # than real.
-        if self.phase != "production":
-            raise TradeError(f"production is {self.phase}, not open")
+        if self.finished:
+            raise TradeError("the island is closed")
         state = self._agent(agent_id)
         if state.last_spent_tick == self.tick:
             raise TradeError("you have already worked this round")
@@ -371,8 +405,10 @@ class Manager:
         the id worth anything to the seller: by the time it can approve, the
         goods are already out of the buyer's hands.
         """
-        if self.phase != "trading":
-            raise TradeError(f"trading is {self.phase}, not open")
+        if self.finished or self.level < LEVEL_OFFER:
+            raise TradeError(
+                "proposing is not open yet; it opens once everyone has had time "
+                "to say what they are making")
         buyer_state = self._agent(buyer)
         if seller == buyer:
             raise TradeError("you cannot trade with yourself")
@@ -422,8 +458,10 @@ class Manager:
 
     def op_approve(self, seller: str, trade_id: str) -> dict[str, Any]:
         """Seller settles a trade by id. The only way goods change hands."""
-        if self.phase != "trading":
-            raise TradeError(f"trading is {self.phase}, not open")
+        if self.finished or self.level < LEVEL_SETTLE:
+            raise TradeError(
+                "approving is not open yet; it opens once offers have had time "
+                "to accumulate")
         trade = self.trades.get(str(trade_id))
         if trade is None:
             raise TradeError(f"no trade {trade_id!r}")
@@ -462,6 +500,11 @@ class Manager:
         }
 
     def op_cancel(self, buyer: str, trade_id: str) -> dict[str, Any]:
+        # Opens with proposing, not with approving: withdrawing is the undo of
+        # an offer, so an agent that offers at level 2 must be able to take it
+        # back before anything can settle at level 3.
+        if self.finished or self.level < LEVEL_OFFER:
+            raise TradeError("withdrawing is not open yet")
         trade = self.trades.get(str(trade_id))
         if trade is None:
             raise TradeError(f"no trade {trade_id!r}")
@@ -511,98 +554,49 @@ class Manager:
                 expired.append(trade.id)
         return expired
 
-    def open_discovery(self) -> None:
-        """Open the round's first talk stage. Nothing may be committed.
+    def open(self, level: int) -> None:
+        """Raise what is open. Never lowers inside a round.
 
-        Reachable from ``trading`` — the end of the previous round — or from
-        the initial state. That is the whole cycle: every round deliberates
-        before it commits.
+        The flow calls this on a wall clock rather than after everyone has had
+        a turn, which is what makes the deadline real: an agent still thinking
+        when the level rises does not hold the round open, and an agent that
+        misses a window has missed it.
         """
-        if self.phase not in ("trading", "discovery"):
-            raise TradeError(f"cannot open discovery from {self.phase}")
-        self.phase = "discovery"
+        if self.finished:
+            raise TradeError("the island is closed")
+        self.level = max(self.level, int(level))
 
-    def open_production(self) -> None:
-        """Close deliberation, let this round's labour be committed.
+    def next_round(self) -> list[str]:
+        """End the round: expire stale offers, and drop back to level 1.
 
-        Only reachable from ``discovery``, so labour is never committed in a
-        round that had no chance to talk first. Deliberation preceding
-        manufacture is the whole reason this phase exists — the first paid runs
-        produced before anyone had spoken and no convention could describe a
-        world whose one irreversible decision was already behind it.
+        Resetting is what makes a round a round. The level rises through it and
+        starts again, so every round re-earns the right to trade by spending a
+        window on talking first.
         """
-        if self.phase != "discovery":
-            raise TradeError(f"cannot open production from {self.phase}")
-        self.phase = "production"
-
-    def open_deal(self) -> None:
-        """The round's second talk stage: labour spent, nothing swapped yet.
-
-        A separate phase from ``discovery`` rather than a return to it, because
-        the two are different conversations. Before producing an agent is
-        guessing what it will hold; here it knows, and so does everybody else,
-        which is the first moment terms can be agreed against real inventory
-        rather than intent.
-
-        Optional. Tier 1's scripted agents do all their price discovery in
-        process, through a floor the manager never sees, so their rounds go
-        straight from producing to trading — and making them call a stage they
-        do not have would be a lie told to keep an invariant tidy.
-        """
-        if self.phase != "production":
-            raise TradeError(f"cannot open the deal stage from {self.phase}")
-        self.phase = "deal"
-
-    def open_trading(self) -> None:
-        """Close the talking, open the floor.
-
-        An agent that has never worked at all -- not this round, but in the
-        whole run -- is given its autarky-optimal plan for one instalment, so
-        that "never spoke" shows up as not having specialised rather than as
-        starvation. Those are two very different failures and would otherwise
-        be impossible to tell apart. It fires only for an agent still at zero,
-        so an agent that worked once and then skipped a round keeps its skipped
-        round as the choice it was.
-        """
-        if self.phase not in ("deal", "production", "resolve"):
-            raise TradeError(f"cannot open trading from {self.phase}")
-        # Reopening after the resolve stage is the same trading stage continuing,
-        # not a new one, so the never-worked fallback must not fire again -- it
-        # would hand an instalment to an agent in the middle of a trading stage,
-        # which is labour committed outside a production stage.
-        for state in ([] if self.phase == "resolve" else self.agents.values()):
-            if state.spent <= 1e-12:
-                plan = {g: state.alpha[i] for i, g in enumerate(self.goods)}
-                was, self.phase = self.phase, "production"
-                self.op_produce(state.agent_id, plan)
-                self.phase = was
-        self.phase = "trading"
-
-    def open_resolve(self) -> None:
-        """The round's third talk stage: offers are on the table, none settled.
-
-        This is the stage the crossing problem created. Offers escrow as they
-        are made, so by the end of the offer pass two agents may each be holding
-        the other's goods against mirror-image trades, and somebody has to give
-        way. Every route out of that -- approve one and cancel the other,
-        approve both and swap twice, cancel both and start again -- is a choice
-        the two of them have to make *the same way*, and there is no answer that
-        is right on its own merits. It is a pure tie-break, which makes it the
-        smallest possible instance of the thing this whole experiment is about.
-
-        Neither proposing nor approving is accepted here, so nobody can resolve
-        it by simply being quicker.
-        """
-        if self.phase != "trading":
-            raise TradeError(f"cannot open the resolve stage from {self.phase}")
-        self.phase = "resolve"
+        expired = self.advance()
+        if not self.finished:
+            self.level = LEVEL_PRODUCE
+        return expired
 
     def close(self) -> None:
-        """Close the floor and return every outstanding escrow."""
+        """Close the floor and return every outstanding escrow.
+
+        An agent that never worked at all is given its autarky-optimal plan
+        first, so that "never engaged" shows up as not having specialised
+        rather than as starvation. Those are very different failures and would
+        otherwise be indistinguishable -- an agent holding nothing scores zero
+        either way. It fires only for an agent still at zero after every window
+        of every round, so skipping one round stays the choice it was.
+        """
+        for state in self.agents.values():
+            if state.spent <= 1e-12:
+                state.last_spent_tick = None
+                self.op_produce(state.agent_id,
+                                {g: state.alpha[i] for i, g in enumerate(self.goods)})
         for trade in self.trades.values():
             if trade.status == "pending":
                 self._settle(trade, "expired", "the floor closed")
-        self.phase = "closed"
+        self.finished = True
 
     # --- accounting ---------------------------------------------------------
 
@@ -678,6 +672,10 @@ class Manager:
         ``AssertionError`` and deliberately *do* escape.
         """
         op = str(request.get("op", ""))
+        with self._lock:
+            return self._dispatch(agent_id, request, op)
+
+    def _dispatch(self, agent_id: str, request: dict[str, Any], op: str) -> dict[str, Any]:
         try:
             if op == "state":
                 result = self.op_state(agent_id)
@@ -723,6 +721,11 @@ class ManagerService:
         self.publish_ledger = publish_ledger
         self.lease_ttl = lease_ttl
         self.served = 0
+        # Concurrent agents each pump this between sending and collecting, so
+        # two drains can run at once and race on the inbox cursor -- a reply
+        # read by the wrong drain is a reply lost, and the agent waiting for it
+        # simply times out.
+        self._drain_lock = threading.RLock()
 
     @property
     def ledger_channel(self) -> str:
@@ -761,6 +764,10 @@ class ManagerService:
         body: an agent cannot claim to be another agent by writing a name into
         its own message, so the named-seller rule on approvals actually holds.
         """
+        with self._drain_lock:
+            return self._drain(wait=wait, limit=limit)
+
+    def _drain(self, *, wait: float = 0.0, limit: int = 200) -> int:
         served = 0
         for message in self.client.inbox(wait=wait, limit=limit):
             body = message.get("body")
@@ -781,6 +788,125 @@ class ManagerService:
             served += 1
         self.served += served
         return served
+
+
+class BoardService:
+    """A manager that reads orders off the blackboard instead of being called.
+
+    Nothing sends the manager a request. Agents write what they want to their
+    own keyspace and read the outcome back from theirs::
+
+        barter/{run}/order/{agent}/{n}    agent writes   {"op": "propose", ...}
+        barter/{run}/result/{agent}/{n}   manager writes {"ok": false, "error": ...}
+
+    ``sweep`` reads every order, applies it, records the outcome and **deletes
+    the order** -- deletion being what makes applying one twice impossible,
+    which a cursor would not, since a crashed manager forgets its cursor and a
+    board remembers what is still on it.
+
+    Two things this buys that request/reply did not.
+
+    It removes the pump. ``ManagerRPC`` drives ``ManagerService.drain`` inline
+    from inside the caller's own request, which works only because everything
+    was single-threaded and one agent at a time. With a hard clock and every
+    agent live at once, nobody can afford to block on the manager, and here
+    nobody does: writing an order returns immediately.
+
+    And it makes ordering explicit. Concurrent agents write concurrently, so
+    two can want the same goods; the sweep applies them in the order the board
+    says they were written, and whoever was second is refused. That is a real
+    race with a real tiebreak rather than an artefact of who happened to be
+    scheduled first, and ``updated_by`` gives the writer's identity from the
+    hub rather than from anything inside the message -- so an agent still
+    cannot claim to be another agent by saying so.
+    """
+
+    def __init__(self, client: Any, manager: Manager, *, run: str,
+                 every: float = 1.0) -> None:
+        self.client = client
+        self.manager = manager
+        self.run = run
+        #: How often the sweep runs, in seconds. A market parameter and not an
+        #: implementation detail: it is the granularity at which orders are
+        #: ordered against each other, so two orders inside one interval are
+        #: settled by write time and two in different intervals are not
+        #: comparable at all. Recorded with the run for that reason.
+        self.every = every
+        self.applied = 0
+        #: Anything the sweep itself threw. A sweeper that died would hang every
+        #: agent on the island silently, so it never dies -- it records and
+        #: carries on, and the record is here rather than in a log nobody reads.
+        self.errors: list[str] = []
+        self.orders = f"barter/{run}/order/"
+        self.results = f"barter/{run}/result/"
+        #: The manager's logical clock, readable by anyone. Published on every
+        #: sweep because an agent that needs to know whether a quote has gone
+        #: stale should not have to spend a round trip through the order queue
+        #: to find out what round it is.
+        self.clock = f"barter/{run}/clock"
+
+    # No lease of its own. The state lease belongs to whoever mirrors state --
+    # `ManagerService.claim` -- and two holders of one lease is the failure it
+    # exists to prevent, so a sweeper that also claimed it would be racing the
+    # thing protecting it.
+
+    def sweep(self, *, limit: int = 500) -> int:
+        """Apply everything on the board. Returns how many orders were applied."""
+        self.client.board_set(self.clock, {"tick": self.manager.tick,
+                                           "level": self.manager.level,
+                                           "phase": self.manager.phase}, ttl=3600.0)
+        entries = [e for e in self.client.board_list(prefix=self.orders)
+                   if isinstance(e.get("value"), dict)]
+        # Write order, from the board's own timestamps, with the key breaking
+        # ties so a sweep is deterministic given the same board.
+        entries.sort(key=lambda e: (str(e.get("updated_at") or ""), str(e["key"])))
+        done = 0
+        for entry in entries[:limit]:
+            sender = str(entry.get("updated_by") or "")
+            reply = self.manager.dispatch(sender, entry["value"])
+            suffix = str(entry["key"])[len(self.orders):]
+            self.client.board_set(f"{self.results}{suffix}", reply, ttl=3600.0)
+            self.client.board_delete(str(entry["key"]))
+            done += 1
+        self.applied += done
+        return done
+
+    @contextmanager
+    def sweeping(self) -> Any:
+        """Sweep on a thread of its own for the duration of the block.
+
+        The sweeper has to be something other than the agents, or it is the
+        pump again: an agent that drives the manager between writing its order
+        and reading the answer is blocking on the manager, which is exactly what
+        the board removed. So it runs on its own thread, on its own interval,
+        whatever the agents are doing -- and an agent that writes an order and
+        then stops thinking still gets it applied.
+
+        ``Manager`` takes its own lock, so a sweep landing while an agent is
+        mid-``dispatch`` is serialised rather than interleaved.
+        """
+        stop = threading.Event()
+
+        def loop() -> None:
+            while not stop.wait(self.every):
+                try:
+                    self.sweep()
+                except Exception as exc:  # noqa: BLE001 -- see `errors`
+                    self.errors.append(f"{type(exc).__name__}: {exc}")
+            # One last pass, so an order written just before the block ended is
+            # answered rather than left on the board with an agent waiting.
+            try:
+                self.sweep()
+            except Exception as exc:  # noqa: BLE001
+                self.errors.append(f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=loop, name=f"sweep-{self.run}", daemon=True)
+        thread.start()
+        try:
+            yield self
+        finally:
+            stop.set()
+            thread.join(timeout=30.0)
 
 
 class ManagerRPC:

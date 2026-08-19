@@ -35,13 +35,21 @@ running either alone measures very little.
 Honest limits
 -------------
 * **Small.** Defaults are a handful of agents over a handful of rounds, because
-  every agent-turn is a model call, and one arm of one island costs about two
-  dollars and the better part of an hour. One island is an anecdote; the seed
+  every agent-turn is a model call, and an arm costs a few dollars. The clock
+  bounds the wall time exactly: three rounds of three one-minute windows is a
+  nine-minute island whatever the agents do. One island is an anecdote; the seed
   sweep that would make it evidence is the expensive part, and ``--islands``
   exists for when it is worth paying for.
-* **Turn-based.** Agents act in a shuffled order, one turn each per round. Real
-  agents on a hub are concurrent, and concurrency is exactly where a
-  coordination protocol is hardest. This measures the easier problem.
+* **Time-boxed, not turn-boxed.** Every agent runs for the whole of a round,
+  concurrently, and a round is three fixed windows: talk and produce, then
+  propose, then approve. A fast agent fits more in than a slow one and an agent
+  still thinking when a window closes has missed it, so the wall clock is part
+  of what is being measured rather than something the harness holds still.
+  ``missed_windows`` keeps that separable from anything the agents decided.
+* **Nobody calls the manager.** Agents write orders to the blackboard and read
+  the outcome back; a sweeper applies them in the order the board says they
+  arrived. Two agents wanting the same goods is settled by which write landed
+  first, which is a real race with a real tiebreak.
 * **A ruined agent is not noise.** Cobb-Douglas utility is zero at a zero
   holding, so an agent that never acquired some good scores zero and the island
   is reported as ruined rather than averaged into a mean.
@@ -64,7 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from barter.analysis import render as render_comparison  # noqa: E402
 from barter.analysis import snapshot, trajectory_table  # noqa: E402
 from barter.economy import autarky, draw_island, efficiency, exchange_ceiling  # noqa: E402
-from barter.flow import play  # noqa: E402
+from barter.flow import Budgets, play  # noqa: E402
 from barter.llm import (  # noqa: E402
     ARMS,
     TURN,
@@ -75,7 +83,7 @@ from barter.llm import (  # noqa: E402
     compose,
     tool_names,
 )
-from barter.manager import Manager, ManagerService  # noqa: E402
+from barter.manager import BoardService, Manager, ManagerService  # noqa: E402
 from barter.run import score  # noqa: E402
 
 from switchboard.testing import hub  # noqa: E402
@@ -179,6 +187,29 @@ class Trader:
         return "\n".join(said)
 
 
+def turns_needed(rounds: int, lead_in: int, budgets: Any) -> int:
+    """A session budget sized from the flow rather than guessed at.
+
+    ``max_turns`` is session-wide, and a round is now three windows an agent
+    may take several turns in — the clock decides how many, not the harness, so
+    this has to cover the fast case rather than the expected one. It was last
+    set by hand when a round was two passes, and was roughly half of what the
+    island asked for; computing it means the next change to the order of play
+    cannot silently outgrow it.
+
+    The headroom is deliberate. Running out is not an error an agent can see
+    coming — its turn simply ends — and the goods it moved before that are
+    real, so a run that hits the cap produces a half-island nobody can
+    distinguish from an island of agents who stopped bothering.
+
+    ``lead_in`` is kept for the records of runs that had one. A round opens with
+    a talking window now, so there is no separate lead-in to size for.
+    """
+    per_window = (budgets.produce + budgets.offer + budgets.settle) + 3
+    per_round = per_window * budgets.turns_per_window
+    return max(240, int(1.5 * (per_round * rounds + lead_in * (budgets.talk + 1))))
+
+
 async def run_llm_island(
     *,
     arm: str,
@@ -188,9 +219,10 @@ async def run_llm_island(
     rounds: int,
     seed: int,
     model: str,
-    max_turns: int = 240,
+    max_turns: int | None = None,
     verbose: bool,
-    discovery: int = 3,
+    window: float = 60.0,
+    sweep_every: float = 1.0,
 ) -> dict:
     """One island. ``telling`` is the whole information setup; ``arm`` only names it.
 
@@ -205,26 +237,43 @@ async def run_llm_island(
     # every trading round, so the frontier and both benchmarks are untouched and
     # a rolling island is directly comparable to a one-shot one.
     rolling = telling.rolling
-    # Every round has its own production stage now, so a rolling run has exactly
-    # one instalment per round -- no spare, and no stage that cannot reach one.
+    # `produce` is open for the whole of every round now, so a rolling run has
+    # exactly one instalment per round -- no spare, and no round that cannot
+    # reach one.
     instalments = rounds if rolling else 1
     manager = Manager(
         island=island,
-        phase="discovery",
         labour_per_round=1.0 / instalments,
         rolling=rolling,
     )
     rng = random.Random(seed)
     run = f"llm{seed}{arm}"
+    budgets = Budgets()
+    if max_turns is None:
+        max_turns = turns_needed(rounds, 0, budgets)
 
     with hub() as handle:
         service = ManagerService(handle.client("manager"), manager, run=run)
         service.claim()
+        # Nothing sends the manager a request. Agents write orders to their own
+        # keyspace and read the outcome back from theirs, and this sweeps the
+        # board on its own thread -- so an agent thinking for a minute never
+        # holds up anybody else's order, and two agents wanting the same goods
+        # are settled by which write the board saw first.
+        board = BoardService(handle.client("manager"), manager, run=run,
+                             every=sweep_every)
 
         wires, traders = {}, {}
         for agent_id in manager.agents:
-            wire = Wire(agent_id=agent_id, client=handle.client(agent_id), service=service,
+            wire = Wire(agent_id=agent_id, client=handle.client(agent_id),
                         telling=telling, floor_channel=f"barter/{run}/floor",
+                        order_prefix=board.orders, result_prefix=board.results,
+                        clock_key=board.clock,
+                        # Generous against the sweep interval: an order that has
+                        # not been swept yet is not a refusal, and an agent told
+                        # otherwise would report one that never happened.
+                        poll_every=min(0.25, sweep_every / 2),
+                        poll_for=max(20.0, sweep_every * 40),
                         quote_prefix=f"barter/{run}/quote/", goods=tuple(manager.goods))
             wires[agent_id] = wire
             traders[agent_id] = Trader(agent_id, ClaudeAgentOptions(
@@ -260,7 +309,7 @@ async def run_llm_island(
             hint = (f" Keep this turn to about {budget} tool calls."
                     if budget else "")
             prompt = TURN.format(round_no=round_no,
-                                 rounds=discovery + 1 + rounds,
+                                 rounds=rounds,
                                  phase_note=note + hint)
             text = await traders[agent_id].take_turn(prompt)
             if verbose:
@@ -268,10 +317,9 @@ async def run_llm_island(
             return text
 
         def observe(round_no: int, label: str) -> dict | None:
-            # Only after a pass that could have changed something. Snapshotting
-            # inside a pass would read a half-applied round.
-            if label not in ("talk", "plan", "produce", "settle"):
-                return None
+            # Once per round, after it has closed. Snapshotting inside a round
+            # would read a half-applied state, and there is no longer a stage
+            # boundary within one to hang a reading on.
             live = {}
             for entry in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
                 value = entry.get("value")
@@ -296,9 +344,10 @@ async def run_llm_island(
             # carries.
             notes = telling.to_notes()
             notes.labour = lambda who: max(0.0, 1.0 - manager.agents[who].spent)
-            played = await play(manager, take_turn, rounds=rounds, lead_in=discovery,
-                                rng=rng, drain=service.drain, notes=notes,
-                                on_round=observe)
+            with board.sweeping():
+                played = await play(manager, take_turn, rounds=rounds,
+                                    rng=rng, window=window, budgets=budgets,
+                                    notes=notes, on_round=observe)
         finally:
             for trader in traders.values():
                 await trader.close()
@@ -350,9 +399,19 @@ async def run_llm_island(
         "quotes_posted": sum(w.quotes_posted for w in wires.values()),
         "expired_unseen": unseen,
         "trajectory": played.trajectory,
-        "flow": {"discovery": discovery, "trade_rounds": rounds, "passes": 2,
+        # The clock is a market parameter now, not a harness detail: `window` is
+        # how long agents get before the next capability opens, and `sweep_every`
+        # is the granularity at which their orders are ordered against each
+        # other. Two runs at different values are not the same market.
+        "flow": {"trade_rounds": rounds, "windows": 3, "window_seconds": window,
+                 "sweep_every": sweep_every,
                  "labour": "rolling" if rolling else "once",
                  "instalments": instalments},
+        # Windows an agent never got into. The clock applying pressure, not the
+        # agent deciding anything, and it must not be read as either.
+        "missed_windows": played.missed,
+        "sweeps": board.applied,
+        "sweep_errors": board.errors[:20],
         "transcript": transcript,
     }
 
@@ -389,12 +448,14 @@ def render(result: dict) -> str:
         f"  labour unclaimed {sum((summary.get('idle_labour') or {}).values()):.3f} of "
         f"{len(summary.get('idle_labour') or {})} unit(s) — plans that summed to "
         f"less than 1, which is not carried over",
-        f"  flow             {result['flow']['discovery']} lead-in + "
-        f"{result['flow']['trade_rounds']} rounds of "
-        f"plan/produce/deal/tradex2, labour "
+        f"  flow             {result['flow']['trade_rounds']} rounds of 3 x "
+        f"{result['flow']['window_seconds']:g}s windows "
+        f"(produce / +offer / +settle), swept every "
+        f"{result['flow']['sweep_every']:g}s, labour "
         f"{result['flow']['labour']} ({result['flow']['instalments']} instalment(s))",
         f"  lost to flow     {result['expired_unseen']} offer(s) expired with the "
-        f"seller never having had a turn",
+        f"seller never having had a turn; {result.get('missed_windows', 0)} "
+        f"window(s) nobody got into",
         f"  switches         {', '.join(result.get('switches') or ['none'])}",
         f"  said             {len(result['said'])} message(s)"
         + (f", {result['quotes_posted']} quote(s) posted" if result.get("quotes_posted") else ""),
@@ -420,10 +481,13 @@ def render(result: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--arms", nargs="+", default=["told", "built"], choices=list(ARMS))
-    parser.add_argument("--agents", type=int, default=5)
+    parser.add_argument("--agents", type=int, default=4)
     parser.add_argument("--goods", type=int, default=5)
-    parser.add_argument("--rounds", type=int, default=8,
-                        help="trading rounds (each is a propose pass and a settle pass)")
+    parser.add_argument("--rounds", type=int, default=3,
+                        help="rounds, each of three windows. Short by default: "
+                             "the wall clock is now exactly rounds x 3 x "
+                             "--window, so 3 rounds of 60s windows is a "
+                             "nine-minute island")
     parser.add_argument("--labour", choices=["once", "rolling"], default="once",
                         help="one-shot commitment, or the same total labour in "
                              "instalments across rounds")
@@ -434,16 +498,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="turn these switches off. `--arms bound --without expiry` "
                              "isolates the deviation report from staleness, which no "
                              "rung of the ladder does on its own")
-    parser.add_argument("--discovery", type=int, default=0,
-                        help="extra talk-only rounds before the first production "
-                             "stage. Defaults to none: every round already opens "
-                             "with one")
+    parser.add_argument("--window", type=float, default=60.0,
+                        help="seconds per window. A round is three of them, so "
+                             "the default is a three-minute round. This is the "
+                             "time pressure, and it is a market parameter: two "
+                             "runs at different windows are not the same market")
+    parser.add_argument("--sweep-every", type=float, default=1.0,
+                        help="seconds between sweeps of the order board. The "
+                             "granularity at which concurrent agents' orders "
+                             "are ordered against each other")
     parser.add_argument("--islands", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--max-turns", type=int, default=240,
+    parser.add_argument("--max-turns", type=int, default=None,
                         help="turns for the whole session, not per round — an agent "
-                             "holds one session for the entire island")
+                             "holds one session for the entire island. Default is "
+                             "computed from the round shape and the tool budgets")
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--compare", nargs="+", type=Path, default=None,
@@ -461,6 +531,26 @@ def main(argv: list[str] | None = None) -> int:
     # because it is also a fact about the manager rather than only a sentence.
     switch_on = list(args.switch_on) + (["rolling"] if args.labour == "rolling" else [])
 
+    # Say what it will cost before spending it, and say it as a *range*, because
+    # the clock decides how many turns an agent takes rather than the harness: a
+    # window is one turn for a model that thinks for a minute and several for
+    # one that does not. The per-turn figure is measured from a real island (48
+    # passes, $3.32, seed 41) rather than guessed, and the arithmetic is printed
+    # because getting it wrong is expensive in a way that nothing else here is —
+    # a full ladder at the old defaults was $116 and nobody should discover that
+    # afterwards.
+    islands = len(args.arms) * args.islands
+    windows = islands * args.agents * args.rounds * 3
+    low, high = windows * 0.069, windows * 3 * 0.069
+    print(f"{len(args.arms)} arm(s) x {args.islands} island(s) x {args.agents} agents "
+          f"x {args.rounds} rounds x 3 windows = {windows} agent-windows",
+          file=sys.stderr)
+    # Wall clock is the clock, exactly: agents run concurrently inside an island
+    # and islands run one after another.
+    wall = islands * args.rounds * 3 * args.window
+    print(f"  roughly ${low:.0f}-${high:.0f} (1-3 turns per window); "
+          f"wall clock {wall / 60:.0f}m\n", file=sys.stderr)
+
     results = []
     for arm in args.arms:
         telling = compose(arm, on=switch_on, off=args.switch_off)
@@ -473,7 +563,8 @@ def main(argv: list[str] | None = None) -> int:
                 arm=label, telling=telling,
                 agents=args.agents, goods=args.goods, rounds=args.rounds,
                 seed=args.seed + step, model=args.model, max_turns=args.max_turns,
-                verbose=args.verbose, discovery=args.discovery,
+                verbose=args.verbose, window=args.window,
+                sweep_every=args.sweep_every,
             ))
             results.append(result)
             print(render(result), flush=True)
