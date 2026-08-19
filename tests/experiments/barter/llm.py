@@ -512,6 +512,8 @@ class Wire:
     clock_key: str = ""
     #: Where the sweep publishes the schedule.
     agenda_key: str = ""
+    #: ...and the channel it is announced on.
+    agenda_channel: str = ""
     #: Blackboard prefix for the quote board. One key per trader,
     #: so a quote is a value anyone can read rather than a message somebody
     #: might have scrolled past.
@@ -714,6 +716,9 @@ class Wire:
         clock = self.client.board_get(self.clock_key)
         out: dict[str, Any] = dict(clock) if isinstance(clock, dict) else {}
         if self.agenda_key:
+            # The board key rather than the channel: the announcement can be
+            # missed and the key cannot, so a lookup always answers with the
+            # schedule that is actually in force.
             agenda = self.client.board_get(self.agenda_key)
             if isinstance(agenda, dict):
                 out["agenda"] = agenda

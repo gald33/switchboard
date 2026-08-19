@@ -965,6 +965,16 @@ class BoardService:
         #: clock, because it changes once per muster and the clock changes
         #: every sweep.
         self.agenda_key = f"barter/{run}/agenda"
+        #: ...and the channel it is *announced* on. Both, deliberately, and for
+        #: the two different jobs the primitives do: the board key is the
+        #: current schedule, which an agent can look up at any time and will
+        #: always get the live one; the channel is the announcement, which
+        #: arrives and can be missed. A schedule that existed only as an
+        #: announcement would be unreadable to an agent that joined late, and
+        #: one that existed only as a key would never tell anybody it changed.
+        self.agenda_channel = f"barter/{run}/agenda"
+        #: Versions already announced, so a re-sweep does not re-announce.
+        self._announced: set[int] = set()
         #: Run-clock seconds, injected because this module must not read a wall
         #: clock -- the manager owns a logical clock and the flow owns the real
         #: one, and an agent needs both on the same key to place itself.
@@ -977,19 +987,6 @@ class BoardService:
 
     def sweep(self, *, limit: int = 500) -> int:
         """Apply everything on the board. Returns how many orders were applied."""
-        clock: dict[str, Any] = {"tick": self.manager.tick,
-                                 "level": self.manager.level,
-                                 "phase": self.manager.phase}
-        if self.now is not None:
-            # "What time is it" -- the one number an agent needs to place
-            # itself on a schedule of absolute times.
-            clock["now"] = round(float(self.now()), 1)
-        agenda = self.manager.agenda
-        if agenda is not None:
-            clock["agenda_version"] = agenda.version
-            clock["acked"] = sorted(self.manager.acked)
-            self.client.board_set(self.agenda_key, agenda.public(), ttl=3600.0)
-        self.client.board_set(self.clock, clock, ttl=3600.0)
         entries = [e for e in self.client.board_list(prefix=self.orders)
                    if isinstance(e.get("value"), dict)]
         # Write order, from the board's own timestamps, with the key breaking
@@ -1004,7 +1001,44 @@ class BoardService:
             self.client.board_delete(str(entry["key"]))
             done += 1
         self.applied += done
+        # Published *after* the orders are applied, not before: an agent that
+        # acknowledges the schedule and then reads the clock to see who is left
+        # must not be shown the state from before its own ack landed.
+        clock: dict[str, Any] = {"tick": self.manager.tick,
+                                 "level": self.manager.level,
+                                 "phase": self.manager.phase}
+        if self.now is not None:
+            # "What time is it" -- the one number an agent needs to place
+            # itself on a schedule of absolute times.
+            clock["now"] = round(float(self.now()), 1)
+        agenda = self.manager.agenda
+        if agenda is not None:
+            clock["agenda_version"] = agenda.version
+            clock["acked"] = sorted(self.manager.acked)
+            clock["present"] = self.roster()
+            self.client.board_set(self.agenda_key, agenda.public(), ttl=3600.0)
+            if agenda.version not in self._announced:
+                self._announced.add(agenda.version)
+                self.client.post(self.agenda_channel, agenda.public(), type="note")
+        self.client.board_set(self.clock, clock, ttl=3600.0)
         return done
+
+    def roster(self) -> list[str]:
+        """Who the hub says is on the island, from presence.
+
+        The muster is a presence question before it is anything else, and the
+        hub already answers it: an agent that never registered cannot
+        acknowledge a schedule, and waiting on it is waiting on nobody. Keeping
+        this separate from the acks is what lets "never turned up" and "turned
+        up and stayed quiet" be different findings rather than one number.
+        """
+        try:
+            return sorted(str(a.get("agent_id") or a.get("name") or "")
+                          for a in self.client.agents()
+                          if str(a.get("agent_id") or "") in self.manager.agents)
+        except Exception as exc:  # noqa: BLE001 -- presence is diagnostic, not load-bearing
+            self.errors.append(f"roster: {type(exc).__name__}: {exc}")
+            return []
 
     @contextmanager
     def sweeping(self) -> Any:

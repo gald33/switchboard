@@ -272,8 +272,16 @@ async def run_llm_island(
 
         wires, traders = {}, {}
         for agent_id in manager.agents:
-            wire = Wire(agent_id=agent_id, client=handle.client(agent_id),
+            # Registered, so the hub's own presence answers "who is on this
+            # island" rather than the experiment keeping a second list beside
+            # it. The muster is a presence question before it is anything else.
+            client = handle.client(agent_id, register=True, kind="trader",
+                                   task=f"barter {arm}",
+                                   channels=[f"barter/{run}/floor",
+                                             f"barter/{run}/agenda"])
+            wire = Wire(agent_id=agent_id, client=client,
                         telling=telling, floor_channel=f"barter/{run}/floor",
+                        agenda_channel=board.agenda_channel,
                         order_prefix=board.orders, result_prefix=board.results,
                         clock_key=board.clock, agenda_key=board.agenda_key,
                         # Generous against the sweep interval: an order that has

@@ -1038,3 +1038,80 @@ def test_the_sweeper_runs_on_its_own_thread_and_stops_with_the_block(island):
         with board.sweeping():
             pass
         assert isinstance(a1.board_get("barter/b4/result/a1/0002"), dict)
+
+
+def test_the_agenda_goes_out_on_all_four_primitives(island):
+    """The muster is built out of the hub, not beside it.
+
+    Each primitive does the job it is for, and the split matters. The board key
+    is the schedule *in force* -- an agent that joined late, or that wants to
+    check, looks it up and always gets the live one. The channel is the
+    *announcement* -- it arrives, and it can be missed, which is exactly why it
+    cannot be the only copy. Presence answers who is on the island at all, so
+    "never turned up" and "turned up and stayed quiet" stay different findings.
+    And the acks arrive as ordinary orders on the board, so acknowledging is
+    the same kind of act as trading and needs no new concept.
+    """
+    from barter.manager import Agenda, BoardService
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="ag")
+        board.now = lambda: 5.0
+        for agent_id in manager.agents:
+            handle.client(agent_id, register=True, kind="trader")
+
+        manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
+                                   starts_at=120.0, window=60.0, rounds=1))
+        board.sweep()
+
+        reader = handle.client("reader")
+        # blackboard: the schedule in force.
+        assert reader.board_get("barter/ag/agenda")["version"] == 1
+        # messages: announced once, on a channel every trader reads.
+        posted = reader.history("barter/ag/agenda", limit=10)
+        assert len(posted) == 1 and posted[0]["body"]["starts_at"] == 120.0
+        # presence: the hub knows who is here.
+        assert board.roster() == sorted(manager.agents)
+        assert reader.board_get("barter/ag/clock")["present"] == sorted(manager.agents)
+
+        # An ack is an order like any other, and identity comes from the hub.
+        handle.client("a1").board_set("barter/ag/order/a1/0001",
+                                      {"op": "ack", "version": 1})
+        board.sweep()
+        assert manager.acked == {"a1"}
+        assert reader.board_get("barter/ag/clock")["acked"] == ["a1"]
+
+        # Sweeping again does not re-announce a schedule nobody replaced.
+        board.sweep()
+        assert len(reader.history("barter/ag/agenda", limit=10)) == 1
+
+        # ...but a new version is announced, and drops the old acks.
+        manager.post_agenda(Agenda(version=2, posted_at=90.0, acks_by=180.0,
+                                   starts_at=210.0, window=60.0, rounds=1))
+        board.sweep()
+        announced = reader.history("barter/ag/agenda", limit=10)
+        assert [m["body"]["version"] for m in announced] == [1, 2]
+        assert manager.acked == set()
+
+
+def test_presence_and_silence_are_not_the_same_absence(island):
+    """A trader the hub has never heard of cannot acknowledge anything, and
+    waiting on it is waiting on nobody. One that is registered and says nothing
+    is making a choice. They score identically and are opposite findings."""
+    from barter.manager import Agenda, BoardService
+
+    manager = Manager(island=island)
+    with hub() as handle:
+        board = BoardService(handle.client("manager"), manager, run="pr")
+        handle.client("a1", register=True, kind="trader")
+        manager.post_agenda(Agenda(version=1, posted_at=0.0, acks_by=90.0,
+                                   starts_at=120.0, window=60.0, rounds=1))
+
+        assert board.roster() == ["a1"]
+        assert not manager.all_acked()
+        manager.dispatch("a1", {"op": "ack", "version": 1})
+        # a1 is present and has acked; the others are not present at all.
+        assert manager.acked == {"a1"}
+        assert set(manager.agents) - set(board.roster()) == {"a2", "a3", "a4"}
+        assert board.errors == []
