@@ -353,15 +353,50 @@ async def run_llm_island(
                 await trader.close()
         transcript = played.transcript
         cost = sum(t.cost for t in traders.values())
+        # Said out loud the moment it is known, before anything else can fail.
+        # When the record building crashed, this number died with it -- the
+        # island had been paid for and there was no way afterwards to say how
+        # much, which is the one fact you most want from a run that lost its
+        # results.
+        print(f"  [{arm} seed {seed}] spent ${cost:.2f}", file=sys.stderr, flush=True)
         service.publish()
 
         floor = handle.client("reader").history(f"barter/{run}/floor", limit=500)
-        board = {}
+        # Named for what it is. This shadowed the `BoardService` above and took
+        # a nine-minute island down with it at the last statement of the record,
+        # after every model call had been paid for -- which is the worst place
+        # in this file to fail, because everything before it is unrecoverable.
+        quotes = {}
         for e in handle.client("reader").board_list(prefix=f"barter/{run}/quote/"):
             value = e.get("value")
             if isinstance(value, dict) and isinstance(value.get("prices"), dict):
-                board[str(e["key"]).rsplit("/", 1)[-1]] = value["prices"]
+                quotes[str(e["key"]).rsplit("/", 1)[-1]] = value["prices"]
+        sweeps, sweep_errors = board.applied, board.errors[:20]
 
+    return record_for(
+        island=island, manager=manager, played=played, telling=telling,
+        arm=arm, seed=seed, model=model, cost=cost, floor=floor, quotes=quotes,
+        quotes_posted=sum(w.quotes_posted for w in wires.values()),
+        sweeps=sweeps, sweep_errors=sweep_errors, transcript=transcript,
+        rounds=rounds, window=window, sweep_every=sweep_every,
+        rolling=rolling, instalments=instalments)
+
+
+def record_for(*, island, manager, played, telling, arm, seed, model, cost,
+               floor, quotes, quotes_posted, sweeps, sweep_errors, transcript,
+               rounds, window, sweep_every, rolling, instalments) -> dict:
+    """Everything one island leaves behind, as one dict.
+
+    A function rather than a tail of ``run_llm_island`` because this is the
+    worst place in the file to fail: every model call has been paid for by the
+    time it runs, and an exception here loses the island rather than degrading
+    it. It went down once to a local named ``board`` shadowing the
+    ``BoardService`` -- nine minutes and a real bill, for a ``NameError`` in the
+    last statement -- and nothing offline could have caught it, because the
+    gates all stop at ``play``. Now they do not have to: this takes a finished
+    manager and a finished ``Played`` and needs no model to build a record from
+    them, so a scripted island can exercise it in milliseconds.
+    """
     # Same scorer as Tier 1, against the same benchmarks, so the two tiers are
     # directly comparable rather than merely similar-looking.
     # Separate "the seller declined" from "the seller never got a turn". Only
@@ -395,8 +430,8 @@ async def run_llm_island(
         "summary": manager.summary(),
         "rejections": manager.rejections[-40:],
         "said": [m["body"] for m in floor if isinstance(m.get("body"), dict)],
-        "quote_board": board,
-        "quotes_posted": sum(w.quotes_posted for w in wires.values()),
+        "quote_board": quotes,
+        "quotes_posted": quotes_posted,
         "expired_unseen": unseen,
         "trajectory": played.trajectory,
         # The clock is a market parameter now, not a harness detail: `window` is
@@ -410,8 +445,8 @@ async def run_llm_island(
         # Windows an agent never got into. The clock applying pressure, not the
         # agent deciding anything, and it must not be read as either.
         "missed_windows": played.missed,
-        "sweeps": board.applied,
-        "sweep_errors": board.errors[:20],
+        "sweeps": sweeps,
+        "sweep_errors": sweep_errors,
         "transcript": transcript,
     }
 

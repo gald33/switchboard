@@ -1368,3 +1368,45 @@ def test_the_tool_surface_can_be_read_without_a_model_client(island):
             assert hasattr(made, field), field
         assert all(hasattr(t, "input_schema") and hasattr(t, "description")
                    for t in real)
+
+
+def test_a_finished_island_can_be_written_up_without_a_model(island):
+    """The record is built after every model call has been paid for.
+
+    An exception there loses the island rather than degrading it, and it is the
+    one part of the runner the offline gates never reached — they all stopped at
+    `play`. A local named `board` shadowing the `BoardService` took a
+    nine-minute island down at the very last statement of the record, for a
+    bill and nothing else.
+
+    So the write-up is a function of a finished manager and a finished `Played`,
+    and this drives it end to end with no model: every field the renderer reads
+    has to be there, and `render` has to survive its own output.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "experiments"))
+    from barter_llm_experiment import record_for, render
+
+    manager, played, _ = _scripted_island(island, rounds=2)
+    record = record_for(
+        island=island, manager=manager, played=played,
+        telling=telling_for("bound"), arm="bound", seed=4, model="none",
+        cost=0.0, floor=[], quotes={"a1": {"fish": 1.0, "grain": 2.0}},
+        quotes_posted=1, sweeps=7, sweep_errors=[], transcript=played.transcript,
+        rounds=2, window=0.02, sweep_every=1.0, rolling=False, instalments=1)
+
+    # The clock is in the record, because two runs at different windows are not
+    # the same market and a record that omitted it could not say so.
+    assert record["flow"]["window_seconds"] == 0.02
+    assert record["flow"]["sweep_every"] == 1.0
+    assert record["missed_windows"] == played.missed
+    assert record["sweeps"] == 7
+    # The quote board is the quotes, not the sweeper that shadowed it.
+    assert record["quote_board"] == {"a1": {"fish": 1.0, "grain": 2.0}}
+    assert record["switches"] == list(telling_for("bound").switches())
+
+    # And the renderer reads only what the record actually has.
+    text = render(record)
+    assert "bound" in text and "window" in text
