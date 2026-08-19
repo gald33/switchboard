@@ -40,6 +40,16 @@ def island():
     return draw_island(3, 5, seed=4)
 
 
+def _flat(text: str) -> str:
+    """Prose with its line breaks collapsed.
+
+    Assertions about what an agent is told should not be hostage to where a
+    paragraph happens to wrap — a reflow is not a change in what was said, and a
+    gate that fails on one is a gate people learn to edit rather than read.
+    """
+    return " ".join(text.split())
+
+
 def _wire(handle, manager, agent_id, telling, run="llm", board=None):
     """One agent's tool surface, wired to the board rather than to the manager.
 
@@ -1040,14 +1050,76 @@ def test_a_rolling_island_is_never_told_it_spends_its_labour_once(island):
     from barter.llm import compose
 
     manager = Manager(island=island)
-    once = brief_for(island, manager, "a1", "told")
-    rolling = brief_for(island, manager, "a1", compose("told", on=["rolling"]))
-    assert "spend it once, at the start" in once
-    assert "spend it once, at the start" not in rolling
+    once = _flat(brief_for(island, manager, "a1", "told"))
+    rolling = _flat(brief_for(island, manager, "a1", compose("told", on=["rolling"])))
+    assert "one chance to spend it" in once
+    assert "one chance to spend it" not in rolling
     assert "instalments" in rolling
     assert "not carried over" in rolling
     # The rest of the world is unchanged — this is a switch, not a rewrite.
     assert rolling.count("propose_trade") == once.count("propose_trade")
+
+
+def test_the_brief_never_says_labour_is_committed_before_anyone_has_spoken(island):
+    """The stale sentence the window model made false.
+
+    It said the unit was spent "once, at the start". `produce` is open for the
+    whole of every round now, so an agent may listen for a round and commit
+    after — which is the entire point of opening a round with talking, and a
+    brief that told them to commit at the start would have suppressed the
+    behaviour the redesign exists to make possible.
+
+    What must survive is that it is still *one* call. "You may wait" and "you
+    may work twice" are different worlds and the manager only implements one.
+    """
+    manager = Manager(island=island)
+    for arm in ("silent", "told", "paid"):
+        text = _flat(brief_for(island, manager, "a1", arm))
+        assert "at the start" not in text, arm
+        assert "when* you call it is yours to decide" in text, arm
+        assert "you call it once" in text, arm
+        # ...and the cost of waiting is stated, because it is real and an agent
+        # that waits until the last round has nothing left to trade with.
+        assert "not trading what you made" in text, arm
+
+
+def test_the_brief_says_what_opens_when(island):
+    """The window shape is the world, not a hint, so every arm gets it.
+
+    An agent that does not know approving opens in the third window cannot plan
+    to approve in it, and an arm missing that would be measuring the harness
+    rather than its convention — which is why this is not a switch.
+
+    Two things stay out. How long a window lasts is not here: agents know there
+    is a deadline and not its size. Nor is the number of rounds, which belongs
+    to `horizon` in the turn note — putting it here would hand it over in every
+    arm and make that switch unattributable.
+    """
+    manager = Manager(island=island)
+    for arm in ("silent", "free", "paid"):
+        text = _flat(brief_for(island, manager, "a1", arm))
+        assert "three windows that open in order" in text, arm
+        assert "`propose_trade`, and withdraw" in text, arm
+        assert "`approve_trade`" in text, arm
+        assert "Nothing closes again inside a round" in text, arm
+        assert "ends on a clock" in text, arm
+        # No wall-clock length, and no round count.
+        assert "second" not in text.lower().replace("seconds", "@"), arm
+        assert "rounds" in text and "3 rounds" not in text, arm
+
+
+def test_a_silent_island_is_not_told_it_can_talk_in_the_first_window(island):
+    """The window shape describes what an arm actually has.
+
+    `silent` has no `say` and no `listen`, so a first window advertised as a
+    talking window would promise a channel that is not there — in the one arm
+    whose whole purpose is the absence of it.
+    """
+    quiet = _flat(brief_for(island, manager := Manager(island=island), "a1", "silent"))
+    loud = _flat(brief_for(island, manager, "a1", "free"))
+    assert "talk" not in quiet.lower()
+    assert "you can `produce`" in quiet
+    assert "you can talk, and you can `produce`" in loud
 
 
 def test_switching_a_switch_off_takes_its_dependents_with_it(island):

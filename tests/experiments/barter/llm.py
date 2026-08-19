@@ -112,7 +112,7 @@ Trading is two-phase and the manager is the only thing that can move goods:
   - check `pending_trades` for offers waiting on you.
 
 Quantities are never negative. You cannot offer what you do not hold.
-"""
+{flow}"""
 
 #: The consequence of the scoring rule, spelled out. A separate switch because
 #: it is not the rule — it is an *inference from* the rule that we currently
@@ -127,20 +127,42 @@ much of everything else you have. You want some of every good."""
 #: simply false. That was live for one paid run, and the sentence agents read
 #: contradicted the manager they were calling.
 ONCE_LABOUR = """\
-You have one unit of labour. You spend it once, at the start, by calling
-`produce` with the fraction you put on each good. Your capacity for each good
-is how much you get for spending your whole unit on it, and it differs between
-goods and between traders. After that you cannot make anything more — the only
-way to change what you hold is to trade."""
+You have one unit of labour and one chance to spend it: a single `produce` call
+naming the fraction you put on each good. Your capacity for each good is how
+much you get for spending your whole unit on it, and it differs between goods
+and between traders. `produce` is open in every window of every round, so *when*
+you call it is yours to decide — but you call it once, and after that you cannot
+make anything more. The only way to change what you hold is to trade, and every
+round you spend deciding is a round you are not trading what you made."""
 
 ROLLING_LABOUR = """\
 You have one unit of labour and you spend it in instalments: in each round you
 may call `produce` once, with the fraction of *that round's* instalment you put
-on each good. Your capacity for each good is how much you get for spending your
-whole unit on it, and it differs between goods and between traders. An
-instalment you do not spend is not carried over — it is a round you did not
-work — and once the unit is gone the only way to change what you hold is to
-trade."""
+on each good. It is open in every window of the round. Your capacity for each
+good is how much you get for spending your whole unit on it, and it differs
+between goods and between traders. An instalment you do not spend is not
+carried over — it is a round you did not work — and once the unit is gone the
+only way to change what you hold is to trade."""
+
+#: The shape of a round. Not a telling and not switchable, for the same reason
+#: the window line in the turn note is not: an agent that does not know
+#: approving has opened cannot approve, so an arm without this would be
+#: measuring the harness rather than the convention. What is *not* here is how
+#: long a window lasts in seconds — agents know there is a deadline and not its
+#: size — and how many rounds there are, which is the `horizon` switch's to give
+#: or withhold in the turn note.
+FLOW_BRIEF = """
+The island runs in rounds, and a round is three windows that open in order:
+
+  1. you can{talk} `produce`.
+  2. ...and you can `propose_trade`, and withdraw your own offers.
+  3. ...and you can `approve_trade`.
+
+Nothing closes again inside a round: what has opened stays open until the round
+ends. Every trader is acting at the same time, and each window ends on a clock
+rather than when anyone is finished — so a decision you are still making when
+the round ends is a decision you did not make.
+"""
 
 CHANNEL_BRIEF = """
 You can also talk. `say` posts a message every trader sees; `listen` returns
@@ -1006,6 +1028,12 @@ def brief_for(island: Island, manager: Manager, agent_id: str,
         goods=", ".join(manager.goods),
         ruin=RUIN_CLAUSE if telling.ruin_warning else ".",
         labour=ROLLING_LABOUR if telling.rolling else ONCE_LABOUR,
+        # A silent island must not be told it can talk. The window shape is the
+        # world and every arm gets it, but the first window's contents differ by
+        # what the arm actually has, and promising a channel that is not there
+        # would be the one thing `silent` exists to measure the absence of.
+        flow=FLOW_BRIEF.format(talk=" talk, and you can" if telling.channel
+                               else ""),
     )
     if telling.channel:
         text += CHANNEL_BRIEF
