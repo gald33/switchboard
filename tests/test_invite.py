@@ -527,3 +527,81 @@ def test_a_minted_room_can_be_handed_over_as_a_link_too(cli_hub, capsys, monkeyp
     out = json.loads(capsys.readouterr().out)
     assert out["link"] == "https://pages.example/v/#" + out["invite"]
     assert Invite.decode(out["invite"]).key == out["key"]
+
+
+# --- the docs, against the parser they describe -------------------------------
+
+
+def _documented_switchboard_commands(text: str) -> set[str]:
+    """Every `switchboard <verb>` a doc tells somebody to run.
+
+    Global flags may precede the subcommand — `switchboard --invite <blob> say`
+    is the whole point of several of these examples — so the verb is not simply
+    the token after `switchboard`. Which flags swallow a following value comes
+    from the parser rather than a list here, so a new global flag cannot make
+    this quietly start reading its value as a command name.
+    """
+    import re
+    import shlex
+
+    from switchboard.cli import _GLOBAL_FLAGS
+
+    takes_value = {
+        flag for flags, options in _GLOBAL_FLAGS
+        for flag in flags if options.get("action") != "store_true"
+    }
+
+    found: set[str] = set()
+    for line in text.splitlines():
+        match = re.match(r"\s*(?:\$\s+)?switchboard\s+(.*)", line)
+        if not match:
+            continue
+        try:
+            tokens = shlex.split(match.group(1), comments=True)
+        except ValueError:            # an unbalanced quote in prose
+            continue
+        skip = False
+        for token in tokens:
+            if skip:
+                skip = False
+                continue
+            if token.startswith("-"):
+                skip = token in takes_value and "=" not in token
+                continue
+            # Subcommand names are lowercase words. Anything else on this line
+            # is output that happens to start with the program name, like the
+            # `switchboard 0.9.0 -> http://...` banner `serve` prints.
+            if re.fullmatch(r"[a-z][a-z-]*", token):
+                found.add(token)
+            break
+    return found
+
+
+@pytest.mark.parametrize("doc", ["README.md", "docs/quickstart.md", "docs/model.md"])
+def test_every_command_these_docs_tell_you_to_run_exists(doc):
+    """Drafting the quickstart's invite section, I wrote `switchboard roster`.
+    There is no such command — `roster` is the MCP tool; the CLI verb is
+    `agents` — and nothing would have caught it, because a doc is not run.
+
+    A wrong command in a quickstart is worse than a missing one: the reader
+    assumes they mistyped, or that their install is broken. Both are cheaper to
+    find here.
+    """
+    import argparse
+    from pathlib import Path
+
+    from switchboard.cli import build_parser
+
+    parser = build_parser()
+    known: set[str] = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            known |= set(action.choices)
+    # `switchboard-viewer` and `switchboard-mcp` are separate console scripts,
+    # not subcommands of this parser.
+    ignore = {"viewer", "mcp"}
+
+    text = (Path(__file__).resolve().parents[1] / doc).read_text()
+    used = _documented_switchboard_commands(text) - ignore
+    unknown = sorted(c for c in used if c not in known)
+    assert not unknown, f"{doc} documents commands that do not exist: {unknown}"

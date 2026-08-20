@@ -265,3 +265,40 @@ def test_a_named_key_this_process_lacks_refuses_before_a_client_exists(host, mon
 
     with pytest.raises(InviteError, match="SWITCHBOARD_KEY_OPS"):
         joined(host, blob)
+
+
+# --- what "verified" is actually claiming -------------------------------------
+
+
+def test_a_verified_plaintext_room_does_not_claim_a_key_matched(host_plain):
+    """There is no key in a plaintext room, so there is none to have matched.
+
+    The probe still proves something — this hub, this workspace — but anyone
+    who can reach that hub and name that workspace can read it, which makes
+    `verified` a strictly weaker statement here than in a sealed room. Saying
+    the same sentence for both is the kind of overclaim that costs the check
+    its credibility the first time somebody notices.
+    """
+    inviter = host_plain.client("inviter")
+    inviter.board_set("join/probe/plain", PROBE_SENTINEL)
+    client = host_plain.client_class().from_invite(
+        Invite(url=BASE_URL, workspace="w_plain", probe="join/probe/plain").encode())
+    try:
+        check = client.verify()
+        assert (check.ok, check.verdict) == (True, "verified")
+        assert "not encrypted" in check.detail
+        assert "the key all match" not in check.detail
+    finally:
+        client.close()
+
+
+def test_a_verified_sealed_room_does_claim_the_key(host):
+    """And the other half, which is the whole reason the probe exists: in a
+    sealed room, opening it is exactly the proof that the keys agree."""
+    client = joined(host, invite_for(host))
+    try:
+        detail = client.verify().detail
+        assert "the key all match" in detail
+        assert "not encrypted" not in detail
+    finally:
+        client.close()
