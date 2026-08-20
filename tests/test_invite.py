@@ -605,3 +605,172 @@ def test_every_command_these_docs_tell_you_to_run_exists(doc):
     used = _documented_switchboard_commands(text) - ignore
     unknown = sorted(c for c in used if c not in known)
     assert not unknown, f"{doc} documents commands that do not exist: {unknown}"
+
+
+# --- the room token: a visit, or a room you can keep -------------------------
+#
+# `workspace` is what goes on the wire and is all a joiner needs to *talk*. It
+# is a hash, and hashes do not run backwards — so an invite carrying only the
+# derived form hands over a room that can be used now and never written down.
+# `.switchboard/rooms.json` records rooms by token, deliberately, because the
+# identifier is derived rather than assigned.
+
+
+def test_the_identifier_is_derived_from_the_token_rather_than_carried_twice():
+    """Two fields holding one fact is two chances for it to be wrong."""
+    from switchboard.rooms import workspace_for
+
+    room = Invite(url="https://h", workspace_token="tok-ops")
+    assert room.workspace == workspace_for("tok-ops")
+    assert Invite.decode(room.encode()) == room
+
+
+def test_a_workspace_that_contradicts_its_token_is_refused():
+    """One is the hash of the other, so they cannot both be right. Catching it
+    at the parse is the difference between a rejected string and a room the
+    sender never named."""
+    with pytest.raises(InviteError, match="cannot both be right"):
+        Invite(url="https://h", workspace="w_wrong", workspace_token="tok-ops")
+
+    good = Invite(url="https://h", workspace_token="tok-ops").encode()
+    import base64
+    import json as _json
+
+    body = good[len(PREFIX):]
+    payload = _json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    payload["w"] = "w_somewhere-else"
+    tampered = PREFIX + base64.urlsafe_b64encode(
+        _json.dumps(payload).encode()).decode().rstrip("=")
+    with pytest.raises(InviteError):
+        Invite.decode(tampered)
+
+
+def test_an_invite_with_neither_is_refused_rather_than_defaulted():
+    with pytest.raises(InviteError, match="needs a workspace"):
+        Invite(url="https://h")
+
+
+def test_an_invite_without_a_token_still_works_exactly_as_before():
+    """Additive. Every invite minted before this must keep opening, and a hub
+    whose rooms are not declared in any file has no token to carry."""
+    room = Invite(url="https://h", workspace="w_a", key="k")
+    assert room.workspace_token == ""
+    assert Invite.decode(room.encode()) == room
+
+
+def test_invite_carries_the_token_its_repo_declared(cli_hub, tmp_path, monkeypatch,
+                                                    capsys):
+    from switchboard import rooms
+
+    token = "tok-for-the-ops-room"
+    _write_rooms(tmp_path, [{"name": "ops", "key_id": "ops",
+                             "workspace_token": token}])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", rooms.workspace_for(token))
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["invite", "--json"]) == 0
+    room = Invite.decode(json.loads(capsys.readouterr().out)["invite"])
+    assert room.workspace_token == token
+    assert room.room_record("ops") == {
+        "name": "ops", "workspace_token": token,
+        "key_id": "ops", "hub_url": BASE_URL,
+    }
+
+
+def test_no_token_is_carried_for_a_room_the_record_does_not_describe(
+    cli_hub, tmp_path, monkeypatch, capsys,
+):
+    """Same care as `key_id`: a token from another room hashes to another
+    identifier, and `Invite` would refuse the pair outright — so the guard is
+    what keeps `invite -w somewhere-else` working at all."""
+    _write_rooms(tmp_path, [{"name": "ops", "key_id": "ops",
+                             "workspace_token": "tok-for-the-ops-room"}])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["-w", "somewhere-else", "invite", "--json"]) == 0
+    room = Invite.decode(json.loads(capsys.readouterr().out)["invite"])
+    assert (room.workspace_token, room.workspace) == ("", "somewhere-else")
+
+
+def test_a_minted_room_can_be_written_down_too(cli_hub, capsys, monkeypatch):
+    """`keygen` used to invent an identifier directly, which made every side
+    room permanently unrecordable. It mints a token now and derives the
+    identifier from it — same shape on the wire, same opacity, and the room
+    outlives the shell it was minted in."""
+    from switchboard.rooms import workspace_for
+
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    assert main(["keygen", "--as-invite", "--json", "--no-input"]) == 0
+    out = json.loads(capsys.readouterr().out)
+
+    assert workspace_for(out["workspace_token"]) == out["workspace"]
+    room = Invite.decode(out["invite"])
+    assert room.workspace_token == out["workspace_token"]
+    assert room.room_record("side")["workspace_token"] == out["workspace_token"]
+
+
+def test_join_shows_the_record_that_would_keep_the_room(cli_hub, capsys):
+    """Exports get you in for one shell. The record is how the room survives
+    it, and every value in it came from the string rather than from retyping."""
+    blob = Invite(url=BASE_URL, workspace_token="tok-kept",
+                  key=cli_hub.workspace_key).encode()
+
+    assert main(["join", blob, "--no-verify", "--save", "billing"]) == 0
+    out = capsys.readouterr().out
+    assert "export SWITCHBOARD_URL=" in out
+    record = json.loads(out[out.index("{"):])
+    assert record == {"rooms": [{"name": "billing",
+                                 "workspace_token": "tok-kept",
+                                 "hub_url": BASE_URL}]}
+
+
+def test_join_offers_no_record_it_cannot_actually_fill(cli_hub, capsys):
+    """An invite with no token cannot produce a record, and printing one with
+    the identifier in the token's place would produce a rooms file that
+    resolves to a room nobody is in."""
+    blob = Invite(url=BASE_URL, workspace=WS, key=cli_hub.workspace_key).encode()
+
+    assert main(["join", blob, "--no-verify"]) == 0
+    assert "rooms" not in capsys.readouterr().out
+
+    with pytest.raises(InviteError, match="carries no workspace token"):
+        Invite(url=BASE_URL, workspace=WS).room_record("nope")
+
+
+def test_a_room_kept_from_an_invite_resolves_without_the_invite(
+    cli_hub, tmp_path, monkeypatch, capsys,
+):
+    """The claim the token exists to make, end to end.
+
+    Join a room from a string, write the record `join` prints, and then reach
+    the same room with no invite and no workspace exported — resolved from the
+    file, the way a room the repo always declared would be. Without the token
+    this is simply not expressible: the record needs one, and the identifier
+    an invite used to carry is a hash of it.
+    """
+    from switchboard import rooms
+
+    token = "tok-kept-room"
+    workspace = rooms.workspace_for(token)
+    host = cli_hub.client("host", register=True, workspace=workspace)
+    host.post("build", "still here tomorrow")
+
+    blob = Invite(url=BASE_URL, workspace_token=token,
+                  key=cli_hub.workspace_key).encode()
+    assert main(["join", blob, "--no-verify", "--save", "billing"]) == 0
+    printed = capsys.readouterr().out
+    (tmp_path / rooms.ROOMS_LOCAL_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rooms.ROOMS_LOCAL_FILE).write_text(printed[printed.index("{"):])
+
+    # Nothing about the room in the environment now — no invite, no workspace.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["history", "build", "--json"]) == 0
+    assert [m["body"] for m in json.loads(capsys.readouterr().out)] == \
+        ["still here tomorrow"]

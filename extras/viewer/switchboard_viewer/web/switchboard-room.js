@@ -87,6 +87,11 @@ export function decodeInvite(text) {
     // instead of "no key", which is the difference between a question a
     // reader can answer and one they cannot.
     keyId: String(payload.ki ?? ""),
+    // The room's token, of which `workspace` is the hash. A browser has no
+    // rooms file to write it into, so nothing here uses it — it is surfaced so
+    // that a reader who *does* have a checkout can copy it out rather than
+    // being handed an identifier that cannot be turned back into a record.
+    workspaceToken: String(payload.wt ?? ""),
   };
 }
 

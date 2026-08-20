@@ -61,8 +61,17 @@ shape can protect against is the page itself, which is why the page has to be
 named rather than defaulted, and why the viewer fills its settings sheet from
 a link instead of joining behind the reader.
 
+An invite carries the room's **token**, not only the `w_…` identifier derived
+from it. The identifier is all a joiner needs to *talk*; the token is what lets
+them write the room down, because `.switchboard/rooms.json` records rooms by
+token and a hash does not run backwards. `switchboard join` prints the record.
+When both travel they must agree — one is the hash of the other — so a
+tampered identifier is caught at the parse rather than becoming a room the
+sender never named.
+
 `switchboard keygen --as-invite` mints a room and emits one of these strings
-for it, on this hub, with this token. That is all a side channel is — a room
+for it, on this hub, with this token. It mints a workspace *token* and derives
+the identifier, so a side room is as recordable as a declared one. That is all a side channel is — a room
 whose coordinates you invented rather than received — so it is handed over the
 same way, verified the same way, and joined by the same three surfaces.
 
