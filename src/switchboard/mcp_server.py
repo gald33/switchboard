@@ -476,12 +476,16 @@ class Bridge:
         """Take an invite and hold the room open for the rest of this session."""
         try:
             blob = Invite.decode(invite)
+            # Inside the try as well: an invite that *names* a key without
+            # carrying it refuses here when this environment does not hold it,
+            # and that refusal is an answer the model can act on — the variable
+            # to set — rather than a tool that crashed.
+            client = Client.from_invite(blob, agent_id=self.identity.agent_id)
         except InviteError as exc:
             return {"joined": False, "error": str(exc)}
         existing = self._rooms.get(blob.workspace)
         if existing is not None:
             existing.close()
-        client = Client.from_invite(blob, agent_id=self.identity.agent_id)
         self._rooms[blob.workspace] = client
 
         check = client.verify()
@@ -493,7 +497,10 @@ class Bridge:
             # be written into the transcript once per call.
             "room": blob.workspace,
             "hub": blob.url,
-            "encrypted": bool(blob.key),
+            # From the client, not the invite: an invite that names a key it
+            # does not carry is still an encrypted room, and reporting it as
+            # plaintext would be a lie the model would repeat.
+            "encrypted": client.encrypted,
             "verified": check.ok,
             "verdict": check.verdict,
             "detail": check.detail,

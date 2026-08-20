@@ -236,3 +236,32 @@ async def test_the_async_client_joins_and_verifies_the_same_way(host):
         assert (await wrong.verify()).verdict == "wrong_room"
     finally:
         await wrong.aclose()
+
+
+# --- a key the invite names but does not carry -------------------------------
+
+
+def test_the_sdk_finds_a_named_key_in_the_environment(host, monkeypatch):
+    """`--no-key` means "you already hold this". Which one, when you hold
+    several, is what the id answers — and holding several is the entire point
+    of named keys."""
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())        # the decoy
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", host.workspace_key)
+    blob = Invite(url=BASE_URL, workspace=WS, key=None, key_id="ops").encode()
+
+    client = joined(host, blob)
+    try:
+        assert [m["body"] for m in client.history("build")] == ["already talking in here"]
+    finally:
+        client.close()
+
+
+def test_a_named_key_this_process_lacks_refuses_before_a_client_exists(host, monkeypatch):
+    """Refusing is the feature. A fallback to whatever is exported builds a
+    client that connects, registers, and reads nothing."""
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())
+    monkeypatch.delenv("SWITCHBOARD_KEY_OPS", raising=False)
+    blob = Invite(url=BASE_URL, workspace=WS, key=None, key_id="ops").encode()
+
+    with pytest.raises(InviteError, match="SWITCHBOARD_KEY_OPS"):
+        joined(host, blob)

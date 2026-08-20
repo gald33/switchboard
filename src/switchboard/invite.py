@@ -29,6 +29,8 @@ import base64
 import json
 from dataclasses import dataclass
 
+from . import rooms
+
 #: The sentinel an inviter seals under the probe key. Its content does not
 #: matter; being able to read it at all is the proof.
 PROBE_SENTINEL = "switchboard-room-proof"
@@ -54,6 +56,19 @@ class Invite:
     key: str | None = None
     #: Free-form, purely for the human pasting it: which room this is, why.
     note: str = ""
+    #: Which key opens this room, by id — the same `key_id` a rooms file uses
+    #: and `SWITCHBOARD_KEY_<ID>` holds. Non-secret: it names a key, it is not
+    #: one.
+    #:
+    #: What it is *for* is the invite that deliberately carries no key.
+    #: `invite --no-key` means "you already hold this", and without an id that
+    #: is only true for whoever keeps their key in the unnamed
+    #: `SWITCHBOARD_KEY`. Anyone holding several — which is the whole point of
+    #: named keys — has no way to know which of them was meant, and picks the
+    #: default one: same hub, same workspace, wrong key, quiet room. With the
+    #: id, the right key is *found*, and its absence is a sentence naming the
+    #: variable to set rather than an afternoon.
+    key_id: str = ""
     #: Board key of a value the INVITER sealed, for the joiner to open.
     #:
     #: A joiner writing and reading its own probe proves nothing: sealing and
@@ -73,6 +88,7 @@ class Invite:
             "k": self.key or "",
             "n": self.note,
             "p": self.probe,
+            "ki": self.key_id,
         }
         raw = json.dumps(payload, separators=(",", ":")).encode()
         return PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -113,7 +129,43 @@ class Invite:
             key=str(payload.get("k") or "") or None,
             note=str(payload.get("n") or ""),
             probe=str(payload.get("p") or ""),
+            key_id=str(payload.get("ki") or ""),
         )
+
+    def resolve_key(self, fallback: str | None = None,
+                    env: dict[str, str] | None = None) -> str | None:
+        """The key to actually seal with, given what this environment holds.
+
+        Three cases, and the third is the one this method exists for:
+
+        - The invite carries a key. Use it; it outranks everything, because an
+          invite that lost to an exported key would put its holder in the right
+          workspace on the wrong one.
+        - It names no key at all. `fallback` — whatever the caller resolved
+          from its own tiers — which is what makes `--no-key` mean "you already
+          hold this" rather than "send in the clear".
+        - It *names* a key it does not carry. Then there is a right answer and
+          a wrong one, and guessing between them is the failure: look the id up
+          in the environment, and refuse rather than quietly using some other
+          key that happens to be lying around under `SWITCHBOARD_KEY`.
+
+        Refusing is the point. Every alternative to it is a room you appear to
+        be in.
+        """
+        if self.key:
+            return self.key
+        if not self.key_id or self.key_id == rooms.DEFAULT_KEY_ID:
+            return fallback
+        found = rooms.key_for(self.key_id, env)
+        if found is None:
+            raise InviteError(
+                f"this room needs key {self.key_id!r}, which this environment "
+                f"does not hold — set {rooms.env_var_for(self.key_id)}. The "
+                "invite names the key instead of carrying it, so joining "
+                "without it would put you in the right workspace on the wrong "
+                "key: registered, on a roster, reading nothing."
+            )
+        return found
 
     def env_block(self) -> str:
         """Exactly what to export, for an environment with no checkout."""
@@ -127,8 +179,11 @@ class Invite:
 
     def redacted(self) -> str:
         """A description safe to print in a log or a PR body."""
+        carried = "set" if self.key else "none"
+        if self.key_id:
+            carried += f" (id {self.key_id})"
         return (
             f"hub={self.url} workspace={self.workspace} "
             f"token={'set' if self.token else 'none'} "
-            f"key={'set' if self.key else 'none'}"
+            f"key={carried}"
         )
