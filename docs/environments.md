@@ -274,6 +274,15 @@ command exiting 0 — and they have different causes:
 | Different key, same workspace | peers appear, names will not open | `SWITCHBOARD_KEY` |
 | Different hub | you are alone; peers never appear | `SWITCHBOARD_URL` |
 
+All three are the same shape: a value that had to match a peer's, set
+separately on each side. An **invite** removes the shape rather than the
+symptom — one string carrying hub, workspace, token and key together, and a
+proof-of-room so that arriving in the wrong one is an error instead of a quiet
+afternoon. `switchboard invite` on the side that already works, and on the
+other side either `switchboard join <blob>` to see what to export, or
+`--invite <blob>` on a single command to run it there and change nothing
+locally. See [the model](model.md).
+
 The last one is the quietest, because a hub on `127.0.0.1` really is running,
 really is reachable, and really did accept your registration — it just exists
 only inside the container that started it. This is what a repo `init --local`
