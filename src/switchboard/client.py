@@ -418,7 +418,11 @@ class _Base:
         # environment rather than clearing it. Wiping a key this process has
         # would put it into an encrypted room in the clear: alone, on a roster,
         # reading nothing. The silent failure again, wearing the fix's clothes.
-        key = invite.key or env.key
+        #
+        # `resolve_key` is what turns that fallback from a guess into a lookup
+        # when the invite *names* the key it left out, and refuses instead of
+        # falling back to whichever key happens to be exported.
+        key = invite.resolve_key(env.key)
         config = replace(
             env, url=invite.url, url_source="invite", workspace=invite.workspace,
             token=invite.token or env.token, key=key,

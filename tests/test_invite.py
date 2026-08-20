@@ -299,3 +299,172 @@ def test_a_probe_that_aged_out_is_not_reported_as_a_wrong_key(cli_hub, capsys):
     assert "cannot verify" in err
     assert "nothing suggests your key is wrong" in err
     assert "WRONG ROOM" not in err
+
+
+# --- a key the invite names but does not carry -------------------------------
+#
+# `invite --no-key` means "you already hold this". That is only unambiguous for
+# somebody who keeps one key, in the unnamed `SWITCHBOARD_KEY`. Anyone holding
+# several — which is the entire point of named keys — has to guess which was
+# meant, and a guess here is the original failure: right workspace, wrong key,
+# quiet room. So the invite names the key it left out.
+
+
+def test_a_named_key_is_looked_up_rather_than_guessed(cli_hub, capsys, monkeypatch):
+    """Two keys in the environment, and the invite says which one. Without the
+    id the unnamed one wins, and it is the wrong one."""
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())          # the decoy
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", cli_hub.workspace_key)
+    cli_hub.client("inviter", register=True).post("build", "readable under ops")
+    blob = Invite(url=BASE_URL, workspace=WS, key=None, key_id="ops").encode()
+
+    assert main(["--invite", blob, "history", "build", "--json"]) == 0
+    assert [m["body"] for m in json.loads(capsys.readouterr().out)] == \
+        ["readable under ops"]
+
+
+def test_a_named_key_this_environment_lacks_is_refused_not_substituted(
+    cli_hub, capsys, monkeypatch
+):
+    """The refusal is the feature. Falling back to whichever key happens to be
+    exported would join the room and read nothing — and look fine doing it."""
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())
+    blob = Invite(url=BASE_URL, workspace=WS, key=None, key_id="ops").encode()
+
+    assert main(["--invite", blob, "agents"]) == 1
+    err = capsys.readouterr().err
+    assert "needs key 'ops'" in err
+    assert "SWITCHBOARD_KEY_OPS" in err
+
+
+def test_an_unnamed_key_still_means_the_one_you_have(cli_hub, monkeypatch, capsys):
+    """`key_id` is additive: an invite without one behaves exactly as before,
+    or every invite minted by an older client would start refusing."""
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+    cli_hub.client("inviter", register=True).post("build", "sealed")
+    blob = Invite(url=BASE_URL, workspace=WS, key=None).encode()
+
+    assert main(["--invite", blob, "history", "build", "--json"]) == 0
+    assert [m["body"] for m in json.loads(capsys.readouterr().out)] == ["sealed"]
+
+
+def test_a_carried_key_beats_the_named_one(cli_hub, monkeypatch):
+    """An invite that carries a key is not asking a question. The id is a label
+    on it, not a second lookup that could disagree."""
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", generate_key())
+    blob = Invite(url=BASE_URL, workspace=WS, key=cli_hub.workspace_key,
+                  key_id="ops")
+    assert blob.resolve_key() == cli_hub.workspace_key
+
+
+def test_the_key_id_survives_the_round_trip_and_shows_in_the_redaction():
+    blob = Invite(url="https://h", workspace="w_a", key=None, key_id="ops")
+    assert Invite.decode(blob.encode()).key_id == "ops"
+    assert "id ops" in blob.redacted()
+
+
+def test_an_older_invite_without_a_key_id_still_decodes():
+    """`key_id` is additive within v1 on purpose — a version bump would make
+    every invite already in someone's clipboard refuse to open."""
+    import base64 as b64
+
+    raw = b'{"v":1,"u":"https://h","w":"w_a","t":"tok","k":"","n":"","p":""}'
+    blob = PREFIX + b64.urlsafe_b64encode(raw).decode().rstrip("=")
+    assert Invite.decode(blob).key_id == ""
+
+
+# --- keygen as a way of handing over a room ----------------------------------
+
+
+def test_keygen_can_hand_over_the_room_it_mints(cli_hub, capsys, monkeypatch):
+    """A side channel is a minted room, so minting one should produce the same
+    artifact as being handed one — not a pair of values each side has to set
+    correctly and separately, which is the shape that fails quietly."""
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_TOKEN", "tok")
+
+    assert main(["keygen", "--as-invite", "--json", "--no-input"]) == 0
+    minted = json.loads(capsys.readouterr().out)
+    room = Invite.decode(minted["invite"])
+    assert room.url == BASE_URL
+    assert room.workspace == minted["workspace"] != WS
+    assert room.key == minted["key"]
+    assert minted["verifiable"] is True
+
+    # And the far side can actually get in, which is the only claim that counts.
+    assert main(["--invite", minted["invite"], "say", "build", "first words", "-q"]) == 0
+    capsys.readouterr()
+    assert main(["--invite", minted["invite"], "history", "build", "--json"]) == 0
+    assert [m["body"] for m in json.loads(capsys.readouterr().out)] == ["first words"]
+
+
+def test_the_minted_room_can_be_verified_like_any_other(cli_hub, capsys, monkeypatch):
+    """The probe is what makes "did we both land here" answerable. A minted
+    room that could not be verified would be the one room where the check that
+    matters most — two people trying to start a private conversation — is
+    unavailable."""
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    assert main(["keygen", "--as-invite", "--json", "--no-input"]) == 0
+    blob = json.loads(capsys.readouterr().out)["invite"]
+
+    assert main(["join", blob]) == 0
+    assert "verified" in capsys.readouterr().err
+
+
+def test_plain_keygen_still_touches_no_hub(monkeypatch, capsys):
+    """Unchanged, and worth a test: `keygen` is usable before anything is
+    registered and with no hub reachable at all. Only `--as-invite` dials."""
+    import switchboard.cli as cli_module
+
+    def explode(*a, **k):  # pragma: no cover - the point is that it is not called
+        raise AssertionError("keygen reached the hub")
+
+    monkeypatch.setattr(cli_module, "Client", explode)
+    assert main(["keygen", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["key"]
+
+
+# --- where the key id comes from ---------------------------------------------
+
+
+def _write_rooms(directory, entries):
+    from switchboard import rooms
+
+    path = directory / rooms.ROOMS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"rooms": entries}))
+    return path
+
+
+def test_invite_names_the_key_its_room_declares(cli_hub, tmp_path, monkeypatch, capsys):
+    """So `invite --no-key` is usable by somebody holding several keys: the
+    string says which one, and they need not be told separately."""
+    from switchboard import rooms
+
+    token = "tok-for-the-ops-room"
+    _write_rooms(tmp_path, [{"name": "ops", "key_id": "ops", "workspace_token": token}])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", rooms.workspace_for(token))
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["invite", "--no-key", "--json"]) == 0
+    assert Invite.decode(json.loads(capsys.readouterr().out)["invite"]).key_id == "ops"
+
+
+def test_a_key_id_is_never_named_for_a_room_it_does_not_open(
+    cli_hub, tmp_path, monkeypatch, capsys
+):
+    """The declared room and the room this invocation is in can differ — `-w`,
+    an environment variable, a second entry in the file. Naming the wrong key
+    is worse than naming none: the receiver looks up a variable, finds a real
+    key in it, and seals with it."""
+    _write_rooms(tmp_path, [
+        {"name": "ops", "key_id": "ops", "workspace_token": "tok-for-the-ops-room"},
+    ])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["-w", "somewhere-else", "invite", "--no-key", "--json"]) == 0
+    assert Invite.decode(json.loads(capsys.readouterr().out)["invite"]).key_id == ""

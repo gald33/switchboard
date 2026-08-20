@@ -287,8 +287,14 @@ them) and have each of you pass it as `custom_scope`.
 A side channel is the same idea as an invited room, minted rather than
 received: `keygen` gives you the `(workspace, key)` pair that an invite would
 otherwise have carried. The difference is only where the coordinates came
-from — and therefore whether there is anything to verify. Nothing to prove
-about a room you invented.
+from.
+
+Which means the pair does not have to be how you hand it over. At a terminal,
+`switchboard keygen --as-invite` emits a `swb1_…` for the room it just minted,
+proof-of-room included — so the peer joins and *verifies* it exactly like any
+other room, instead of you both setting two values correctly and separately.
+Two values set separately is the shape that fails quietly; it is what this
+whole section is working around.
 
 `custom_scope` is deliberately **not** a lifecycle you open and close — there
 is no "join channel" step for it. Whichever agents share the same `(workspace, key)`

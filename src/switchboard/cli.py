@@ -367,7 +367,9 @@ def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfi
         # agent into an encrypted room in the clear, which is the silent
         # failure again wearing the fix's clothes.
         token=room.token or config.token,
-        key=room.key or config.key,
+        # A named key it did not carry is looked up rather than guessed at, and
+        # its absence is refused — see `Invite.resolve_key`.
+        key=room.resolve_key(config.key),
     )
 
 
@@ -661,6 +663,64 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
+    """Hand a freshly minted room over as one string.
+
+    A side channel and an invited room stopped being two ideas once an invite
+    could carry a whole room: the only difference is where the coordinates came
+    from — minted here, or received from someone who minted them. So minting
+    should produce the same artifact as inviting, and this is that. The hub and
+    the token come from wherever this invocation was already pointed, because a
+    side room is a room on *your* hub; only the workspace and the key are new.
+
+    A probe is sealed if the hub can be reached, so the far side can verify
+    rather than assume. If it cannot, the invite is still emitted — an
+    unverifiable room beats no room, and saying so is cheaper than failing.
+    `keygen` without this flag stays what it was: purely local, no hub, works
+    before anything is registered.
+    """
+    config = replace(_make_config(args), workspace=workspace, key=key)
+    fmt = Fmt(_use_color(sys.stdout))
+    probe, unproven = f"coord/join-probe/{secrets.token_urlsafe(8)}", ""
+    try:
+        with Client(config, agent_id=f"keygen-{secrets.token_hex(4)}") as room:
+            room.board_set(probe, invite.PROBE_SENTINEL, ttl=86400)
+    except (SwitchboardError, OSError, CryptoError) as exc:
+        probe, unproven = "", str(exc)
+
+    blob = invite.Invite(
+        url=config.url, workspace=workspace, token=config.token,
+        key=key, note=args.note or "", probe=probe,
+    )
+    if args.json:
+        _print_json({
+            "invite": blob.encode(), "describes": blob.redacted(),
+            "key": key, "workspace": workspace,
+            "verifiable": bool(probe),
+            **({"unproven": unproven} if unproven else {}),
+        })
+        return EXIT_OK
+
+    print(blob.encode())
+    if unproven:
+        print(f"\n{fmt.yellow('no proof-of-room')} — could not reach the hub to "
+              f"leave one ({unproven}).\nThe room is still usable; the far side "
+              "will not be able to verify it.", file=sys.stderr)
+    if _can_prompt(no_input=getattr(args, "no_input", False), quiet=args.quiet,
+                   as_json=args.json):
+        print(
+            f"\n{blob.redacted()}\n\n"
+            + fmt.yellow("This is a credential.")
+            + " Nobody is in this room yet — it exists once\nyou hand this to the "
+              "peers you want in it, and to nobody else.\n\n"
+              "They run:  switchboard --invite <the string above> say build hi\n"
+              "      or:  switchboard join <the string above>",
+            file=sys.stderr,
+        )
+        _offer_clipboard(blob.encode(), "the invite", args)
+    return EXIT_OK
+
+
 def cmd_keygen(args: argparse.Namespace) -> int:
     """Print a fresh workspace key, and an opaque workspace name to go with it.
 
@@ -672,6 +732,10 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     """
     key = generate_key()
     workspace = "w_" + generate_key()[:16]
+
+    if getattr(args, "as_invite", False):
+        return _keygen_invite(args, key, workspace)
+
     if args.json:
         _print_json({"key": key, "workspace": workspace})
         return EXIT_OK
@@ -2118,6 +2182,25 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _key_id_for(workspace: str) -> str:
+    """Which named key opens this room, if the repo says so.
+
+    Only from a record whose workspace is the one being invited to. The room
+    a repo *declares* and the room this invocation is actually in can differ —
+    `-w`, an environment variable, a second room in the file — and naming a
+    key that does not open the room being handed over would be worse than
+    naming none: the receiver would look up the wrong variable, find a real
+    key in it, and seal with it.
+    """
+    try:
+        for room in rooms.load(Path(".").resolve()):
+            if room.workspace == workspace:
+                return room.key_id
+    except rooms.RoomsError:
+        pass          # an unreadable rooms file is `rooms`' problem to report
+    return ""
+
+
 def cmd_invite(args: argparse.Namespace) -> int:
     """Emit one string carrying everything a peer needs to join this room.
 
@@ -2148,6 +2231,7 @@ def cmd_invite(args: argparse.Namespace) -> int:
         url=config.url, workspace=config.workspace,
         token=None if args.no_token else token,
         key=None if args.no_key else key,
+        key_id=_key_id_for(config.workspace),
         note=args.note or "", probe=probe,
     )
     if args.json:
@@ -4001,6 +4085,13 @@ def build_parser() -> argparse.ArgumentParser:
                     "be confused with a workspace token (`register-token`), which is sent "
                     "on every request and is what grants access to a workspace.",
     )
+    p.add_argument("--as-invite", action="store_true",
+                   help="emit the pair as an invite string instead — a room on this "
+                        "hub that nobody is in yet, ready to hand to the peers you "
+                        "want in it. A side channel is a minted room, so minting "
+                        "one produces the same artifact as being handed one.")
+    p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
+    p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_keygen)
 
     p = sub.add_parser(

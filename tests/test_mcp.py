@@ -957,3 +957,37 @@ def test_room_is_offered_on_the_tools_that_act_on_one(hub):
     assert "room" in schemas["board_set"]
     assert "room" not in schemas["whoami"]
     assert "room" not in schemas["join_room"]
+
+
+def test_a_room_that_names_a_key_this_agent_lacks_is_an_answer_not_a_crash(hub, monkeypatch):
+    """An invite may name the key it deliberately did not carry. When this
+    environment does not hold that key, the tool has to say which variable is
+    missing — falling back to whichever key is exported would join the room and
+    read nothing, which looks exactly like a quiet room."""
+    from switchboard.invite import Invite
+
+    monkeypatch.delenv("SWITCHBOARD_KEY_OPS", raising=False)
+    bridge = make_bridge(hub, "a1")
+    blob = Invite(url=hub.url, workspace="w_elsewhere", key=None, key_id="ops").encode()
+
+    payload, is_error = call(bridge, "join_room", invite=blob)
+    assert is_error is False
+    assert payload["joined"] is False
+    assert "SWITCHBOARD_KEY_OPS" in payload["error"]
+
+
+def test_a_named_key_the_agent_does_hold_joins_and_reports_encrypted(hub, monkeypatch):
+    """And the other half: found, used, and reported as the encrypted room it
+    is. `encrypted` read off the invite would have said plaintext here."""
+    from switchboard.crypto import generate_key
+    from switchboard.invite import Invite
+
+    key = generate_key()
+    monkeypatch.setenv("SWITCHBOARD_KEY_OPS", key)
+    bridge = make_bridge(hub, "a1")
+    blob = Invite(url=hub.url, workspace="w_ops", key=None, key_id="ops").encode()
+
+    payload, is_error = call(bridge, "join_room", invite=blob)
+    assert is_error is False
+    assert payload["joined"] is True
+    assert payload["encrypted"] is True
