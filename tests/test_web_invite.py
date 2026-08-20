@@ -79,6 +79,7 @@ def test_everything_the_encoder_put_in_comes_back_out(decode):
         "key": "9ikzU6p1vI4jCT9gn7gA9cpj-XkMxE7RK54ZRvNTl5E",
         "note": "parser room, ping me if the lexer breaks",
         "probe": "join/probe/deadbeef",
+        "keyId": "",
     }
 
 
@@ -153,3 +154,16 @@ def test_an_invite_missing_a_routing_field_is_refused(decode, missing):
 
     assert result["ok"] is False
     assert ("hub URL" if missing == "u" else "workspace") in result["error"]
+
+
+def test_the_browser_learns_which_key_an_invite_names(decode):
+    """A page has no `SWITCHBOARD_KEY_<ID>` to look an id up in, so it cannot
+    resolve one — but it can say *which* key to paste, and "no key" without
+    that is a question its reader has no way to answer."""
+    blob = Invite(url="https://h", workspace="w_a", key=None, key_id="ops").encode()
+
+    result = decode(blob)
+
+    assert result["ok"], result.get("error")
+    assert result["value"]["keyId"] == "ops"
+    assert result["value"]["key"] is None

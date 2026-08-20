@@ -106,7 +106,18 @@ in that browser.
 
 It is published at **<https://gald33.github.io/switchboard/>**, opening on the
 managed hub with its published token filled in, so a room there needs only a
-workspace id and its key. The managed hub allows that one origin
+workspace id and its key.
+
+Or none of them, if somebody sends you the room. An invite pasted into the
+sheet fills all four fields at once, and `<page>#swb1_…` — what
+`switchboard invite --link <page>` prints — does the same from a URL. The
+invite travels in the fragment, which a browser never sends to a server, so
+the page's host never receives the key. The sheet still opens, filled, rather
+than entering the room on its own: a link arrives from somewhere, often
+forwarded, and a page that read one and silently joined would leave you
+nowhere to notice you had opened the wrong room. The fragment is then dropped
+from the address bar, so the key does not sit in history or in the next
+screenshot. The managed hub allows that one origin
 (`SWITCHBOARD_CORS_ORIGINS` in `docker-compose.yml`) and no other.
 
 Anywhere else, both halves are yours to set:

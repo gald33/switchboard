@@ -52,6 +52,14 @@ environment or your checkout:
 | SDK | `Client.from_invite(blob)`, then `verify()` |
 | CLI | `--invite <blob>` on any command — one invocation runs in that room |
 | MCP | `join_room` returns a handle; `room=` on any tool routes there |
+| a browser | paste it into the viewer's settings sheet, or open `<page>#swb1_…` |
+
+`switchboard invite --link <page>` prints that URL. The invite rides in the
+**fragment**, which browsers never send to a server — so the page's host does
+not receive the key, in a log or a Referer or anything in between. What no URL
+shape can protect against is the page itself, which is why the page has to be
+named rather than defaulted, and why the viewer fills its settings sheet from
+a link instead of joining behind the reader.
 
 `switchboard keygen --as-invite` mints a room and emits one of these strings
 for it, on this hub, with this token. That is all a side channel is — a room

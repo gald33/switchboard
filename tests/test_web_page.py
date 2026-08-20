@@ -454,3 +454,135 @@ def test_a_hub_that_does_not_allow_this_origin_says_which_problem_that_is(
 
     assert "cannot reach the hub" in note
     assert "SWITCHBOARD_CORS_ORIGINS" in note
+
+
+# --- an invite that arrives as a link ----------------------------------------
+#
+# The reader this is for was never going to run `switchboard join`: they have a
+# browser, a link somebody sent them, and no checkout. The whole design rests on
+# the invite riding in the *fragment* — never sent to a server — so these tests
+# check that property as much as the behaviour.
+
+
+def test_a_link_opens_the_sheet_already_filled_in(browser, page, room):
+    """One URL, four fields, and the room reads. Same claim as the paste, for
+    the reader who has nothing to paste it into."""
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=KEY,
+                  note="parser room").encode()
+    tab = browser.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    tab.goto(page + "#" + blob, wait_until="networkidle")
+    try:
+        assert tab.evaluate("document.getElementById('settings').open") is True
+        assert tab.input_value("#f-url") == room.url
+        assert tab.input_value("#f-workspace") == room.workspace
+        assert tab.input_value("#f-key") == KEY
+        assert tab.query_selector("#invite-ok").is_visible() is True
+
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert "parser.py is mine for ~20 minutes" in tab.inner_text("#messages")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_link_fills_the_sheet_rather_than_joining_behind_the_reader(
+    browser, page, room,
+):
+    """A link is *less* trustworthy than a paste — it arrives from somewhere,
+    often forwarded. A page that read a URL and silently entered a room would
+    leave its reader nowhere to notice they had opened the wrong one."""
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=KEY).encode()
+    tab = browser.new_page()
+    tab.goto(page + "#" + blob, wait_until="networkidle")
+    try:
+        assert tab.evaluate(
+            "localStorage.getItem('switchboard.rooms.v1')") in (None, "[]")
+        assert tab.query_selector_all(".msg") == []
+    finally:
+        tab.close()
+
+
+def test_the_key_is_scrubbed_from_the_address_bar(browser, page, room):
+    """What is left otherwise is a key in browser history, in the next
+    screenshot, and in whatever "copy link" pastes."""
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=KEY).encode()
+    tab = browser.new_page()
+    tab.goto(page + "#" + blob, wait_until="networkidle")
+    try:
+        assert KEY not in tab.url
+        assert "#" not in tab.url
+        # ...and it is still usable: scrubbing happens after the sheet is fed.
+        assert tab.input_value("#f-key") == KEY
+    finally:
+        tab.close()
+
+
+def test_the_page_host_never_receives_the_invite(browser, page, room):
+    """The reason this is a fragment and not a query string. Everything else
+    about the shape is convenience; this is the part that is load bearing."""
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=KEY).encode()
+    tab = browser.new_page()
+    asked: list[str] = []
+    tab.on("request", lambda r: asked.append(r.url))
+    tab.goto(page + "#" + blob, wait_until="networkidle")
+    try:
+        assert asked, "no requests captured, so this proves nothing"
+        assert not [u for u in asked if "swb1_" in u or KEY in u]
+    finally:
+        tab.close()
+
+
+def test_a_mangled_link_says_so_instead_of_failing_silently(browser, page):
+    """Truncation is what happens to URLs — a chat client wraps one, somebody
+    copies to the line break. It has to be visible, not an empty sheet."""
+    tab = browser.new_page()
+    tab.goto(page + "#swb1_this-is-not-base64-json", wait_until="networkidle")
+    try:
+        warn = tab.query_selector("#invite-warn")
+        assert warn.is_visible() is True
+        assert "corrupt or truncated" in warn.inner_text()
+        assert tab.input_value("#f-workspace") == ""
+    finally:
+        tab.close()
+
+
+def test_a_fragment_that_is_not_an_invite_is_left_alone(browser, page):
+    """Fragments have other uses, and a page that grabbed every one of them
+    would break the moment anything else wanted to put something there."""
+    tab = browser.new_page()
+    tab.goto(page + "#anchor", wait_until="networkidle")
+    try:
+        assert tab.url.endswith("#anchor")
+        assert tab.query_selector("#invite-warn").is_visible() is False
+    finally:
+        tab.close()
+
+
+def test_a_link_naming_a_key_it_did_not_carry_says_which_one(browser, page, room):
+    """A browser has no `SWITCHBOARD_KEY_<ID>` to resolve an id against, so it
+    cannot find the key — but "no key" leaves its reader with a question they
+    have no way to answer, and the id turns it into one they can."""
+    from switchboard.invite import Invite
+
+    blob = Invite(url=room.url, workspace=room.workspace, key=None,
+                  key_id="ops").encode()
+    tab = browser.new_page()
+    tab.goto(page + "#" + blob, wait_until="networkidle")
+    try:
+        said = tab.inner_text("#invite-ok")
+        assert "names key 'ops'" in said
+        assert tab.input_value("#f-key") == ""
+    finally:
+        tab.close()

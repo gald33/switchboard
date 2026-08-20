@@ -81,6 +81,12 @@ export function decodeInvite(text) {
     key: String(payload.k ?? "") || null,
     note: String(payload.n ?? ""),
     probe: String(payload.p ?? ""),
+    // Which key opens this room, when the invite names one it did not carry.
+    // A browser has no `SWITCHBOARD_KEY_<ID>` to look it up in, so the id is
+    // not a lookup here — it is what lets the page say *which* key to paste
+    // instead of "no key", which is the difference between a question a
+    // reader can answer and one they cannot.
+    keyId: String(payload.ki ?? ""),
   };
 }
 

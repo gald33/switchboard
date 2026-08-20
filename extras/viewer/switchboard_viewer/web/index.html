@@ -307,7 +307,10 @@ async function refresh() {
       $("status").textContent = "no rooms yet";
       $("live").className = "dot off";
       prefill();
-      $("settings").showModal();
+      // Not if it is already up. An invite in the URL opens it first, filled,
+      // and `showModal` on an open dialog throws — which would surface as
+      // "page error" over the sheet the reader is being asked to confirm.
+      if (!$("settings").open) $("settings").showModal();
     }
   } catch (e) {
     $("live").className = "dot off";
@@ -361,10 +364,42 @@ function applyInvite(text) {
   invitedProbe = invite.probe;
   ok.hidden = false;
   ok.textContent = "read this invite: " + invite.workspace + " on " + invite.url
-    + (invite.key ? ", with a key" : ", no key")
+    + (invite.key ? ", with a key"
+                  : invite.keyId ? `, no key — it names key '${invite.keyId}', ` +
+                                   "so paste that one below"
+                                 : ", no key")
     + (invite.probe ? ". It carries a proof-of-room, checked once you are in."
                     : ". It carries no proof-of-room, so nothing can check it.")
     + (invite.note ? ` — ${invite.note}` : "");
+}
+
+/** An invite arriving in the URL, as `…/#swb1_…`.
+ *
+ *  A fragment rather than a query on purpose, and it is the only reason this
+ *  is offerable at all: fragments are never sent to the server, so the host
+ *  of this page never receives the key in its logs, and neither does anything
+ *  the browser sends a Referer to.
+ *
+ *  It fills the sheet and stops, exactly as a paste does. A link is *less*
+ *  trustworthy than a paste — it arrives from somewhere, often forwarded —
+ *  and a page that read a URL and silently joined a room would give its
+ *  reader nowhere to notice they had opened the wrong one.
+ *
+ *  Then the fragment is scrubbed from the address bar. What is left otherwise
+ *  is a key sitting in browser history, in the next screenshot, and in
+ *  whatever "copy link" pastes. Costs a reload, which by then re-reads the
+ *  room from storage anyway.
+ */
+function invitedByUrl() {
+  const raw = decodeURIComponent(location.hash.replace(/^#/, "")).trim();
+  const blob = raw.replace(/^invite=/, "");
+  if (!blob.startsWith("swb1_")) return false;
+  history.replaceState(null, "", location.pathname + location.search);
+  prefill();
+  $("f-invite").value = blob;
+  applyInvite(blob);
+  $("settings").showModal();
+  return true;
 }
 
 if (!LOCAL) {
@@ -394,6 +429,7 @@ if (!LOCAL) {
     setFilter(null);
     refresh();
   });
+  invitedByUrl();
   if (location.protocol !== "https:" && location.hostname !== "localhost"
       && location.hostname !== "127.0.0.1") {
     // A key typed into a page delivered over plain HTTP is a key handed to
