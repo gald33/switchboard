@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
-from .config import ClientConfig, isolation_warning
+from .config import ClientConfig, isolation_warning, rooms_warning
 from .crypto import generate_key
 from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
@@ -647,9 +647,14 @@ class Bridge:
         # session that registers, sees nobody, and reports back that it is
         # first to arrive. Uppercase like the key-mismatch warning below,
         # which is how this file says "tell the user this" to a model.
-        alone = isolation_warning(self.config, self.identity.kind)
-        if alone:
-            out["WARNING"] = alone
+        # Two warnings, one field, and they compose: an unresolved room and an
+        # unreachable hub are independent, and an agent hitting both should be
+        # told both rather than whichever this file happens to check first.
+        notes = [note for note in (rooms_warning(self.config),
+                                   isolation_warning(self.config, self.identity.kind))
+                 if note]
+        if notes:
+            out["WARNING"] = "\n\n".join(notes)
         calibration = self._calibration()
         if calibration:
             out["forecast_calibration"] = calibration

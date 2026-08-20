@@ -160,3 +160,93 @@ def test_whoami_ids_coincide_without_a_key(clean_env, monkeypatch, capsys, tmp_p
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["agent_id"] == payload["local_agent_id"] == "local-name"
+
+
+# --- a room the repo did not choose, on the way to the hub --------------------
+
+
+@pytest.fixture
+def cli_hub():
+    """A hub for commands that actually dial one. The workspace does not
+    matter here — the point is which one the CLI *chose*, not what is in it."""
+    from switchboard.testing import hub as _hub
+
+    with _hub() as handle:
+        yield handle
+
+
+def _ambiguous_repo(tmp_path, monkeypatch):
+    from switchboard import rooms as rooms_mod
+
+    path = tmp_path / rooms_mod.ROOMS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"rooms": [
+        {"name": "main", "key_id": "default", "workspace_token": "tok-main"},
+        {"name": "guest", "key_id": "guest", "workspace_token": "tok-guest"},
+    ]}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_KEY", "k" * 43)
+    monkeypatch.setenv("SWITCHBOARD_KEY_GUEST", "g" * 43)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_ROOM", raising=False)
+
+
+def test_a_read_command_says_it_is_in_a_room_the_repo_did_not_choose(
+    tmp_path, monkeypatch, capsys, cli_hub,
+):
+    """On a *read*, deliberately. `agents` and `inbox` are where this failure
+    is most convincing — an empty answer from the wrong room is indexed by the
+    reader as "nobody is here yet", which is the belief that costs the
+    afternoon. Warning only on the publishing commands would leave it."""
+    import switchboard.cli as cli_module
+
+    _ambiguous_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "Client", cli_hub.client_class())
+    monkeypatch.setattr(cli_module, "_ROOMS_WARNED", False)
+
+    assert cli_module.main(["agents"]) == 0
+    err = capsys.readouterr().err
+    assert "rooms file" in err
+    assert "guest, main" in err
+
+
+def test_quiet_silences_it(tmp_path, monkeypatch, capsys, cli_hub):
+    """It is a warning, not a failure — a hook running with `-q` has already
+    said it does not want commentary on stdout or stderr."""
+    import switchboard.cli as cli_module
+
+    _ambiguous_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "Client", cli_hub.client_class())
+    monkeypatch.setattr(cli_module, "_ROOMS_WARNED", False)
+
+    assert cli_module.main(["-q", "agents"]) == 0
+    assert "rooms file" not in capsys.readouterr().err
+
+
+def test_it_is_said_once_rather_than_per_client(tmp_path, monkeypatch, capsys, cli_hub):
+    import switchboard.cli as cli_module
+
+    _ambiguous_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "Client", cli_hub.client_class())
+    monkeypatch.setattr(cli_module, "_ROOMS_WARNED", False)
+
+    cli_module.main(["agents"])
+    cli_module.main(["agents"])
+    assert capsys.readouterr().err.count("rooms file") == 1
+
+
+def test_help_still_works_with_a_rooms_file_too_broken_to_read(tmp_path, monkeypatch):
+    """The property the silence was protecting, and the reason this is a
+    warning rather than a raise. `from_env` runs for every command, including
+    the ones with nothing to do with a hub."""
+    import switchboard.cli as cli_module
+    from switchboard import rooms as rooms_mod
+
+    path = tmp_path / rooms_mod.ROOMS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_module.main(["--help"])
+    assert exit_info.value.code == 0
