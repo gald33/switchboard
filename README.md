@@ -161,6 +161,10 @@ returns a handle you pass as `room=` on any other tool). And
 browser and nothing installed; the invite rides in the fragment, which is
 never sent to a server.
 
+`switchboard join` also prints the `.switchboard/rooms.json` record that keeps
+the room past this shell — the invite carries the workspace *token*, not just
+the identifier hashed from it, which is what makes that possible at all.
+
 Joining also *checks*, which is the part a roster cannot do for you: the invite
 carries a board key whose value the inviter sealed, and opening it proves the
 hub, the workspace **and** the key all match. A wrong key is caught here, not

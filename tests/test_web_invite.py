@@ -80,6 +80,7 @@ def test_everything_the_encoder_put_in_comes_back_out(decode):
         "note": "parser room, ping me if the lexer breaks",
         "probe": "join/probe/deadbeef",
         "keyId": "",
+        "workspaceToken": "",
     }
 
 
@@ -167,3 +168,18 @@ def test_the_browser_learns_which_key_an_invite_names(decode):
     assert result["ok"], result.get("error")
     assert result["value"]["keyId"] == "ops"
     assert result["value"]["key"] is None
+
+
+def test_the_browser_sees_the_room_token_when_one_travels(decode):
+    """Nothing in a browser writes a rooms file, so this is carriage rather
+    than use — but an identifier is a hash, and dropping the token here would
+    mean a reader with a checkout could never turn a link into a record."""
+    from switchboard.rooms import workspace_for
+
+    blob = Invite(url="https://h", workspace_token="tok-ops").encode()
+
+    result = decode(blob)
+
+    assert result["ok"], result.get("error")
+    assert result["value"]["workspaceToken"] == "tok-ops"
+    assert result["value"]["workspace"] == workspace_for("tok-ops")

@@ -663,7 +663,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
+def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str) -> int:
     """Hand a freshly minted room over as one string.
 
     A side channel and an invited room stopped being two ideas once an invite
@@ -679,6 +679,7 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
     `keygen` without this flag stays what it was: purely local, no hub, works
     before anything is registered.
     """
+    workspace = rooms.workspace_for(workspace_token)
     config = replace(_make_config(args), workspace=workspace, key=key)
     fmt = Fmt(_use_color(sys.stdout))
     probe, unproven = f"coord/join-probe/{secrets.token_urlsafe(8)}", ""
@@ -689,7 +690,7 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
         probe, unproven = "", str(exc)
 
     blob = invite.Invite(
-        url=config.url, workspace=workspace, token=config.token,
+        url=config.url, workspace_token=workspace_token, token=config.token,
         key=key, note=args.note or "", probe=probe,
     )
     handover, caveat = _handover(blob, args)
@@ -697,6 +698,7 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
         _print_json({
             "invite": blob.encode(), "describes": blob.redacted(),
             "key": key, "workspace": workspace,
+            "workspace_token": workspace_token,
             "verifiable": bool(probe),
             **({"link": handover} if args.link else {}),
             **({"unproven": unproven} if unproven else {}),
@@ -736,10 +738,16 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     privacy win available, and it costs nothing to take.
     """
     key = generate_key()
-    workspace = "w_" + generate_key()[:16]
+    # A token, with the identifier derived from it — not an identifier invented
+    # directly. Both are opaque and the same shape on the wire, so this costs
+    # nothing, and it is the difference between a room that can be written into
+    # a rooms file afterwards and one that can only ever be retyped: the file
+    # records rooms by token, because `hash(token)` does not run backwards.
+    workspace_token = generate_key()
+    workspace = rooms.workspace_for(workspace_token)
 
     if getattr(args, "as_invite", False):
-        return _keygen_invite(args, key, workspace)
+        return _keygen_invite(args, key, workspace_token)
 
     if args.json:
         _print_json({"key": key, "workspace": workspace})
@@ -2207,23 +2215,25 @@ def _handover(blob: invite.Invite, args: argparse.Namespace) -> tuple[str, str]:
     )
 
 
-def _key_id_for(workspace: str) -> str:
-    """Which named key opens this room, if the repo says so.
+def _declared_room(workspace: str) -> rooms.Room | None:
+    """The repo's record for the room being invited to, if it has one.
 
-    Only from a record whose workspace is the one being invited to. The room
-    a repo *declares* and the room this invocation is actually in can differ —
-    `-w`, an environment variable, a second room in the file — and naming a
-    key that does not open the room being handed over would be worse than
-    naming none: the receiver would look up the wrong variable, find a real
-    key in it, and seal with it.
+    Matched on the workspace rather than taken as "the selected room", and
+    that is the whole care in this function. The room a repo *declares* and
+    the room this invocation is actually in can differ — `-w`, an environment
+    variable, a second entry in the file — and the two things this record
+    supplies are both worse wrong than absent. A `key_id` naming the wrong key
+    sends the receiver to a variable holding a real key that opens nothing
+    here. A `workspace_token` from another room hashes to another identifier,
+    and `Invite` refuses that outright.
     """
     try:
         for room in rooms.load(Path(".").resolve()):
             if room.workspace == workspace:
-                return room.key_id
+                return room
     except rooms.RoomsError:
         pass          # an unreadable rooms file is `rooms`' problem to report
-    return ""
+    return None
 
 
 def cmd_invite(args: argparse.Namespace) -> int:
@@ -2252,11 +2262,16 @@ def cmd_invite(args: argparse.Namespace) -> int:
         print(f"error: could not leave a proof-of-room on the hub ({exc})",
               file=sys.stderr)
         return EXIT_ERROR
+    declared = _declared_room(config.workspace)
     blob = invite.Invite(
         url=config.url, workspace=config.workspace,
         token=None if args.no_token else token,
         key=None if args.no_key else key,
-        key_id=_key_id_for(config.workspace),
+        key_id=declared.key_id if declared else "",
+        # Non-secret, and what lets the far side write this room down rather
+        # than only visit it: a rooms file records rooms by token, because the
+        # identifier is a hash and a hash does not run backwards.
+        workspace_token=declared.workspace_token if declared else "",
         note=args.note or "", probe=probe,
     )
     handover, caveat = _handover(blob, args)
@@ -2317,6 +2332,20 @@ def cmd_join(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     print(room.env_block())
+    if room.workspace_token:
+        # Exports get you in for this shell; a record keeps the room. Shown
+        # rather than written, because writing a second room into a repo that
+        # already declares one changes which room every *other* command in that
+        # checkout lands in — see `switchboard rooms`. Whose repo this is, and
+        # what to call the room, are not an invite's business.
+        print(
+            "\nTo keep this room rather than export it, add to "
+            f"{rooms.ROOMS_LOCAL_FILE}:\n"
+            + json.dumps({"rooms": [room.room_record(args.save or "invited")]},
+                         indent=2)
+            + (f"\n\nand set {rooms.env_var_for(room.key_id)} to the key above."
+               if room.key_id else "")
+        )
 
     if args.no_verify:
         if args.json:
@@ -4171,6 +4200,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the string from `switchboard invite`")
     p.add_argument("--no-verify", action="store_true",
                    help="print the settings without touching the hub")
+    p.add_argument("--save", metavar="NAME",
+                   help="what to call this room in the rooms record it prints "
+                        "(default: 'invited')")
     p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("health", help="check the hub is reachable")

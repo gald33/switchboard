@@ -51,7 +51,10 @@ class InviteError(ValueError):
 @dataclass(frozen=True)
 class Invite:
     url: str
-    workspace: str
+    #: What goes on the wire. Optional at construction *only* because it can be
+    #: derived from `workspace_token` — see `__post_init__`, which refuses an
+    #: invite that ends up with neither.
+    workspace: str = ""
     token: str | None = None
     key: str | None = None
     #: Free-form, purely for the human pasting it: which room this is, why.
@@ -69,6 +72,20 @@ class Invite:
     #: id, the right key is *found*, and its absence is a sentence naming the
     #: variable to set rather than an afternoon.
     key_id: str = ""
+    #: The room's *token*, of which `workspace` is the hash.
+    #:
+    #: `workspace` is what goes on the wire and is all a joiner needs in order
+    #: to talk. The token is what a joiner needs in order to **write the room
+    #: down**: `.switchboard/rooms.json` records rooms by token, precisely
+    #: because the identifier is derived rather than assigned, and a hash
+    #: cannot be un-hashed. Carrying only the derived form makes every invited
+    #: room a visit — usable now, unrecordable afterwards — and leaves a
+    #: joiner who wants to stay retyping values out of an export block.
+    #:
+    #: Also an integrity check on the way in: when both are present they must
+    #: agree, so a `workspace` altered in transit is caught at the parse rather
+    #: than becoming a room the sender never named.
+    workspace_token: str = ""
     #: Board key of a value the INVITER sealed, for the joiner to open.
     #:
     #: A joiner writing and reading its own probe proves nothing: sealing and
@@ -78,6 +95,32 @@ class Invite:
     #: hub". The key name is plaintext here so the joiner can ask for it; the
     #: value under it is sealed, and unreadable to anyone on another key.
     probe: str = ""
+
+    def __post_init__(self) -> None:
+        """Keep `workspace` and `workspace_token` from ever disagreeing.
+
+        One is the hash of the other, so two fields carrying it is two chances
+        to be wrong. Deriving the identifier when only the token is given, and
+        refusing when they contradict, means the pair can only ever be
+        consistent — the same reason the identifier is derived rather than
+        assigned in the first place.
+        """
+        if not self.workspace and not self.workspace_token:
+            raise InviteError(
+                "an invite needs a workspace, or a workspace token to derive "
+                "one from"
+            )
+        if self.workspace_token:
+            derived = rooms.workspace_for(self.workspace_token)
+            if not self.workspace:
+                object.__setattr__(self, "workspace", derived)
+            elif self.workspace != derived:
+                raise InviteError(
+                    f"invite names workspace {self.workspace!r} but carries a "
+                    f"token for {derived!r}. One is the hash of the other, so "
+                    "they cannot both be right — this string has been altered "
+                    "or assembled by hand."
+                )
 
     def encode(self) -> str:
         payload = {
@@ -89,6 +132,7 @@ class Invite:
             "n": self.note,
             "p": self.probe,
             "ki": self.key_id,
+            "wt": self.workspace_token,
         }
         raw = json.dumps(payload, separators=(",", ":")).encode()
         return PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -130,6 +174,9 @@ class Invite:
             note=str(payload.get("n") or ""),
             probe=str(payload.get("p") or ""),
             key_id=str(payload.get("ki") or ""),
+            # `__post_init__` checks this against `workspace` — a mismatch is
+            # an altered string, not a preference to resolve.
+            workspace_token=str(payload.get("wt") or ""),
         )
 
     def resolve_key(self, fallback: str | None = None,
@@ -194,6 +241,32 @@ class Invite:
         gets to see their key.
         """
         return page.split("#", 1)[0] + "#" + self.encode()
+
+    def room_record(self, name: str) -> dict[str, str]:
+        """This room as a `.switchboard/rooms.json` entry.
+
+        The reason the token is carried at all. Everything a record needs is
+        non-secret and already here — token, key id, hub — so a joiner who
+        wants to keep the room does not have to be told any of it a second
+        time, and cannot mistype it. `name` is a local label and belongs to
+        whoever is keeping the room, not to whoever sent it.
+
+        The key is deliberately absent: records name a key, environments hold
+        one. That split is what keeps a rooms file committable.
+        """
+        if not self.workspace_token:
+            raise InviteError(
+                "this invite carries no workspace token, so the room cannot be "
+                "written down — a rooms file records rooms by token, and the "
+                "identifier it carries is a hash. Ask for one minted by a "
+                "newer client, or from a repo that declares this room."
+            )
+        record = {"name": name, "workspace_token": self.workspace_token}
+        if self.key_id:
+            record["key_id"] = self.key_id
+        if self.url:
+            record["hub_url"] = self.url
+        return record
 
     def redacted(self) -> str:
         """A description safe to print in a log or a PR body."""
