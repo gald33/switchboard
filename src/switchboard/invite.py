@@ -177,6 +177,24 @@ class Invite:
             lines.append(f"export SWITCHBOARD_KEY={self.key}")
         return "\n".join(lines)
 
+    def link(self, page: str) -> str:
+        """This invite as a URL onto a viewer page, for a human to click.
+
+        The invite rides in the **fragment**, which is the only reason this is
+        offerable: a fragment is never sent to the server, so the page's host
+        never receives the key — not in its access log, not in a Referer, not
+        in anything a proxy in between records. A query string would put the
+        key in all three.
+
+        What it does *not* protect against is the page itself, and no URL
+        shape can: whoever serves that file could serve one that reads the
+        fragment and posts it somewhere. Which page to trust is the caller's
+        decision, so `page` is required rather than defaulted — a convenient
+        default here would be this library choosing, on somebody's behalf, who
+        gets to see their key.
+        """
+        return page.split("#", 1)[0] + "#" + self.encode()
+
     def redacted(self) -> str:
         """A description safe to print in a log or a PR body."""
         carried = "set" if self.key else "none"

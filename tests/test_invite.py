@@ -468,3 +468,62 @@ def test_a_key_id_is_never_named_for_a_room_it_does_not_open(
 
     assert main(["-w", "somewhere-else", "invite", "--no-key", "--json"]) == 0
     assert Invite.decode(json.loads(capsys.readouterr().out)["invite"]).key_id == ""
+
+
+# --- an invite as a link ------------------------------------------------------
+
+
+def test_a_link_carries_the_invite_in_the_fragment(cli_hub, capsys):
+    """Not a query string, and the difference is the whole feature: a fragment
+    is never sent to a server, so the page's host never sees the key — not in
+    an access log, not in a Referer, not in a proxy in between."""
+    assert main(["-w", WS, "invite", "--link",
+                 "https://pages.example/switchboard/", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+
+    head, _, fragment = out["link"].partition("#")
+    assert head == "https://pages.example/switchboard/"
+    assert "?" not in out["link"]
+    assert fragment == out["invite"]
+    assert Invite.decode(fragment).workspace == WS
+
+
+def test_the_page_in_a_link_is_named_rather_than_defaulted(cli_hub, capsys):
+    """A default here would be this tool choosing, on somebody's behalf, who
+    gets to serve the page that will hold their key. The fragment keeps it
+    from that host's server; nothing keeps it from the script it serves."""
+    assert main(["invite", "--json"]) == 0
+    assert "link" not in json.loads(capsys.readouterr().out)
+
+    blob = Invite(url=BASE_URL, workspace=WS)
+    with pytest.raises(TypeError):
+        blob.link()          # type: ignore[call-arg]
+
+
+def test_a_link_says_which_host_is_being_trusted(cli_hub, capsys):
+    """The caveat names the host, because "link only to a page you trust" is
+    advice and "pages.example serves the script that reads this key" is a
+    fact about the string just printed."""
+    assert main(["invite", "--link", "https://pages.example/switchboard/",
+                 "--no-input"]) == 0
+    err = capsys.readouterr().err
+    assert "pages.example" in err
+    assert "never receives it" in err
+
+
+def test_an_existing_fragment_is_replaced_not_appended(cli_hub):
+    """Two `#` in a URL is one URL with a fragment that starts with `#`, which
+    no page will decode."""
+    blob = Invite(url=BASE_URL, workspace=WS)
+    assert blob.link("https://p/page#old").count("#") == 1
+
+
+def test_a_minted_room_can_be_handed_over_as_a_link_too(cli_hub, capsys, monkeypatch):
+    """`keygen --as-invite` produces a room; how it travels is a separate
+    question, and a person with a browser is a perfectly ordinary answer."""
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    assert main(["keygen", "--as-invite", "--link", "https://pages.example/v/",
+                 "--json", "--no-input"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["link"] == "https://pages.example/v/#" + out["invite"]
+    assert Invite.decode(out["invite"]).key == out["key"]

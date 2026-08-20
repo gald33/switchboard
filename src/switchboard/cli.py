@@ -692,16 +692,20 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
         url=config.url, workspace=workspace, token=config.token,
         key=key, note=args.note or "", probe=probe,
     )
+    handover, caveat = _handover(blob, args)
     if args.json:
         _print_json({
             "invite": blob.encode(), "describes": blob.redacted(),
             "key": key, "workspace": workspace,
             "verifiable": bool(probe),
+            **({"link": handover} if args.link else {}),
             **({"unproven": unproven} if unproven else {}),
         })
         return EXIT_OK
 
-    print(blob.encode())
+    print(handover)
+    if caveat:
+        print(f"\n{caveat}", file=sys.stderr)
     if unproven:
         print(f"\n{fmt.yellow('no proof-of-room')} — could not reach the hub to "
               f"leave one ({unproven}).\nThe room is still usable; the far side "
@@ -713,11 +717,12 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace: str) -> int:
             + fmt.yellow("This is a credential.")
             + " Nobody is in this room yet — it exists once\nyou hand this to the "
               "peers you want in it, and to nobody else.\n\n"
-              "They run:  switchboard --invite <the string above> say build hi\n"
-              "      or:  switchboard join <the string above>",
+            + ("They open it in a browser." if args.link else
+               "They run:  switchboard --invite <the string above> say build hi\n"
+               "      or:  switchboard join <the string above>"),
             file=sys.stderr,
         )
-        _offer_clipboard(blob.encode(), "the invite", args)
+        _offer_clipboard(handover, "the invite", args)
     return EXIT_OK
 
 
@@ -2182,6 +2187,26 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _handover(blob: invite.Invite, args: argparse.Namespace) -> tuple[str, str]:
+    """What to print, and the one extra sentence a link needs.
+
+    A link is for a human with a browser and no checkout — the reader who was
+    never going to run `join`. It costs one warning, because the page in it is
+    a page that will hold the key: the fragment keeps the key away from that
+    host's *server*, and nothing keeps it away from the script it serves.
+    """
+    page = getattr(args, "link", None)
+    if not page:
+        return blob.encode(), ""
+    host = urlsplit(page).netloc or page
+    return blob.link(page), (
+        f"The key rides in the URL fragment, so {host} never receives it — "
+        f"fragments\nare not sent to servers. But the page {host} serves is a "
+        f"page that reads\nthe key. Link to one you control, or one you have "
+        f"read and pinned."
+    )
+
+
 def _key_id_for(workspace: str) -> str:
     """Which named key opens this room, if the repo says so.
 
@@ -2234,10 +2259,17 @@ def cmd_invite(args: argparse.Namespace) -> int:
         key_id=_key_id_for(config.workspace),
         note=args.note or "", probe=probe,
     )
+    handover, caveat = _handover(blob, args)
     if args.json:
-        _print_json({"invite": blob.encode(), "describes": blob.redacted()})
+        _print_json({"invite": blob.encode(), "describes": blob.redacted(),
+                     **({"link": handover} if args.link else {})})
         return EXIT_OK
-    print(blob.encode())
+    print(handover)
+    # Not inside the prompt block below: that one is gated on a TTY, and a
+    # caveat about a credential in a URL is not a nicety for interactive
+    # users. It is the reason the flag was worth thinking about.
+    if caveat:
+        print(f"\n{caveat}", file=sys.stderr)
     if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
         fmt = Fmt(_use_color(sys.stdout))
         print(
@@ -2245,12 +2277,13 @@ def cmd_invite(args: argparse.Namespace) -> int:
             + fmt.yellow("This is a credential.")
             + " It carries the token and the workspace key, so it\ngrants "
               "everything you have. Hand it over the way you would a password.\n\n"
-              "The other side runs:  switchboard join <the string above>\n"
-              "  ...or, for one command in that room and no local change:\n"
-              "                      switchboard --invite <the string> say build hi",
+            + ("The other side opens it in a browser." if args.link else
+               "The other side runs:  switchboard join <the string above>\n"
+               "  ...or, for one command in that room and no local change:\n"
+               "                      switchboard --invite <the string> say build hi"),
             file=sys.stderr,
         )
-        _offer_clipboard(blob.encode(), "the invite", args)
+        _offer_clipboard(handover, "the invite", args)
     return EXIT_OK
 
 
@@ -4091,6 +4124,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "want in it. A side channel is a minted room, so minting "
                         "one produces the same artifact as being handed one.")
     p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
+    p.add_argument("--link", metavar="PAGE",
+                   help="emit a URL onto PAGE instead of the bare string, for "
+                        "someone with a browser and no checkout. The invite rides "
+                        "in the fragment, which is never sent to a server — but "
+                        "the page itself reads the key, so link only to one you "
+                        "control or have read.")
     p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_keygen)
 
@@ -4107,6 +4146,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-key", action="store_true",
                    help="omit the key (the peer must already hold it)")
     p.add_argument("--no-token", action="store_true", help="omit the hub token")
+    p.add_argument("--link", metavar="PAGE",
+                   help="emit a URL onto PAGE instead of the bare string, for "
+                        "someone with a browser and no checkout. The invite rides "
+                        "in the fragment, which is never sent to a server — but "
+                        "the page itself reads the key, so link only to one you "
+                        "control or have read.")
     p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_invite)
 
