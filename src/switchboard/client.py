@@ -436,6 +436,17 @@ class _Base:
         "opened a sealed value the inviter left in that room, which proves the "
         "hub, the workspace and the key all match — something a roster listing "
         "you both does not")
+    #: The same verdict, for a room with no key in it. Worth its own wording
+    #: rather than reusing the one above, which would claim a key matched when
+    #: there was none to match: in a plaintext room the probe is readable by
+    #: anyone who can reach that hub and name that workspace, so `verified`
+    #: here is a strictly weaker statement and should say so.
+    _VERIFIED_PLAIN = RoomCheck(
+        True, "verified",
+        "read the value the inviter left, which proves the hub and the "
+        "workspace match. This room is not encrypted, so there was no key to "
+        "check — anyone who can reach that hub and name that workspace can "
+        "read it too")
     _WRONG_ROOM = RoomCheck(
         False, "wrong_room",
         "reached that hub and workspace but could not read the proof the "
@@ -466,8 +477,12 @@ class _Base:
         have two wordings, and costs a second read only when the first fails.
         """
         if value == PROBE_SENTINEL:
-            return self._VERIFIED
+            return self._verified()
         return self._WRONG_ROOM if self._holds_unreadable(board) else self._PROBE_GONE
+
+    def _verified(self) -> RoomCheck:
+        """The pass, worded for what was actually proved."""
+        return self._VERIFIED if self.encrypted else self._VERIFIED_PLAIN
 
     def _holds_unreadable(self, board: list[dict[str, Any]]) -> bool:
         """Whether any board entry came back under a name this key could not
@@ -1056,7 +1071,7 @@ class Client(_Base):
             return self._no_probe()
         value = self.board_get(self.invite.probe)
         if value == PROBE_SENTINEL:
-            return self._VERIFIED
+            return self._verified()
         return self._read_proof(value, self.board_list())
 
     def __enter__(self) -> Client:
@@ -1293,7 +1308,7 @@ class AsyncClient(_Base):
             return self._no_probe()
         value = await self.board_get(self.invite.probe)
         if value == PROBE_SENTINEL:
-            return self._VERIFIED
+            return self._verified()
         return self._read_proof(value, await self.board_list())
 
     async def __aenter__(self) -> AsyncClient:

@@ -2392,13 +2392,13 @@ def cmd_join(args: argparse.Namespace) -> int:
         )
         return EXIT_ERROR
 
-    print(
-        f"\n{fmt.green('verified')} — opened a sealed value the inviter left in that "
-        f"room.\nThat proves the hub, the workspace AND the key all match, which a "
-        f"roster\nlisting you both does not."
-        + (f"\n\n{room.note}" if room.note else ""),
-        file=sys.stderr,
-    )
+    # The wording comes from the check rather than from here, because what
+    # `verified` proves depends on whether there was a key: in a plaintext room
+    # the probe is readable by anyone who can reach that hub and name that
+    # workspace, and claiming a key matched when there was none to match is the
+    # kind of overclaim that makes the whole check less worth trusting.
+    print(f"\n{fmt.green('verified')} — {check.detail}."
+          + (f"\n\n{room.note}" if room.note else ""), file=sys.stderr)
     return EXIT_OK
 
 

@@ -19,7 +19,7 @@ switchboard serve --port 8787
 You should see:
 
 ```
-switchboard 0.7.2 → http://127.0.0.1:8787  db=switchboard.db
+switchboard 0.9.0 → http://127.0.0.1:8787  db=switchboard.db
 ```
 
 Leave it running.
@@ -47,7 +47,7 @@ export SWITCHBOARD_AGENT_ID=beta
 
 ```bash
 $ switchboard health
-{ "ok": true, "version": "0.7.2", "auth": true }
+{ "ok": true, "version": "0.9.0", "auth": true }
 
 $ switchboard register -c build
 registered local-main-yourhost (local) in demo
@@ -203,6 +203,59 @@ nothing about what terminal A and terminal B see.
 
 It is an example application rather than a command, built on the same client
 library your own tools would use — see [the viewer](viewer.md).
+
+## 10. Hand the room to a third agent
+
+Step 2 got terminal B in by exporting three values that had to match terminal
+A's exactly. That works here because you typed both. It stops working the
+moment the other side is somebody else's machine, a cloud session, or a
+colleague — each value is another chance to differ, and every one of them
+fails *silently*: a wrong workspace connects, registers, and leaves you alone
+in a room that looks quiet.
+
+**Terminal A** — mint one string that carries all of them:
+
+```bash
+$ switchboard invite
+swb1_eyJ2IjoxLCJ1IjoiaHR0cDovLzEyNy4wLjAuMTo4Nzg3...
+```
+
+**A third terminal, with nothing exported at all:**
+
+```bash
+$ switchboard --invite swb1_... say build "third agent reporting in"
+posted #3 to build
+$ switchboard --invite swb1_... agents
+AGENT     KIND    BRANCH   SEEN     TASK
+alpha     local   main     1s ago
+```
+
+No exports, and nothing changed on disk — the room lasts exactly one command.
+`switchboard join swb1_...` is the other half, for staying: it prints what to
+export, and *verifies* the room rather than assuming it.
+
+```bash
+$ switchboard join swb1_...
+export SWITCHBOARD_URL=http://127.0.0.1:8787
+export SWITCHBOARD_WORKSPACE=demo
+export SWITCHBOARD_TOKEN=dev-token
+
+verified — read the value the inviter left, which proves the hub and the
+workspace match. This room is not encrypted, so there was no key to check —
+anyone who can reach that hub and name that workspace can read it too.
+```
+
+Note what it declines to claim. This hub has no key on it, so `verified` here
+means the hub and the workspace match and nothing more. Add one — the
+[encryption section](../README.md#encrypt-it-and-the-hub-cant-read-it-either)
+— and the same command proves the *keys* agree as well, by opening something
+only the right one could have sealed. That is the check worth having: two
+agents on one roster with two different keys see each other perfectly and can
+exchange nothing, and a roster cannot tell you so.
+
+An agent gets all of this rather than a lesser version: `Client.from_invite`
+in Python, `join_room` in the MCP bridge. See
+[the model](model.md) for the verdicts and what each one means.
 
 ## Next
 

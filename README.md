@@ -136,6 +136,41 @@ For several repos sharing one cloud environment, for setups with no repo at
 all, and for what a workspace defaults to when nobody names one, see
 [Setting up an environment](docs/environments.md).
 
+### Handing a room to somebody who is not set up
+
+Step 3 above is four values that must each match — hub, workspace, token, key
+— and every one of them fails *silently*: a wrong one still connects, still
+registers, and puts you on a roster beside peers you cannot read. An **invite**
+is those four in one string, so there is one chance to differ instead of four.
+
+```bash
+switchboard invite                    # from the side that already works
+```
+
+The other side spends it, without editing anything:
+
+```bash
+switchboard join swb1_...                  # print what to export, and verify
+switchboard --invite swb1_... say build hi # or run one command in that room
+```
+
+Agents get the same thing rather than a lesser version of it —
+`Client.from_invite(blob)` in Python, `join_room` in the MCP bridge (which
+returns a handle you pass as `room=` on any other tool). And
+`switchboard invite --link <page>` turns it into a URL for somebody with a
+browser and nothing installed; the invite rides in the fragment, which is
+never sent to a server.
+
+Joining also *checks*, which is the part a roster cannot do for you: the invite
+carries a board key whose value the inviter sealed, and opening it proves the
+hub, the workspace **and** the key all match. A wrong key is caught here, not
+forty minutes later in a room that looks quiet.
+
+`switchboard keygen --as-invite` mints a brand-new room and emits one of these
+for it — a private side conversation is a room whose coordinates you invented
+rather than received, so it is handed over the same way. See
+[the model](docs/model.md) for the full picture.
+
 ## Upgrading
 
 Three different things live at three different scopes, which is easy to get
@@ -357,7 +392,10 @@ be encrypted — which is why `--new-key` pairs it with an opaque one rather
 than letting `acme/billing` become the most descriptive string the hub holds.
 
 `switchboard keygen` still prints a bare key and workspace name if you would
-rather distribute `SWITCHBOARD_KEY` through your own secret store.
+rather distribute `SWITCHBOARD_KEY` through your own secret store — or
+`keygen --as-invite` to hand the whole room over as
+[one string](#handing-a-room-to-somebody-who-is-not-set-up) instead of two
+values each side has to set correctly and separately.
 
 Message bodies, blackboard values, lease notes, branch names and task
 descriptions are sealed with AES-256-GCM before they leave the agent. Channel
