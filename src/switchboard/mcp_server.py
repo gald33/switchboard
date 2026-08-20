@@ -31,6 +31,7 @@ from .crypto import generate_key
 from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
+from .invite import Invite, InviteError
 from .signing import SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
@@ -95,6 +96,21 @@ def _now_iso() -> str:
 _STR = {"type": "string"}
 _NUM = {"type": "number"}
 _BOOL = {"type": "boolean"}
+
+
+#: Tools that act on a room, and therefore accept `room` to act on a joined
+#: one instead of the default. Added in one loop below rather than typed into
+#: fifteen schemas, so a tool added later is routable the moment it is
+#: room-scoped — the dispatcher already handles it.
+_ROOMLESS = {"help", "whoami", "keygen", "join_room"}
+
+_ROOM_PARAM = {
+    "type": "string",
+    "description": (
+        "A room handle from join_room, to act in a room you were invited to "
+        "rather than your own. Omit for your default room."
+    ),
+}
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -386,6 +402,30 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _schema({"prefix": _STR}),
     },
     {
+        "name": "join_room",
+        "description": (
+            "Enter a room somebody sent you an invite for — a string starting 'swb1_'. "
+            "It carries the hub, the workspace, the token and the key together, which "
+            "is the point: each of those must match the sender's exactly, and each one "
+            "fails SILENTLY when it does not. You would connect, announce, and appear "
+            "on a roster beside agents you cannot read, in a room that looks quiet. "
+            "Never assemble those four by hand from a message someone wrote you; pass "
+            "the whole string here.\n\n"
+            "Returns a 'room' handle to pass to any other tool — say, dm, inbox, "
+            "roster, claim, board_set and the rest — which reaches that room instead "
+            "of your default one. Your own room stays exactly as it was, and calls "
+            "without 'room' still go there.\n\n"
+            "Also returns 'verified'. If the invite carried a proof-of-room, this "
+            "opened a value only the right key can read, which is the ONLY thing that "
+            "proves you are where the sender meant — a roster listing you both does "
+            "not. If it is false, you are still in the room and can work, but say so "
+            "rather than assuming the coordination is real."
+        ),
+        "inputSchema": _schema({
+            "invite": {**_STR, "description": "the swb1_… string, pasted whole"},
+        }, ["invite"]),
+    },
+    {
         "name": "keygen",
         "description": (
             "Mint a fresh (key, workspace) pair for a private side-conversation with "
@@ -402,6 +442,12 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+for _tool in TOOLS:
+    if _tool["name"] not in _ROOMLESS:
+        _tool["inputSchema"]["properties"]["room"] = _ROOM_PARAM
+del _tool
+
+
 # --- the bridge -------------------------------------------------------------
 
 
@@ -414,10 +460,52 @@ class Bridge:
         self.client = Client(self.config, agent_id=self.identity.agent_id)
         self.timing = TimingModel(self.config.timing_db)
         self._registered = False
+        #: Rooms joined from an invite this session, by their workspace id.
+        #: Keyed by workspace rather than a counter so joining twice is the
+        #: same room rather than a second client on the same coordinates, and
+        #: so the handle a model quotes back is self-describing.
+        self._rooms: dict[str, Client] = {}
 
     def close(self) -> None:
+        for joined in self._rooms.values():
+            joined.close()
         self.client.close()
         self.timing.close()
+
+    def join_room(self, invite: str) -> dict[str, Any]:
+        """Take an invite and hold the room open for the rest of this session."""
+        try:
+            blob = Invite.decode(invite)
+        except InviteError as exc:
+            return {"joined": False, "error": str(exc)}
+        existing = self._rooms.get(blob.workspace)
+        if existing is not None:
+            existing.close()
+        client = Client.from_invite(blob, agent_id=self.identity.agent_id)
+        self._rooms[blob.workspace] = client
+
+        check = client.verify()
+        out = {
+            "joined": True,
+            # What to pass as `room` on every later call. Not a secret, and
+            # deliberately so: the key was handed over once, here, instead of
+            # riding along in the arguments of every message — where it would
+            # be written into the transcript once per call.
+            "room": blob.workspace,
+            "hub": blob.url,
+            "encrypted": bool(blob.key),
+            "verified": check.ok,
+            "verdict": check.verdict,
+            "detail": check.detail,
+        }
+        if blob.note:
+            out["note"] = blob.note
+        if not check.ok:
+            out["next"] = (
+                "You are in this room and can work in it, but nothing proved it "
+                "is the room the inviter meant. Say so rather than assuming."
+            )
+        return out
 
     def tools(self) -> list[dict[str, Any]]:
         """The tool list, with the execution-class shortlist filled in from
@@ -957,7 +1045,25 @@ class Bridge:
         handler: Callable[..., Any] | None = getattr(self, name, None)
         if handler is None or name.startswith("_") or name not in {t["name"] for t in TOOLS}:
             raise ValueError(f"unknown tool: {name}")
-        return handler(**arguments)
+        arguments = dict(arguments)
+        room = arguments.pop("room", None)
+        if not room:
+            return handler(**arguments)
+        # Swapped here rather than threaded through every tool. One place to
+        # get right, and a tool added next year is routable without anybody
+        # remembering to add a parameter to it — the same reason the hub
+        # enforces authorization in one dependency rather than 18 handlers.
+        joined = self._rooms.get(room)
+        if joined is None:
+            raise ValueError(
+                f"not in room {room!r} — call join_room with the invite first. "
+                f"Joined this session: {sorted(self._rooms) or 'none'}")
+        was = self.client
+        self.client = joined
+        try:
+            return handler(**arguments)
+        finally:
+            self.client = was
 
 
 # --- JSON-RPC plumbing ------------------------------------------------------

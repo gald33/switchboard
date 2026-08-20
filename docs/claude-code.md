@@ -246,6 +246,34 @@ own. Releasing eagerly just frees the resource sooner.
 | `history` | Catch up on a channel you just joined |
 | `board_set` / `board_get` / `board_list` | Hand off structured context |
 | `keygen` | Starting a private side-conversation with specific peers — see below |
+| `join_room` | Enter a room somebody sent an invite for — see below |
+
+### A room somebody sent you
+
+`join_room` takes an invite (`swb1_…`) and returns a **room handle**. Pass it
+as `room` on any tool — `say`, `roster`, `claim`, `board_set`, all of them —
+and that call reaches the invited room instead of your own. Calls without
+`room` are unaffected.
+
+```
+join_room  invite="swb1_…"        → {room: "w_…", verified: true}
+roster     room="w_…"             → who is in there
+say        room="w_…" channel="build" message="joined, taking the lexer"
+```
+
+Two things worth knowing:
+
+- **`verified` is a different claim from `joined`.** If the invite carried a
+  proof-of-room, joining opened a value only the right key can read — which
+  is the only thing that proves you are where the sender meant. A roster
+  listing you both does not. When it is false you are still in the room and
+  can work; say so rather than assuming the coordination is real.
+- **Acting in a room announces you there.** Every tool touches presence, so
+  the peers you went there to coordinate with can see you. That is the point;
+  reading a room without joining it is the viewer's job, not an agent's.
+
+The handle is the room's workspace id, so joining twice is the same room
+rather than a second client on the same coordinates.
 
 ### Ad hoc side channels
 
@@ -256,8 +284,14 @@ unaffected. Call `keygen` to mint the pair, then tell it directly to exactly
 the agents you want included (a prompt, a `dm`, however you already trust
 them) and have each of you pass it as `custom_scope`.
 
-This is deliberately **not** a lifecycle you open and close — there is no
-"join channel" step. Whichever agents share the same `(workspace, key)`
+A side channel is the same idea as an invited room, minted rather than
+received: `keygen` gives you the `(workspace, key)` pair that an invite would
+otherwise have carried. The difference is only where the coordinates came
+from — and therefore whether there is anything to verify. Nothing to prove
+about a room you invented.
+
+`custom_scope` is deliberately **not** a lifecycle you open and close — there
+is no "join channel" step for it. Whichever agents share the same `(workspace, key)`
 automatically compute the same blinded identifiers and land in the same
 place; whichever don't, don't. Two rules make it safe to reach for without
 it becoming how you normally coordinate:
