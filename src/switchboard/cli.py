@@ -44,6 +44,7 @@ from .config import (
     local_setting,
     machine_suffix,
     mcp_env,
+    rooms_warning,
 )
 from .crypto import CryptoError, generate_key
 from .guidance import SKILL_NAME, skill_history, skill_text
@@ -387,7 +388,31 @@ def _make_client(args: argparse.Namespace) -> Client:
     # leave the ones that only read — `agents`, `inbox` — silently reading a
     # second identity's cursor.
     _warn_identity_drift(args, identity)
+    _warn_unresolved_room(args, config)
     return Client(config, agent_id=identity.agent_id)
+
+
+#: Set once the rooms warning has been printed, so a command building two
+#: clients says it once. Same shape as `_DRIFT_WARNED` next door.
+_ROOMS_WARNED = False
+
+
+def _warn_unresolved_room(args: argparse.Namespace, config: ClientConfig) -> None:
+    """Say, on stderr, that this command is about to use a room the repo's own
+    file did not choose.
+
+    Here rather than in the commands that publish, for the same reason the
+    identity warning is: a command that only reads — `agents`, `inbox` — is
+    reading the wrong room just as thoroughly, and an empty answer from it is
+    the most convincing version of the failure.
+    """
+    global _ROOMS_WARNED
+    if _ROOMS_WARNED or getattr(args, "quiet", False):
+        return
+    note = rooms_warning(config)
+    if note:
+        _ROOMS_WARNED = True
+        print(note, file=sys.stderr)
 
 
 def _warn_isolated(

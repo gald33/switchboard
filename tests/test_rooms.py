@@ -141,3 +141,96 @@ def test_a_readable_token_does_not_become_a_readable_room(tmp_path):
 def test_the_derivation_is_stable_and_collision_free_enough(tmp_path):
     assert rooms.workspace_for("x") == rooms.workspace_for("x")
     assert len({rooms.workspace_for(str(n)) for n in range(500)}) == 500
+
+
+# --- a room the repo did not choose ------------------------------------------
+#
+# Resolution can fail two ways — a file too malformed to declare anything, and
+# a file that declares several rooms this environment can open — and both fall
+# through to the derived `default-<tag>` workspace. That is not one of the
+# rooms. Peers who *did* resolve the file are elsewhere, every command exits 0,
+# and an empty roster reads exactly like being first to arrive. It is the
+# failure the rooms file exists to remove, produced by the rooms file.
+
+
+def _two_openable(tmp_path, monkeypatch):
+    write(tmp_path, [
+        {"name": "main", "key_id": "default", "workspace_token": "tok-main"},
+        {"name": "guest", "key_id": "guest", "workspace_token": "tok-guest"},
+    ])
+    monkeypatch.setenv("SWITCHBOARD_KEY", "k" * 43)
+    monkeypatch.setenv("SWITCHBOARD_KEY_GUEST", "g" * 43)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_ROOM", raising=False)
+
+
+def test_an_unresolved_rooms_file_is_reported_rather_than_silently_defaulted(
+    tmp_path, monkeypatch,
+):
+    from switchboard.config import rooms_warning
+
+    _two_openable(tmp_path, monkeypatch)
+    config = ClientConfig.from_env(tmp_path)
+
+    # The fallback still happens — raising here would break `--help`, which is
+    # why it was swallowed in the first place. What changes is that it says so.
+    assert config.workspace.startswith("default-")
+    assert config.room_problem is not None
+    note = rooms_warning(config)
+    assert note is not None
+    assert "guest, main" in note
+    assert config.workspace in note          # names the room it actually used
+
+
+def test_a_malformed_rooms_file_is_reported_the_same_way(tmp_path, monkeypatch):
+    """The other route to the same place. `switchboard rooms` already said so,
+    and that is not enough: nobody runs `rooms` while everything exits 0."""
+    from switchboard.config import rooms_warning
+
+    (tmp_path / rooms.ROOMS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rooms.ROOMS_FILE).write_text("{not json")
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+
+    config = ClientConfig.from_env(tmp_path)
+    assert config.workspace.startswith("default-")
+    assert "not valid JSON" in (rooms_warning(config) or "")
+
+
+def test_resolving_cleanly_says_nothing(tmp_path, monkeypatch):
+    from switchboard.config import rooms_warning
+
+    _two_openable(tmp_path, monkeypatch)
+    monkeypatch.setenv("SWITCHBOARD_ROOM", "guest")
+    config = ClientConfig.from_env(tmp_path)
+
+    assert config.workspace == rooms.workspace_for("tok-guest")
+    assert config.room_problem is None
+    assert rooms_warning(config) is None
+
+
+def test_an_exported_workspace_settles_it_and_silences_the_warning(
+    tmp_path, monkeypatch,
+):
+    """The ambiguity is only a problem because of what it falls back to. Told
+    the workspace outright, there is nothing left to warn about, and doing so
+    anyway would be nagging somebody who already decided."""
+    from switchboard.config import rooms_warning
+
+    _two_openable(tmp_path, monkeypatch)
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "w_chosen")
+    config = ClientConfig.from_env(tmp_path)
+
+    assert (config.workspace, config.room_problem) == ("w_chosen", None)
+    assert rooms_warning(config) is None
+
+
+def test_a_repo_with_no_rooms_file_is_not_warned_about(tmp_path, monkeypatch):
+    """Most repos. The derived default is the correct answer there, not a
+    fallback from anything, and a warning would fire on every command."""
+    from switchboard.config import rooms_warning
+
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    config = ClientConfig.from_env(tmp_path)
+
+    assert config.room_problem is None
+    assert rooms_warning(config) is None

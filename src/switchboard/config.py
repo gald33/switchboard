@@ -398,22 +398,31 @@ def default_workspace(directory: Path | str | None = None) -> str:
     return f"default-{machine_suffix(root)}"
 
 
-def _selected_room(directory: Path):
-    """The room this repo and this environment agree on, or None.
+def _selected_room(directory: Path) -> tuple[rooms.Room | None, str | None]:
+    """The room this repo and this environment agree on, and why not if not.
 
-    Deliberately swallows a resolution failure rather than raising here.
-    `from_env` is on the path of every command, including ones that have
-    nothing to do with a hub, so a malformed rooms file must not make
-    `switchboard --help` fail. The failure surfaces where it is actionable —
-    see `switchboard rooms`, which reports it in full.
+    Still swallows the failure rather than raising: `from_env` is on the path
+    of every command, including ones with nothing to do with a hub, so a
+    malformed rooms file must not make `switchboard --help` fail.
+
+    But it no longer swallows it *silently*, and that distinction is the whole
+    of this change. Not resolving means falling through to a derived
+    `default-<tag>` workspace — a room neither the file nor the environment
+    names — and that outcome is indistinguishable from a repo with no rooms
+    file at all. A repo declaring two rooms you hold keys for would put you
+    somewhere neither of them is, with every command exiting 0: exactly the
+    "agent ends up alone" failure the rooms file exists to remove, produced by
+    the mechanism meant to remove it.
+
+    So the reason comes back with the answer, for a caller to say out loud.
     """
     try:
         declared = rooms.load(directory)
         if not declared:
-            return None
-        return rooms.select(declared)
-    except rooms.RoomsError:
-        return None
+            return None, None
+        return rooms.select(declared), None
+    except rooms.RoomsError as exc:
+        return None, str(exc)
 
 
 @dataclass
@@ -427,6 +436,12 @@ class ClientConfig:
     #: telling them apart is the whole of `isolation_warning`. Kept in step by
     #: every later tier that overrides the URL — see the CLI's `_make_config`.
     url_source: str = "default"
+    #: Why this repo's rooms file did not settle on one room, when it had
+    #: something to say and could not. Carried for the same reason
+    #: `url_source` is: the fallback is a plain string, so by the time anyone
+    #: reads `workspace` a room nobody chose looks exactly like a room somebody
+    #: did. See `rooms_warning`.
+    room_problem: str | None = None
     token: str | None = None
     workspace: str = field(default_factory=default_workspace)
     agent_id: str | None = None
@@ -485,7 +500,7 @@ class ClientConfig:
         key = os.environ.get("SWITCHBOARD_KEY") or None
 
         where = Path.cwd() if directory is None else directory
-        room = _selected_room(where)
+        room, room_problem = _selected_room(where)
         if room is not None:
             if url is None and room.hub_url:
                 url, url_source = room.hub_url, "rooms"
@@ -500,6 +515,11 @@ class ClientConfig:
             # process's cwd: a hook or a bridge asking about a checkout it is
             # not sitting inside would otherwise derive somebody else's repo.
             workspace=workspace or default_workspace(where),
+            # Only when nothing else supplied the workspace. An exported
+            # `SWITCHBOARD_WORKSPACE` settles the question the rooms file
+            # could not, so the file's ambiguity is no longer anybody's
+            # problem and saying so would be nagging.
+            room_problem=None if workspace else room_problem,
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
             key=key,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
@@ -713,6 +733,35 @@ def rooms_in(directory: Path | str | None = None, *,
         return []
     return [RepoRoom(label=where.resolve().name or base.workspace, directory=where,
                      config=base, source="mcp.json")]
+
+
+def rooms_warning(config: ClientConfig) -> str | None:
+    """Text saying this agent is in a room its own repo did not choose.
+
+    The sibling of `isolation_warning`, for the other half of the same
+    failure. That one catches a hub nobody else can reach; this one catches a
+    *workspace* nobody named — a repo that declares rooms, could not be
+    resolved to one of them, and therefore fell through to the derived
+    `default-<tag>`.
+
+    Everything stays green through it. The hub is fine, register succeeds, and
+    the roster is empty because you are the only agent who resolved to this
+    room. The peers you meant to find are in the room the file names, and
+    nothing connects the two facts — the whole reason `switchboard rooms` was
+    the only command that mentioned it, and the whole reason that is not
+    enough: nobody runs `rooms` when everything is exiting 0.
+    """
+    if not config.room_problem:
+        return None
+    return (
+        # "has a rooms file" rather than "declares rooms": one of the two ways
+        # to get here is a file too malformed to declare anything.
+        f"warning: this repo has a rooms file, but {config.room_problem}.\n"
+        f"Falling back to workspace {config.workspace}, which is not one of "
+        "them — peers who\nresolved the file will be somewhere else, and an "
+        "empty roster here looks exactly\nlike being first to arrive. "
+        "`switchboard rooms` shows what this repo declares."
+    )
 
 
 def isolation_warning(config: ClientConfig, kind: str) -> str | None:

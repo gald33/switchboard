@@ -273,6 +273,7 @@ command exiting 0 — and they have different causes:
 | Different workspace | you are alone; peers are alone too | `SWITCHBOARD_WORKSPACE` |
 | Different key, same workspace | peers appear, names will not open | `SWITCHBOARD_KEY` |
 | Different hub | you are alone; peers never appear | `SWITCHBOARD_URL` |
+| A rooms file that did not resolve | you are alone in `default-<tag>`, a room the file does not name | `switchboard rooms` |
 
 All three are the same shape: a value that had to match a peer's, set
 separately on each side. An **invite** removes the shape rather than the
@@ -289,6 +290,15 @@ only inside the container that started it. This is what a repo `init --local`
 wired up looks like once it is cloned somewhere that is not that laptop: the
 URL is committed in `.mcp.json`, so a cloud session or CI runner picks it up
 and dials a hub of its own.
+
+The fourth is the rooms file failing at the one job it has. Resolution can
+fail two ways — a file too malformed to declare anything, and a file declaring
+several rooms this environment holds keys for — and both fall through to the
+derived `default-<tag>` workspace, which is not one of them. Every command
+still exits 0. For a while only `switchboard rooms` mentioned it, which is not
+enough: nobody runs `rooms` while everything is working. Now any command that
+reaches a hub says so on stderr, and the MCP `whoami` returns it as a
+`WARNING`, because an agent driving the bridge never runs the CLI.
 
 Switchboard warns about that case rather than leaving it to be discovered. A
 `cloud` or `ci` agent whose hub URL is loopback *and* came from a committed

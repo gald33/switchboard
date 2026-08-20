@@ -991,3 +991,36 @@ def test_a_named_key_the_agent_does_hold_joins_and_reports_encrypted(hub, monkey
     assert is_error is False
     assert payload["joined"] is True
     assert payload["encrypted"] is True
+
+
+def test_whoami_tells_a_model_it_is_in_a_room_the_repo_did_not_choose(
+    hub, tmp_path, monkeypatch,
+):
+    """An agent driving the bridge never runs the CLI, so a CLI-only warning
+    would miss the audience this failure hits hardest — a cloud session that
+    registers, sees nobody, and reports back that it is first to arrive."""
+    import json as _json
+
+    from switchboard import rooms
+
+    path = tmp_path / rooms.ROOMS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"rooms": [
+        {"name": "main", "key_id": "default", "workspace_token": "tok-main"},
+        {"name": "guest", "key_id": "guest", "workspace_token": "tok-guest"},
+    ]}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SWITCHBOARD_KEY", "k" * 43)
+    monkeypatch.setenv("SWITCHBOARD_KEY_GUEST", "g" * 43)
+    monkeypatch.delenv("SWITCHBOARD_WORKSPACE", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_ROOM", raising=False)
+
+    from switchboard.config import ClientConfig
+
+    bridge = make_bridge(hub, "a1")
+    bridge.config = ClientConfig.from_env(tmp_path)
+
+    payload, is_error = call(bridge, "whoami")
+    assert is_error is False
+    assert "rooms file" in payload["WARNING"]
+    assert "guest, main" in payload["WARNING"]
