@@ -27,6 +27,23 @@ witness, and everything expires.
 | **hub token** | gets you through the front door | everyone, or one operator's users | committed `.mcp.json` when public; the environment when it is a secret |
 | **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere |
 
+An **invite** is those first three bundled into one string, so the values that
+have to match a peer's cannot be assembled wrongly one at a time — every one
+of them fails silently, and the result is a room you are alone in that looks
+like a quiet one. `Client.from_invite(blob)` is the whole of joining; it does
+no I/O, because verification is a round trip and belongs to the caller.
+
+`verify()` then reads the invite's **proof-of-room**: a board key whose value
+the inviter sealed. Opening it proves the hub, the workspace *and* the key all
+match, which a roster listing you both does not. Three verdicts, because two
+of the failures need opposite responses:
+
+| | Means |
+|---|---|
+| `verified` | opened what the inviter sealed |
+| `wrong_room` | the board holds entries this key cannot open — your key differs from theirs |
+| `probe_gone` | the board reads cleanly and simply lacks the probe. It expired; nothing suggests the key is wrong |
+
 ## The five rules
 
 **1. Identifiers are derived, never assigned.**

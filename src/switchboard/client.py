@@ -14,7 +14,7 @@ import secrets
 import socket
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 import httpx
@@ -22,6 +22,7 @@ import httpx
 from . import peers, signing
 from .config import ClientConfig
 from .crypto import DecryptionError, WorkspaceCipher, looks_sealed
+from .invite import PROBE_SENTINEL, Invite
 from .signing import SigningIdentity
 
 __all__ = [
@@ -366,7 +367,111 @@ def _board_labelled(opened: Any) -> bool:
 _UNSET: Any = object()
 
 
+@dataclass(frozen=True)
+class RoomCheck:
+    """What an invite's proof-of-room turned out to say.
+
+    Reaching a hub proves nothing about being in the right room: a wrong key
+    connects, registers, and lists you on a roster beside the peers you cannot
+    read. Only opening a value the inviter sealed distinguishes "same room"
+    from "same hub", which is what a probe is for.
+    """
+
+    #: Opened the inviter's proof. False for every other outcome, including
+    #: the ones that are nobody's fault, because a caller deciding whether to
+    #: start work wants one question answered.
+    ok: bool
+    #: `verified`, `wrong_room`, or `no_probe`.
+    verdict: str
+    #: A sentence for a human, already saying what to do about it.
+    detail: str
+
+
 class _Base:
+    #: The invite this client was built from, when it was. Carries the probe
+    #: `verify()` checks, and is what makes a joined room re-describable.
+    invite: Invite | None = None
+
+    @classmethod
+    def from_invite(cls, blob: str | Invite, *, agent_id: str | None = None,
+                    **kwargs: Any) -> Any:
+        """A client for a room somebody sent you.
+
+        The whole of joining, from one string: hub, workspace, token and key
+        arrive together, so the four values that must each match a peer's
+        cannot be assembled wrongly one at a time. That is the failure this
+        exists to remove — every one of them fails *silently*, leaving you
+        alone in a room that looks quiet.
+
+        Deliberately does no I/O. Verification is a round trip and belongs to
+        the caller's event loop, not a constructor: see `verify()`, which the
+        sync and async clients each implement in their own idiom.
+
+        Everything else about this process is kept — identity, timing history,
+        peer log — because those are properties of *you*, not of the room you
+        were invited to.
+        """
+        invite = blob if isinstance(blob, Invite) else Invite.decode(blob)
+        config = replace(
+            ClientConfig.from_env(),
+            url=invite.url, url_source="invite", workspace=invite.workspace,
+            token=invite.token, key=invite.key,
+        )
+        client = cls(config, agent_id=agent_id, key=invite.key, **kwargs)
+        client.invite = invite
+        return client
+
+    _VERIFIED = RoomCheck(
+        True, "verified",
+        "opened a sealed value the inviter left in that room, which proves the "
+        "hub, the workspace and the key all match — something a roster listing "
+        "you both does not")
+    _WRONG_ROOM = RoomCheck(
+        False, "wrong_room",
+        "reached that hub and workspace but could not read the proof the "
+        "inviter left, so your key does not match theirs: you would appear on "
+        "each other's roster and be able to exchange nothing. Ask for a fresh "
+        "invite rather than editing settings")
+    _PROBE_GONE = RoomCheck(
+        False, "probe_gone",
+        "the proof the inviter left is not on the blackboard. Everything here "
+        "expires, so it has most likely aged out — nothing suggests your key is "
+        "wrong. Ask for a fresh invite if you want this checked")
+
+    def _read_proof(self, value: Any, board: list[dict[str, Any]]) -> RoomCheck:
+        """The verdict, once the probe and the board are in hand.
+
+        Two failures look identical from `board_get` alone, and they call for
+        opposite responses. A wrong key blinds the probe's name to a token
+        nobody stored, so the hub 404s — exactly as it does for a probe that
+        has expired. Answering "wrong key" to both sends somebody off to
+        re-key a room whose key was fine.
+
+        What separates them is the rest of the board: an entry whose *name*
+        did not come back is one this key could not open, and a key that
+        cannot open the room's other entries is the explanation. A board that
+        reads cleanly and simply lacks the probe is a probe that expired.
+
+        Shared by the sync and async clients so one security answer cannot
+        have two wordings, and costs a second read only when the first fails.
+        """
+        if value == PROBE_SENTINEL:
+            return self._VERIFIED
+        return self._WRONG_ROOM if self._holds_unreadable(board) else self._PROBE_GONE
+
+    def _holds_unreadable(self, board: list[dict[str, Any]]) -> bool:
+        """Whether any board entry came back under a name this key could not
+        recover. Meaningless without encryption, where every key is its own
+        plaintext — hence the guard, not an oversight."""
+        if not self.encrypted:
+            return False
+        return any(e.get("key") == e.get("hub_key") for e in board)
+
+    def _no_probe(self) -> RoomCheck:
+        return RoomCheck(False, "no_probe",
+                         "this invite carries no proof-of-room, so nothing here "
+                         "can check that these settings reach the room it describes")
+
     def __init__(self, config: ClientConfig | None = None, *, agent_id: str | None = None,
                  key: str | None = None) -> None:
         self.config = config or ClientConfig.from_env()
@@ -930,6 +1035,20 @@ class Client(_Base):
             timeout=timeout,
         )
 
+    def verify(self) -> RoomCheck:
+        """Check the invite's proof-of-room, if it carried one.
+
+        One board read. Cheap enough to do at join and worth doing there: the
+        alternative is finding out an hour later, from an empty room that
+        looks like a quiet one.
+        """
+        if self.invite is None or not self.invite.probe:
+            return self._no_probe()
+        value = self.board_get(self.invite.probe)
+        if value == PROBE_SENTINEL:
+            return self._VERIFIED
+        return self._read_proof(value, self.board_list())
+
     def __enter__(self) -> Client:
         return self
 
@@ -1157,6 +1276,15 @@ class AsyncClient(_Base):
             headers=_headers(self.config.effective_token()),
             timeout=timeout,
         )
+
+    async def verify(self) -> RoomCheck:
+        """The async half of `Client.verify`. Same verdicts, same wording."""
+        if self.invite is None or not self.invite.probe:
+            return self._no_probe()
+        value = await self.board_get(self.invite.probe)
+        if value == PROBE_SENTINEL:
+            return self._VERIFIED
+        return self._read_proof(value, await self.board_list())
 
     async def __aenter__(self) -> AsyncClient:
         return self

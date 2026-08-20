@@ -20,6 +20,7 @@ from .client import (
     Client,
     Identity,
     LeaseHeld,
+    RoomCheck,
     SwitchboardError,
     detect_identity,
 )
@@ -30,6 +31,7 @@ from .crypto import (
     WorkspaceCipher,
     generate_key,
 )
+from .invite import PROBE_SENTINEL, Invite, InviteError
 from .notify import Notifier
 from .store import (
     Agent,
@@ -46,7 +48,11 @@ from .timing import unwrap_forecast, wrap_forecast
 __version__ = "0.9.0"
 
 __all__ = [
+    "Invite",
+    "InviteError",
+    "PROBE_SENTINEL",
     "Perimeter",
+    "RoomCheck",
     "__version__",
     # client
     "Client",
