@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 
 import pytest
-import tomllib
 
 from switchboard import __version__
 
@@ -30,7 +29,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _project_version(pyproject: Path) -> str:
-    return tomllib.loads(pyproject.read_text())["project"]["version"]
+    """The `version` a pyproject declares, read without a TOML parser.
+
+    `tomllib` is stdlib only from 3.11 and this suite runs on 3.10 — which is
+    exactly how the first version of this file went red on one matrix leg
+    while passing locally. `tomli` is in the dev install, but only
+    transitively, and a test resting on somebody else's dependency breaks when
+    they drop it.
+
+    One anchored line, and exactly one: a second `version =` at column zero
+    would mean this file is not the shape assumed here, and taking the first
+    match would quietly read the wrong table.
+    """
+    found = re.findall(r'^version\s*=\s*"([^"]+)"',
+                       pyproject.read_text(), re.MULTILINE)
+    assert len(found) == 1, f"{pyproject} declares {len(found)} versions: {found}"
+    return found[0]
 
 
 def test_the_wheel_is_labelled_what_the_code_reports():
