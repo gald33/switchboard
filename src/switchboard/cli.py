@@ -316,7 +316,59 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
         config.workspace = args.workspace
     if getattr(args, "key", None):
         config.key = args.key
-    return config
+    return _apply_invite(config, args)
+
+
+def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
+    """Fold `--invite` in, above every other tier.
+
+    An invite outranks the environment on purpose, and it is the one tier
+    where that is a safety property rather than a convenience. An agent with a
+    `SWITCHBOARD_KEY` exported — which is most of them, because `init` exports
+    one — that is handed a room and reads its own key anyway does not fail:
+    it joins the workspace it was pointed at, on a key nobody there holds, and
+    sits in a room that looks quiet. Anything less than "the invite wins" makes
+    `--invite` a suggestion, and a suggestion cannot be relied on to move an
+    agent into somebody else's room.
+
+    A flag that contradicts the invite is refused rather than merged. The four
+    values are a room; overriding one of them describes a room nobody is in,
+    and the whole reason invites exist is that arriving in one fails silently.
+    Agreeing with the invite is fine — a script that passes both is not
+    confused about which room it means.
+    """
+    blob = getattr(args, "invite", None)
+    if not blob:
+        return config
+    room = invite.Invite.decode(blob)
+    clashes = [
+        flag
+        for flag, given, carried in (
+            ("--url", (args.url or "").rstrip("/"), room.url.rstrip("/")),
+            ("--token", args.token, room.token),
+            ("--workspace", args.workspace, room.workspace),
+            ("--key", getattr(args, "key", None), room.key),
+        )
+        if given and given != carried
+    ]
+    if clashes:
+        raise invite.InviteError(
+            f"{', '.join(clashes)} disagrees with --invite. An invite is a whole "
+            "room — hub, workspace, token and key travel together — so overriding "
+            "one of them describes a room nobody is in. Drop the flag, or drop "
+            "the invite."
+        )
+    return replace(
+        config, url=room.url.rstrip("/"), url_source="invite",
+        workspace=room.workspace,
+        # A field the invite omits means "you already hold this" — that is
+        # what `invite --no-key` and `--no-token` are *for* — so it falls back
+        # rather than clearing. Wiping a key the environment has would send an
+        # agent into an encrypted room in the clear, which is the silent
+        # failure again wearing the fix's clothes.
+        token=room.token or config.token,
+        key=room.key or config.key,
+    )
 
 
 #: Set once the drift warning has been printed, so a command that builds two
@@ -2109,7 +2161,9 @@ def cmd_invite(args: argparse.Namespace) -> int:
             + fmt.yellow("This is a credential.")
             + " It carries the token and the workspace key, so it\ngrants "
               "everything you have. Hand it over the way you would a password.\n\n"
-              "The other side runs:  switchboard join <the string above>",
+              "The other side runs:  switchboard join <the string above>\n"
+              "  ...or, for one command in that room and no local change:\n"
+              "                      switchboard --invite <the string> say build hi",
             file=sys.stderr,
         )
         _offer_clipboard(blob.encode(), "the invite", args)
@@ -2121,46 +2175,56 @@ def cmd_join(args: argparse.Namespace) -> int:
 
     Printing the settings is not the point — being in the same room is, and
     those are different claims. A roster listing both of you proves nothing:
-    that is exactly what the forty-minute failure looked like. So this writes a
-    probe and reads it back, which only succeeds if the key matches, and says
-    plainly which of the two it confirmed.
+    that is exactly what the forty-minute failure looked like. So this opens a
+    value the *inviter* sealed, which only their key could have produced.
+
+    The verdict comes from `Client.verify()` rather than from a comparison
+    written out again here. Two of the failures are indistinguishable from one
+    read — a wrong key blinds the probe's name to a token nobody stored, so the
+    hub 404s exactly as it does for a probe that aged out — and telling them
+    apart takes a second read this used to skip, answering "wrong key" to an
+    expired probe and sending somebody off to re-key a room whose key was fine.
+    One implementation, one wording, in the place the SDK already tests it.
     """
     fmt = Fmt(_use_color(sys.stdout))
+    blob = getattr(args, "invite", None)
+    if not blob:
+        print("error: join needs the invite string — `switchboard join swb1_...`, "
+              "the one\n`switchboard invite` printed on the other side.",
+              file=sys.stderr)
+        return EXIT_ERROR
     try:
-        blob = invite.Invite.decode(args.invite)
+        room = invite.Invite.decode(blob)
     except invite.InviteError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
-    print(blob.env_block())
-    if args.json:
-        _print_json({
-            "url": blob.url, "workspace": blob.workspace,
-            "encrypted": bool(blob.key), "note": blob.note,
-        })
+    print(room.env_block())
 
     if args.no_verify:
+        if args.json:
+            _print_json({
+                "url": room.url, "workspace": room.workspace,
+                "encrypted": bool(room.key), "note": room.note,
+                "verdict": "unchecked",
+            })
         return EXIT_OK
 
-    # Verify by round-tripping a sealed value through the hub. A peer on a
-    # different key cannot produce one we can open, which is the only check
-    # that distinguishes "same room" from "same roster".
-    config = _make_config(args)
-    config = replace(
-        config, url=blob.url, url_source="flag",
-        workspace=blob.workspace, token=blob.token, key=blob.key,
-    )
-    if not blob.probe:
-        print(
-            f"\n{fmt.yellow('cannot verify')} — this invite carries no proof-of-room. "
-            "The settings\nabove are what it said; nothing checked them.",
-            file=sys.stderr,
-        )
-        return EXIT_OK
+    # Verify by opening a sealed value through the hub. A peer on a different
+    # key cannot produce one we can read, which is the only check that
+    # distinguishes "same room" from "same roster".
     try:
-        with Client(config, agent_id=f"join-probe-{secrets.token_hex(4)}") as hub:
-            back = hub.board_get(blob.probe)
+        with Client.from_invite(
+            room, agent_id=f"join-probe-{secrets.token_hex(4)}"
+        ) as peer:
+            check = peer.verify()
     except (SwitchboardError, OSError, CryptoError) as exc:
+        if args.json:
+            _print_json({
+                "url": room.url, "workspace": room.workspace,
+                "encrypted": bool(room.key), "note": room.note,
+                "verdict": "unreachable", "detail": str(exc),
+            })
         print(
             f"\n{fmt.red('could not reach that room')}: {exc}\n"
             "The settings above are what the invite said; something between "
@@ -2168,15 +2232,45 @@ def cmd_join(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_ERROR
-    if back != invite.PROBE_SENTINEL:
+
+    if args.json:
+        _print_json({
+            "url": room.url, "workspace": room.workspace,
+            "encrypted": bool(room.key), "note": room.note,
+            "verdict": check.verdict, "ok": check.ok, "detail": check.detail,
+        })
+
+    if check.verdict == "no_probe":
+        print(
+            f"\n{fmt.yellow('cannot verify')} — this invite carries no "
+            "proof-of-room. The settings\nabove are what it said; nothing "
+            "checked them.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+
+    if check.verdict == "probe_gone":
+        # Not a failure to act on, and emphatically not a key problem: saying
+        # so is the point. Everything here expires; the invite simply outlived
+        # the proof it referred to.
+        print(
+            f"\n{fmt.yellow('cannot verify')} — the proof the inviter left is no "
+            "longer on the\nblackboard. Everything here expires, so it has most "
+            "likely aged out;\nnothing suggests your key is wrong. Ask for a fresh "
+            "invite to have this\nchecked.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+
+    if not check.ok:
         # Reached the hub, could not open what the inviter left. Same hub, same
         # workspace, different key — two agents listed on one roster, able to
         # exchange nothing. Exactly the forty minutes this exists to save.
         print(
-            f"\n{fmt.red('WRONG ROOM')} — reached that hub and workspace, but could not "
-            f"read\nthe proof the inviter left. Your key does not match theirs.\n\n"
-            f"You would have appeared on each other's roster and been unable to\n"
-            f"exchange anything. Ask for a fresh invite rather than editing settings.",
+            f"\n{fmt.red('WRONG ROOM')} — reached that hub and workspace, but could "
+            "not read\nthe proof the inviter left. Your key does not match theirs.\n\n"
+            "You would have appeared on each other's roster and been unable to\n"
+            "exchange anything. Ask for a fresh invite rather than editing settings.",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -2185,11 +2279,10 @@ def cmd_join(args: argparse.Namespace) -> int:
         f"\n{fmt.green('verified')} — opened a sealed value the inviter left in that "
         f"room.\nThat proves the hub, the workspace AND the key all match, which a "
         f"roster\nlisting you both does not."
-        + (f"\n\n{blob.note}" if blob.note else ""),
+        + (f"\n\n{room.note}" if room.note else ""),
         file=sys.stderr,
     )
     return EXIT_OK
-
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -3619,6 +3712,7 @@ _GLOBAL_FLAGS: tuple[tuple[tuple[str, ...], dict[str, Any]], ...] = (
     (("-w", "--workspace"), {}),
     (("--agent-id",), {}),
     (("--key",), {}),
+    (("--invite",), {}),
     (("--json",), {"action": "store_true"}),
     (("-q", "--quiet"), {"action": "store_true"}),
 )
@@ -3672,6 +3766,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--key",
         help="key for end-to-end encryption (env: SWITCHBOARD_KEY). "
              "Never sent to the hub; generate one with `switchboard keygen`.",
+    )
+    parser.add_argument(
+        "--invite",
+        help="run this one command in the room an invite describes (from "
+             "`switchboard invite`). Hub, workspace, token and key come from the "
+             "string and outrank the environment; nothing on disk is changed.",
     )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress success chatter")
@@ -3927,7 +4027,12 @@ def build_parser() -> argparse.ArgumentParser:
                     "'same room' from 'same roster' — two agents listed together on one "
                     "hub, on different keys, see each other and can exchange nothing.",
     )
-    p.add_argument("invite", help="the string from `switchboard invite`")
+    # SUPPRESS, not None: this dest is shared with the global `--invite`, and a
+    # plain default would overwrite it with nothing whenever the positional is
+    # absent — so `switchboard --invite <blob> join` would lose the invite. See
+    # `_accept_global_flags_after_subcommand`, which relies on the same trick.
+    p.add_argument("invite", nargs="?", default=argparse.SUPPRESS,
+                   help="the string from `switchboard invite`")
     p.add_argument("--no-verify", action="store_true",
                    help="print the settings without touching the hub")
     p.set_defaults(func=cmd_join)
@@ -4239,6 +4344,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"encryption error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except SwitchboardError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except invite.InviteError as exc:
+        # Raised by `--invite` on any command, from inside `_make_config` — so
+        # every command gets the parse error as a sentence rather than the
+        # traceback each would otherwise have to catch for itself.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except KeyboardInterrupt:

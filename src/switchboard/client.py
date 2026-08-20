@@ -412,12 +412,18 @@ class _Base:
         were invited to.
         """
         invite = blob if isinstance(blob, Invite) else Invite.decode(blob)
+        env = ClientConfig.from_env()
+        # A field the invite omits means "you already hold this" — that is what
+        # `invite --no-key` and `--no-token` are for — so it falls back to the
+        # environment rather than clearing it. Wiping a key this process has
+        # would put it into an encrypted room in the clear: alone, on a roster,
+        # reading nothing. The silent failure again, wearing the fix's clothes.
+        key = invite.key or env.key
         config = replace(
-            ClientConfig.from_env(),
-            url=invite.url, url_source="invite", workspace=invite.workspace,
-            token=invite.token, key=invite.key,
+            env, url=invite.url, url_source="invite", workspace=invite.workspace,
+            token=invite.token or env.token, key=key,
         )
-        client = cls(config, agent_id=agent_id, key=invite.key, **kwargs)
+        client = cls(config, agent_id=agent_id, key=key, **kwargs)
         client.invite = invite
         return client
 

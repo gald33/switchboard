@@ -44,6 +44,24 @@ of the failures need opposite responses:
 | `wrong_room` | the board holds entries this key cannot open — your key differs from theirs |
 | `probe_gone` | the board reads cleanly and simply lacks the probe. It expired; nothing suggests the key is wrong |
 
+The same string works from all three surfaces, and none of them touches your
+environment or your checkout:
+
+| | |
+|---|---|
+| SDK | `Client.from_invite(blob)`, then `verify()` |
+| CLI | `--invite <blob>` on any command — one invocation runs in that room |
+| MCP | `join_room` returns a handle; `room=` on any tool routes there |
+
+A field the invite omits means "you already hold this" — that is what
+`invite --no-key` and `--no-token` produce — so it falls back to the
+environment. A field it carries **outranks** the environment, which is a
+safety property rather than a convenience: nearly every agent has a key
+exported, and an invite that lost to it would land the agent in the right
+workspace on the wrong key. Registered, on a roster, reading nothing. A flag
+that contradicts an invite is refused rather than merged; a half-invite
+describes a room nobody is in.
+
 ## The five rules
 
 **1. Identifiers are derived, never assigned.**
