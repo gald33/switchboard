@@ -44,6 +44,7 @@ def make_bridge(hub: Hub, agent_id: str = "mcp-agent") -> Bridge:
     bridge.client = hub.client(agent_id, agent_id=agent_id)
     bridge.timing = TimingModel(":memory:")
     bridge._registered = False
+    bridge._rooms = {}
     return bridge
 
 
@@ -808,3 +809,151 @@ def test_the_raw_proof_never_reaches_the_model():
     # 43 characters of base64 per message with no decision attached to them.
     out = _project(_msg(signature={"status": "mismatch", "seq": 2, "key": "K" * 43}))
     assert "K" * 43 not in json.dumps(out)
+
+
+# --- rooms you were invited to ----------------------------------------------
+#
+# An agent handed an invite could previously do nothing with it: `join` printed
+# an env block for a human, and `custom_scope` is same-hub by construction. The
+# room handle is what closes that, and the two properties worth holding are
+# that a joined room is *reachable* and that reaching it does not disturb the
+# default one.
+
+
+OTHER = "w_invited-room"
+
+
+def invited(hub, monkeypatch, *, key=None, probe="join/probe/abcd", note=""):
+    """An invite to a second room on this hub, with a probe already in it."""
+    from switchboard.crypto import generate_key
+    from switchboard.invite import PROBE_SENTINEL, Invite
+    from switchboard.testing import BASE_URL
+
+    room_key = generate_key()
+    host = hub.client("host", workspace=OTHER, key=room_key, agent_id="host")
+    host.register(name="host:main", kind="local")
+    host.board_set("join/probe/abcd", PROBE_SENTINEL)
+    # The bridge builds its own client from the invite; bind it to this hub.
+    monkeypatch.setattr(mcp_server, "Client", hub.client_class())
+    return Invite(url=BASE_URL, workspace=OTHER,
+                  key=key if key is not None else room_key,
+                  probe=probe, note=note).encode()
+
+
+def test_an_invite_becomes_a_room_handle(hub, monkeypatch):
+    bridge = make_bridge(hub)
+    payload, error = call(bridge, "join_room", invite=invited(hub, monkeypatch))
+
+    assert error is False
+    assert payload["joined"] is True
+    # The handle is the workspace, so joining twice is the same room and the
+    # value a model quotes back says which room it means.
+    assert payload["room"] == OTHER
+    assert payload["verified"] is True
+    assert payload["verdict"] == "verified"
+
+
+def test_a_handle_reaches_that_room_and_leaves_the_default_alone(hub, monkeypatch):
+    """The property the whole handle exists for, and the one a swap could
+    quietly break: work must land where it was addressed."""
+    bridge = make_bridge(hub)
+    call(bridge, "join_room", invite=invited(hub, monkeypatch))
+
+    call(bridge, "say", channel="build", message="for the invited room", room=OTHER)
+    call(bridge, "say", channel="build", message="for my own room")
+
+    there, _ = call(bridge, "history", channel="build", room=OTHER)
+    here, _ = call(bridge, "history", channel="build")
+    assert [m["body"] for m in there["messages"]] == ["for the invited room"]
+    assert [m["body"] for m in here["messages"]] == ["for my own room"]
+
+
+def test_the_roster_of_a_joined_room_is_that_rooms_roster(hub, monkeypatch):
+    """And this agent is on it.
+
+    Every tool touches presence, so acting in a joined room announces you
+    there — which is what should happen. An agent that speaks in a room but
+    never appears in its roster is invisible to exactly the peers it is
+    trying to coordinate with, and invisibility is the failure this project
+    exists to remove. Watching without joining is the viewer's job, not an
+    agent's.
+    """
+    bridge = make_bridge(hub)
+    call(bridge, "join_room", invite=invited(hub, monkeypatch))
+
+    payload, _ = call(bridge, "roster", room=OTHER)
+
+    assert sorted(a["name"] for a in payload["agents"]) == ["host:main", "mcp agent"]
+    # And announcing there did not announce here.
+    mine, _ = call(bridge, "roster")
+    assert [a["name"] for a in mine["agents"]] == ["mcp agent"]
+
+
+def test_the_blackboard_of_a_joined_room_is_reachable_too(hub, monkeypatch):
+    """Not every tool took `custom_scope`; board_set was one that did not, and
+    a side room with no blackboard cannot do a handoff."""
+    bridge = make_bridge(hub)
+    call(bridge, "join_room", invite=invited(hub, monkeypatch))
+
+    call(bridge, "board_set", key="handoff/x", value={"next": "escapes"}, room=OTHER)
+    payload, _ = call(bridge, "board_get", key="handoff/x", room=OTHER)
+
+    assert payload["value"] == {"next": "escapes"}
+    missing, _ = call(bridge, "board_get", key="handoff/x")
+    assert missing.get("value") is None
+
+
+def test_a_room_nobody_joined_says_how_to_join_it(hub):
+    bridge = make_bridge(hub)
+    payload, error = call(bridge, "say", channel="build", message="hi", room="w_nope")
+
+    assert error is True
+    assert "join_room" in json.dumps(payload)
+
+
+def test_a_mangled_invite_is_an_answer_rather_than_a_crash(hub, monkeypatch):
+    bridge = make_bridge(hub)
+    payload, error = call(bridge, "join_room", invite="swb1_nonsense")
+
+    assert payload["joined"] is False
+    assert "corrupt or truncated" in payload["error"]
+    assert error is False
+
+
+def test_an_unverifiable_room_is_joined_but_says_so(hub, monkeypatch):
+    """Joining and being in the right room are different claims. The agent is
+    told which one it has, in words it can repeat to a human."""
+    from switchboard.crypto import generate_key
+
+    bridge = make_bridge(hub)
+    payload, _ = call(bridge, "join_room",
+                      invite=invited(hub, monkeypatch, key=generate_key()))
+
+    assert payload["joined"] is True
+    assert payload["verified"] is False
+    assert payload["verdict"] == "wrong_room"
+    assert "rather than assuming" in payload["next"]
+
+
+def test_the_default_client_is_restored_even_when_a_tool_fails(hub, monkeypatch):
+    """The swap is in a finally for a reason: one raising tool must not leave
+    every later call pointed at somebody else's room."""
+    bridge = make_bridge(hub)
+    call(bridge, "join_room", invite=invited(hub, monkeypatch))
+    default = bridge.client
+
+    call(bridge, "board_get", key="nope", room=OTHER)
+    with pytest.raises(TypeError):
+        bridge.dispatch("say", {"room": OTHER})       # missing required args
+
+    assert bridge.client is default
+
+
+def test_room_is_offered_on_the_tools_that_act_on_one(hub):
+    """`whoami` and `keygen` are about you and your machine; routing them
+    would be a parameter that reads as if it did something."""
+    schemas = {t["name"]: t["inputSchema"]["properties"] for t in TOOLS}
+    assert "room" in schemas["say"]
+    assert "room" in schemas["board_set"]
+    assert "room" not in schemas["whoami"]
+    assert "room" not in schemas["join_room"]
