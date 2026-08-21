@@ -1,0 +1,40 @@
+id: ci-workspace-is-public
+title: Stop publishing the one room identifier that was never meant to be guessable
+status: ready
+arc: hub-boundary
+priority: now
+blocked_on: []
+related_to:
+- key: init-writes-rooms-file
+  note: 'Both decide where a room identifier is allowed to live. This one is about an
+    identifier that should not have been committed; that one proposes that `init` start
+    committing a rooms record carrying a workspace token by default. Settle the rule here
+    first, or `init` ships the same mistake as the default for every adopter.'
+refs:
+- 'https://github.com/gald33/switchboard/issues/82'
+- '.github/workflows/ci.yml'
+- 'docs/model.md'
+evidence: |
+  `.github/workflows/ci.yml` announces each run to workspace
+  `w_gAbpTxVh-Jl0pjx0Hnqupw`, committed in a public repository, with no
+  `SWITCHBOARD_KEY` set.
+
+  Since #73 the hub does no authorization at all: reaching a room IS knowing its
+  identifier. So the design rests entirely on identifiers being unguessable, and
+  this is the one room whose identifier is published — by accident rather than by
+  design. Anyone can read what CI announces and post messages that look like CI.
+
+  The stakes of the content are low ("a run started on branch X"). What makes it
+  worth doing first is that it is a standing counterexample to the model in this
+  project's own repository, and the project's own `.gitignore` already refuses to
+  commit `.mcp.json` for exactly this reason — so the rule is stated and then
+  broken one directory away.
+
+  Issue #82 lists three options and argues for the second: move the identifier to
+  a repository secret so the room is neither readable nor addressable. That loses
+  nothing, because nobody needs to discover the CI room from the repo. Dropping
+  the announcement is rejected there — it exists to dogfood, which is worth
+  keeping.
+
+  Done when the identifier is no longer derivable from a public checkout and the
+  CI job's messages are sealed.

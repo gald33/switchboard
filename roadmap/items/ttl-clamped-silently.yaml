@@ -1,0 +1,47 @@
+id: ttl-clamped-silently
+title: Say when a ttl was clamped, instead of returning a number nobody agreed to
+status: ready
+arc: ttl-ceilings
+priority: next
+blocked_on: []
+related_to:
+- key: board-ttl-ceiling
+  note: 'Adjacent, and explicitly NOT the same question — do not conflate them or fix
+    one believing it settles the other. That item argues about what the ceilings should
+    be; this one says that whatever they are, hitting one must not look like success.
+    Landing new ceilings without this leaves the silence intact at a different number.'
+refs:
+- 'https://github.com/gald33/switchboard/issues/142'
+evidence: |
+  `clamp_ttl` bounds a caller-supplied ttl to the ceiling and returns it. Nothing
+  tells the caller it happened — not an error, not a warning, not a field in the
+  response.
+
+  Measured against `switchboard.lucille-ai.com` with a 0.7.2 client on 2026-08-19:
+  `switchboard --json dm "..." --ttl 604800` (7 days) returned an `expires_at`
+  exactly 24h out, empty stderr, exit 0. Presence behaves the same way —
+  `announce --ttl 86400` comes back `expires_in: 3600.0`.
+
+  The ceilings themselves are not in dispute. The failure is that a clamped
+  response is byte-for-byte indistinguishable from an honoured one, so a caller
+  sizes its behaviour on a number the hub never agreed to. The concrete case that
+  found it: an agent sleeping on a multi-hour cadence needs to know whether a
+  message survives until it next looks. It asks for a ttl covering the gap, gets a
+  quarter of it with a cheerful `expires_at` in the reply, and neither side learns
+  anything — the sender believes the recipient will see it, the recipient never
+  does, and the failure surfaces hours later. Silent on both ends and late is the
+  worst available combination.
+
+  The information is already in the response. Nobody compares `expires_at` against
+  what they asked for, because a successful-looking call is not a thing you
+  re-check.
+
+  Options from #142, in the issue author's stated order of preference:
+
+  1. Reject — 400 on a ttl above the ceiling, naming the ceiling. Loudest and most
+     useful; a caller that meant it can clamp deliberately. Breaking for anyone
+     currently over-asking, which may be nobody.
+  2. Report it — return the clamp (`ttl_clamped_from`, or similar) and have the
+     CLI print a line to stderr when it fires. Non-breaking.
+  3. Document it — weakest. `--ttl` help text says nothing about a ceiling, so
+     this is the floor of any fix rather than a fix.

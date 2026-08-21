@@ -1,0 +1,31 @@
+id: board-ttl-ceiling
+title: Decide whether a board value has earned seven times a lease's lifetime
+status: ready
+arc: ttl-ceilings
+priority: later
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/85'
+- 'https://github.com/gald33/switchboard/issues/61'
+evidence: |
+  `MAX_MESSAGE_TTL` and `MAX_LEASE_TTL` are 86400. `MAX_BOARD_TTL` and
+  `DEFAULT_CURSOR_TTL` are `7 * 86400`. The asymmetry may be deliberate or may be
+  a ceiling set once without the rotation argument in view — #85 exists because
+  nobody can currently tell which.
+
+  Two places it has already mattered, both argued in the #61 discussion:
+
+  * **Rotation as recovery.** The project's headline claim that a compromise is
+    bounded because everything expires within a day is not quite true: a
+    blackboard value written before a rotation outlives it by a week. That is the
+    claim `docs/encryption.md` rests its "catastrophe into an inconvenience"
+    argument on.
+  * **Room rotation, if ever revisited.** Any room-epoch period is bounded below
+    by the longest-lived state keyed to the room. A daily room epoch is possible
+    only if the board ceiling comes down to match; at a week it is not. So this
+    number silently forecloses a design option.
+
+  `later` rather than `next` deliberately: nothing is broken today, and the answer
+  is a judgement about what a handoff legitimately needs, not a bug. But it should
+  be decided rather than inherited, and written down where the encryption doc's
+  one-day claim can point at it.

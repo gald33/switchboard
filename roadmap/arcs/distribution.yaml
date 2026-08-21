@@ -1,0 +1,17 @@
+id: distribution
+title: Getting the thing to the people who run it
+refs:
+- 'CONTRIBUTING.md'
+- '.github/workflows/publish.yml'
+narrative: |
+  The agent side of this project is well distributed: `pip install
+  agent-switchboard`, a release workflow on Trusted Publishing with no stored
+  credentials, a version guard that refuses a mismatched tag, and a documented
+  ordering rule so an add-on never ships against an SDK that is not on PyPI yet.
+
+  The hub side is not. Running one from a container still means cloning the
+  repository and building the image yourself, which is the only place this project
+  asks for a source checkout in order to *use* it rather than to develop it.
+
+  One item today, and it is the only one on the board not traceable to a filed
+  issue — read off a line in the README rather than reported by anyone.

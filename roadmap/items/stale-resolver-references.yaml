@@ -1,0 +1,35 @@
+id: stale-resolver-references
+title: Delete the comments describing auth machinery that no longer exists
+status: ready
+arc: hub-boundary
+priority: now
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/84'
+- 'src/switchboard/store.py'
+- 'docs/managed-hub.md'
+evidence: |
+  `SelfIssuedKeyResolver`, `StaticKeyResolver` and `key_bindings` were removed in
+  #73 and #76. Comments describing them survived.
+
+  Verified on `main` at 0469286: `auth.py` is clean, but `store.py:121` still
+  carries a schema comment for the deleted key-bindings table.
+
+  Issue #84 names `auth.py`, `server.py` and `store.py`. It understates the
+  problem — `docs/managed-hub.md` is worse than a stale comment, because it reads
+  as current documentation rather than as an aside. Its Stage 1 section still says
+  "Two resolvers ship" and describes `StaticKeyResolver` as a shipping option
+  (lines 39-41), and Stage 2 still explains at length what `SelfIssuedKeyResolver`
+  does and how `--self-issued-keys` is run (lines 197-226). A reader following that
+  doc will go looking for flags that were deliberately deleted.
+
+  This codebase leans hard on comments that explain *why*, which is exactly what
+  makes a stale one expensive: it sends the next reader hunting for machinery
+  somebody removed on purpose, and it costs them the reasoning that removal was
+  based on.
+
+  One decision rides along and should not be made silently: `key_bindings` rows
+  are still present in databases created before the removal. The table is out of
+  the schema so new hubs never create it, and no migration drops it, because
+  deleting data on deploy is the wrong default. Decide explicitly whether that
+  gets a cleanup path or a documented "it is inert, leave it".

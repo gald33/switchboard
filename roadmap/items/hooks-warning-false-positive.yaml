@@ -1,0 +1,33 @@
+id: hooks-warning-false-positive
+title: Stop warning about uncommitted hooks in repos that commit none of their wiring
+status: ready
+arc: setup-and-first-run
+priority: later
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/89'
+- '.gitignore'
+evidence: |
+  `init` warns when `.switchboard/hooks/` is gitignored while the shims that call
+  it are committed — a clone would get hooks pointing at nothing, and that failure
+  is quiet. The check is right in general.
+
+  It is wrong for a repo that gitignores its *entire* switchboard wiring on
+  purpose, which is what this repository does. Its `.gitignore` excludes
+  `.mcp.json`, `.switchboard/`, `.claude/settings.json` and `.claude/skills/`,
+  because committing them would publish the room identifier and the model forbids
+  it. So the warning fires on every `init` run here, in the project's own
+  checkout.
+
+  A warning that fires on a correct configuration is worse than no warning: it
+  trains the reader to skip it, and this one is the only thing standing between an
+  adopter and hooks that silently point at nothing.
+
+  The distinguishing signal is already available. The warning exists because a
+  *committed* shim points at an ignored script; if `.claude/settings.json` is
+  ignored too, nothing dangles and there is nothing to warn about. So the condition
+  becomes: warn only when the hooks are ignored **and** the file registering them
+  is not.
+
+  `later` because it is a false positive rather than a broken behaviour, and the
+  fix is small and self-contained whenever someone is next in that code.

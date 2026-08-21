@@ -100,6 +100,37 @@ something is wrong with the locking, not with the test.
 - If you add or change an MCP tool, update its description — the description
   is the entire interface an agent has to the tool, so it needs to say *when*
   to use it, not just what it does.
+- If you finish something the roadmap tracks, move it in the same PR:
+  `roadmap status <key> done && roadmap sync`. A backlog nobody closes stops
+  being read.
+
+## The roadmap
+
+`roadmap/` is the backlog as files, and `roadmap/ROADMAP.md` is the committed
+projection an agent can read in a checkout with nothing installed. `ARCS.md` at
+the repository root is the narrative layer above it — *why* a theme is open,
+rather than what is claimable.
+
+Most items point at a filed issue, and the discussion stays on the issue. The
+item is where this project states what it intends to do about it and in what
+order.
+
+```bash
+pip install "roadmap-core[files]"
+export ROADMAP_SOURCE=local
+roadmap ready                  # what is startable, in priority order
+roadmap claim <key>            # take it before you start
+```
+
+Both markdown files are generated; edit `roadmap/items/*.yaml` and
+`roadmap/arcs/*.yaml` and run `roadmap sync`. CI checks that you did. See
+[roadmap/README.md](roadmap/README.md) for the conventions, including the two
+places the generated output still names paths from the project `roadmap-core`
+was extracted from.
+
+Coordination state is a different system and expires on its own — see
+[docs/seam.md](docs/seam.md) for why a durable claim and a Switchboard lease must
+not be the same object.
 
 ## Releasing
 

@@ -1,0 +1,23 @@
+id: setup-and-first-run
+title: The first ten minutes, for somebody who has not read the docs
+refs:
+- 'https://github.com/gald33/switchboard/issues/86'
+- 'https://github.com/gald33/switchboard/issues/88'
+- 'https://github.com/gald33/switchboard/issues/89'
+- 'docs/environments.md'
+narrative: |
+  Switchboard's characteristic failure is not an error — it is an agent that
+  connects, registers, and coordinates with nobody. `docs/environments.md` names
+  three ways that happens, and the common thread is that every one of them looks
+  like success from the inside.
+
+  These three items are that theme at setup time. `init` does not produce the
+  rooms record the authoritative doc calls the model, so the documented shape and
+  the generated shape differ. A connection failure prints forty lines of httpx
+  frames without naming the URL it tried, which is the single fact that would
+  reveal a silent fallback to loopback. And the one warning that does guard
+  against quietly-broken wiring fires on correct configurations, including this
+  repository's own — which is how a warning stops being read.
+
+  None of them is a hard bug. Together they decide whether a first run that went
+  wrong says so.

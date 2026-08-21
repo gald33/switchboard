@@ -1,0 +1,58 @@
+id: abuse-control-after-authorization
+title: Replace the abuse control that per-token authorization used to provide
+status: deferred
+arc: hub-boundary
+blocked_on: []
+defer_reason: |
+  A design record rather than startable work, and #72 says so itself: "Nothing
+  here blocks #61; it is what the answer looks like afterwards."
+
+  Three of its four steps are also not this repository's to build. Edge rate
+  limiting by address belongs at Cloudflare or equivalent; premium tokens are a
+  managed-hub billing concern; proof of work is explicitly "under load only", and
+  there is no load. Only per-room limits are buildable here today, and nothing has
+  yet been abused.
+
+  Un-defer this on evidence, not on a schedule: a room whose quota someone
+  actually burns, or a managed deployment that needs billing attribution. Filing
+  it now so the reasoning is not rediscovered from scratch when that happens.
+related_to:
+- key: ci-workspace-is-public
+  note: 'The worked example of this item''s new exposure — a room whose identifier is
+    known can have its quota burned specifically. Read that one first: it is the concrete
+    instance, this is the general policy, and fixing the instance does not discharge
+    the policy.'
+refs:
+- 'https://github.com/gald33/switchboard/issues/72'
+- 'https://github.com/gald33/switchboard/issues/61'
+evidence: |
+  #61 removed per-token authorization: the workspace token is public, the room
+  identifier is `hash(token)`, and encryption became the only boundary. This
+  records what replaces the abuse control that went with it.
+
+  **What was never true.** Per-token rate limiting was not a DDoS defence.
+  Volumetric attacks are an edge problem, and a hub that authenticates every
+  request still falls over when the pipe is full. What token limits actually
+  bought was *attribution* — knowing which paying party a burst belonged to.
+
+  **What survives for free.** Per-room limits need no authorization at all: the
+  room identifier is on every request as the routing key, so the hub can bound a
+  room without knowing or authorizing anyone. The new exposure is narrow and
+  targeted — someone who learns a room id can burn that room's quota. Rooms whose
+  identifiers stay unguessable, meaning anything minted rather than typed, are not
+  reachable this way.
+
+  **The plan, in order:** edge rate limiting by address; per-room limits; premium
+  tokens for scale and priority (where attribution comes back, for billing, not as
+  a security boundary); proof of work under load only.
+
+  **If proof of work is ever built**, three things from #72 to get right.
+  *Prioritize, do not gate* — Tor's onion-service PoW is the reference: clients
+  attach whatever effort they chose and the server serves highest-effort first, so
+  honest clients degrade instead of failing and there is no threshold to tune
+  wrong during an incident. *Bind the challenge* — the puzzle must contain the room
+  identifier and a timestamp, signed by a server secret, with a short expiry, or
+  solutions get precomputed at leisure and spent in a burst. *Know who it
+  penalizes* — PoW spreads cheaply across a botnet and expensively across one
+  honest laptop or CI runner, so it raises the price of a concentrated attack while
+  mildly taxing the clients least able to pay.
