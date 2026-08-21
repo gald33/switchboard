@@ -12,12 +12,22 @@ name: Publish switchboard-viewer to PyPI
 # To cut one: bump `version` in extras/viewer/pyproject.toml, merge, then
 #   gh release create viewer-vX.Y.Z --generate-notes --title 'switchboard-viewer X.Y.Z'
 #
-# ONE-TIME SETUP, and it cannot be done from here — the project does not exist
-# on PyPI until its first upload, so the trust relationship has to be created
-# ahead of it as a *pending* publisher:
+# ONE-TIME SETUP, and it cannot be done from here. Which page depends on
+# whether the project exists on PyPI yet, and getting that wrong is silent:
+# the publisher is accepted, nothing matches it, and every run dies with
+# `invalid-publisher` while the settings page shows a publisher configured.
 #
-#   https://pypi.org/manage/account/publishing/ → "Add a new pending publisher"
-#     PyPI Project Name: switchboard-viewer
+#   switchboard-viewer EXISTS on PyPI, so it is the second one:
+#
+#   https://pypi.org/manage/project/switchboard-viewer/settings/publishing/
+#     → "Add a new publisher", GitHub
+#
+#   A *pending* publisher (https://pypi.org/manage/account/publishing/) is for
+#   a name PyPI has never seen. This comment said to use one, which was true
+#   when it was written and stopped being true the moment 0.8.0 went up by
+#   another route — and a pending entry does not authorise an existing
+#   project, so following it produces exactly the failure above.
+#
 #     Owner:             gald33
 #     Repository:        switchboard
 #     Workflow name:     publish-viewer.yml
@@ -25,7 +35,8 @@ name: Publish switchboard-viewer to PyPI
 #
 # The environment name must match the `environment:` below and differ from the
 # SDK's, or a trust relationship scoped to one project would admit uploads of
-# the other.
+# the other. Add it under the *project*, not the account: the same four fields
+# under `agent-switchboard` authorise that project and not this one.
 
 on:
   release:
