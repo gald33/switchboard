@@ -1,0 +1,27 @@
+id: hub-boundary
+title: What protects a room once the hub stops authorizing anyone
+refs:
+- 'https://github.com/gald33/switchboard/issues/61'
+- 'https://github.com/gald33/switchboard/issues/73'
+- 'docs/model.md'
+- 'docs/encryption.md'
+narrative: |
+  #61 and #73 removed per-token authorization. Reaching a room is now knowing its
+  identifier, `hash(workspace_token)`, and encryption is the only boundary left.
+
+  That is a coherent design, and this arc is the work of actually living inside
+  it. Three kinds of debt fall out of a change that size, and all three are here:
+
+  * **Identifiers that leak.** The model's whole load is carried by
+    unguessability, so any published identifier is a hole in it — including the
+    one in this repository's own CI workflow.
+  * **Payloads that are not sealed.** Every field that skips `_SEAL_BODY` hands
+    the hub something it claims not to hold. `meta` still carries the repo name.
+  * **Reasoning that outlived its subject.** Comments and docs still describe the
+    resolvers that were deleted, which sends readers looking for machinery that
+    was removed on purpose.
+
+  The fourth item is the policy question the removal opened rather than closed:
+  what replaces the abuse control that per-token limits used to provide. It is
+  deferred, not abandoned — the answer is written down so it is not rediscovered
+  under pressure.

@@ -1,0 +1,32 @@
+id: seal-agent-meta
+title: Seal agent meta, so the hub stops reading the repo name off every announcement
+status: ready
+arc: hub-boundary
+priority: next
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/83'
+- 'https://github.com/gald33/switchboard/issues/63'
+- 'docs/encryption.md'
+evidence: |
+  `meta` on `/agents/register` is not in `_SEAL_BODY`, so `host`, `repo`,
+  `platform` and `pid` travel in the clear even with encryption switched on.
+
+  That undercuts the opaque-identifier story directly, and in the worst direction:
+  a hub that deliberately cannot read the workspace name can still read the
+  repository name off every announcement — usually the more identifying of the
+  two. The model's claim is that the hub holds "only who is awake and what they
+  are saying"; today it also holds where they are working.
+
+  Found while adding the signing key in #63, and it is the reason the public key
+  got its own sealed field rather than riding along inside `meta`. So the
+  workaround already exists in the codebase as a one-off, which is a good sign the
+  general fix is the right shape.
+
+  Sealing it is mechanical: add `meta` to `_SEAL_BODY` and `_OPEN_RESPONSE` for
+  `/agents/register`, the same way `name`, `branch` and `task` already work.
+
+  The only judgement is whether anything operational needs to read it hub-side.
+  Nothing currently does — confirm that against the route table rather than
+  assuming it, since the point of the exercise is that a hub-side read of a sealed
+  field fails at runtime rather than at review.

@@ -1,0 +1,20 @@
+id: ttl-ceilings
+title: Ceilings that are honest about themselves
+refs:
+- 'https://github.com/gald33/switchboard/issues/142'
+- 'https://github.com/gald33/switchboard/issues/85'
+narrative: |
+  Everything in Switchboard expires, and the expiry is the correctness property
+  rather than a cleanup detail. That makes the ceilings load-bearing in two ways
+  that are easy to conflate, which is why these two items carry a `related_to`
+  edge warning against exactly that.
+
+  One is about **communication**: a ttl clamped to the ceiling comes back looking
+  like a ttl that was granted, so a caller plans around a number the hub never
+  agreed to. Whatever the ceilings are, hitting one should not resemble success.
+
+  The other is about **the values themselves**: `MAX_BOARD_TTL` is seven times
+  `MAX_LEASE_TTL`, which quietly falsifies the project's "everything expires
+  within a day" claim and forecloses a daily room epoch.
+
+  Fixing either one alone leaves the other entirely intact.

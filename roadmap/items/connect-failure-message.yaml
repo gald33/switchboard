@@ -1,0 +1,33 @@
+id: connect-failure-message
+title: Name the URL a failed connection actually tried
+status: ready
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/88'
+evidence: |
+  `switchboard agents` against an unreachable hub prints a raw
+  `httpcore.ConnectError` and roughly forty lines of httpx/httpcore frames.
+
+  None of it contains the one fact needed to fix the problem: **which URL it
+  tried**. In the reported case the CLI had no `SWITCHBOARD_URL` and fell back to
+  `http://127.0.0.1:8787`, and nothing in the traceback lets a reader discover
+  that.
+
+  This is a gap in an otherwise consistent contract. Every other failure in this
+  CLI is one line naming the problem and the next action — `error: could not reach
+  {url}: ...`, the workspace-mismatch note, the missing-key message. Network errors
+  escape that treatment for a purely structural reason: they are raised from inside
+  `httpx` rather than caught at the boundary.
+
+  The fix is to catch `httpx.HTTPError` in `main` and print, e.g.:
+
+      error: could not reach http://127.0.0.1:8787 (connection refused).
+             Set SWITCHBOARD_URL, or check the hub is running.
+
+  Naming the URL is the part that carries the value — it is what turns "the tool is
+  broken" into "oh, it went to localhost". Worth weighting because a silent
+  fallback to loopback is a failure mode this project already treats as serious
+  elsewhere: `docs/environments.md` documents "the three ways an agent ends up
+  alone", and a cloud session inheriting a loopback URL is one of them.

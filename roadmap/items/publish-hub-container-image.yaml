@@ -1,0 +1,42 @@
+id: publish-hub-container-image
+title: Publish the hub image, so running a hub is not a clone and a build
+status: ready
+arc: distribution
+priority: later
+blocked_on: []
+refs:
+- 'README.md'
+- 'Dockerfile'
+- '.github/workflows/publish.yml'
+- 'CONTRIBUTING.md'
+evidence: |
+  NOT from a filed issue — read off README.md, which says in the "Run a hub"
+  section: "Or with Docker — no published image yet, so build it from a clone".
+  Worth confirming with the author before starting, since nobody has filed it.
+
+  The asymmetry is what makes it worth stating. The agent side is one line,
+  `pip install agent-switchboard`. The hub side, which is the part an operator
+  runs, is `git clone` then `docker build` — the only step in the project that
+  requires a source checkout to use rather than to develop. `docker-compose.yml`
+  has the same shape.
+
+  Nothing is missing technically. The `Dockerfile` is finished work: multi-stage,
+  non-root uid 10001, a `/data` volume, a `HEALTHCHECK`, and a comment recording
+  why the wheel path is resolved into a variable first. It is built by nothing that
+  publishes it.
+
+  The release machinery to copy is also already here and already opinionated.
+  `publish.yml` publishes `agent-switchboard` on a GitHub Release via PyPI Trusted
+  Publishing (OIDC), with no stored token, a guard that refuses a tag whose version
+  disagrees with `pyproject.toml`, and a `workflow_dispatch` retry path for runs
+  that die for reasons unrelated to the code. `publish-viewer.yml` is the same
+  shape for the add-on, ignoring the other's tag prefix so one release never
+  publishes two projects. A third workflow for the image should inherit all of it —
+  including CONTRIBUTING.md's ordering rule that the SDK goes first, since the
+  image installs the wheel it builds from source and an image tagged for an
+  unreleased version would be the same class of unfixable mistake PyPI's
+  no-reuse rule already guards against.
+
+  The open decision is the registry — GHCR is the low-friction answer given the
+  OIDC pattern already in use, but it is a distribution choice, not a technical
+  one.

@@ -1,0 +1,61 @@
+# The roadmap check.
+#
+# Three commands, no schedule, no credentials, no bot identity, no commit back
+# to the default branch. That is the whole CI story for `roadmap-core`'s SQLite
+# floor, and the shortness is the point: with `ROADMAP_SOURCE=local` the store
+# is a SQLite file inside the checkout, rebuilt from the committed YAML by
+# `push` on first open. There is no second copy to drift from, so there is
+# nothing to reconcile on a clock and nothing to commit back.
+#
+# Adapted from `roadmap-core`'s `templates/roadmap.yml`. The three commands are
+# byte-identical to it; only these comments were rewritten for this repository.
+# See `roadmap/README.md` for the conventions, and "Upgrading to a served store"
+# in roadmap-core's README for what comes back if the store ever moves off the
+# checkout.
+
+name: Roadmap
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  roadmap:
+    runs-on: ubuntu-latest
+    env:
+      # Selects the SQLite store. Without it the CLI expects a served store and
+      # asks for a credential this repository does not have.
+      ROADMAP_SOURCE: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `[files]` adds PyYAML. Authoring an item IS writing a YAML file, so
+      # without the extra every command below fails on the same import. This
+      # also puts the `roadmap` console script on PATH — there is no script to
+      # vendor into this repository and no file to keep in sync.
+      - run: pip install "roadmap-core[files]"
+
+      # Files -> store. The store is not committed (it is derived, and a binary
+      # file in git conflicts on every claim), so each run builds it fresh from
+      # the YAML. The files ARE the record.
+      - run: roadmap push
+
+      # Schema, dangling dependencies, cycles, and the missing-evidence rule.
+      - run: roadmap validate
+
+      # And the committed markdown against the graph that generated it.
+      # `--check` exits 1 rather than rewriting, because CI must report a stale
+      # file, not quietly fix one in a container about to be discarded.
+      #
+      # This is the check that earns the workflow. `roadmap/ROADMAP.md` and
+      # `ARCS.md` are generated but committed, precisely so an agent in a
+      # checkout can read the backlog with no install and no network — and a
+      # generated file that nobody regenerates is a file that lies.
+      - run: roadmap sync --check
