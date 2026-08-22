@@ -220,6 +220,38 @@ def test_a_room_entered_once_is_remembered(browser, page, room):
         tab.close()
 
 
+def test_a_tab_can_be_closed_and_the_room_is_forgotten(browser, page, room):
+    """The × on a tab is the same act as "forget" in the settings sheet: the
+    room leaves storage, so a reload does not bring it back."""
+    tab, errors = open_page(browser, page, room)
+    try:
+        # A second room, so there is a tab strip at all — one room needs no
+        # switcher, and the page draws none.
+        tab.click("#settings-open")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace + "-other")
+        tab.fill("#f-label", "other")
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.room').length === 2",
+                              timeout=10_000)
+
+        tab.click('.room[data-room$="-other"] .close')
+        tab.wait_for_function("document.querySelectorAll('.room').length === 0",
+                              timeout=10_000)
+        stored = json.loads(tab.evaluate(
+            "localStorage.getItem('switchboard.rooms.v1')"))
+        assert [r["workspace"] for r in stored] == [WORKSPACE]
+
+        tab.reload(wait_until="networkidle")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.query_selector(".room") is None
+        assert errors == []
+    finally:
+        tab.close()
+
+
 def test_the_key_never_leaves_the_browser(browser, page, room):
     """The property the whole design rests on: the page decrypts locally, so
     the key must appear in no request it makes."""

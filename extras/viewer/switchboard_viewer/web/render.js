@@ -83,7 +83,7 @@ function bodyHtml(body) {
   return `<pre>${esc(JSON.stringify(body, null, 2))}</pre>`;
 }
 
-export function render(s, { onRoom } = {}) {
+export function render(s, { onRoom, onClose } = {}) {
   $("ws").textContent = s.hub.workspace;
   $("hub").innerHTML = `via <code>${esc(s.hub.url)}</code>` +
     (s.hub.encrypted
@@ -100,24 +100,42 @@ export function render(s, { onRoom } = {}) {
   // Where a room came from is worth a glance only when they differ — three
   // tabs all saying "mcp.json" is furniture.
   const mixed = new Set(rooms.map((r) => r.source)).size > 1;
+  // A tab can only be closed where closing means something: the browser keeps
+  // its rooms and can forget one, but a viewer serving rooms from config would
+  // hand the same tab straight back on the next poll.
   $("rooms").innerHTML = rooms.length < 2 ? "" : rooms.map((r) => {
     const state = r.error ? "bad" : (r.awake ? "live" : "");
     const count = r.error ? "unreachable"
       : (r.awake === null ? "—" : `${r.awake} awake`);
-    return `<button class="room ${r.selected ? "on" : ""}" data-room="${esc(r.id)}"
+    return `<div class="room ${r.selected ? "on" : ""}" data-room="${esc(r.id)}"
+              role="tab" tabindex="0" aria-selected="${r.selected ? "true" : "false"}"
               title="${esc(r.workspace)} on ${esc(r.hub)}">
         <span>${esc(r.label)}</span>
         <span class="awake ${state}">${esc(count)}</span>
         ${mixed ? `<span class="where">${esc(r.source)}</span>` : ""}
-      </button>`;
+        ${onClose ? `<button class="close" type="button" data-close="${esc(r.id)}"
+              title="Forget ${esc(r.label)}" aria-label="Forget ${esc(r.label)}">×</button>` : ""}
+      </div>`;
   }).join("");
   for (const tab of document.querySelectorAll(".room")) {
-    tab.onclick = () => {
+    const open = () => {
       if (tab.classList.contains("on")) return;
       filter = null;               // channels belong to the room you left
       toBottom = true;             // and so does where you were reading
       if (onRoom) onRoom(tab.dataset.room);
     };
+    tab.onclick = open;
+    tab.onkeydown = (e) => {
+      // A div wearing role="tab" has to answer the keys a button would.
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    };
+  }
+  for (const x of document.querySelectorAll(".room .close")) {
+    x.onclick = (e) => {
+      e.stopPropagation();         // closing a tab is not switching to it
+      onClose(x.dataset.close);
+    };
+    x.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); };
   }
 
   const chans = s.channels.slice().sort((a, b) => a.name.localeCompare(b.name));
@@ -132,7 +150,7 @@ export function render(s, { onRoom } = {}) {
     chip.onclick = () => {
       filter = chip.dataset.c || null;
       toBottom = true;   // a different channel starts at its newest, not mid-way
-      render(s, { onRoom });
+      render(s, { onRoom, onClose });
     };
   }
 
