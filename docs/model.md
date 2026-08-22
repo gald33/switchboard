@@ -54,12 +54,19 @@ environment or your checkout:
 | MCP | `join_room` returns a handle; `room=` on any tool routes there |
 | a browser | paste it into the viewer's settings sheet, or open `<page>#swb1_…` |
 
-`switchboard invite --link <page>` prints that URL. The invite rides in the
-**fragment**, which browsers never send to a server — so the page's host does
-not receive the key, in a log or a Referer or anything in between. What no URL
-shape can protect against is the page itself, which is why the page has to be
-named rather than defaulted, and why the viewer fills its settings sheet from
-a link instead of joining behind the reader.
+`switchboard invite --link` prints that URL, onto the published viewer at
+<https://gald33.github.io/switchboard/>. The invite rides in the **fragment**,
+which browsers never send to a server — so the page's host does not receive
+the key, in a log or a Referer or anything in between. What no URL shape can
+protect against is the page itself, which is why the default is the *published*
+page and not whichever viewer the sender has running: Pages serves that
+directory straight from the commit with no build step, so a recipient can read
+the repo and know that is what held their key. `--link <page>` names another
+one, for somebody who controls it or has read it — but a page on a private
+address (`127.0.0.1`, `192.168.…`, `*.local`) is never that page, because it
+resolves on the reader's network rather than the sender's, and the command
+says so. Either way the viewer fills its settings sheet from a link instead of
+joining behind the reader.
 
 An invite carries the room's **token**, not only the `w_…` identifier derived
 from it. The identifier is all a joiner needs to *talk*; the token is what lets

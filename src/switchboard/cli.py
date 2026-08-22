@@ -37,9 +37,11 @@ from .config import (
     LOCAL_SETTINGS_FILE,
     MANAGED_HUB_TOKEN,
     MANAGED_HUB_URL,
+    PUBLISHED_PAGE_URL,
     ClientConfig,
     git_remote_workspace,
     is_loopback,
+    is_private_page,
     isolation_warning,
     local_setting,
     machine_suffix,
@@ -2227,11 +2229,30 @@ def _handover(blob: invite.Invite, args: argparse.Namespace) -> tuple[str, str]:
     never going to run `join`. It costs one warning, because the page in it is
     a page that will hold the key: the fragment keeps the key away from that
     host's *server*, and nothing keeps it away from the script it serves.
+
+    Which is why the page a bare `--link` picks is the published one and not
+    the viewer someone happens to have running. `PUBLISHED_PAGE_URL` is served
+    from this repo with no build step, so a recipient can read the files the
+    commit contains and know that is what ran in their browser. A page served
+    off a laptop is the same script with none of that check — and, when the
+    URL names a private address, not even a page: `http://192.168.1.7:8899`
+    resolves on the *recipient's* network, where it is somebody else's router
+    or nothing at all, while still opening perfectly for whoever sent it.
     """
     page = getattr(args, "link", None)
     if not page:
         return blob.encode(), ""
     host = urlsplit(page).netloc or page
+    if is_private_page(page):
+        return blob.link(page), (
+            f"{host} is a private address. It resolves on whatever network "
+            f"opens this\nlink, not on yours — so for anyone but you this "
+            f"points at their own machine,\ntheir router, or nothing. Drop "
+            f"the argument to link to the published page\n"
+            f"({PUBLISHED_PAGE_URL}), which is served from this repo with no "
+            f"build\nstep, so the recipient can diff what ran in their "
+            f"browser against the commit."
+        )
     return blob.link(page), (
         f"The key rides in the URL fragment, so {host} never receives it — "
         f"fragments\nare not sent to servers. But the page {host} serves is a "
@@ -4178,12 +4199,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "want in it. A side channel is a minted room, so minting "
                         "one produces the same artifact as being handed one.")
     p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
-    p.add_argument("--link", metavar="PAGE",
-                   help="emit a URL onto PAGE instead of the bare string, for "
-                        "someone with a browser and no checkout. The invite rides "
-                        "in the fragment, which is never sent to a server — but "
-                        "the page itself reads the key, so link only to one you "
-                        "control or have read.")
+    p.add_argument("--link", metavar="PAGE", nargs="?", const=PUBLISHED_PAGE_URL,
+                   help="emit a URL onto a viewer page instead of the bare "
+                        f"string, for someone with a browser and no checkout. "
+                        f"With no PAGE, the published viewer "
+                        f"({PUBLISHED_PAGE_URL}) — served from this repo with "
+                        "no build step, so what runs in the recipient's "
+                        "browser is diffable against the commit. The invite "
+                        "rides in the fragment, which is never sent to a "
+                        "server, but the page itself reads the key: name "
+                        "another PAGE only if you control it or have read it.")
     p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_keygen)
 
@@ -4200,12 +4225,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-key", action="store_true",
                    help="omit the key (the peer must already hold it)")
     p.add_argument("--no-token", action="store_true", help="omit the hub token")
-    p.add_argument("--link", metavar="PAGE",
-                   help="emit a URL onto PAGE instead of the bare string, for "
-                        "someone with a browser and no checkout. The invite rides "
-                        "in the fragment, which is never sent to a server — but "
-                        "the page itself reads the key, so link only to one you "
-                        "control or have read.")
+    p.add_argument("--link", metavar="PAGE", nargs="?", const=PUBLISHED_PAGE_URL,
+                   help="emit a URL onto a viewer page instead of the bare "
+                        f"string, for someone with a browser and no checkout. "
+                        f"With no PAGE, the published viewer "
+                        f"({PUBLISHED_PAGE_URL}) — served from this repo with "
+                        "no build step, so what runs in the recipient's "
+                        "browser is diffable against the commit. The invite "
+                        "rides in the fragment, which is never sent to a "
+                        "server, but the page itself reads the key: name "
+                        "another PAGE only if you control it or have read it.")
     p.add_argument("--no-input", action="store_true", help="never stop to ask")
     p.set_defaults(func=cmd_invite)
 
