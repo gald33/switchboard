@@ -110,7 +110,14 @@ workspace id and its key.
 
 Or none of them, if somebody sends you the room. An invite pasted into the
 sheet fills all four fields at once, and `<page>#swb1_…` — what
-`switchboard invite --link <page>` prints — does the same from a URL. The
+`switchboard invite --link` prints — does the same from a URL. That is the
+page it links to with no argument, and deliberately: the workflow uploads
+`switchboard_viewer/web/` verbatim, so whoever opens the link can diff what
+ran in their browser against the commit, and see for themselves that the key
+is read there and nowhere else. A link to a viewer running on the sender's own
+machine keeps none of that and does not even open — `http://192.168.1.7:8899`
+resolves on the *reader's* network — so `--link` warns when the page it is
+given is on a private address. The
 invite travels in the fragment, which a browser never sends to a server, so
 the page's host never receives the key. The sheet still opens, filled, rather
 than entering the room on its own: a link arrives from somewhere, often

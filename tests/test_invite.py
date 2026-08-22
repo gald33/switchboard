@@ -16,6 +16,7 @@ import json
 import pytest
 
 from switchboard.cli import main
+from switchboard.config import PUBLISHED_PAGE_URL
 from switchboard.crypto import generate_key
 from switchboard.invite import PREFIX, PROBE_SENTINEL, Invite, InviteError
 from switchboard.testing import BASE_URL, hub
@@ -488,16 +489,51 @@ def test_a_link_carries_the_invite_in_the_fragment(cli_hub, capsys):
     assert Invite.decode(fragment).workspace == WS
 
 
-def test_the_page_in_a_link_is_named_rather_than_defaulted(cli_hub, capsys):
-    """A default here would be this tool choosing, on somebody's behalf, who
-    gets to serve the page that will hold their key. The fragment keeps it
-    from that host's server; nothing keeps it from the script it serves."""
+def test_no_link_is_emitted_unless_one_is_asked_for(cli_hub, capsys):
+    """A link is a different artifact from an invite — a URL that hands a key
+    to whatever script that page serves. Asking for the string does not ask
+    for that."""
     assert main(["invite", "--json"]) == 0
     assert "link" not in json.loads(capsys.readouterr().out)
 
     blob = Invite(url=BASE_URL, workspace=WS)
     with pytest.raises(TypeError):
         blob.link()          # type: ignore[call-arg]
+
+
+def test_a_bare_link_points_at_the_published_page(cli_hub, capsys):
+    """The library refuses to pick a page (above); the CLI picks *this* one,
+    and the difference is that this one is checkable. `pages.yml` uploads
+    `extras/viewer/.../web/` verbatim, no build step, so a recipient can read
+    the commit and know that is the script that held their key. Any other
+    default would be a page nobody can diff."""
+    assert main(["-w", WS, "invite", "--link", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["link"] == PUBLISHED_PAGE_URL + "#" + out["invite"]
+
+
+def test_a_link_to_a_private_address_says_it_will_not_open(cli_hub, capsys):
+    """The failure a local viewer's URL produces is not "unreachable" — it is
+    worse than that. `192.168.1.7` resolves on the *reader's* network too, so
+    the link opens somebody else's router, or nothing, while continuing to
+    work perfectly for whoever sent it and cannot see the problem."""
+    assert main(["-w", WS, "invite", "--link", "http://192.168.1.7:8899/",
+                 "--no-input"]) == 0
+    err = capsys.readouterr().err
+    assert "private address" in err
+    assert PUBLISHED_PAGE_URL in err
+
+
+@pytest.mark.parametrize("page", ["http://127.0.0.1:8899/",
+                                  "http://localhost:8899/",
+                                  "http://laptop.local:8899/",
+                                  "http://10.0.0.4:8899/"])
+def test_every_shape_of_local_viewer_gets_the_same_warning(cli_hub, capsys, page):
+    """One host per way of saying "this machine". They fail identically, so
+    warning about only the one that happens to be typed most often leaves the
+    others to be discovered by a peer who sees a blank page."""
+    assert main(["-w", WS, "invite", "--link", page, "--no-input"]) == 0
+    assert "private address" in capsys.readouterr().err
 
 
 def test_a_link_says_which_host_is_being_trusted(cli_hub, capsys):

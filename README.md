@@ -157,9 +157,12 @@ switchboard --invite swb1_... say build hi # or run one command in that room
 Agents get the same thing rather than a lesser version of it —
 `Client.from_invite(blob)` in Python, `join_room` in the MCP bridge (which
 returns a handle you pass as `room=` on any other tool). And
-`switchboard invite --link <page>` turns it into a URL for somebody with a
-browser and nothing installed; the invite rides in the fragment, which is
-never sent to a server.
+`switchboard invite --link` turns it into a URL for somebody with a browser
+and nothing installed, onto the published viewer at
+[gald33.github.io/switchboard](https://gald33.github.io/switchboard/) — served
+from this repo with no build step, so the page that reads the key is diffable
+against the commit. The invite rides in the fragment, which is never sent to a
+server. `--link <page>` names a different one.
 
 `switchboard join` also prints the `.switchboard/rooms.json` record that keeps
 the room past this shell — the invite carries the workspace *token*, not just

@@ -109,6 +109,40 @@ MANAGED_HUB_URL = "https://switchboard.lucille-ai.com"
 #: that extraction, so reformatting this line breaks a build rather than a hub.
 MANAGED_HUB_TOKEN = "sb_public_lucille"  # noqa: S105 - published on purpose
 
+#: The viewer as it is published: `extras/viewer/switchboard_viewer/web/`,
+#: served by `.github/workflows/pages.yml` straight from the commit with no
+#: build step in between.
+#:
+#: Why a constant rather than "whatever page you happen to be serving": an
+#: invite link hands its key to the *script the page serves*, and the fragment
+#: does nothing about that. What makes this URL safe to hand out is not that
+#: it is ours — it is that it is diffable. The workflow uploads the directory
+#: verbatim, so a recipient can read the files in the repo and know that is
+#: what ran in their browser, keys and all. A page served from somebody's
+#: laptop offers a reader no such check, and offers a *remote* reader no page
+#: at all: `http://192.168.1.7:8899` on their machine is their router, not
+#: yours.
+#:
+#: tests/test_deployment.py pins this against the workflow that publishes it,
+#: so the two cannot drift.
+PUBLISHED_PAGE_URL = "https://gald33.github.io/switchboard/"
+
+#: Hosts that only resolve to something useful on the machine that typed
+#: them. Private ranges and `.local` are here alongside loopback because the
+#: failure they share is the one that matters for a link: the URL keeps
+#: working for its sender long after it has stopped meaning anything to
+#: anyone else.
+_PRIVATE_HOST = re.compile(
+    r"""^(
+        localhost | .*\.local | .*\.localhost      # names
+      | 127\..* | ::1 | 10\..*                     # loopback, RFC1918
+      | 192\.168\..*
+      | 172\.(1[6-9]|2[0-9]|3[01])\..*
+      | 169\.254\..* | fe80:.* | f[cd][0-9a-f]{2}:.*   # link-local, ULA
+    )$""",
+    re.VERBOSE,
+)
+
 
 def is_loopback(url: str) -> bool:
     """Whether `url` names a hub reachable only from the machine running it.
@@ -121,6 +155,20 @@ def is_loopback(url: str) -> bool:
         return False
     host = host.lower()
     return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
+def is_private_page(url: str) -> bool:
+    """Whether `url` names a page only its own network can open.
+
+    Broader than `is_loopback`, and for a different question. A loopback hub
+    is a hub nobody else can reach; a private *page* is worse than
+    unreachable, because a link to one is not inert on the far side — the
+    recipient's browser resolves `192.168.1.7` on *their* network and reaches
+    whatever is there, or nothing, with the same URL that works perfectly for
+    whoever sent it.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    return bool(host) and bool(_PRIVATE_HOST.match(host))
 
 
 def _env_float(name: str, default: float) -> float:

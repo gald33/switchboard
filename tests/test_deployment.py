@@ -17,8 +17,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL, ServerConfig
+from switchboard.config import (
+    MANAGED_HUB_TOKEN,
+    MANAGED_HUB_URL,
+    PUBLISHED_PAGE_URL,
+    ServerConfig,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = (ROOT / "docker-compose.yml").read_text()
@@ -113,3 +119,18 @@ def test_the_manual_step_stays_written_down_where_the_error_will_send_you():
 
 def test_the_hosted_origin_is_written_down_where_a_reader_will_look():
     assert _compose_cors_default() in WEB_README
+
+
+def test_the_page_invites_link_to_is_the_page_that_gets_published():
+    """`switchboard invite --link` with no argument sends a key to this URL,
+    and the reason that is safe to default is the workflow above: the
+    directory is uploaded verbatim, so what ran in the recipient's browser is
+    diffable against the commit. A constant pointing anywhere else keeps the
+    convenience and loses the only thing that justified it."""
+    origin = urlsplit(PUBLISHED_PAGE_URL)
+    assert origin.scheme == "https"
+    assert PUBLISHED_PAGE_URL in PAGES, (
+        f"invites link to {PUBLISHED_PAGE_URL}, which pages.yml never mentions")
+    assert f"{origin.scheme}://{origin.netloc}" == _compose_cors_default(), (
+        "the page invites link to is on an origin the managed hub does not "
+        "allow, so it will open and then read nothing")
