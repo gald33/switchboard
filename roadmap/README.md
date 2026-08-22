@@ -56,17 +56,11 @@ Without `ROADMAP_SOURCE=local` the CLI expects a served store and asks for a
 credential that does not exist here. `.github/workflows/roadmap.yml` sets it for
 CI; set it in your shell profile, or pass `--source local` per command.
 
-## Three things that will look wrong
+## Two things that will look wrong
 
 **`ARCS.md` lives at the repository root, not in `roadmap/`.** That path is fixed
 in `roadmap-core` (`cli.py`'s `GENERATED_ARCS_MD`), and `sync --check` compares
 against it. Moving it into `roadmap/` makes CI fail on a file it cannot find.
-
-**The generated header says `python scripts/roadmap.py sync`.** There is no
-`scripts/roadmap.py` in this repository. That instruction is inherited from the
-project `roadmap-core` was extracted from; here the command is `roadmap sync`,
-from the console script the package installs. Likewise the ARCS.md preamble links
-three `docs/architecture/*.md` files that do not exist here.
 
 **`roadmap/roadmap.db` is not committed**, and is already covered by the `*.db`
 line in `.gitignore`. It is derived — `push` rebuilds it from the YAML on first

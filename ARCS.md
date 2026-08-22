@@ -1,10 +1,8 @@
 # ARCS.md — what's in flight, at arc level
 
-<!-- GENERATED FILE — DO NOT EDIT BY HAND. Regenerate with `python scripts/roadmap.py sync`. Edit roadmap/arcs/*.yaml instead. -->
+<!-- GENERATED FILE — DO NOT EDIT BY HAND. Regenerate with `roadmap sync`. Edit roadmap/arcs/*.yaml instead. -->
 
 The narrative layer above `roadmap/ROADMAP.md`: *why* each theme is still open. Work items live in the roadmap graph and are listed per arc below; the prose here is the arc's own, and is the one place a multi-PR theme gets explained rather than enumerated. For when this was last regenerated ask git — `git log -1 --format=%cI -- ARCS.md` — because nothing here derives from the clock or from a graph-wide total, so two branches editing different arcs merge cleanly.
-
-**Three things that used to live here are not arcs** and moved out when this file became generated: the flag ledger ([`docs/architecture/flag-ledger.md`](docs/architecture/flag-ledger.md)), the substrate-quality trace ([`docs/architecture/substrate-quality.md`](docs/architecture/substrate-quality.md)), and the hygiene backlog ([`docs/architecture/hygiene-backlog.md`](docs/architecture/hygiene-backlog.md)). They are cross-cutting prose with no tail of their own to close, and forcing them into the arc schema is how the schema gets wrong. They stay hand-maintained.
 
 ## Legend
 
