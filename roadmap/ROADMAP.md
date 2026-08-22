@@ -1,6 +1,6 @@
 # ROADMAP.md — open work items
 
-<!-- GENERATED FILE — DO NOT EDIT BY HAND. Regenerate with `python scripts/roadmap.py sync`. -->
+<!-- GENERATED FILE — DO NOT EDIT BY HAND. Regenerate with `roadmap sync`. -->
 
 This is the agent-readable projection of the roadmap graph; the store is the `roadmap_items` table (see `roadmap/README.md`). For when it was last regenerated ask git — `git log -1 --format=%cI -- roadmap/ROADMAP.md` — because nothing in this file is derived from the clock or from a graph-wide total, so that two branches editing different items merge cleanly. Do not add one back.
 
@@ -8,7 +8,7 @@ This is the agent-readable projection of the roadmap graph; the store is the `ro
 
 ## ▶ Ready — startable now
 
-Claim before starting: `python scripts/roadmap.py claim <key>`
+Claim before starting: `roadmap claim <key>`
 
 **In priority order, most important first.** An item with no marker carries no stated priority — take it as unjudged, not as low. The order within a band is alphabetical and means nothing.
 

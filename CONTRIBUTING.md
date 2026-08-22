@@ -124,9 +124,8 @@ roadmap claim <key>            # take it before you start
 
 Both markdown files are generated; edit `roadmap/items/*.yaml` and
 `roadmap/arcs/*.yaml` and run `roadmap sync`. CI checks that you did. See
-[roadmap/README.md](roadmap/README.md) for the conventions, including the two
-places the generated output still names paths from the project `roadmap-core`
-was extracted from.
+[roadmap/README.md](roadmap/README.md) for the conventions, including why
+`ARCS.md` sits at the repository root rather than under `roadmap/`.
 
 Coordination state is a different system and expires on its own — see
 [docs/seam.md](docs/seam.md) for why a durable claim and a Switchboard lease must
