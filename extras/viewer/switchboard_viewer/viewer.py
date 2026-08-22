@@ -38,8 +38,8 @@ plaintext, and the hub's own perimeter protects nothing here.
 
 **It reads without disturbing.** Every call it makes is a read that leaves no
 trace an agent could trip over: `agents()`, `leases()`, `board_list()`,
-`channels()`, and `read_channels()` — which reads from the beginning with
-every cursor left where it was. The viewer never registers, never heartbeats, and never
+`channels()`, and `read_channels()` — which pages to the newest messages
+with every cursor left where it was. The viewer never registers, never heartbeats, and never
 posts, so it does not appear in the roster it is displaying and cannot make an
 agent's next `inbox` come back empty.
 
@@ -97,7 +97,8 @@ DEFAULT_HOST = "127.0.0.1"
 #: the viewer is the one that should move.
 DEFAULT_PORT = 8799
 
-#: Messages fetched per channel. The hub caps `limit` at 500.
+#: Messages shown per channel — the newest that many, which `read_channels`
+#: pages to rather than reading the first of. The hub caps `limit` at 1000.
 DEFAULT_LIMIT = 50
 
 #: How often the page asks for a fresh snapshot.
@@ -294,11 +295,12 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
         channels = sorted(channels, key=lambda c: c.get("messages", 0),
                           reverse=True)[:MAX_CHANNELS]
 
-    # The whole conversation in one request, whatever it is spread across.
+    # The live end of the conversation, whatever it is spread across.
     # `channels()` names these the way the hub does — blinded tokens in an
     # encrypted room — and `read_channels` is the reader that takes them in
-    # that form, leaves every cursor where it found it, and marks what this
-    # key cannot open rather than failing the lot.
+    # that form, pages to the newest `limit` in each, leaves every cursor
+    # where it found it, and marks what this key cannot open rather than
+    # failing the lot.
     tokens = [entry.get("channel", "") for entry in channels]
     opened = section("the conversation", lambda: hub.read_channels(tokens, limit=limit)) or []
 

@@ -126,5 +126,6 @@ key handed to anyone on the path.
 ## What it does not do
 
 Everything the local viewer does not do, for the same reasons: it never posts,
-never registers, and reads through `since=0` with `peek`, so watching a room
-cannot advance any agent's cursor or make its next `inbox` come back empty.
+never registers, and pages to the newest messages through `peek`, so watching
+a room cannot advance any agent's cursor or make its next `inbox` come back
+empty.

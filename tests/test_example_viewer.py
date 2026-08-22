@@ -329,6 +329,73 @@ def test_a_reader_takes_the_identifiers_the_hub_gave_it():
         assert {m["hub_channel"] for m in messages} == set(tokens)
 
 
+def test_a_reader_is_shown_the_newest_messages_not_the_first():
+    """The hub reads forward — `since=N` answers with the messages *after* N —
+    so a single read from zero is the opening `limit` messages of the room,
+    for as long as the room lives. A viewer polling that re-renders the same
+    stale window forever, which reads as a run that has stalled. Reading a
+    room means reading the end of it."""
+    with hub() as h:
+        a = h.client("a", register=True)
+        for i in range(120):
+            a.post("build", f"line {i}")
+        reader = h.client("reader")
+
+        tail = reader.read_channels([c["channel"] for c in reader.channels()], limit=50)
+
+        assert [m["body"] for m in tail] == [f"line {i}" for i in range(70, 120)]
+
+
+def test_a_quiet_channel_is_not_stepped_over_on_the_way_to_the_tail():
+    """One `since` covers every channel in the request, so paging to the tail
+    of the busy one must not carry the cursor past the next message in a
+    quiet one. That loss would be silent: a channel that simply renders
+    empty."""
+    with hub() as h:
+        a = h.client("a", register=True)
+        a.post("asides", "first aside")
+        for i in range(120):
+            a.post("build", f"line {i}")
+        a.post("asides", "last aside")
+        reader = h.client("reader")
+
+        tail = reader.read_channels([c["channel"] for c in reader.channels()], limit=50)
+
+        assert [m["body"] for m in tail if m["channel"] == "asides"] == \
+               ["first aside", "last aside"]
+        assert len([m for m in tail if m["channel"] == "build"]) == 50
+
+
+def test_paging_to_the_tail_still_leaves_every_cursor_where_it_was():
+    """Several requests instead of one is several chances to disturb the room,
+    and every one of them is still a peek."""
+    with hub() as h:
+        subscriber = h.client("sub", register=True, channels=["build"])
+        a = h.client("a", register=True)
+        for i in range(120):
+            a.post("build", f"line {i}")
+        reader = h.client("reader")
+
+        reader.read_channels([c["channel"] for c in reader.channels()], limit=10)
+
+        assert len(subscriber.inbox(limit=200)) == 120
+
+
+async def test_the_async_client_reaches_the_same_tail():
+    """The two clients must not drift here either — an async dashboard shows
+    the same window a sync one does."""
+    with hub() as h:
+        a = h.client("a", register=True)
+        for i in range(120):
+            a.post("build", f"line {i}")
+        reader = h.async_client("reader")
+
+        tokens = [c["channel"] for c in await reader.channels()]
+        tail = await reader.read_channels(tokens, limit=50)
+
+        assert [m["body"] for m in tail] == [f"line {i}" for i in range(70, 120)]
+
+
 def test_reading_a_room_leaves_every_cursor_where_it_was():
     """The property the whole method exists for: an observer must not be able
     to make a participant's next `inbox` come back empty."""

@@ -219,8 +219,8 @@ registration — the viewer does not appear in the roster it is displaying,
 because it is not an agent and pretending otherwise would put a phantom in
 everyone else's `agents` output.
 
-**It never advances a cursor.** `read_channels()` reads from sequence 0 with
-every cursor left where it was. Watching a room therefore cannot make an
+**It never advances a cursor.** `read_channels()` pages through the room as
+a peek, with every cursor left where it was. Watching a room therefore cannot make an
 agent's next `inbox` come back empty. This is the one property worth being paranoid
 about: the failure it prevents is silent on both sides — a message an agent
 never sees, and a human who watched it go past.

@@ -23,6 +23,12 @@ const SEALED = {
 
 const MAX_CHANNELS = 60;
 
+// How many pages the conversation read walks looking for the tail before it
+// gives up. A runaway guard rather than a policy — messages expire, so a live
+// room does not grow without bound — and the mirror of `_MAX_TAIL_PAGES` in
+// the client.
+const MAX_TAIL_PAGES = 100;
+
 // --- invites ----------------------------------------------------------------
 //
 // The read half of `invite.py`, for the same reason the cipher has one: this
@@ -232,6 +238,50 @@ function unwrapForecast(body) {
   return [body, null];
 }
 
+/** The newest `limit` messages per channel, paged out of a forward-only hub.
+ *
+ *  Mirrors `_Tail` in `switchboard/client.py`, down to how far the cursor is
+ *  allowed to move: one `since` covers every channel in the request, so it
+ *  advances only to the lowest of the pages that came back full. Anything
+ *  further steps over the next message in a quieter channel — a message
+ *  silently lost rather than a page saved. The overlap that follows is why
+ *  messages are kept by sequence instead of appended.
+ */
+async function readTail(config, tokens, limit) {
+  const width = Math.max(1, limit);
+  const kept = new Map();  // hub channel -> Map(seq -> message)
+  let since = 0;
+  for (let page = 0; page < MAX_TAIL_PAGES; page++) {
+    const messages = (await get(config, "/inbox", {
+      agent_id: "viewer", channel: tokens, since, peek: true,
+      include_own: true, limit,
+    })).messages;
+    const seen = new Map();
+    for (const m of messages) {
+      const channel = m.hub_channel ?? m.channel ?? "";
+      const seq = Number(m.seq ?? 0);
+      if (!kept.has(channel)) kept.set(channel, new Map());
+      const window = kept.get(channel);
+      window.set(seq, m);
+      for (const old of [...window.keys()].sort((a, b) => a - b).slice(0, -width)) {
+        window.delete(old);
+      }
+      seen.set(channel, (seen.get(channel) ?? []).concat(seq));
+    }
+    const full = [...seen.values()]
+      .filter((seqs) => seqs.length >= width)
+      .map((seqs) => Math.max(...seqs));
+    if (!full.length) break;
+    const next = Math.min(...full);
+    if (next <= since) break;
+    since = next;
+  }
+  const out = [];
+  for (const window of kept.values()) out.push(...window.values());
+  out.sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+  return out;
+}
+
 /** One complete view of a room, in the shape the page renders. */
 export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   const room = config.key ? RoomKey.from(config.key, config.workspace) : null;
@@ -310,13 +360,13 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   }
 
   const tokens = channels.map((c) => c.channel);
-  // One request for the whole room: `since=0` with `peek` reads from the
-  // beginning and leaves every cursor where it was.
+  // The tail of the room, not its opening. `peek` leaves every cursor where
+  // it was, but the hub only reads *forward* — `since=N` answers with the
+  // `limit` messages after N — so a single `since=0` read is the first fifty
+  // messages of the room forever, however long the room has been running.
+  // Getting to the newest ones means paging there; `readTail` does the walk.
   const opened = tokens.length ? ((await section("the conversation", async () =>
-    openAll(room, (await get(config, "/inbox", {
-      agent_id: "viewer", channel: tokens, since: 0, peek: true,
-      include_own: true, limit,
-    })).messages, SEALED.messages))) ?? []) : [];
+    openAll(room, await readTail(config, tokens, limit), SEALED.messages))) ?? []) : [];
 
   const byToken = new Map(tokens.map((t) => [t, []]));
   for (const m of opened) {
