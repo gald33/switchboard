@@ -130,6 +130,21 @@ def room(hub):
     agent.close()
 
 
+@pytest.fixture(scope="module")
+def long_room(hub):
+    """A room with more history than one read can carry, in its own workspace
+    so the shorter tests are not paging through it."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-tail", key=KEY)
+    agent = Client(config, agent_id="chatty-agent", key=KEY)
+    agent.register(name="chatty", kind="local", channels=["build"])
+    agent.post("asides", "an aside nobody followed up on")
+    for n in range(120):
+        agent.post("build", f"line {n}")
+    yield config
+    agent.close()
+
+
 def open_page(browser, page_url, room_config, *, key=KEY):
     """Load the static build and enter a room through the settings sheet —
     the path a person actually takes, rather than seeding storage behind it."""
@@ -185,6 +200,38 @@ def test_the_browser_builds_the_same_view_the_python_viewer_does(browser, page, 
     assert set(from_browser["leases"][0]) == set(from_python["leases"][0])
     assert set(from_browser["board"][0]) == set(from_python["board"][0])
     assert set(from_browser["channels"][0]) == set(from_python["channels"][0])
+
+
+def test_the_browser_shows_the_end_of_a_long_room_not_its_beginning(
+    browser, page, long_room,
+):
+    """The bug this pins: the hub reads forward, so `since=0` is the opening
+    `limit` messages of the room and stays that way however long the room
+    runs. On anything busy the page then showed a window half an hour stale
+    and never moved it — which reads as a board that has gone quiet. Both
+    builders page to the tail, and to the same one.
+    """
+    tab, errors = open_page(browser, page, long_room)
+    try:
+        from_browser = tab.evaluate("""async () => {
+            const mod = await import("./switchboard-room.js");
+            const rooms = JSON.parse(localStorage.getItem("switchboard.rooms.v1"));
+            return mod.snapshot(rooms[0]);
+        }""")
+    finally:
+        tab.close()
+
+    with Client(long_room, agent_id="viewer", key=KEY) as reader:
+        from_python = viewer_app.snapshot(reader)
+
+    assert errors == []
+    shown = [m["body"] for m in from_browser["messages"] if m["channel"] == "build"]
+    assert shown == [f"line {n}" for n in range(70, 120)]
+    # And the quiet channel is not stepped over on the way there.
+    assert "an aside nobody followed up on" in \
+           [m["body"] for m in from_browser["messages"]]
+    assert [m["body"] for m in from_browser["messages"]] == \
+           [m["body"] for m in from_python["messages"]]
 
 
 def test_the_page_decrypts_in_the_browser_and_shows_it(browser, page, room):

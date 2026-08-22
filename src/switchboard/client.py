@@ -367,6 +367,63 @@ def _board_labelled(opened: Any) -> bool:
 _UNSET: Any = object()
 
 
+#: How many pages `read_channels` walks looking for the tail before it gives
+#: up. A runaway guard rather than a policy: messages expire, so a live room
+#: does not grow without bound, and at the default `limit` this covers five
+#: thousand messages in the busiest channel.
+_MAX_TAIL_PAGES = 100
+
+
+def _peek_params(*, workspace: str, agent_id: str | None,
+                 channels: Sequence[str], since: int, limit: int) -> dict[str, Any]:
+    """One page of a room-wide peek. Shared so the two clients cannot drift."""
+    return {
+        "workspace": workspace, "agent_id": agent_id, "channel": list(channels),
+        "since": since, "peek": True, "include_own": True, "limit": limit,
+    }
+
+
+class _Tail:
+    """Walk a peek forward and keep the newest `limit` messages per channel.
+
+    The hub reads in one direction: `since=N` answers with the `limit`
+    messages *after* N, oldest first. A viewer wants the other end of the
+    room, and the only route there is to keep asking — so this holds the
+    window while the caller pages, and hands back the tail when the paging
+    stops.
+
+    One `since` covers every channel in the request, so it may only advance to
+    the lowest of the pages that came back full: anything further steps over
+    the next message in a quieter channel, which is a message silently lost
+    rather than a page saved. The overlap that follows is why messages are
+    kept by sequence instead of appended.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, limit)
+        self._kept: dict[str, dict[int, dict[str, Any]]] = {}
+
+    def absorb(self, page: Sequence[dict[str, Any]]) -> int | None:
+        """Take one page in; return the next `since`, or None at the tail."""
+        seen: dict[str, list[int]] = {}
+        for message in page:
+            channel = message.get("hub_channel") or message.get("channel") or ""
+            seq = int(message.get("seq") or 0)
+            kept = self._kept.setdefault(channel, {})
+            kept[seq] = message
+            for old in sorted(kept)[: -self._limit]:
+                del kept[old]
+            seen.setdefault(channel, []).append(seq)
+        full = [max(seqs) for seqs in seen.values() if len(seqs) >= self._limit]
+        return min(full) if full else None
+
+    def messages(self) -> list[dict[str, Any]]:
+        """The window, merged and in hub order."""
+        out = [m for kept in self._kept.values() for m in kept.values()]
+        out.sort(key=lambda m: int(m.get("seq") or 0))
+        return out
+
+
 @dataclass(frozen=True)
 class RoomCheck:
     """What an invite's proof-of-room turned out to say.
@@ -1215,9 +1272,13 @@ class Client(_Base):
         For reading a room you are not part of — a viewer, an audit, a
         dashboard. Three properties follow from that:
 
-        - **Nothing is disturbed.** It reads from sequence 0 with the cursor
+        - **Nothing is disturbed.** Every read is a peek with the cursor
           untouched, so no agent's `inbox` loses a message to it, and
           `include_own` is on because an observer wants everything.
+        - **It ends at the newest.** The hub only reads forward, so reaching
+          the tail of a long room means paging to it: what comes back is the
+          last `limit` messages, not the first. A dashboard that polls this
+          follows the room instead of re-rendering its opening minutes.
         - **`limit` is per channel**, as it is on the hub. Messages come back
           merged and in hub order regardless.
         - **A channel you cannot open does not fail the call.** Reading a room
@@ -1228,14 +1289,20 @@ class Client(_Base):
         """
         if not channels:
             return []
-        return self._call(
-            "GET", "/inbox", blind_params=False, tolerate=frozenset({"messages"}),
-            params={
-                "workspace": self._ws(workspace), "agent_id": self.agent_id,
-                "channel": list(channels), "since": 0, "peek": True,
-                "include_own": True, "limit": limit,
-            },
-        )["messages"]
+        tail, since = _Tail(limit), 0
+        for _ in range(_MAX_TAIL_PAGES):
+            page = self._call(
+                "GET", "/inbox", blind_params=False,
+                tolerate=frozenset({"messages"}),
+                params=_peek_params(
+                    workspace=self._ws(workspace), agent_id=self.agent_id,
+                    channels=channels, since=since, limit=limit),
+            )["messages"]
+            nxt = tail.absorb(page)
+            if nxt is None or nxt <= since:
+                break
+            since = nxt
+        return tail.messages()
 
     def channels(self, workspace: str | None = None) -> list[dict[str, Any]]:
         return self._call("GET", "/channels",
@@ -1441,20 +1508,26 @@ class AsyncClient(_Base):
                             workspace: str | None = None) -> list[dict[str, Any]]:
         """Every live message across `channels`, in one request.
 
-        See `Client.read_channels`. The two clients must not drift: an async
-        application reads a room it is not part of for the same reasons and
-        meets the same wall in the same place."""
+        See `Client.read_channels`, including the paging to the tail. The two
+        clients must not drift: an async application reads a room it is not
+        part of for the same reasons and meets the same wall in the same
+        place."""
         if not channels:
             return []
-        result = await self._call(
-            "GET", "/inbox", blind_params=False, tolerate=frozenset({"messages"}),
-            params={
-                "workspace": self._ws(workspace), "agent_id": self.agent_id,
-                "channel": list(channels), "since": 0, "peek": True,
-                "include_own": True, "limit": limit,
-            },
-        )
-        return result["messages"]
+        tail, since = _Tail(limit), 0
+        for _ in range(_MAX_TAIL_PAGES):
+            result = await self._call(
+                "GET", "/inbox", blind_params=False,
+                tolerate=frozenset({"messages"}),
+                params=_peek_params(
+                    workspace=self._ws(workspace), agent_id=self.agent_id,
+                    channels=channels, since=since, limit=limit),
+            )
+            nxt = tail.absorb(result["messages"])
+            if nxt is None or nxt <= since:
+                break
+            since = nxt
+        return tail.messages()
 
     async def channels(self, workspace: str | None = None) -> list[dict[str, Any]]:
         result = await self._call("GET", "/channels",
