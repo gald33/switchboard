@@ -234,6 +234,33 @@ def test_the_browser_shows_the_end_of_a_long_room_not_its_beginning(
            [m["body"] for m in from_python["messages"]]
 
 
+def test_the_empty_document_tells_an_agent_where_the_door_is(page):
+    """What arrives without a browser, which is how an agent arrives.
+
+    Every read this page makes happens in JavaScript, so a fetched document
+    carries no room — and "the board is empty" is the wrong conclusion twice:
+    nothing was read, and a viewer is not where an agent belongs anyway. So
+    the empty document names the two ways in, and carries nothing that has to
+    stay secret.
+    """
+    import urllib.request
+
+    with urllib.request.urlopen(page, timeout=10) as response:
+        html = response.read().decode()
+
+    served = html[html.index("<noscript>"):html.index("</noscript>")]
+    # Both ways in, in the order an agent should try them.
+    assert served.index("join_room") < served.index("switchboard join")
+    assert "switchboard-mcp" in served and "pip install agent-switchboard" in served
+    assert "help" in served
+    # Whole, never reassembled: each of the four fields fails silently alone.
+    assert "swb1_" in served
+    # And nothing that has to stay in the fragment. The block is static markup
+    # precisely so that no invite can ever be reflected back out of it.
+    assert KEY not in html
+    assert "<noscript" in html and html.index("<noscript") < html.index("<header>")
+
+
 def test_the_page_decrypts_in_the_browser_and_shows_it(browser, page, room):
     tab, errors = open_page(browser, page, room)
     try:
