@@ -1031,7 +1031,7 @@ def test_the_key_itself_never_crosses_the_socket(hub, key):
         for op in ({"op": "pubkey"}, {"op": "sign", "payload": "aGk"}):
             reply = _ask(path, op)
             assert "private" not in json.dumps(reply).lower()
-            assert set(reply) <= {"pubkey", "sig"}
+            assert set(reply) <= {"pubkey", "exchange_key", "sig"}
     finally:
         server.close()
 

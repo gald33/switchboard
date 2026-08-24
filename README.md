@@ -460,9 +460,12 @@ enforced in one shared dependency rather than per-handler — see
   in your issue tracker.
 - **Not an audit log.** It forgets on purpose. Decisions that should outlive the
   work still belong in a commit message, a PR, or a doc.
-- **Not confidential from your own agents.** One key per workspace: everyone in
-  it reads everything in it. The encryption keeps out the hub and other
-  tenants, not your own colleagues.
+- **Not confidential from your own agents, by default.** One key per
+  workspace: everyone in it reads everything in it. The encryption keeps out
+  the hub and other tenants, not your own colleagues — `ask` is the narrow,
+  opt-in exception: a message sealed to one specific peer's own published key,
+  unreadable by the rest of the room even though they hold the workspace key
+  too. See [docs/encryption.md](docs/encryption.md#sealed-to-one-peer-ask).
 - **Not an identity system.** Keys scope *which workspaces* a caller may touch;
   within a workspace, agents are assumed to trust each other, because they
   already share a codebase. Agent ids tell agents apart, they don't keep them

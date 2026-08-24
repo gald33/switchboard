@@ -21,13 +21,21 @@ import httpx
 
 from . import peers, signing
 from .config import ClientConfig
-from .crypto import DecryptionError, WorkspaceCipher, looks_sealed
+from .crypto import (
+    CryptoError,
+    DecryptionError,
+    WorkspaceCipher,
+    looks_sealed,
+    seal_to_peer,
+    unseal_from_peer,
+)
 from .invite import PROBE_SENTINEL, Invite
 from .signing import SigningIdentity
 
 __all__ = [
     "SwitchboardError",
     "LeaseHeld",
+    "UnknownPeerExchangeKey",
     "Client",
     "AsyncClient",
     "Identity",
@@ -55,6 +63,18 @@ class LeaseHeld(SwitchboardError):
     @property
     def expires_in(self) -> float | None:
         return self.payload.get("expires_in")
+
+
+class UnknownPeerExchangeKey(SwitchboardError):
+    """`ask()` was called for a peer whose exchange key this client has not
+    seen yet.
+
+    Distinct from every other `SwitchboardError`: nothing was sent to the
+    hub, and there is nothing to retry — the fix is a roster read. Raising a
+    dedicated type rather than falling back to a plain `send()` is the point;
+    silently downgrading an `ask` into an unsealed message would hand the
+    caller exactly the confidentiality it explicitly asked to avoid.
+    """
 
 
 # --- identity ---------------------------------------------------------------
@@ -250,7 +270,8 @@ def _headers(token: str | None) -> dict[str, str]:
 #: move a sealed value from one field to another and have it still open.
 _SEAL_BODY: dict[str, dict[str, str]] = {
     "/agents/register": {"name": "agent.name", "branch": "agent.branch",
-                         "task": "agent.task", "pubkey": "agent.pubkey"},
+                         "task": "agent.task", "pubkey": "agent.pubkey",
+                         "exchange_key": "agent.exchange_key"},
     "/agents/heartbeat": {"task": "agent.task"},
     "/leases/acquire": {"note": "lease.note"},
     "/leases/renew": {"note": "lease.note"},
@@ -272,9 +293,9 @@ _BLIND_BODY: dict[str, dict[str, str]] = {
 #: Response keys that carry sealed fields, and the context each was sealed under.
 _OPEN_RESPONSE: dict[str, dict[str, str]] = {
     "agents": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task",
-               "pubkey": "agent.pubkey"},
+               "pubkey": "agent.pubkey", "exchange_key": "agent.exchange_key"},
     "agent": {"name": "agent.name", "branch": "agent.branch", "task": "agent.task",
-              "pubkey": "agent.pubkey"},
+              "pubkey": "agent.pubkey", "exchange_key": "agent.exchange_key"},
     "leases": {"note": "lease.note"},
     "lease": {"note": "lease.note"},
     "messages": {"body": "message.body"},
@@ -317,6 +338,11 @@ _TOLERATE_UNREADABLE = {"agents", "agent", "entries", "leases"}
 #: One definition, in crypto.py, where the envelope is. This name stays
 #: because it is used throughout this module.
 _looks_sealed = looks_sealed
+
+_ASK_MISSING = (
+    "ask needs a signing identity, which needs the crypto extra: "
+    "pip install 'agent-switchboard[crypto]'"
+)
 
 
 def _is_labelled(opened: Any) -> bool:
@@ -607,6 +633,12 @@ class _Base:
         #: caller who wants no on-disk footprint pass.
         peer_db = getattr(config, "peer_log", peers.DEFAULT_PATH)
         self._peer_log = peers.PeerKeyLog(peer_db) if peer_db else None
+        #: Peer exchange keys learned from a roster read, keyed by hub-form
+        #: agent id. Per-process only, unlike `_peer_log` above: this exists
+        #: purely so `ask()` and inbox's auto-open can find a key they have
+        #: already seen, and no security property rides on it persisting —
+        #: it is a convenience cache, not a trust store.
+        self._peer_exchange_keys: dict[str, str] = {}
 
     @property
     def encrypted(self) -> bool:
@@ -747,10 +779,13 @@ class _Base:
         log = self._peer_log
         workspace = self.workspace
         for agent in agents:
+            agent_id = agent.get("agent_id", "")
+            exchange_key = agent.get("exchange_key")
+            if isinstance(exchange_key, str) and exchange_key and agent_id != self.agent_id:
+                self._peer_exchange_keys[agent_id] = exchange_key
             key = agent.get("pubkey")
             if not isinstance(key, str) or not key:
                 continue
-            agent_id = agent.get("agent_id", "")
             if agent_id == self.agent_id:
                 # Never judge ourselves. `key_mismatches` already skips self;
                 # this did not, so an agent whose own commands are separate
@@ -845,6 +880,73 @@ class _Base:
         stores an opaque string and learns nothing from it.
         """
         return self.signing.public_key if self.signing else None
+
+    @property
+    def exchange_key(self) -> str | None:
+        """What a peer seals an `ask` to. Published at registration, sealed
+        like `public_key` above and for the same reason."""
+        return self.signing.exchange_key if self.signing else None
+
+    def _peer_exchange_key_for(self, to_agent: str) -> str:
+        """The cached exchange key `ask(to_agent, ...)` would seal to, or a
+        clear, actionable error.
+
+        Never falls back to an unsealed `send` — a caller that reached for
+        `ask` explicitly wanted the peer-only property, and silently handing
+        back something weaker would be the one failure mode worse than
+        raising.
+        """
+        hub_id = self.peer_id(to_agent)
+        key = self._peer_exchange_keys.get(hub_id)
+        if key is None:
+            raise UnknownPeerExchangeKey(
+                f"no exchange key known for {to_agent!r} ({hub_id[:22]}…). "
+                "Call agents() to read this peer's exchange key from the "
+                "roster before asking them — a peer you have never seen "
+                "there cannot be `ask`ed yet; `say`/`dm` them first instead."
+            )
+        return key
+
+    def _seal_ask_body(self, to_agent: str, body: Any) -> dict[str, Any]:
+        """The sealed envelope `ask` sends as its message body."""
+        if self.signing is None:
+            raise CryptoError(_ASK_MISSING)
+        peer_key = self._peer_exchange_key_for(to_agent)
+        return seal_to_peer(
+            body, my_identity=self.signing, peer_exchange_key=peer_key, context="ask.body",
+        )
+
+    def _open_asks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Auto-open every `type == "ask"` message this client currently can.
+
+        Mirrors the convention `key_mismatches`/`_mark_unopened` already use
+        for a workspace-key mismatch: a message this process cannot yet open
+        — no signing identity, or a sender whose exchange key has not been
+        seen on a roster read — is not an error, so it is never dropped and
+        `inbox` never raises for it. It stays in the result with its raw
+        sealed envelope as `body` and `unreadable: True`, the same shape
+        every other "sealed but I cannot currently open it" case in this file
+        already uses.
+        """
+        for message in messages:
+            if message.get("type") != "ask":
+                continue
+            sender = message.get("from")
+            peer_key = (
+                self._peer_exchange_keys.get(sender)
+                if self.signing is not None and sender else None
+            )
+            if peer_key is None:
+                message["unreadable"] = True
+                continue
+            try:
+                message["body"] = unseal_from_peer(
+                    message["body"], my_identity=self.signing,
+                    peer_exchange_key=peer_key, context="ask.body",
+                )
+            except DecryptionError:
+                message["unreadable"] = True
+        return messages
 
     def _seal_request(
         self, path: str, kwargs: dict[str, Any], cipher: WorkspaceCipher | None,
@@ -1038,7 +1140,13 @@ class _Base:
         if cipher is None:
             # Nothing to open, but a keyless reader in an encrypted room still
             # gets envelopes back, and "empty" must not look like "sealed".
-            return self._mark_unopened(payload, tolerate)
+            #
+            # Roster fields still get a look, below, even here: `pubkey` and
+            # `exchange_key` travel in the clear in a genuinely plaintext
+            # workspace (there is no cipher on either side to seal them with),
+            # so a keyless reader is not "no key", it is "no workspace key" —
+            # and `ask` explicitly needs to keep working without one.
+            return self._note_roster(self._mark_unopened(payload, tolerate))
         for key, fields in _OPEN_RESPONSE.items():
             if key not in payload or payload[key] is None:
                 continue
@@ -1086,6 +1194,13 @@ class _Base:
         # keys before this loop would cache ciphertext. Doing it here rather
         # than in `agents()` means every path returning agents teaches the
         # verifier — heartbeat included, which is what an idle agent calls.
+        return self._note_roster(payload)
+
+    def _note_roster(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Learn peer keys from any response that happens to carry a roster
+        entry, opened or not. Shared by both branches of `_open_response`
+        above — see the comment on the keyless branch for why an unopened
+        roster still has something worth learning."""
         for roster_key in ("agents", "agent"):
             value = payload.get(roster_key)
             if isinstance(value, list):
@@ -1167,8 +1282,8 @@ class Client(_Base):
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "pubkey": self.public_key, "ttl": ttl,
-            "back_in": back_in,
+            "meta": meta or {}, "pubkey": self.public_key, "exchange_key": self.exchange_key,
+            "ttl": ttl, "back_in": back_in,
         })["agent"]
 
     def heartbeat(self, *, task: str | None = None, ttl: float | None = None,
@@ -1233,6 +1348,30 @@ class Client(_Base):
         """Direct message — sugar for posting to the recipient's ``@`` channel."""
         return self.post(f"@{to_agent}", body, **kwargs)
 
+    def ask(self, to_agent: str, body: Any, *, type: str = "ask", ttl: float | None = None,
+            workspace: str | None = None) -> dict[str, Any]:
+        """A direct message only `to_agent` can read — sealed pairwise with
+        their published X25519 exchange key, not with the workspace key.
+
+        Unlike `send`, every other holder of this workspace's key (which, by
+        construction, is everyone else in the room) sees the outer message —
+        sender, recipient, size, timing — but not the body: it opens for
+        `to_agent` alone. See `crypto.seal_to_peer` for how, and
+        `docs/encryption.md` for what this costs relative to `custom_scope`.
+
+        The outer transport is still the ordinary workspace-encrypted `send`:
+        in an encrypted room the sealed-to-peer envelope is wrapped a second
+        time, hiding from the hub even that an `ask` happened; in a
+        plaintext room only the inner seal protects the content, and that
+        confidentiality against fellow workspace members is real either way.
+
+        Raises `UnknownPeerExchangeKey` if `to_agent`'s exchange key has not
+        been learned yet — call `agents()` first. Never falls back to an
+        unsealed `send`.
+        """
+        envelope = self._seal_ask_body(to_agent, body)
+        return self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
+
     def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
               limit: int = 100, peek: bool = False, include_own: bool = False,
               workspace: str | None = None,
@@ -1244,7 +1383,8 @@ class Client(_Base):
         }
         if channels:
             params["channel"] = list(channels)
-        return self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
+        messages = self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
+        return self._open_asks(messages)
 
     def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
@@ -1412,7 +1552,8 @@ class AsyncClient(_Base):
         result = await self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
             "kind": kind, "branch": branch, "task": task, "channels": list(channels),
-            "meta": meta or {}, "ttl": ttl, "back_in": back_in,
+            "meta": meta or {}, "pubkey": self.public_key, "exchange_key": self.exchange_key,
+            "ttl": ttl, "back_in": back_in,
         })
         return result["agent"]
 
@@ -1483,6 +1624,12 @@ class AsyncClient(_Base):
     async def send(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
         return await self.post(f"@{to_agent}", body, **kwargs)
 
+    async def ask(self, to_agent: str, body: Any, *, type: str = "ask",
+                  ttl: float | None = None, workspace: str | None = None) -> dict[str, Any]:
+        """The async half of `Client.ask`. Same envelope, same guarantee."""
+        envelope = self._seal_ask_body(to_agent, body)
+        return await self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
+
     async def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
                     limit: int = 100, peek: bool = False, include_own: bool = False,
                     workspace: str | None = None,
@@ -1495,7 +1642,7 @@ class AsyncClient(_Base):
         if channels:
             params["channel"] = list(channels)
         result = await self._call("GET", "/inbox", cipher=cipher, params=params)
-        return result["messages"]
+        return self._open_asks(result["messages"])
 
     async def history(self, channel: str, *, limit: int = 50,
                       workspace: str | None = None) -> list[dict[str, Any]]:

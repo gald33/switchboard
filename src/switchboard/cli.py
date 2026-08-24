@@ -1822,6 +1822,29 @@ def cmd_dm(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """`dm`'s sealed sibling: readable by `args.to` alone, not by anyone else
+    who holds this workspace's key. See `docs/encryption.md` for what that
+    costs — the recipient must already have been seen on the roster."""
+    body = _read_body(args)
+    timing = _Timing(args)
+    timing.note_speak()
+    forecast = timing.declare()
+    timing.close()
+    with _make_client(args) as hub:
+        target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
+        msg = hub.ask(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
+    if args.json:
+        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
+                               if forecast else {})})
+    elif not args.quiet:
+        print(f"asked #{msg['seq']} to {args.to} (sealed to them alone)")
+        if forecast:
+            print(_forecast_line(Fmt(_use_color(sys.stdout)),
+                                 forecast.as_message_meta(), "you expect to be"))
+    return EXIT_OK
+
+
 def _read_body(args: argparse.Namespace) -> Any:
     parts: Sequence[str] = args.message or []
     text = " ".join(parts)
@@ -4385,6 +4408,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-body", action="store_true")
     _add_timing_args(p)
     p.set_defaults(func=cmd_dm)
+
+    p = sub.add_parser(
+        "ask", help="message one agent so only they can read it, even on this workspace's key")
+    p.add_argument("to")
+    p.add_argument("message", nargs="*", help="text, or - to read stdin")
+    p.add_argument("--type", default="ask")
+    p.add_argument("--ttl", type=float)
+    p.add_argument("--json-body", action="store_true")
+    _add_timing_args(p)
+    p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("inbox", help="drain new messages for this agent")
     p.add_argument("-c", "--channel", action="append", help="override subscriptions")

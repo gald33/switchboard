@@ -7,9 +7,17 @@ shape for confidentiality and the wrong shape for attribution — AEAD proves
 self-asserted and the hub does not check it, so inside a room any agent can
 post as another, release another's leases, or advance another's read cursor.
 
-This module is the other half: a keypair that is *not* shared, so peers can
-tell each other apart. The hub learns nothing — the public key is sealed like
-any other content, so only key-holders ever see it.
+This module is the other half: two keypairs that are *not* shared, so peers
+can tell each other apart. The hub learns nothing — both public keys are
+sealed like any other content, so only key-holders ever see them.
+
+Two keypairs, not one, and for the same reason `WorkspaceCipher` derives two
+subkeys instead of reusing one: Ed25519 signs, X25519 seals, and sharing a
+single key across both primitives is the kind of thing that is fine until it
+suddenly is not. The Ed25519 half is `public_key`/`sign` — attribution within
+a room. The X25519 half is `exchange_key`/`derive_shared_secret` — a
+pairwise secret with one specific peer, which is what `crypto.seal_to_peer`
+uses to seal something even fellow workspace-key holders cannot open.
 
 The private key is generated per process and held in memory. It is never
 written to a file and never put in the environment, for a specific reason:
@@ -54,6 +62,10 @@ try:  # pragma: no cover - exercised by the minimal-install CI job
         Ed25519PrivateKey,
         Ed25519PublicKey,
     )
+    from cryptography.hazmat.primitives.asymmetric.x25519 import (
+        X25519PrivateKey,
+        X25519PublicKey,
+    )
 
     AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -70,18 +82,23 @@ def _b64d(text: str) -> bytes:
 
 @dataclass
 class SigningIdentity:
-    """An in-memory Ed25519 keypair for one agent process.
+    """An in-memory Ed25519 + X25519 keypair pair for one agent process.
 
     Ed25519 rather than anything configurable: one curve, no parameters to get
     wrong, 32-byte public keys and 64-byte signatures small enough to ride
-    along on every message without anyone noticing.
+    along on every message without anyone noticing. X25519 alongside it for
+    the same reason and on the same curve family, but deliberately a
+    *separate* keypair — see the module docstring for why signing and sealing
+    must not share one key.
     """
 
     _private: object = field(repr=False)
+    _x25519_private: object = field(repr=False)
 
     @classmethod
     def generate(cls) -> SigningIdentity:
-        return cls(_private=Ed25519PrivateKey.generate())
+        return cls(_private=Ed25519PrivateKey.generate(),
+                   _x25519_private=X25519PrivateKey.generate())
 
     @property
     def public_key(self) -> str:
@@ -97,9 +114,46 @@ class SigningIdentity:
     def sign(self, message: bytes) -> str:
         return _b64e(self._private.sign(message))
 
+    @property
+    def exchange_key(self) -> str:
+        """The X25519 public half, as a short string safe to put in a payload.
+
+        Publishing this is what lets a peer seal something to this identity
+        alone with `crypto.seal_to_peer` — the ECDH exchange needs the other
+        side's public key, and this is how it becomes available without a
+        second out-of-band handoff.
+        """
+        from cryptography.hazmat.primitives import serialization
+
+        raw = self._x25519_private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return _b64e(raw)
+
+    def derive_shared_secret(self, peer_exchange_key: str) -> bytes:
+        """The raw 32-byte ECDH output shared with one peer's exchange key.
+
+        Both sides compute the same value from their own private half and the
+        other's public half — that symmetry is the entire point of ECDH, and
+        it is why `crypto.seal_to_peer`/`unseal_from_peer` need no key
+        exchange protocol beyond "read it off the roster".
+
+        Raises rather than crashing with a low-level traceback on malformed
+        input, mirroring how `verify()` below turns bad key material into a
+        clean error instead of letting the caller find out from cryptography's
+        own exception type.
+        """
+        try:
+            peer_key = X25519PublicKey.from_public_bytes(_b64d(peer_exchange_key))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"malformed peer exchange key: {peer_exchange_key!r}") from exc
+        return self._x25519_private.exchange(peer_key)
+
     def __repr__(self) -> str:  # pragma: no cover - defensive
-        # Never let the private half reach a log, a traceback or a repr in a
-        # crash report. The public key is enough to tell two identities apart.
+        # Never let either private half reach a log, a traceback or a repr in
+        # a crash report. The public keys are enough to tell two identities
+        # apart.
         return f"<SigningIdentity {self.public_key[:12]}…>"
 
 
@@ -224,12 +278,25 @@ class SigningServer:
         if not data:
             return
         request = json.loads(data.decode())
-        if request.get("op") == "pubkey":
-            reply = {"pubkey": self.identity.public_key}
-        elif request.get("op") == "sign":
+        op = request.get("op")
+        if op == "pubkey":
+            reply = {"pubkey": self.identity.public_key,
+                     "exchange_key": self.identity.exchange_key}
+        elif op == "sign":
             payload = _b64d(request["payload"])
             reply = {"pubkey": self.identity.public_key,
                      "sig": self.identity.sign(payload)}
+        elif op == "exchange":
+            try:
+                secret = self.identity.derive_shared_secret(request["peer_exchange_key"])
+            except (ValueError, KeyError, TypeError) as exc:
+                # A bad request from the other end of this process's own
+                # socket must not take the signer thread down with it — every
+                # other process this agent is made of depends on it staying
+                # up.
+                reply = {"error": str(exc)}
+            else:
+                reply = {"secret": _b64e(secret)}
         else:
             reply = {"error": "unknown op"}
         conn.sendall(json.dumps(reply).encode())
@@ -249,9 +316,10 @@ class RemoteSigningIdentity:
     knowing whether the key is in this process or the session's.
     """
 
-    def __init__(self, path: Path, public_key: str) -> None:
+    def __init__(self, path: Path, public_key: str, exchange_key: str) -> None:
         self._path = path
         self._public_key = public_key
+        self._exchange_key = exchange_key
 
     @property
     def public_key(self) -> str:
@@ -262,6 +330,17 @@ class RemoteSigningIdentity:
         if reply is None or "sig" not in reply:
             raise OSError("the session's signer did not answer")
         return reply["sig"]
+
+    @property
+    def exchange_key(self) -> str:
+        return self._exchange_key
+
+    def derive_shared_secret(self, peer_exchange_key: str) -> bytes:
+        reply = _ask(self._path, {"op": "exchange", "peer_exchange_key": peer_exchange_key})
+        if reply is None or "secret" not in reply:
+            detail = reply.get("error") if reply else "the session's signer did not answer"
+            raise OSError(detail)
+        return _b64d(reply["secret"])
 
     def __repr__(self) -> str:  # pragma: no cover - defensive
         return f"<RemoteSigningIdentity {self._public_key[:12]}…>"
@@ -293,6 +372,7 @@ def attach(agent_id: str) -> RemoteSigningIdentity | None:
     if not path.exists():
         return None
     reply = _ask(path, {"op": "pubkey"})
-    if not reply or not isinstance(reply.get("pubkey"), str):
+    if (not reply or not isinstance(reply.get("pubkey"), str)
+            or not isinstance(reply.get("exchange_key"), str)):
         return None
-    return RemoteSigningIdentity(path, reply["pubkey"])
+    return RemoteSigningIdentity(path, reply["pubkey"], reply["exchange_key"])
