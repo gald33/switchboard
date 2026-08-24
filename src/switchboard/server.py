@@ -82,6 +82,11 @@ class RegisterIn(BaseModel):
     #: content. Opaque here: the hub stores and echoes it, and cannot verify
     #: anything with it — verification is between peers, who hold the key.
     pubkey: str | None = None
+    #: The agent's X25519 exchange key, sealed the same way `pubkey` is. Also
+    #: opaque here: the hub stores and echoes it and does nothing with it —
+    #: it exists so a peer can seal an `ask` to this agent alone, which is a
+    #: property between the two peers and never involves the hub.
+    exchange_key: str | None = None
     kind: str = "unknown"
     branch: str | None = None
     task: str | None = None
@@ -158,6 +163,7 @@ def dump_agent(a: Agent, now: float) -> dict[str, Any]:
         "channels": a.channels,
         "meta": a.meta,
         "pubkey": a.pubkey,
+        "exchange_key": a.exchange_key,
         "registered_at": iso(a.registered_at),
         "last_seen_at": iso(a.last_seen_at),
         "present_until": iso(a.present_until),
@@ -475,6 +481,7 @@ def create_app(
             channels=payload.channels,
             meta=payload.meta,
             pubkey=payload.pubkey,
+            exchange_key=payload.exchange_key,
             ttl=clamp_ttl(payload.ttl, DEFAULT_AGENT_TTL, MAX_AGENT_TTL),
             expected_back=_expected_back(payload.back_in, now),
             now=now,

@@ -25,9 +25,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
-from .client import Client, Identity, LeaseHeld, SwitchboardError, detect_identity
+from .client import (
+    Client,
+    Identity,
+    LeaseHeld,
+    SwitchboardError,
+    UnknownPeerExchangeKey,
+    detect_identity,
+)
 from .config import ClientConfig, isolation_warning, rooms_warning
-from .crypto import generate_key
+from .crypto import CryptoError, generate_key
 from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
@@ -340,6 +347,29 @@ TOOLS: list[dict[str, Any]] = [
             "type": _STR,
             "ttl": _NUM,
             "custom_scope": _CUSTOM_SCOPE,
+            "execution_class": _TIMING_CLASS,
+            "effort": _TIMING_EFFORT,
+        }, ["to", "message"]),
+    },
+    {
+        "name": "ask",
+        "description": (
+            "Send a message to one specific agent that ONLY that agent can read — sealed to "
+            "their exchange key, not just to the workspace key. Reach for this instead of "
+            "'dm' when the room itself should not be able to read the answer, even though "
+            "everyone in it holds the same workspace key: it costs nothing to mint (unlike "
+            "'keygen', no key to distribute out of band) but the recipient must already have "
+            "been seen on 'roster'/'agents' at least once, so the very first message to a "
+            "brand-new peer cannot be an ask yet — use 'dm' first, then switch to 'ask' once "
+            "they have been seen. If this fails because their exchange key is not known yet, "
+            "read the roster and try again. Optionally pass execution_class/effort to attach "
+            "a check-in forecast — advisory only, based on your own local history."
+        ),
+        "inputSchema": _schema({
+            "to": {**_STR, "description": "recipient agent id (see roster)"},
+            "message": {**_STR, "description": "what to ask, readable by them alone"},
+            "type": _STR,
+            "ttl": _NUM,
             "execution_class": _TIMING_CLASS,
             "effort": _TIMING_EFFORT,
         }, ["to", "message"]),
@@ -942,6 +972,21 @@ class Bridge:
             out["timing_forecast"] = self._sender_forecast(forecast)
         return out
 
+    def ask(self, to: str, message: str, type: str = "ask",
+            ttl: float | None = None,
+            execution_class: str | None = None,
+            effort: str | None = None) -> dict[str, Any]:
+        unread_dms = self._touch()
+        body, forecast = self._body_with_forecast(message, execution_class, effort)
+        msg = self.client.ask(to, body, type=type, ttl=ttl)
+        out = {
+            "sent": True, "to": to, "seq": msg["seq"],
+            "unread_dms": unread_dms, "now": _now_iso(),
+        }
+        if forecast:
+            out["timing_forecast"] = self._sender_forecast(forecast)
+        return out
+
     def inbox(self, channels: list[str] | None = None, wait: float = 0.0,
               peek: bool = False,
               custom_scope: dict[str, str] | None = None,
@@ -1025,6 +1070,22 @@ class Bridge:
             out["timing_forecast"] = _mark_if_expired(timing_forecast)
         if m.get("type") and m["type"] != "note":
             out["type"] = m["type"]
+        if m.get("unreadable"):
+            # An `ask` sealed to someone else's exchange key — either this
+            # agent is not the intended recipient (sealed pairwise, so it
+            # never will be able to open it), or it is the recipient but has
+            # not yet read the sender's exchange key off the roster. `body`
+            # above is still the raw sealed envelope, which is data rather
+            # than the message, so say so plainly instead of letting it look
+            # like content.
+            out["body"] = None
+            out["unreadable"] = True
+            out["hint"] = (
+                "sealed with `ask` to one specific recipient. If that is you and this "
+                "still shows unreadable, call roster/agents to learn the sender's "
+                "exchange key and read again; if it is not you, this is not something "
+                "your key can ever open."
+            )
 
         # Only when something is wrong. A per-message "verified" line is noise
         # on the overwhelmingly common path, and noise is how a warning stops
@@ -1150,6 +1211,18 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         except LeaseHeld as exc:
             return _response(request_id, _tool_result(
                 {"error": "lease_held", "detail": str(exc), **exc.payload}, is_error=True
+            ))
+        except UnknownPeerExchangeKey as exc:
+            # Before the SwitchboardError branch below, which it subclasses:
+            # nothing was sent to the hub, so "hub_error" would misname what
+            # went wrong. The fix is local — read the roster — and the
+            # message already says so.
+            return _response(request_id, _tool_result(
+                {"error": "unknown_peer_exchange_key", "detail": str(exc)}, is_error=True
+            ))
+        except CryptoError as exc:
+            return _response(request_id, _tool_result(
+                {"error": "crypto_unavailable", "detail": str(exc)}, is_error=True
             ))
         except SwitchboardError as exc:
             return _response(request_id, _tool_result(

@@ -87,6 +87,16 @@ def _default_period() -> int:
 ENVELOPE_KEY = "$swb"
 ENVELOPE_VERSION = 1
 
+#: Marks an envelope sealed pairwise, by `seal_to_peer`, rather than under the
+#: workspace key. Both ciphers use the same `ENVELOPE_KEY` so `is_sealed`/
+#: `looks_sealed` still recognise the value as "this is sealed" everywhere
+#: that already relies on them — the viewer included, which has no reason to
+#: know `ask` exists to keep telling "empty" from "sealed" apart. The marker
+#: is what lets `WorkspaceCipher.unseal` refuse one with a useful message
+#: instead of an opaque AEAD failure, and `unseal_from_peer` refuse the
+#: opposite mix-up the same way.
+ASK_MARKER = "ask"
+
 #: Pad plaintext up to a bucket before sealing, so ciphertext length stops
 #: reporting plaintext length. AEAD preserves length exactly: measured on real
 #: traffic, 18- and 19-character messages produced 143- and 144-byte rows, so
@@ -141,6 +151,30 @@ def _b64e(raw: bytes) -> str:
 
 def _b64d(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _seal_bytes(key: bytes, plaintext: bytes, aad: bytes) -> dict[str, Any]:
+    """The AEAD step shared by every envelope this module writes.
+
+    Factored out so `WorkspaceCipher.seal` and `seal_to_peer` cannot drift on
+    the one thing that must never differ between them: the envelope shape a
+    reader recognises via `is_sealed`/`looks_sealed`.
+    """
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    return {ENVELOPE_KEY: ENVELOPE_VERSION, "n": _b64e(nonce), "c": _b64e(ciphertext)}
+
+
+def _unseal_bytes(key: bytes, envelope: dict[str, Any], aad: bytes, context: str) -> bytes:
+    """The inverse of `_seal_bytes`. Raises `DecryptionError`, never the raw
+    AEAD exception — a caller should never have to know this is AES-GCM."""
+    try:
+        return AESGCM(key).decrypt(_b64d(envelope["n"]), _b64d(envelope["c"]), aad)
+    except Exception as exc:  # InvalidTag and malformed input alike
+        raise DecryptionError(
+            f"could not open the value at {context!r}: wrong key, tampering, "
+            f"or a mismatched context"
+        ) from exc
 
 
 def generate_key() -> str:
@@ -242,16 +276,8 @@ class WorkspaceCipher:
         """
         plaintext = _pad(json.dumps(value, separators=(",", ":")).encode()) \
             if self.pad else json.dumps(value, separators=(",", ":")).encode()
-        nonce = os.urandom(12)
         epoch = self.current_epoch()
-        ciphertext = AESGCM(self._payload_key_for(epoch)).encrypt(
-            nonce, plaintext, self._aad(context)
-        )
-        envelope = {
-            ENVELOPE_KEY: ENVELOPE_VERSION,
-            "n": _b64e(nonce),
-            "c": _b64e(ciphertext),
-        }
+        envelope = _seal_bytes(self._payload_key_for(epoch), plaintext, self._aad(context))
         if epoch:
             # Omitted at epoch 0 so that a client with rotation switched off
             # writes bytes an older reader still understands. A reader that
@@ -277,22 +303,27 @@ class WorkspaceCipher:
         version = envelope[ENVELOPE_KEY]
         if version != ENVELOPE_VERSION:
             raise DecryptionError(f"unsupported envelope version {version!r}")
-        try:
-            # The epoch comes from the message, never from our own clock: a
-            # message written seconds before a boundary must stay readable by
-            # someone already past it, and a reader joining later must be able
-            # to open history. Both fall out of following the writer.
-            epoch = envelope.get("e", 0)
-            if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
-                raise DecryptionError(f"invalid key epoch {epoch!r}")
-            plaintext = AESGCM(self._payload_key_for(epoch)).decrypt(
-                _b64d(envelope["n"]), _b64d(envelope["c"]), self._aad(context)
-            )
-        except Exception as exc:  # InvalidTag and malformed input alike
+        if envelope.get("m") == ASK_MARKER:
+            # Right shape, wrong key entirely: this was sealed pairwise to one
+            # recipient's exchange key by `seal_to_peer`, not to the workspace
+            # key every member holds. Opening it here would either fail on an
+            # opaque AEAD mismatch or — worse, if the pair keys ever collided
+            # by coincidence — succeed and hand back garbage. Naming the
+            # mistake is strictly more useful than either.
             raise DecryptionError(
-                f"could not open the value at {context!r}: wrong workspace key, "
-                f"tampering, or a mismatched context"
-            ) from exc
+                f"the value at {context!r} is sealed to one peer with `ask`, "
+                "not to the workspace; open it with `unseal_from_peer` instead"
+            )
+        # The epoch comes from the message, never from our own clock: a
+        # message written seconds before a boundary must stay readable by
+        # someone already past it, and a reader joining later must be able to
+        # open history. Both fall out of following the writer.
+        epoch = envelope.get("e", 0)
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+            raise DecryptionError(f"invalid key epoch {epoch!r}")
+        plaintext = _unseal_bytes(
+            self._payload_key_for(epoch), envelope, self._aad(context), context
+        )
         # Padding is detected from the payload itself rather than from this
         # client's setting, so a padded and an unpadded agent interoperate.
         return json.loads(_unpad(plaintext))
@@ -373,6 +404,120 @@ class WorkspaceCipher:
         # The workspace is bound in too, so a ciphertext cannot be replayed
         # into a different workspace on a shared hub.
         return f"switchboard/v1\x00{self.workspace}\x00{context}".encode()
+
+
+# --- sealed to one peer, not to the workspace --------------------------------
+#
+# Everything above protects a *workspace*: one key, shared by every member, so
+# any of them can read any of it. That is the right shape for coordination and
+# the wrong shape the moment one agent wants to say something to one specific
+# peer that the rest of the room — same workspace, same key — cannot open.
+#
+# `custom_scope` already covers "a private conversation among a subset of the
+# room", but it needs a fresh (key, workspace) pair minted and handed out of
+# band before the first word can be exchanged. What follows needs none of
+# that: every agent already publishes an X25519 exchange key alongside its
+# Ed25519 signing key (`signing.SigningIdentity.exchange_key`), sealed into
+# the roster like any other field, so anyone who has seen a peer on the
+# roster already has what ECDH needs. No key to mint, no out-of-band channel,
+# and it works even in a workspace with no `WorkspaceCipher` configured at
+# all — the pairwise secret never depends on one.
+
+
+def _ask_aad(context: str) -> bytes:
+    # No workspace to bind — the pair key already ties this to exactly two
+    # identities — but `context` is bound the same way `WorkspaceCipher._aad`
+    # binds it, for the same reason: without it a hub could take a sealed ask
+    # body and relocate it onto another field, and the ciphertext would still
+    # look authentic there.
+    return f"switchboard/v1/ask\x00{context}".encode()
+
+
+def _derive_ask_key(my_identity: Any, peer_exchange_key: str) -> bytes:
+    """The per-pair AES-256-GCM key two identities agree on without a hub.
+
+    ECDH already gives both ends an identical shared secret — that symmetry
+    is the whole point of Diffie-Hellman, and it is why nothing here needs a
+    negotiation. What HKDF's ``info`` adds is binding, not direction: sorting
+    the two exchange keys into it (never into the ECDH itself, which already
+    does not care about order) ties the derived key deterministically to
+    *this unordered pair* rather than to whichever side happened to call
+    first, so A deriving "my key and B's" and B deriving "B's key and mine"
+    land on the same 32 bytes without either needing to know who initiated.
+    Sender authenticity for an ask rides on the same Ed25519 signature every
+    other message carries, not on this key being direction-specific.
+    """
+    if not AVAILABLE:
+        raise CryptoError(_MISSING)
+    secret = my_identity.derive_shared_secret(peer_exchange_key)
+    pair = "\x00".join(sorted([my_identity.exchange_key, peer_exchange_key]))
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None,
+        info=b"switchboard/v1/ask\x00" + pair.encode(),
+    ).derive(secret)
+
+
+def seal_to_peer(
+    value: Any, *, my_identity: Any, peer_exchange_key: str, context: str, pad: bool = True,
+) -> dict[str, Any]:
+    """Seal `value` so that only `peer_exchange_key`'s holder can open it.
+
+    Not even a fellow holder of the workspace key can — the key used here
+    never touches the workspace at all, which is the entire reason this
+    exists next to `WorkspaceCipher`: sometimes "everyone in this room" is
+    the wrong audience for one message, and minting a whole second (key,
+    workspace) pair with `switchboard keygen` for a single question is more
+    ceremony than the moment deserves.
+
+    Uses the same envelope shape `WorkspaceCipher.seal` does — `is_sealed`/
+    `looks_sealed` need no changes to keep telling "sealed" from "empty" —
+    with one added field, `"m": "ask"`, that tells the two apart so neither
+    cipher can be handed the other's envelope and misread it as its own.
+    """
+    if not AVAILABLE:
+        raise CryptoError(_MISSING)
+    key = _derive_ask_key(my_identity, peer_exchange_key)
+    plaintext = json.dumps(value, separators=(",", ":")).encode()
+    if pad:
+        plaintext = _pad(plaintext)
+    envelope = _seal_bytes(key, plaintext, _ask_aad(context))
+    envelope["m"] = ASK_MARKER
+    return envelope
+
+
+def unseal_from_peer(
+    envelope: Any, *, my_identity: Any, peer_exchange_key: str, context: str,
+) -> Any:
+    """Open an envelope `seal_to_peer` sealed to `my_identity`.
+
+    `peer_exchange_key` is the *sender's* exchange key — ECDH needs one
+    identity's private half and the other's public half, and here that is
+    ours and theirs respectively, the mirror image of the call that sealed
+    it.
+
+    Refuses an envelope that is not ask-marked, symmetrically with
+    `WorkspaceCipher.unseal` refusing one that is: the two ciphers protect
+    different things, and silently accepting either envelope in the other's
+    place would make a hub's or a peer's mix-up look like it worked.
+    """
+    if not AVAILABLE:
+        raise CryptoError(_MISSING)
+    if not is_sealed(envelope):
+        raise DecryptionError(
+            f"expected a value sealed with `ask` at {context!r} but found "
+            "plaintext or an ordinary value; refusing it"
+        )
+    version = envelope[ENVELOPE_KEY]
+    if version != ENVELOPE_VERSION:
+        raise DecryptionError(f"unsupported envelope version {version!r}")
+    if envelope.get("m") != ASK_MARKER:
+        raise DecryptionError(
+            f"the value at {context!r} is sealed to the workspace, not to you "
+            "specifically with `ask`; open it with `WorkspaceCipher.unseal` instead"
+        )
+    key = _derive_ask_key(my_identity, peer_exchange_key)
+    plaintext = _unseal_bytes(key, envelope, _ask_aad(context), context)
+    return json.loads(_unpad(plaintext))
 
 
 #: Marks a padded plaintext. Chosen as a byte that cannot begin a JSON

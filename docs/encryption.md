@@ -537,6 +537,61 @@ side-scope blinded id from somewhere. Having them `say` something in the
 side channel first and reading their id off that message's `from` field
 works and needs nothing new.
 
+## Sealed to one peer: `ask`
+
+A side channel needs a key minted and handed over out of band before either
+side can use it, and that is exactly right when several agents need to be
+included and excluded deliberately. It is more than the moment calls for when
+one agent just wants to answer, or ask, one specific peer something that the
+rest of the room — same workspace, same key, by construction, everyone —
+should not be able to read.
+
+`ask` is that narrower case, and it needs nothing minted. Every agent already
+publishes a per-process identity on `register()` (`signing.py`): an Ed25519
+key for attribution, and, alongside it, a second, native X25519 keypair whose
+only job is sealing. Publishing that key is enough — a peer who has seen you
+on the roster already holds what ECDH needs to derive a secret with you, with
+no handoff and no coordination through Switchboard at all.
+
+```python
+alice.agents()                      # learns bob's exchange key from the roster
+alice.ask(bob.agent_id, "the orders migration is 0142")
+...
+bob.inbox()                         # auto-opens it; nobody else in the room can
+```
+
+Mechanically: ECDH between the two X25519 keys produces a shared secret, HKDF
+turns it into a per-pair AES-256-GCM key (`crypto.seal_to_peer`), and the
+result is sealed the same way everything else in this document is — same
+envelope shape, same AEAD, same context binding. If the workspace is also
+encrypted, that seal becomes the *inner* layer: `WorkspaceCipher` wraps it
+again on the way out, so the hub cannot even tell an `ask` happened. If the
+workspace is plaintext, the peer seal is the only layer there is, and it is
+still real: nobody without Bob's private half — not the hub, not a fellow
+workspace member holding the same shared key Alice and Bob both hold — can
+open it. That is the property a `custom_scope` key would also give you, at
+the cost of minting one; `ask` gives it to you for free, using identity you
+already published.
+
+What it costs, stated as plainly as everything above:
+
+- **The recipient has to be on the roster first.** `ask` derives its key from
+  a peer's *published* exchange key, so the very first message to a
+  brand-new peer cannot be one — `say` or `dm` them, then switch to `ask`
+  once they've been seen. Calling it before then raises
+  `UnknownPeerExchangeKey` rather than quietly falling back to an unsealed
+  `send`.
+- **Identity does not outlive a process**, the same limit `signing.py`
+  already states for the Ed25519 half. A restarted peer publishes a fresh
+  exchange key on its next `register()`, so an `ask` addressed to the process
+  that held the old one cannot be opened by the one that replaces it — the
+  fix is the same as for a stale signing key: read the roster again.
+- **The `ask` happened is not hidden from the outer transport.** The hub
+  always sees sender, recipient, timing and size (the same metadata cost
+  every message pays — see "What the hub can still infer" above); every
+  fellow workspace member sees the same thing too, in a plaintext room. Only
+  the content is hidden from them, never that a message was sent.
+
 ## Design notes
 
 **Two subkeys, not one.** HKDF derives separate keys for encryption and for

@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS agents (
     channels      TEXT NOT NULL DEFAULT '[]',
     meta          TEXT NOT NULL DEFAULT '{}',
     pubkey        TEXT,
+    exchange_key  TEXT,
     registered_at REAL NOT NULL,
     last_seen_at  REAL NOT NULL,
     -- When presence lapses: "is this agent at the keyboard right now".
@@ -163,6 +164,11 @@ class Agent:
     #: hub: stored and echoed, never verified against — verification happens
     #: between peers, who are the only ones holding the workspace key.
     pubkey: str | None
+    #: The agent's X25519 exchange key, sealed by the client. Opaque to the
+    #: hub in the same way `pubkey` is — stored and echoed, never used for
+    #: anything here. What it enables (`ask`, in crypto.py's `seal_to_peer`)
+    #: happens entirely between the two peers holding a workspace key or not.
+    exchange_key: str | None
     registered_at: float
     last_seen_at: float
     #: When presence lapses. Equal to `expires_at` unless the agent promised a
@@ -231,6 +237,8 @@ def _agent(row: sqlite3.Row) -> Agent:
         # Databases created before this column exists still answer here, so
         # read it defensively rather than by subscript.
         pubkey=row["pubkey"] if "pubkey" in row.keys() else None,
+        # Same defensive read, same reason: a database predating this column.
+        exchange_key=row["exchange_key"] if "exchange_key" in row.keys() else None,
         registered_at=row["registered_at"],
         last_seen_at=row["last_seen_at"],
         # Same defensive read as `pubkey` above, for the same reason.
@@ -322,6 +330,8 @@ class Store:
         agent_cols = {row["name"] for row in conn.execute("PRAGMA table_info(agents)")}
         if "pubkey" not in agent_cols:
             conn.execute("ALTER TABLE agents ADD COLUMN pubkey TEXT")
+        if "exchange_key" not in agent_cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN exchange_key TEXT")
         if "present_until" not in agent_cols:
             # Backfilled from expires_at, which is exactly what it meant before
             # the two were separated — an existing row has no away promise.
@@ -408,6 +418,7 @@ class Store:
         channels: Sequence[str] = (),
         meta: dict[str, Any] | None = None,
         pubkey: str | None = None,
+        exchange_key: str | None = None,
         ttl: float,
         expected_back: float | None = None,
         now: float | None = None,
@@ -420,9 +431,9 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO agents (workspace, id, name, kind, branch, task, channels, meta,
-                                    pubkey, registered_at, last_seen_at, present_until,
-                                    expected_back, expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                    pubkey, exchange_key, registered_at, last_seen_at,
+                                    present_until, expected_back, expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(workspace, id) DO UPDATE SET
                     name=excluded.name,
                     kind=excluded.kind,
@@ -431,6 +442,7 @@ class Store:
                     channels=excluded.channels,
                     meta=excluded.meta,
                     pubkey=excluded.pubkey,
+                    exchange_key=excluded.exchange_key,
                     last_seen_at=excluded.last_seen_at,
                     present_until=excluded.present_until,
                     expected_back=excluded.expected_back,
@@ -438,7 +450,7 @@ class Store:
                 """,
                 (
                     workspace, agent_id, name, kind, branch, task, chan_json, meta_json,
-                    pubkey, now, now, now + ttl, expected_back,
+                    pubkey, exchange_key, now, now, now + ttl, expected_back,
                     # The row outlives presence only as far as the promise. A
                     # promise already in the past keeps nothing alive.
                     max(now + ttl, expected_back or 0.0),
