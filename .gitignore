@@ -23,5 +23,6 @@ build/
 .switchboard/
 .claude/settings.json
 .claude/skills/
+.claude/worktrees/
 CLAUDE.md
 uv.lock
