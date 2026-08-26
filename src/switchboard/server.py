@@ -84,7 +84,7 @@ class RegisterIn(BaseModel):
     pubkey: str | None = None
     #: The agent's X25519 exchange key, sealed the same way `pubkey` is. Also
     #: opaque here: the hub stores and echoes it and does nothing with it —
-    #: it exists so a peer can seal an `ask` to this agent alone, which is a
+    #: it exists so a peer can seal a `whisper` to this agent alone, which is a
     #: property between the two peers and never involves the hub.
     exchange_key: str | None = None
     kind: str = "unknown"

@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .client import (
+    WHISPER_TYPE,
     Client,
     Identity,
     LeaseHeld,
@@ -352,7 +353,7 @@ TOOLS: list[dict[str, Any]] = [
         }, ["to", "message"]),
     },
     {
-        "name": "ask",
+        "name": "whisper",
         "description": (
             "Send a message to one specific agent that ONLY that agent can read — sealed to "
             "their exchange key, not just to the workspace key. Reach for this instead of "
@@ -360,14 +361,15 @@ TOOLS: list[dict[str, Any]] = [
             "everyone in it holds the same workspace key: it costs nothing to mint (unlike "
             "'keygen', no key to distribute out of band) but the recipient must already have "
             "been seen on 'roster'/'agents' at least once, so the very first message to a "
-            "brand-new peer cannot be an ask yet — use 'dm' first, then switch to 'ask' once "
+            "brand-new peer cannot be a whisper yet — use 'dm' first, then switch to 'whisper' "
+            "once "
             "they have been seen. If this fails because their exchange key is not known yet, "
             "read the roster and try again. Optionally pass execution_class/effort to attach "
             "a check-in forecast — advisory only, based on your own local history."
         ),
         "inputSchema": _schema({
             "to": {**_STR, "description": "recipient agent id (see roster)"},
-            "message": {**_STR, "description": "what to ask, readable by them alone"},
+            "message": {**_STR, "description": "what to say, readable by them alone"},
             "type": _STR,
             "ttl": _NUM,
             "execution_class": _TIMING_CLASS,
@@ -972,13 +974,13 @@ class Bridge:
             out["timing_forecast"] = self._sender_forecast(forecast)
         return out
 
-    def ask(self, to: str, message: str, type: str = "ask",
-            ttl: float | None = None,
-            execution_class: str | None = None,
-            effort: str | None = None) -> dict[str, Any]:
+    def whisper(self, to: str, message: str, type: str = WHISPER_TYPE,
+                ttl: float | None = None,
+                execution_class: str | None = None,
+                effort: str | None = None) -> dict[str, Any]:
         unread_dms = self._touch()
         body, forecast = self._body_with_forecast(message, execution_class, effort)
-        msg = self.client.ask(to, body, type=type, ttl=ttl)
+        msg = self.client.whisper(to, body, type=type, ttl=ttl)
         out = {
             "sent": True, "to": to, "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
@@ -1071,7 +1073,7 @@ class Bridge:
         if m.get("type") and m["type"] != "note":
             out["type"] = m["type"]
         if m.get("unreadable"):
-            # An `ask` sealed to someone else's exchange key — either this
+            # A `whisper` sealed to someone else's exchange key — either this
             # agent is not the intended recipient (sealed pairwise, so it
             # never will be able to open it), or it is the recipient but has
             # not yet read the sender's exchange key off the roster. `body`
@@ -1081,7 +1083,7 @@ class Bridge:
             out["body"] = None
             out["unreadable"] = True
             out["hint"] = (
-                "sealed with `ask` to one specific recipient. If that is you and this "
+                "sealed with `whisper` to one specific recipient. If that is you and this "
                 "still shows unreadable, call roster/agents to learn the sender's "
                 "exchange key and read again; if it is not you, this is not something "
                 "your key can ever open."

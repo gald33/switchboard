@@ -91,11 +91,16 @@ ENVELOPE_VERSION = 1
 #: workspace key. Both ciphers use the same `ENVELOPE_KEY` so `is_sealed`/
 #: `looks_sealed` still recognise the value as "this is sealed" everywhere
 #: that already relies on them — the viewer included, which has no reason to
-#: know `ask` exists to keep telling "empty" from "sealed" apart. The marker
+#: know `whisper` exists to keep telling "empty" from "sealed" apart. The
+#: marker
 #: is what lets `WorkspaceCipher.unseal` refuse one with a useful message
 #: instead of an opaque AEAD failure, and `unseal_from_peer` refuse the
 #: opposite mix-up the same way.
-ASK_MARKER = "ask"
+#: The wire value stays `"ask"` — the name this feature shipped under in
+#: 0.11.0 — even though the tool, CLI and client method are now `whisper`.
+#: Changing it would make 0.11.0 and 1.0.0 refuse each other's envelopes for
+#: a rename that is only ever read by humans.
+WHISPER_MARKER = "ask"
 
 #: Pad plaintext up to a bucket before sealing, so ciphertext length stops
 #: reporting plaintext length. AEAD preserves length exactly: measured on real
@@ -303,7 +308,7 @@ class WorkspaceCipher:
         version = envelope[ENVELOPE_KEY]
         if version != ENVELOPE_VERSION:
             raise DecryptionError(f"unsupported envelope version {version!r}")
-        if envelope.get("m") == ASK_MARKER:
+        if envelope.get("m") == WHISPER_MARKER:
             # Right shape, wrong key entirely: this was sealed pairwise to one
             # recipient's exchange key by `seal_to_peer`, not to the workspace
             # key every member holds. Opening it here would either fail on an
@@ -311,7 +316,7 @@ class WorkspaceCipher:
             # by coincidence — succeed and hand back garbage. Naming the
             # mistake is strictly more useful than either.
             raise DecryptionError(
-                f"the value at {context!r} is sealed to one peer with `ask`, "
+                f"the value at {context!r} is sealed to one peer with `whisper`, "
                 "not to the workspace; open it with `unseal_from_peer` instead"
             )
         # The epoch comes from the message, never from our own clock: a
@@ -424,16 +429,16 @@ class WorkspaceCipher:
 # all — the pairwise secret never depends on one.
 
 
-def _ask_aad(context: str) -> bytes:
+def _whisper_aad(context: str) -> bytes:
     # No workspace to bind — the pair key already ties this to exactly two
     # identities — but `context` is bound the same way `WorkspaceCipher._aad`
-    # binds it, for the same reason: without it a hub could take a sealed ask
-    # body and relocate it onto another field, and the ciphertext would still
+    # binds it, for the same reason: without it a hub could take a sealed
+    # whisper body and relocate it onto another field, and the ciphertext would still
     # look authentic there.
     return f"switchboard/v1/ask\x00{context}".encode()
 
 
-def _derive_ask_key(my_identity: Any, peer_exchange_key: str) -> bytes:
+def _derive_whisper_key(my_identity: Any, peer_exchange_key: str) -> bytes:
     """The per-pair AES-256-GCM key two identities agree on without a hub.
 
     ECDH already gives both ends an identical shared secret — that symmetry
@@ -444,7 +449,7 @@ def _derive_ask_key(my_identity: Any, peer_exchange_key: str) -> bytes:
     *this unordered pair* rather than to whichever side happened to call
     first, so A deriving "my key and B's" and B deriving "B's key and mine"
     land on the same 32 bytes without either needing to know who initiated.
-    Sender authenticity for an ask rides on the same Ed25519 signature every
+    Sender authenticity for a whisper rides on the same Ed25519 signature every
     other message carries, not on this key being direction-specific.
     """
     if not AVAILABLE:
@@ -466,22 +471,23 @@ def seal_to_peer(
     never touches the workspace at all, which is the entire reason this
     exists next to `WorkspaceCipher`: sometimes "everyone in this room" is
     the wrong audience for one message, and minting a whole second (key,
-    workspace) pair with `switchboard keygen` for a single question is more
+    workspace) pair with `switchboard keygen` for a single message is more
     ceremony than the moment deserves.
 
     Uses the same envelope shape `WorkspaceCipher.seal` does — `is_sealed`/
     `looks_sealed` need no changes to keep telling "sealed" from "empty" —
-    with one added field, `"m": "ask"`, that tells the two apart so neither
+    with one added field, `"m": "ask"` (the name this shipped under before
+    the rename to `whisper`), that tells the two apart so neither
     cipher can be handed the other's envelope and misread it as its own.
     """
     if not AVAILABLE:
         raise CryptoError(_MISSING)
-    key = _derive_ask_key(my_identity, peer_exchange_key)
+    key = _derive_whisper_key(my_identity, peer_exchange_key)
     plaintext = json.dumps(value, separators=(",", ":")).encode()
     if pad:
         plaintext = _pad(plaintext)
-    envelope = _seal_bytes(key, plaintext, _ask_aad(context))
-    envelope["m"] = ASK_MARKER
+    envelope = _seal_bytes(key, plaintext, _whisper_aad(context))
+    envelope["m"] = WHISPER_MARKER
     return envelope
 
 
@@ -495,7 +501,7 @@ def unseal_from_peer(
     ours and theirs respectively, the mirror image of the call that sealed
     it.
 
-    Refuses an envelope that is not ask-marked, symmetrically with
+    Refuses an envelope that is not whisper-marked, symmetrically with
     `WorkspaceCipher.unseal` refusing one that is: the two ciphers protect
     different things, and silently accepting either envelope in the other's
     place would make a hub's or a peer's mix-up look like it worked.
@@ -504,19 +510,19 @@ def unseal_from_peer(
         raise CryptoError(_MISSING)
     if not is_sealed(envelope):
         raise DecryptionError(
-            f"expected a value sealed with `ask` at {context!r} but found "
+            f"expected a value sealed with `whisper` at {context!r} but found "
             "plaintext or an ordinary value; refusing it"
         )
     version = envelope[ENVELOPE_KEY]
     if version != ENVELOPE_VERSION:
         raise DecryptionError(f"unsupported envelope version {version!r}")
-    if envelope.get("m") != ASK_MARKER:
+    if envelope.get("m") != WHISPER_MARKER:
         raise DecryptionError(
             f"the value at {context!r} is sealed to the workspace, not to you "
-            "specifically with `ask`; open it with `WorkspaceCipher.unseal` instead"
+            "specifically with `whisper`; open it with `WorkspaceCipher.unseal` instead"
         )
-    key = _derive_ask_key(my_identity, peer_exchange_key)
-    plaintext = _unseal_bytes(key, envelope, _ask_aad(context), context)
+    key = _derive_whisper_key(my_identity, peer_exchange_key)
+    plaintext = _unseal_bytes(key, envelope, _whisper_aad(context), context)
     return json.loads(_unpad(plaintext))
 
 

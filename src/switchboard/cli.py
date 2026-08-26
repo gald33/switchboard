@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 from . import __version__, drill, holds, invite, rendezvous, rooms
 from .client import (
+    WHISPER_TYPE,
     Client,
     Identity,
     LeaseHeld,
@@ -1822,7 +1823,7 @@ def cmd_dm(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_ask(args: argparse.Namespace) -> int:
+def cmd_whisper(args: argparse.Namespace) -> int:
     """`dm`'s sealed sibling: readable by `args.to` alone, not by anyone else
     who holds this workspace's key. See `docs/encryption.md` for what that
     costs — the recipient must already have been seen on the roster."""
@@ -1833,12 +1834,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
     timing.close()
     with _make_client(args) as hub:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
-        msg = hub.ask(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
+        msg = hub.whisper(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
     if args.json:
         _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
                                if forecast else {})})
     elif not args.quiet:
-        print(f"asked #{msg['seq']} to {args.to} (sealed to them alone)")
+        print(f"whispered #{msg['seq']} to {args.to} (sealed to them alone)")
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
@@ -4409,15 +4410,19 @@ def build_parser() -> argparse.ArgumentParser:
     _add_timing_args(p)
     p.set_defaults(func=cmd_dm)
 
+    # `ask` is 0.11.0's name for this, kept as an alias so a script written
+    # against that release keeps working. argparse aliases share one parser,
+    # so both spellings get identical flags for free.
     p = sub.add_parser(
-        "ask", help="message one agent so only they can read it, even on this workspace's key")
+        "whisper", aliases=["ask"],
+        help="message one agent so only they can read it, even on this workspace's key")
     p.add_argument("to")
     p.add_argument("message", nargs="*", help="text, or - to read stdin")
-    p.add_argument("--type", default="ask")
+    p.add_argument("--type", default=WHISPER_TYPE)
     p.add_argument("--ttl", type=float)
     p.add_argument("--json-body", action="store_true")
     _add_timing_args(p)
-    p.set_defaults(func=cmd_ask)
+    p.set_defaults(func=cmd_whisper)
 
     p = sub.add_parser("inbox", help="drain new messages for this agent")
     p.add_argument("-c", "--channel", action="append", help="override subscriptions")

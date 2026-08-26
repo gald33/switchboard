@@ -66,13 +66,13 @@ class LeaseHeld(SwitchboardError):
 
 
 class UnknownPeerExchangeKey(SwitchboardError):
-    """`ask()` was called for a peer whose exchange key this client has not
+    """`whisper()` was called for a peer whose exchange key this client has not
     seen yet.
 
     Distinct from every other `SwitchboardError`: nothing was sent to the
     hub, and there is nothing to retry — the fix is a roster read. Raising a
     dedicated type rather than falling back to a plain `send()` is the point;
-    silently downgrading an `ask` into an unsealed message would hand the
+    silently downgrading a `whisper` into an unsealed message would hand the
     caller exactly the confidentiality it explicitly asked to avoid.
     """
 
@@ -339,8 +339,14 @@ _TOLERATE_UNREADABLE = {"agents", "agent", "entries", "leases"}
 #: because it is used throughout this module.
 _looks_sealed = looks_sealed
 
-_ASK_MISSING = (
-    "ask needs a signing identity, which needs the crypto extra: "
+#: The message `type` a whisper carries on the wire. 0.11.0 sent `"ask"`
+#: under the old name; both open, so a mixed room stays readable in the
+#: direction that matters — reading an older peer's whisper.
+WHISPER_TYPE = "whisper"
+WHISPER_TYPES = frozenset({WHISPER_TYPE, "ask"})
+
+_WHISPER_MISSING = (
+    "whisper needs a signing identity, which needs the crypto extra: "
     "pip install 'agent-switchboard[crypto]'"
 )
 
@@ -635,7 +641,7 @@ class _Base:
         self._peer_log = peers.PeerKeyLog(peer_db) if peer_db else None
         #: Peer exchange keys learned from a roster read, keyed by hub-form
         #: agent id. Per-process only, unlike `_peer_log` above: this exists
-        #: purely so `ask()` and inbox's auto-open can find a key they have
+        #: purely so `whisper()` and inbox's auto-open can find a key they have
         #: already seen, and no security property rides on it persisting —
         #: it is a convenience cache, not a trust store.
         self._peer_exchange_keys: dict[str, str] = {}
@@ -883,16 +889,16 @@ class _Base:
 
     @property
     def exchange_key(self) -> str | None:
-        """What a peer seals an `ask` to. Published at registration, sealed
+        """What a peer seals a `whisper` to. Published at registration, sealed
         like `public_key` above and for the same reason."""
         return self.signing.exchange_key if self.signing else None
 
     def _peer_exchange_key_for(self, to_agent: str) -> str:
-        """The cached exchange key `ask(to_agent, ...)` would seal to, or a
+        """The cached exchange key `whisper(to_agent, ...)` would seal to, or a
         clear, actionable error.
 
         Never falls back to an unsealed `send` — a caller that reached for
-        `ask` explicitly wanted the peer-only property, and silently handing
+        `whisper` explicitly wanted the peer-only property, and silently handing
         back something weaker would be the one failure mode worse than
         raising.
         """
@@ -902,22 +908,26 @@ class _Base:
             raise UnknownPeerExchangeKey(
                 f"no exchange key known for {to_agent!r} ({hub_id[:22]}…). "
                 "Call agents() to read this peer's exchange key from the "
-                "roster before asking them — a peer you have never seen "
-                "there cannot be `ask`ed yet; `say`/`dm` them first instead."
+                "roster before whispering to them — a peer you have never "
+                "seen there cannot be whispered to yet; `say`/`dm` them first."
             )
         return key
 
-    def _seal_ask_body(self, to_agent: str, body: Any) -> dict[str, Any]:
-        """The sealed envelope `ask` sends as its message body."""
+    def _seal_whisper_body(self, to_agent: str, body: Any) -> dict[str, Any]:
+        """The sealed envelope `whisper` sends as its message body."""
         if self.signing is None:
-            raise CryptoError(_ASK_MISSING)
+            raise CryptoError(_WHISPER_MISSING)
         peer_key = self._peer_exchange_key_for(to_agent)
         return seal_to_peer(
             body, my_identity=self.signing, peer_exchange_key=peer_key, context="ask.body",
         )
 
-    def _open_asks(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Auto-open every `type == "ask"` message this client currently can.
+    def _open_whispers(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Auto-open every whisper-typed message this client currently can.
+
+        Both `"whisper"` and `"ask"` count: `ask` is what 0.11.0 sent, and a
+        peer still on it goes on being readable here rather than silently
+        arriving as `unreadable`.
 
         Mirrors the convention `key_mismatches`/`_mark_unopened` already use
         for a workspace-key mismatch: a message this process cannot yet open
@@ -929,7 +939,7 @@ class _Base:
         already uses.
         """
         for message in messages:
-            if message.get("type") != "ask":
+            if message.get("type") not in WHISPER_TYPES:
                 continue
             sender = message.get("from")
             peer_key = (
@@ -1145,7 +1155,7 @@ class _Base:
             # `exchange_key` travel in the clear in a genuinely plaintext
             # workspace (there is no cipher on either side to seal them with),
             # so a keyless reader is not "no key", it is "no workspace key" —
-            # and `ask` explicitly needs to keep working without one.
+            # and `whisper` explicitly needs to keep working without one.
             return self._note_roster(self._mark_unopened(payload, tolerate))
         for key, fields in _OPEN_RESPONSE.items():
             if key not in payload or payload[key] is None:
@@ -1348,8 +1358,9 @@ class Client(_Base):
         """Direct message — sugar for posting to the recipient's ``@`` channel."""
         return self.post(f"@{to_agent}", body, **kwargs)
 
-    def ask(self, to_agent: str, body: Any, *, type: str = "ask", ttl: float | None = None,
-            workspace: str | None = None) -> dict[str, Any]:
+    def whisper(self, to_agent: str, body: Any, *, type: str = WHISPER_TYPE,
+                ttl: float | None = None,
+                workspace: str | None = None) -> dict[str, Any]:
         """A direct message only `to_agent` can read — sealed pairwise with
         their published X25519 exchange key, not with the workspace key.
 
@@ -1361,7 +1372,7 @@ class Client(_Base):
 
         The outer transport is still the ordinary workspace-encrypted `send`:
         in an encrypted room the sealed-to-peer envelope is wrapped a second
-        time, hiding from the hub even that an `ask` happened; in a
+        time, hiding from the hub even that a whisper happened; in a
         plaintext room only the inner seal protects the content, and that
         confidentiality against fellow workspace members is real either way.
 
@@ -1369,8 +1380,14 @@ class Client(_Base):
         been learned yet — call `agents()` first. Never falls back to an
         unsealed `send`.
         """
-        envelope = self._seal_ask_body(to_agent, body)
+        envelope = self._seal_whisper_body(to_agent, body)
         return self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
+
+    def ask(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
+        """Deprecated alias for `whisper`, the name this shipped under in
+        0.11.0. Kept because renaming a method one release after publishing
+        it is not a reason to break the callers who took it up."""
+        return self.whisper(to_agent, body, **kwargs)
 
     def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
               limit: int = 100, peek: bool = False, include_own: bool = False,
@@ -1384,7 +1401,7 @@ class Client(_Base):
         if channels:
             params["channel"] = list(channels)
         messages = self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
-        return self._open_asks(messages)
+        return self._open_whispers(messages)
 
     def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
@@ -1624,11 +1641,16 @@ class AsyncClient(_Base):
     async def send(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
         return await self.post(f"@{to_agent}", body, **kwargs)
 
-    async def ask(self, to_agent: str, body: Any, *, type: str = "ask",
-                  ttl: float | None = None, workspace: str | None = None) -> dict[str, Any]:
-        """The async half of `Client.ask`. Same envelope, same guarantee."""
-        envelope = self._seal_ask_body(to_agent, body)
+    async def whisper(self, to_agent: str, body: Any, *, type: str = WHISPER_TYPE,
+                      ttl: float | None = None,
+                      workspace: str | None = None) -> dict[str, Any]:
+        """The async half of `Client.whisper`. Same envelope, same guarantee."""
+        envelope = self._seal_whisper_body(to_agent, body)
         return await self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
+
+    async def ask(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
+        """Deprecated alias for `whisper`. See `Client.ask`."""
+        return await self.whisper(to_agent, body, **kwargs)
 
     async def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
                     limit: int = 100, peek: bool = False, include_own: bool = False,
@@ -1642,7 +1664,7 @@ class AsyncClient(_Base):
         if channels:
             params["channel"] = list(channels)
         result = await self._call("GET", "/inbox", cipher=cipher, params=params)
-        return self._open_asks(result["messages"])
+        return self._open_whispers(result["messages"])
 
     async def history(self, channel: str, *, limit: int = 50,
                       workspace: str | None = None) -> list[dict[str, Any]]:
