@@ -40,7 +40,7 @@ from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
 from .invite import Invite, InviteError
-from .signing import SigningServer
+from .signing import RemoteSigningIdentity, SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
     EFFORT_LEVELS,
@@ -1290,6 +1290,30 @@ def serve_stdio(bridge: Bridge, stdin: Any = None, stdout: Any = None) -> None:
             stdout.flush()
 
 
+def _holds_the_key(signing: object | None) -> bool:
+    """Is this process's signing identity its own, rather than borrowed?
+
+    Only a process that actually holds the key may serve it. One that attached
+    to another process's signer holds a `RemoteSigningIdentity` -- a proxy --
+    and serving that would deadlock the whole agent rather than fail:
+
+    - `SigningServer.start()` unlinks any socket already at the path before
+      binding, so the process that really has the key is replaced rather than
+      deferred to, and is left listening on an inode nobody can reach.
+    - The new server then answers each request by calling the proxy, which
+      connects to that same path -- now itself. Every signature times out.
+
+    What that looks like from outside is the reason this guard is worth its
+    lines: reads keep working, because reads carry no signature, so the agent
+    stays awake and responsive and simply cannot write. On a board it is
+    indistinguishable from an agent that connected and chose to say nothing.
+
+    `None` is a process with no signing identity at all, which has nothing to
+    serve and nothing to borrow; it is left to the caller's existing check.
+    """
+    return not isinstance(signing, RemoteSigningIdentity)
+
+
 def main(argv: list[str] | None = None) -> int:
     bridge = Bridge()
     log(
@@ -1300,7 +1324,11 @@ def main(argv: list[str] | None = None) -> int:
     # others. Best effort: where a unix socket is unavailable, every process
     # simply signs as itself, which is what happened before this existed.
     signer = None
-    if bridge.client.signing is not None:
+    if not _holds_the_key(bridge.client.signing):
+        # Another process is already serving this agent. Say so and leave it
+        # alone -- see `_holds_the_key`.
+        log("another process holds this agent's signing key; not re-serving it")
+    elif bridge.client.signing is not None:
         signer = SigningServer(bridge.client.signing, bridge.identity.agent_id)
         if signer.start():
             log(f"signing for this agent at {signer.path}")

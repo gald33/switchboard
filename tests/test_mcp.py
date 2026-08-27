@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1024,3 +1026,68 @@ def test_whoami_tells_a_model_it_is_in_a_room_the_repo_did_not_choose(
     assert is_error is False
     assert "rooms file" in payload["WARNING"]
     assert "guest, main" in payload["WARNING"]
+
+
+# --- a borrowed signing key is never re-served -----------------------------
+#
+# Reported downstream (gald33/ai-lab, games/island): a real game where both
+# players were awake, reasoning, and unable to write a single line.
+
+
+def test_a_process_that_borrowed_the_key_does_not_serve_it():
+    """Only the process that holds the key may serve it.
+
+    A process that attached to another's signer holds a proxy. Serving that
+    replaces the real server's socket -- `start()` unlinks whatever is at the
+    path -- and then answers every request by calling the proxy, which now
+    connects to itself. Signatures time out, reads keep working because they
+    carry no signature, and the agent looks like one that chose to say nothing.
+    """
+    from switchboard.mcp_server import _holds_the_key
+    from switchboard.signing import RemoteSigningIdentity, SigningIdentity
+
+    borrowed = RemoteSigningIdentity(Path("/tmp/whatever.sock"), "pub", "exch")
+    assert _holds_the_key(SigningIdentity.generate()) is True
+    assert _holds_the_key(borrowed) is False
+    # Nothing to serve and nothing to borrow; the caller's own check covers it.
+    assert _holds_the_key(None) is True
+
+
+def test_the_signer_is_started_only_when_this_process_owns_the_key(monkeypatch):
+    """The guard, where it actually sits: `main` must not construct a server
+    around a proxy. Asserted here rather than trusted to the predicate, so a
+    later refactor that drops the call site is caught too."""
+    import switchboard.mcp_server as mcp
+    from switchboard.signing import RemoteSigningIdentity
+
+    started: list[object] = []
+
+    class _Spy:
+        def __init__(self, identity, agent_id):
+            started.append(identity)
+            self.path = Path("/tmp/spy.sock")
+
+        def start(self):
+            return True
+
+        def stop(self):
+            pass
+
+    class _Bridge:
+        def __init__(self):
+            self.client = SimpleNamespace(
+                signing=RemoteSigningIdentity(Path("/tmp/x.sock"), "p", "e"))
+            self.identity = SimpleNamespace(agent_id="agent-1")
+            self.config = SimpleNamespace(workspace="w", url="http://h")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mcp, "SigningServer", _Spy)
+    monkeypatch.setattr(mcp, "Bridge", _Bridge)
+    monkeypatch.setattr(mcp, "serve_stdio", lambda bridge: None)
+    monkeypatch.setattr(mcp, "log", lambda *a, **k: None)
+
+    mcp.main([])
+
+    assert started == [], "a borrowed key must never be served"
