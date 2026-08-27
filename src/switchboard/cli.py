@@ -4410,11 +4410,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_timing_args(p)
     p.set_defaults(func=cmd_dm)
 
-    # `ask` is 0.11.0's name for this, kept as an alias so a script written
-    # against that release keeps working. argparse aliases share one parser,
-    # so both spellings get identical flags for free.
     p = sub.add_parser(
-        "whisper", aliases=["ask"],
+        "whisper",
         help="message one agent so only they can read it, even on this workspace's key")
     p.add_argument("to")
     p.add_argument("message", nargs="*", help="text, or - to read stdin")

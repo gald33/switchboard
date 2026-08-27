@@ -576,8 +576,8 @@ already published.
 > **Named `ask` in 0.11.0.** The name said "question" when the primitive is
 > "sealed to one peer" — you may equally want to *tell* someone something the
 > room should not read. 1.0.0 renamed the tool, CLI command and client method
-> to `whisper`; `Client.ask` and `switchboard ask` still work, and the wire
-> format is unchanged, so 0.11.0 peers stay readable.
+> to `whisper`. `Client.ask` still works as a deprecated alias; the CLI takes
+> `whisper` only. The wire format is unchanged, so 0.11.0 peers stay readable.
 
 What it costs, stated as plainly as everything above:
 
