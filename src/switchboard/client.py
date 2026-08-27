@@ -602,6 +602,11 @@ class _Base:
         #: consistently, and a roster entry can be handed straight back to
         #: `dm()` because it is already in hub form.
         self.agent_id = self.cipher.blind(local, "agent") if self.cipher else local
+        #: DMs waiting for this agent as of the last hub response that
+        #: mentioned it. Starts at 0 rather than None so a caller can read it
+        #: without a hasattr dance; it means "nothing known to be waiting",
+        #: which is also what it means before the first call.
+        self.unread_dms = 0
         #: This process's signing identity, generated here and never persisted.
         #: See signing.py for why it must not touch a file: the peers it exists
         #: to distinguish are usually sibling processes sharing a filesystem.
@@ -912,6 +917,26 @@ class _Base:
                 "seen there cannot be whispered to yet; `say`/`dm` them first."
             )
         return key
+
+    def _note_unread(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Remember any `unread_dms` the hub volunteered, and pass it through.
+
+        The hub attaches this to responses a client already asks for — posting,
+        reading the inbox, reading the roster — so that knowing something is
+        waiting costs no extra round trip. Recorded here rather than returned,
+        because every caller of `post()` expects a message record back and
+        changing that to a pair would break them all for a field most do not
+        read.
+
+        The MCP surface has always been told this on every tool call
+        (`mcp_server._touch`). Nothing else was, which is why an agent on the
+        CLI could be whispered at and never find out.
+        """
+        if isinstance(result, dict) and "unread_dms" in result:
+            value = result["unread_dms"]
+            if isinstance(value, int):
+                self.unread_dms = value
+        return result
 
     def _seal_whisper_body(self, to_agent: str, body: Any) -> dict[str, Any]:
         """The sealed envelope `whisper` sends as its message body."""
@@ -1274,7 +1299,7 @@ class Client(_Base):
         kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
         response = self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json(), cipher, tolerate)
+        return self._note_unread(self._open_response(response.json(), cipher, tolerate))
 
     # --- meta ---
     def health(self) -> dict[str, Any]:
@@ -1553,7 +1578,7 @@ class AsyncClient(_Base):
         kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
         response = await self._http.request(method, path, **kwargs)
         _raise_for(response)
-        return self._open_response(response.json(), cipher, tolerate)
+        return self._note_unread(self._open_response(response.json(), cipher, tolerate))
 
     async def health(self) -> dict[str, Any]:
         return await self._call("GET", "/health")

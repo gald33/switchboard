@@ -421,6 +421,74 @@ TOOLS: list[dict[str, Any]] = [
         }, ["key", "value"]),
     },
     {
+        "name": "board_delete",
+        "description": (
+            "Remove a blackboard entry you no longer stand behind. The counterpart to "
+            "'board_set': without it an entry can only be overwritten or left to expire, "
+            "so a plan you have abandoned goes on looking current to everybody else "
+            "until its TTL runs out. Returns whether a value was actually there."
+        ),
+        "inputSchema": _schema({
+            "key": {**_STR, "description": "the key to delete"},
+        }, ["key"]),
+    },
+    {
+        "name": "subscribe",
+        "description": (
+            "Add channels to what your inbox reads. Until you call this you receive "
+            "only direct messages, so a room can be busy on 'general' while your "
+            "'checkin' and 'inbox' return nothing at all — which looks exactly like a "
+            "quiet room. Call it once, early, naming the channels the humans and agents "
+            "here actually talk on. Adds rather than replaces, and returns everything "
+            "you are subscribed to afterwards. To stop reading a channel, say so by "
+            "name with 'unsubscribe'."
+        ),
+        "inputSchema": _schema({
+            "channels": {
+                "type": "array", "items": {"type": "string"},
+                "description": "channel names to add, e.g. ['general', 'build']",
+            },
+        }, ["channels"]),
+    },
+    {
+        "name": "unsubscribe",
+        "description": (
+            "Stop reading channels you no longer need. Your direct messages are not a "
+            "subscription and are unaffected — you cannot switch those off, and should "
+            "not want to. Returns what you are still subscribed to."
+        ),
+        "inputSchema": _schema({
+            "channels": {
+                "type": "array", "items": {"type": "string"},
+                "description": "channel names to drop",
+            },
+        }, ["channels"]),
+    },
+    {
+        "name": "renew",
+        "description": (
+            "Extend one lease you already hold, without touching the others. 'checkin' "
+            "renews everything you hold, which is usually what you want; this is for "
+            "when it is not — you are still working one resource and want the rest to "
+            "lapse for whoever is waiting on them."
+        ),
+        "inputSchema": _schema({
+            "resource": {**_STR, "description": "the resource whose lease to extend"},
+            "ttl": {**_NUM, "description": "seconds to extend it by"},
+        }, ["resource"]),
+    },
+    {
+        "name": "leave",
+        "description": (
+            "Deregister: drop off the roster deliberately instead of fading when your "
+            "presence expires. Call it when your work is finished and you will not be "
+            "back — a peer waiting on you learns now rather than after a timeout, and a "
+            "roster that lists only agents actually present is worth more to everyone "
+            "reading it. Your held leases are released with you."
+        ),
+        "inputSchema": _schema({}),
+    },
+    {
         "name": "board_get",
         "description": "Read one value from the shared blackboard. Returns null if absent.",
         "inputSchema": _schema({"key": _STR}, ["key"]),
@@ -485,6 +553,13 @@ del _tool
 
 class Bridge:
     """Holds the hub client and turns tool calls into hub calls."""
+
+    #: Channels this agent reads beyond its own DMs, set by the `subscribe`
+    #: tool. A class-level empty tuple rather than an instance list: it is
+    #: immutable, so no two bridges can ever share one, and it is present on a
+    #: bridge built by `Bridge.__new__` — which the test harness does, and
+    #: which an instance-only attribute would leave half-constructed.
+    _subscriptions: tuple[str, ...] = ()
 
     def __init__(self) -> None:
         self.config = ClientConfig.from_env()
@@ -595,6 +670,7 @@ class Bridge:
             kind=self.identity.kind,
             branch=self.identity.branch,
             meta=self.identity.meta,
+            channels=list(self._subscriptions),
         )
         self._registered = True
 
@@ -1033,6 +1109,73 @@ class Bridge:
         entry = self.client.board_set(key, value, ttl=ttl)
         return {"key": entry["key"], "revision": entry["revision"],
                 "expires_in": entry["expires_in"], "unread_dms": unread_dms}
+
+    def board_delete(self, key: str) -> dict[str, Any]:
+        unread_dms = self._touch()
+        deleted = self.client.board_delete(key)
+        return {"key": key, "deleted": deleted, "unread_dms": unread_dms}
+
+    def _resubscribe(self, wanted: tuple[str, ...]) -> None:
+        """Re-register under a new subscription set.
+
+        Registration is the only place the hub takes channels, so changing them
+        means registering again — and the set is remembered on the bridge,
+        because `_ensure_registered` re-registers after a presence lapse and
+        would otherwise silently drop them on the one call that looks like
+        nothing happened.
+        """
+        self._subscriptions = wanted
+        self._registered = False
+        self._ensure_registered()
+
+    def subscribe(self, channels: list[str]) -> dict[str, Any]:
+        """Add channels to this agent's subscriptions.
+
+        Adds rather than replaces, which is not the shape this first had. The
+        argument that changed it, from the island's agent: the two failure
+        modes are not symmetric. A wrong add is noise — loud, immediate, and
+        self-correcting. A wrong replace is *silence*: an agent names one
+        channel, loses the others, and its inbox simply stops showing things,
+        with no error raised anywhere. Silence is the failure this whole tool
+        exists to end, so it must not be the default way to use it. Dropping a
+        channel is `unsubscribe`, by name — a boolean that inverts a verb reads
+        as safe right up until it is not.
+        """
+        merged = tuple(dict.fromkeys(
+            [*self._subscriptions, *(c for c in channels if c)]
+        ))
+        added = [c for c in merged if c not in self._subscriptions]
+        self._resubscribe(merged)
+        unread_dms = self._touch()
+        return {"subscribed": list(merged), "added": added, "unread_dms": unread_dms,
+                "note": "your inbox reads these channels plus your direct messages"}
+
+    def unsubscribe(self, channels: list[str]) -> dict[str, Any]:
+        """Drop channels, by name. Dropping one you do not have is a no-op
+        rather than an error: the caller wanted it gone, and it is gone."""
+        drop = {c for c in channels if c}
+        remaining = tuple(c for c in self._subscriptions if c not in drop)
+        removed = [c for c in self._subscriptions if c in drop]
+        self._resubscribe(remaining)
+        unread_dms = self._touch()
+        return {"subscribed": list(remaining), "removed": removed,
+                "unread_dms": unread_dms,
+                "note": ("your direct messages are unaffected; they are not a "
+                         "subscription")}
+
+    def renew(self, resource: str, ttl: float | None = None) -> dict[str, Any]:
+        unread_dms = self._touch()
+        lease = self.client.renew(resource, ttl=ttl)
+        return {"resource": resource, "expires_in": lease.get("expires_in"),
+                "unread_dms": unread_dms}
+
+    def leave(self) -> dict[str, Any]:
+        """Deregister deliberately. No `_touch()` — bumping presence on the way
+        out would re-list the agent it is removing."""
+        removed = self.client.deregister()
+        self._registered = False
+        return {"left": removed, "now": _now_iso(),
+                "note": "you are off the roster; any tool call registers you again"}
 
     def board_get(self, key: str) -> dict[str, Any]:
         unread_dms = self._touch()

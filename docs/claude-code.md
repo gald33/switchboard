@@ -142,6 +142,8 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
 - **If you are ending a turn while still waiting on another agent**, read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
