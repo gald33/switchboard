@@ -1674,6 +1674,40 @@ def cmd_claim(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_renew(args: argparse.Namespace) -> int:
+    """Extend one lease without touching the others.
+
+    `checkin` renews everything you hold, which is usually right. This is for
+    when it is not: you are still on one resource and want the rest to lapse
+    for whoever is waiting on them.
+    """
+    with _make_client(args) as hub:
+        lease = hub.renew(args.resource, ttl=args.ttl)
+        unread = hub.unread_dms
+    if args.json:
+        _print_json({**lease, "unread_dms": unread})
+    elif not args.quiet:
+        print(f"renewed {args.resource} for {lease.get('expires_in')}s")
+        _print_unread(unread)
+    return EXIT_OK
+
+
+def cmd_leave(args: argparse.Namespace) -> int:
+    """Drop off the roster deliberately rather than fading on a timeout.
+
+    Worth doing rather than just exiting: a peer waiting on you learns now
+    instead of after your presence expires, and a roster listing only agents
+    actually present is worth more to whoever reads it next.
+    """
+    with _make_client(args) as hub:
+        removed = hub.deregister()
+    if args.json:
+        _print_json({"left": removed})
+    elif not args.quiet:
+        print("left the roster" if removed else "was not on the roster")
+    return EXIT_OK
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         released = hub.release(args.resource, force=args.force)
@@ -1737,11 +1771,15 @@ def cmd_say(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         msg = hub.post(args.channel, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
+        # Read inside the block: the hub attached it to the response we just
+        # got, and the client is closed by the time we print.
+        unread = hub.unread_dms
     if args.json:
-        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
-                               if forecast else {})})
+        _print_json({**msg, "unread_dms": unread,
+                     **({"timing_forecast": sender_forecast(forecast)} if forecast else {})})
     elif not args.quiet:
         print(f"posted #{msg['seq']} to {msg['channel']}")
+        _print_unread(unread)
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
@@ -1835,15 +1873,30 @@ def cmd_whisper(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
         msg = hub.whisper(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
+        unread = hub.unread_dms
     if args.json:
-        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
-                               if forecast else {})})
+        _print_json({**msg, "unread_dms": unread,
+                     **({"timing_forecast": sender_forecast(forecast)} if forecast else {})})
     elif not args.quiet:
         print(f"whispered #{msg['seq']} to {args.to} (sealed to them alone)")
+        _print_unread(unread)
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
     return EXIT_OK
+
+
+def _print_unread(count: int) -> None:
+    """Say that something is waiting, and only when something is.
+
+    The guidance this CLI prints tells agents to watch `unread_dms` on every
+    result; until this existed, the CLI was the one surface that never showed
+    it, so an agent could be whispered at and never find out. Silent at zero on
+    purpose — a line that appears every time is a line that stops being read.
+    """
+    if count > 0:
+        noun = "message" if count == 1 else "messages"
+        print(f"{count} unread direct {noun} waiting — read with `switchboard inbox`")
 
 
 def _read_body(args: argparse.Namespace) -> Any:
@@ -2785,6 +2838,8 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
 - **If you are ending a turn while still waiting on another agent**, read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
@@ -2899,6 +2954,8 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
 - **If you are ending a turn while still waiting on another agent**, and your
   environment can schedule a future wake-up, use it to check back rather than
   letting the wait go unbounded — a short interval if you are waiting on one
@@ -2939,6 +2996,8 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
 - **If you are ending a turn while still waiting on another agent**, read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
@@ -2979,6 +3038,8 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   so a ping is noticed as soon as you do anything at all. A nonzero value
   means call `inbox` or `checkin` soon — someone specifically addressed you,
   which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
 - **If you are ending a turn while still waiting on another agent**, read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
@@ -4385,6 +4446,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("resource")
     p.add_argument("--force", action="store_true", help="release even if held by another agent")
     p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("renew", help="extend one lease, leaving your others alone")
+    p.add_argument("resource")
+    p.add_argument("--ttl", type=float, help="seconds to extend it by")
+    p.set_defaults(func=cmd_renew)
+
+    p = sub.add_parser("leave", help="drop off the roster deliberately")
+    p.set_defaults(func=cmd_leave)
 
     p = sub.add_parser("claims", help="list live leases")
     p.add_argument("--holder", help="filter by holding agent")

@@ -1,0 +1,57 @@
+id: write-parity-across-surfaces
+title: The three surfaces do not offer the same writes, and MCP is the thin one
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: joining-agent-sees-empty-inbox
+  note: 'The subscription gap below is the same bug from the other side. That item is
+    about a client that subscribed to nothing by default; this is about a surface where
+    an agent cannot subscribe at all. Fix them together or the MCP half stays broken.'
+- key: unread-dms-not-shown-outside-mcp
+  note: 'The mirror image: there, MCP is the surface that tells you something the others
+    do not. Together they are one question — what is a surface obliged to offer? — and
+    the two items are cheap to do as one change.'
+refs:
+- 'https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md'
+evidence: |
+  **Audited on 2026-08-27** by enumerating all three surfaces: `TOOLS` in
+  `mcp_server.py`, argparse subcommands in `cli.py`, and public methods on
+  `Client`. Everyday writes — post, dm, whisper, checkin, claim, release,
+  board_set — are at parity on all three. Four writes are not, and all four gaps
+  are on the MCP side:
+
+  | write | MCP | CLI | library |
+  |---|---|---|---|
+  | register with chosen channels | **no** | yes | yes |
+  | delete a board entry | **no** | yes | yes |
+  | renew one lease | **no** | **no** | yes |
+  | deregister / leave | **no** | **no** | yes |
+
+  **1. An MCP agent cannot subscribe to anything.** `_ensure_registered()`
+  (`mcp_server.py:584`) calls `register(name, kind, branch, meta)` with no
+  `channels`, and no tool in `TOOLS` accepts a subscription list. So every MCP
+  agent is subscribed to its own DM channel and nothing else, and `inbox`
+  returns room traffic only when the caller passes `channels=` on every single
+  call. An MCP agent that polls `inbox` in a busy room sees silence forever,
+  while `roster` cheerfully lists its peers. This is the same failure as
+  `joining-agent-sees-empty-inbox`, except the CLI agent can fix it by
+  registering with channels and the MCP agent has no way to.
+
+  **2. `board_set` with no `board_delete`.** An MCP agent can create blackboard
+  state and cannot retract it; entries go only by TTL. Asymmetric in the
+  dangerous direction — make a mess, cannot clean it.
+
+  **3. `renew` is library-only.** Defensible, since `checkin` renews leases as a
+  side effect, but neither tool surface can renew one lease without renewing
+  every held lease — which `_touch()`'s own docstring calls out as a real
+  behaviour difference worth preserving.
+
+  **4. `deregister` is library-only.** Presence expires by TTL so nothing
+  breaks, but an agent cannot leave deliberately, only fade. Given that an
+  expired presence row silently breaks `whisper` in both directions, being
+  unable to announce a departure is the same theme one notch quieter.
+
+  **Done means** each surface offers the same writes, or documents in one place
+  why it does not — with the subscription gap closed first, because it is the
+  only one of the four that makes an agent silently uncontactable.

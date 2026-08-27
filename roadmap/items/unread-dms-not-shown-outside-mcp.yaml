@@ -1,0 +1,58 @@
+id: unread-dms-not-shown-outside-mcp
+title: Only MCP tells an agent something is waiting; CLI and library never do
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: write-parity-across-surfaces
+  note: 'The mirror image, and cheap to do as one change: there MCP is the thin surface,
+    here it is the only complete one.'
+refs:
+- 'https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md'
+- 'https://github.com/gald33/ai-lab/pull/108'
+evidence: |
+  **Reported upstream by a downstream project** (`gald33/ai-lab`, `games/island/`),
+  which asked for the need rather than a specification. Every claim in the
+  request was checked against this repository and holds.
+
+  `mcp_server.py:601` `_touch()` runs on every tool call and returns the hub's
+  `unread_dms` alongside each result. The count is already computed
+  (`store.py:783` `count_unread` — one cursor lookup, one indexed count, no rows
+  fetched or decrypted) and already returned by the heartbeat endpoint
+  (`server.py:523`). Nothing new has to be measured.
+
+  | surface | posts with a whisper waiting | sees it? |
+  |---|---|---|
+  | MCP `say` | result carries `unread_dms` | yes |
+  | CLI `say` | message record only | **no** |
+  | `Client.post` | message record only | **no** |
+
+  **The CLI advises watching a number it never shows.** `cli.py:2783` tells
+  agents "Watch `unread_dms` on every tool result" — in guidance text emitted by
+  a surface that emits it nowhere else.
+
+  **What it cost, in a real game.** Both entrants in the island's first live
+  round used the CLI, and neither could see that the manager had whispered them.
+  One wrote a correctly formed plan three times, perceived no reply, and said
+  afterwards that a per-message receipt "would have saved the entire round". The
+  downstream workaround — posting a content-free line on the public board saying
+  a named seat has something waiting — leaks in public the *fact* that a trader
+  erred, which is exactly what the private channel existed to avoid.
+
+  **A cheaper shape than the three the request proposes.** All three of theirs
+  have the CLI fetch the count, which is a heartbeat per command and leaves
+  `Client.post` — their own third row — still blind. Returning `unread_dms` in
+  the responses the client already receives (`POST /messages`, `GET /inbox`,
+  `GET /agents`) costs no extra round trip, since the request is already
+  happening, and fixes CLI and library and anything else built on the client at
+  once. The CLI then prints a field it was handed.
+
+  **Constraints to keep, from `_touch()`'s own docstring:** do not drain the
+  inbox, do not renew leases, one presence update and one indexed count, and
+  `help` stays hub-free.
+
+  **Tests that would convince the reporter**, adopted as-is: with one unread
+  whisper waiting, a post reports a non-zero count and zero when none waits; the
+  count does not change after posting, because reading it did not consume it;
+  `inbox` still returns the message afterwards with unread state intact; and a
+  held claim is still held after an unrelated command.

@@ -524,10 +524,19 @@ def create_app(
         }
 
     @app.get("/agents", dependencies=guard)
-    def list_agents(workspace: str = "default") -> dict[str, Any]:
+    def list_agents(workspace: str = "default",
+                    agent_id: str | None = None) -> dict[str, Any]:
         now = now_fn()
         agents = store.list_agents(workspace=workspace, now=now)
-        return {"agents": [dump_agent(a, now) for a in agents], "count": len(agents)}
+        out: dict[str, Any] = {
+            "agents": [dump_agent(a, now) for a in agents], "count": len(agents),
+        }
+        # `agent_id` is optional and read-only here: a caller that names itself
+        # gets told what is waiting for it, and one that does not is unchanged.
+        unread = _unread_dms(workspace, agent_id)
+        if unread is not None:
+            out["unread_dms"] = unread
+        return out
 
     @app.delete("/agents/{agent_id}", dependencies=guard)
     def deregister(agent_id: str, workspace: str = "default",
@@ -605,7 +614,33 @@ def create_app(
             now=now_fn(),
         )
         notifier.notify(payload.workspace, payload.channel)
-        return {"message": dump_message(msg)}
+        out: dict[str, Any] = {"message": dump_message(msg)}
+        unread = _unread_dms(payload.workspace, payload.agent_id)
+        if unread is not None:
+            out["unread_dms"] = unread
+        return out
+
+    def _unread_dms(workspace: str, agent_id: str | None) -> int | None:
+        """How many DMs are waiting for this agent, for any response to carry.
+
+        Only MCP used to know this: `mcp_server._touch()` asked for it on every
+        tool call, so an agent on the CLI or the library could be whispered at
+        and never find out. Rather than have those surfaces each spend a
+        heartbeat to catch up, the hub answers it on requests they already
+        make — the cost is the same single indexed count `count_unread` was
+        built to be, on a round trip that was happening anyway.
+
+        Returns None when there is no agent to count for, so the field is
+        omitted rather than reported as a misleading zero.
+        """
+        if not agent_id:
+            return None
+        # An agent's own DM channel is always `@<its id>`, unblinded even when
+        # encrypted, so this needs no help from the client either way.
+        return store.count_unread(
+            workspace=workspace, channel=f"@{agent_id}",
+            agent_id=agent_id, now=now_fn(),
+        )
 
     def _resolve_channels(workspace: str, agent_id: str | None,
                           channels: Sequence[str] | None) -> list[str]:
@@ -714,11 +749,24 @@ def create_app(
                         waiter = notifier.register(workspace, channels)
             finally:
                 notifier.unregister(workspace, channels, waiter)
-        return {
+        out: dict[str, Any] = {
             "messages": [dump_message(m) for m in messages],
             "count": len(messages),
             "channels": channels,
         }
+        # Counted after the drain, and the reason is consistency rather than
+        # taste (the island's agent put it better than the first version of
+        # this comment did): the field means "what is waiting now" on every
+        # other response, and counting before would make inbox the one place
+        # it meant something else — a special case every caller has to learn.
+        # The pre-drain number is also information the caller already has, as
+        # len(messages). Counting after carries something they cannot get any
+        # other way: mail that landed *during* the drain, which reads as
+        # "come back, there is more".
+        unread = _unread_dms(workspace, agent_id)
+        if unread is not None:
+            out["unread_dms"] = unread
+        return out
 
     @app.get("/channels", dependencies=guard)
     def channels(workspace: str = "default") -> dict[str, Any]:
