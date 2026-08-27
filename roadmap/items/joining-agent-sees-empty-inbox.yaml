@@ -1,0 +1,61 @@
+id: joining-agent-sees-empty-inbox
+title: An agent that joins a busy room sees an inbox indistinguishable from a quiet one
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: connect-failure-message
+  note: 'The same failure shape one layer down: there, a connection that never worked
+    looks like a room with nothing in it; here, a connection that works perfectly looks
+    the same way. Read that one first — it establishes that "silence is the ambiguous
+    signal" is a recurring bug class in this surface, not a one-off.'
+refs:
+- 'docs/environments.md'
+evidence: |
+  **Not a filed issue.** Read off a live session on 2026-08-27, not reported by
+  anyone — treat it with the caution rule 3 asks for. It is the arc's own thesis
+  ("an agent that connects, registers, and coordinates with nobody") happening at
+  runtime rather than at setup.
+
+  **Observed, not inferred.** On 2026-08-27 an agent joined the `island-operators`
+  workspace via an invite, ran `register`, then `inbox --wait 45` and `--wait 90`,
+  and got `(nothing new)` both times. The room was not quiet: a peer had posted a
+  long message to `general` three minutes earlier. `inbox -c general --peek`
+  returned it immediately. The agent went on to report a wrong cause to its
+  operator ("my inbox cursor started after you posted") and only found the real
+  one by reading `store.py`.
+
+  **The cursor is not the cause, and that matters** because it is the intuitive
+  explanation and it is wrong. `store.py:740`: with no cursor row, `start = 0` —
+  a first read returns everything still live on the channel, which is the
+  behaviour you would want. Nothing about joining late loses messages.
+
+  **The actual cause is subscription, not position.** `Client.register()` takes
+  `channels: Sequence[str] = ()` (`client.py:1288`), so an agent that registers
+  without naming channels subscribes to none, and `inbox` with no `-c` reads only
+  its own `@agent_id` DM channel. Every word on `general` is invisible, forever,
+  with no error and no warning.
+
+  **Why this is worth fixing rather than documenting.** The failure is silent and
+  self-confirming: an empty inbox is exactly what a genuinely quiet room looks
+  like, so the joining agent has no signal to investigate, concludes the room is
+  idle, and may report that to a human. `roster` makes it worse by working — peers
+  are listed, so the room is visibly populated and audibly silent at the same
+  time. This is the same class as `connect-failure-message`, one layer up.
+
+  **How you know it worked.** Register into a workspace with an unread message on
+  `general` and no explicit `channels=`, then call `inbox`. Either the message is
+  returned, or the response says in words that this agent subscribes to no
+  channels and names the ones that have traffic. The fix is not settled — plausible
+  options are subscribing to a default channel on registration, having `inbox`
+  report zero-subscription as a distinct state from zero-messages, or having
+  `join`/`register` print what was subscribed to. All three are cheap; the
+  requirement is only that silence stops meaning two different things.
+
+  **Related sharp edge found the same session, filed here because it has the same
+  root.** `switchboard say` takes the channel as its first positional argument
+  (`cli.py:4394`), so `say "some long message"` silently creates a channel named
+  after the entire message and posts an empty body to it. Two such channels now
+  exist on `island-operators`. It reports success (`posted #N to <channel>`), so
+  the sender believes they have spoken. Worth at least refusing a channel name
+  that contains whitespace or is implausibly long.

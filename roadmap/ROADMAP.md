@@ -17,11 +17,14 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
 - `next` **`connect-failure-message`** — Name the URL a failed connection actually tried
+  - ↔ related: **`joining-agent-sees-empty-inbox`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
+  - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - `later` **`hooks-warning-false-positive`** — Stop warning about uncommitted hooks in repos that commit none of their wiring
@@ -52,6 +55,7 @@ graph TD
   connect_failure_message["Name the URL a failed connection actually tried"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
+  joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
@@ -59,6 +63,7 @@ graph TD
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
+  connect_failure_message -.- joining_agent_sees_empty_inbox
 ```
 
 ## Items
@@ -196,6 +201,8 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `joining-agent-sees-empty-inbox` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/88`
 
@@ -312,6 +319,68 @@ graph TD
 > in #86: existing repos keep the `.mcp.json` path, only new ones get rooms, and
 > the client prefers a rooms file when present — which is already how
 > `ClientConfig` resolves, so the migration is a no-op by construction.
+
+</details>
+
+### `joining-agent-sees-empty-inbox`
+
+- **title:** An agent that joins a busy room sees an inbox indistinguishable from a quiet one
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `connect-failure-message` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+- **refs:**
+  - `docs/environments.md`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Read off a live session on 2026-08-27, not reported by
+> anyone — treat it with the caution rule 3 asks for. It is the arc's own thesis
+> ("an agent that connects, registers, and coordinates with nobody") happening at
+> runtime rather than at setup.
+>
+> **Observed, not inferred.** On 2026-08-27 an agent joined the `island-operators`
+> workspace via an invite, ran `register`, then `inbox --wait 45` and `--wait 90`,
+> and got `(nothing new)` both times. The room was not quiet: a peer had posted a
+> long message to `general` three minutes earlier. `inbox -c general --peek`
+> returned it immediately. The agent went on to report a wrong cause to its
+> operator ("my inbox cursor started after you posted") and only found the real
+> one by reading `store.py`.
+>
+> **The cursor is not the cause, and that matters** because it is the intuitive
+> explanation and it is wrong. `store.py:740`: with no cursor row, `start = 0` —
+> a first read returns everything still live on the channel, which is the
+> behaviour you would want. Nothing about joining late loses messages.
+>
+> **The actual cause is subscription, not position.** `Client.register()` takes
+> `channels: Sequence[str] = ()` (`client.py:1288`), so an agent that registers
+> without naming channels subscribes to none, and `inbox` with no `-c` reads only
+> its own `@agent_id` DM channel. Every word on `general` is invisible, forever,
+> with no error and no warning.
+>
+> **Why this is worth fixing rather than documenting.** The failure is silent and
+> self-confirming: an empty inbox is exactly what a genuinely quiet room looks
+> like, so the joining agent has no signal to investigate, concludes the room is
+> idle, and may report that to a human. `roster` makes it worse by working — peers
+> are listed, so the room is visibly populated and audibly silent at the same
+> time. This is the same class as `connect-failure-message`, one layer up.
+>
+> **How you know it worked.** Register into a workspace with an unread message on
+> `general` and no explicit `channels=`, then call `inbox`. Either the message is
+> returned, or the response says in words that this agent subscribes to no
+> channels and names the ones that have traffic. The fix is not settled — plausible
+> options are subscribing to a default channel on registration, having `inbox`
+> report zero-subscription as a distinct state from zero-messages, or having
+> `join`/`register` print what was subscribed to. All three are cheap; the
+> requirement is only that silence stops meaning two different things.
+>
+> **Related sharp edge found the same session, filed here because it has the same
+> root.** `switchboard say` takes the channel as its first positional argument
+> (`cli.py:4394`), so `say "some long message"` silently creates a channel named
+> after the entire message and posts an empty body to it. Two such channels now
+> exist on `island-operators`. It reports success (`posted #N to <channel>`), so
+> the sender believes they have spoken. Worth at least refusing a channel name
+> that contains whitespace or is implausibly long.
 
 </details>
 

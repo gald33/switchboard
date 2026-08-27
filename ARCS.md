@@ -74,7 +74,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 3 item(s), 3 startable
+`setup-and-first-run` · 4 item(s), 4 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -98,6 +98,7 @@ wrong says so.
 |---|---|---|
 | `connect-failure-message` | ready | next |
 | `init-writes-rooms-file` | ready | next |
+| `joining-agent-sees-empty-inbox` | ready | — |
 | `hooks-warning-false-positive` | ready | later |
 
 ### 🟠 Ceilings that are honest about themselves
