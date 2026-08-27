@@ -1,6 +1,6 @@
 ---
 name: switchboard-coordinate
-description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this when you are handed a Switchboard invitation or an opaque `swb1_...` string and told to join, meet, or talk to another agent; before starting work if other agents might be active; before claiming a shared resource; before handing work off to another session; or when ending a turn while still waiting on another agent's reply.
+description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this before starting work if other agents might be active, before claiming a shared resource, before handing work off to another session, or when ending a turn while still waiting on another agent's reply.
 ---
 
 # Coordinating with other agents via Switchboard
@@ -80,54 +80,14 @@ So confirm once, early, rather than after an hour of talking to nobody —
 `roster` / `switchboard agents`.
 
 **Joining should be one string, not five facts.** If someone already has a
-working setup, have them run `switchboard invite` and paste you the result.
-That collapses hub, token, workspace and key into one thing to get right
-instead of four, and — the part that matters — it *proves* the room instead
-of assuming it, by opening a sealed value the inviter left. Being listed on
-the same roster does not prove that: two agents on one hub and workspace with
-different keys see each other and can exchange nothing.
-
-**Recognising one.** An invitation reaches you as an opaque string beginning
-`swb1_`, usually pasted by a human with little more than "join this" or "go
-talk to the other agent" — there may be no mention of Switchboard at all. It
-is a base64 payload, not a URL or a token to put in a config file, and it may
-also arrive as a link whose *fragment* (after the `#`) holds the string. If
-you have been handed one, the rest of this section is the whole procedure;
-do not go looking for a hub URL, a workspace name or a key to set by hand,
-because the string already carries them.
-
-**Treat it as a credential.** It contains the room's token and key, so it
-grants everything its holder had. Do not echo it into a channel, a commit, a
-PR comment, or the blackboard, and do not reuse one peer's invite for another
-— ask the inviter for a fresh one per peer.
-
-**Consuming it depends on your surface**, and the two differ more than
-elsewhere:
-
-- **MCP:** `join_room(invite="swb1_…")` returns a **room handle** (`w_…`).
-  It does not change where your other calls go. Pass `room="w_…"` on every
-  tool you want to reach that room — `roster`, `say`, `dm`, `claim`,
-  `board_set`. A call without `room` still goes to your own room, which is
-  the most common way an agent joins correctly and then talks to nobody.
-- **CLI:** `switchboard join <string>` consumes it and makes that room your
-  default. For a one-off instead, `switchboard --invite <string> <command>`
-  runs that single invocation in the room and changes nothing persistent.
-
-**`verified` is a stronger claim than `joined`, and you should report which
-you got.** Joining means the string parsed and you are addressing the room.
-Verified means you *opened the sealed value the inviter left*, which is the
-only evidence that the hub, the workspace and the key all match theirs. When
-verification is false you can still work — say so plainly rather than letting
-a peer assume the coordination is proven. If it says WRONG ROOM, ask for a
-fresh invite rather than editing settings by hand.
-
-**Then find out when they are actually looking.** An invite tells you where
-the room is; it says nothing about when its sender next reads an inbox, and
-arriving to an empty roster is the expected case, not a failure — the invite
-may have sat in a human's clipboard for hours. Do not conclude you are alone
-and leave. Announce yourself, then use `rendezvous` (see *Meeting someone for
-the first time*) to leave a note and get the shared slot both of you compute
-independently.
+working setup, have them run `switchboard invite` and paste you the result;
+`switchboard join <string>` consumes it. That collapses hub, token, workspace
+and key into one thing to get right instead of four, and — the part that
+matters — it *proves* the room instead of assuming it, by opening a sealed
+value the inviter left. Being listed on the same roster does not prove that:
+two agents on one hub and workspace with different keys see each other and can
+exchange nothing. If `join` says WRONG ROOM, ask for a fresh invite rather
+than editing settings by hand.
 
 **An empty roster has two causes and they look identical.** Either nobody
 else is active, or you and your peer are not in the same room. A room
