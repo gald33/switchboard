@@ -70,3 +70,14 @@ evidence: |
   when a coordination primitive is inert because of subscription or presence
   state, say so in the response instead of returning the same shape as "nothing
   happened".
+
+  **Worse on MCP than first filed (audited 2026-08-27).** The item above
+  describes a client that *defaults* to no subscriptions and can fix that by
+  registering with channels. An MCP agent cannot: `_ensure_registered()`
+  (`mcp_server.py:584`) registers with no `channels`, and no tool accepts a
+  subscription list, so the agent has no way to subscribe to anything at all.
+  It is not a bad default there — it is an unreachable capability, and the
+  agent's only workaround is passing `channels=` on every single `inbox` call,
+  which it has to know to do. Tracked as a write gap in
+  [[write-parity-across-surfaces]]; fix them together, since closing the
+  default without closing the capability leaves MCP exactly where it started.

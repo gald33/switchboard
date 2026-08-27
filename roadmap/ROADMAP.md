@@ -29,6 +29,12 @@ Claim before starting: `roadmap claim <key>`
 - **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
   - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+- **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
+  - ↔ related: **`write-parity-across-surfaces`** — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
+- **`write-parity-across-surfaces`** — The three surfaces do not offer the same writes, and MCP is the thin one
+  - ↔ related: **`joining-agent-sees-empty-inbox`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+  - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - `later` **`hooks-warning-false-positive`** — Stop warning about uncommitted hooks in repos that commit none of their wiring
@@ -68,12 +74,16 @@ graph TD
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
+  unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
+  write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
+  joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
+  unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
 ```
 
 ## Items
@@ -411,6 +421,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `clients-that-cannot-post` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - `connect-failure-message` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - `write-parity-across-surfaces` — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **refs:**
   - `docs/environments.md`
 
@@ -474,6 +485,17 @@ graph TD
 > when a coordination primitive is inert because of subscription or presence
 > state, say so in the response instead of returning the same shape as "nothing
 > happened".
+>
+> **Worse on MCP than first filed (audited 2026-08-27).** The item above
+> describes a client that *defaults* to no subscriptions and can fix that by
+> registering with channels. An MCP agent cannot: `_ensure_registered()`
+> (`mcp_server.py:584`) registers with no `channels`, and no tool accepts a
+> subscription list, so the agent has no way to subscribe to anything at all.
+> It is not a bad default there — it is an unreachable capability, and the
+> agent's only workaround is passing `channels=` on every single `inbox` call,
+> which it has to know to do. Tracked as a write gap in
+> [[write-parity-across-surfaces]]; fix them together, since closing the
+> default without closing the capability leaves MCP exactly where it started.
 
 </details>
 
@@ -693,5 +715,122 @@ graph TD
 >    CLI print a line to stderr when it fires. Non-breaking.
 > 3. Document it — weakest. `--ttl` help text says nothing about a ceiling, so
 >    this is the floor of any fix rather than a fix.
+
+</details>
+
+### `unread-dms-not-shown-outside-mcp`
+
+- **title:** Only MCP tells an agent something is waiting; CLI and library never do
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `write-parity-across-surfaces` — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
+- **refs:**
+  - `https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md`
+  - `https://github.com/gald33/ai-lab/pull/108`
+
+<details><summary>evidence</summary>
+
+> **Reported upstream by a downstream project** (`gald33/ai-lab`, `games/island/`),
+> which asked for the need rather than a specification. Every claim in the
+> request was checked against this repository and holds.
+>
+> `mcp_server.py:601` `_touch()` runs on every tool call and returns the hub's
+> `unread_dms` alongside each result. The count is already computed
+> (`store.py:783` `count_unread` — one cursor lookup, one indexed count, no rows
+> fetched or decrypted) and already returned by the heartbeat endpoint
+> (`server.py:523`). Nothing new has to be measured.
+>
+> | surface | posts with a whisper waiting | sees it? |
+> |---|---|---|
+> | MCP `say` | result carries `unread_dms` | yes |
+> | CLI `say` | message record only | **no** |
+> | `Client.post` | message record only | **no** |
+>
+> **The CLI advises watching a number it never shows.** `cli.py:2783` tells
+> agents "Watch `unread_dms` on every tool result" — in guidance text emitted by
+> a surface that emits it nowhere else.
+>
+> **What it cost, in a real game.** Both entrants in the island's first live
+> round used the CLI, and neither could see that the manager had whispered them.
+> One wrote a correctly formed plan three times, perceived no reply, and said
+> afterwards that a per-message receipt "would have saved the entire round". The
+> downstream workaround — posting a content-free line on the public board saying
+> a named seat has something waiting — leaks in public the *fact* that a trader
+> erred, which is exactly what the private channel existed to avoid.
+>
+> **A cheaper shape than the three the request proposes.** All three of theirs
+> have the CLI fetch the count, which is a heartbeat per command and leaves
+> `Client.post` — their own third row — still blind. Returning `unread_dms` in
+> the responses the client already receives (`POST /messages`, `GET /inbox`,
+> `GET /agents`) costs no extra round trip, since the request is already
+> happening, and fixes CLI and library and anything else built on the client at
+> once. The CLI then prints a field it was handed.
+>
+> **Constraints to keep, from `_touch()`'s own docstring:** do not drain the
+> inbox, do not renew leases, one presence update and one indexed count, and
+> `help` stays hub-free.
+>
+> **Tests that would convince the reporter**, adopted as-is: with one unread
+> whisper waiting, a post reports a non-zero count and zero when none waits; the
+> count does not change after posting, because reading it did not consume it;
+> `inbox` still returns the message afterwards with unread state intact; and a
+> held claim is still held after an unrelated command.
+
+</details>
+
+### `write-parity-across-surfaces`
+
+- **title:** The three surfaces do not offer the same writes, and MCP is the thin one
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `joining-agent-sees-empty-inbox` — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+  - `unread-dms-not-shown-outside-mcp` — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
+- **refs:**
+  - `https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md`
+
+<details><summary>evidence</summary>
+
+> **Audited on 2026-08-27** by enumerating all three surfaces: `TOOLS` in
+> `mcp_server.py`, argparse subcommands in `cli.py`, and public methods on
+> `Client`. Everyday writes — post, dm, whisper, checkin, claim, release,
+> board_set — are at parity on all three. Four writes are not, and all four gaps
+> are on the MCP side:
+>
+> | write | MCP | CLI | library |
+> |---|---|---|---|
+> | register with chosen channels | **no** | yes | yes |
+> | delete a board entry | **no** | yes | yes |
+> | renew one lease | **no** | **no** | yes |
+> | deregister / leave | **no** | **no** | yes |
+>
+> **1. An MCP agent cannot subscribe to anything.** `_ensure_registered()`
+> (`mcp_server.py:584`) calls `register(name, kind, branch, meta)` with no
+> `channels`, and no tool in `TOOLS` accepts a subscription list. So every MCP
+> agent is subscribed to its own DM channel and nothing else, and `inbox`
+> returns room traffic only when the caller passes `channels=` on every single
+> call. An MCP agent that polls `inbox` in a busy room sees silence forever,
+> while `roster` cheerfully lists its peers. This is the same failure as
+> `joining-agent-sees-empty-inbox`, except the CLI agent can fix it by
+> registering with channels and the MCP agent has no way to.
+>
+> **2. `board_set` with no `board_delete`.** An MCP agent can create blackboard
+> state and cannot retract it; entries go only by TTL. Asymmetric in the
+> dangerous direction — make a mess, cannot clean it.
+>
+> **3. `renew` is library-only.** Defensible, since `checkin` renews leases as a
+> side effect, but neither tool surface can renew one lease without renewing
+> every held lease — which `_touch()`'s own docstring calls out as a real
+> behaviour difference worth preserving.
+>
+> **4. `deregister` is library-only.** Presence expires by TTL so nothing
+> breaks, but an agent cannot leave deliberately, only fade. Given that an
+> expired presence row silently breaks `whisper` in both directions, being
+> unable to announce a departure is the same theme one notch quieter.
+>
+> **Done means** each surface offers the same writes, or documents in one place
+> why it does not — with the subscription gap closed first, because it is the
+> only one of the four that makes an agent silently uncontactable.
 
 </details>
