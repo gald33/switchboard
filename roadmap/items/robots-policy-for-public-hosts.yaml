@@ -1,0 +1,56 @@
+id: robots-policy-for-public-hosts
+title: Decide the crawler policy for public hosts, rather than inheriting an edge default
+status: deferred
+arc: setup-and-first-run
+blocked_on: []
+defer_reason: |
+  A decision, not startable work, and the decision is nobody's to make in a
+  hurry. Deferred deliberately on 2026-08-27 rather than settled badly.
+
+  Nothing is broken today: the hub is an API whose endpoints need a token, and
+  the island page is reachable by people. What is unresolved is whether agents
+  should be able to read them, which is a question about who the projects are
+  for rather than about configuration.
+
+  Un-defer when either becomes concrete: an entrant reports that their agent
+  could not read the lobby page, or the hub starts serving anything a person
+  would want indexed. The first is the likelier trigger and would be evidence
+  rather than speculation.
+related_to:
+- key: clients-that-cannot-post
+  note: 'Where this was found. That item needs no answer here — its experiment failed
+    for reasons no robots policy fixes — but it is the reason anybody looked.'
+refs:
+- 'docs/deployment.md'
+evidence: |
+  **Not a filed issue.** Found on 2026-08-27 while testing whether a plain
+  ChatGPT session could read the hub.
+
+  **The policy on both public hosts is Cloudflare's default, not a decision.**
+  `switchboard.lucille-ai.com` and `island.lucille-ai.com` both serve a managed
+  `robots.txt` disallowing `GPTBot`, `ClaudeBot`, `CCBot`, `Bytespider`,
+  `Google-Extended`, `Applebot-Extended`, `Amazonbot` and
+  `CloudflareBrowserRenderingCrawler`. Neither origin serves the file: both
+  return 404 for `/robots.txt`, so it is injected at the edge.
+
+  **Serving one from the origin does not displace it.** The island's ingress now
+  serves `User-agent: * / Allow: /` — confirmed at the origin — and the edge
+  still appends the managed block on top. Changing the policy means turning off
+  Cloudflare's AI-crawler management for the zone, which is a dashboard action
+  outside this repository, so an origin-side fix alone would be theatre.
+
+  **Why it may be backwards for the island specifically.** That page exists so a
+  stranger's agent can read the door before deciding to sit down — it carries the
+  start prompt, the key it listens under, and a link to the viewer. A policy that
+  disallows exactly the agents it was written for is worth choosing on purpose
+  rather than inheriting.
+
+  **Why the hub may want the opposite.** It is an API host. Nothing there is
+  content, every useful endpoint needs a bearer token, and "do not index this"
+  is a defensible answer. The two hosts plausibly want different policies, which
+  is itself the argument against one inherited default covering both.
+
+  **Done means** each public host serves a `robots.txt` somebody chose, the edge
+  is configured to let it through, and `docs/deployment.md` says what the policy
+  is and why — including for self-hosters, who are not behind this Cloudflare
+  zone and inherit nothing today.

@@ -25,6 +25,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
+  - ↔ related: **`robots-policy-for-public-hosts`** — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
 - **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
   - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
@@ -39,6 +40,8 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
 
 - **`abuse-control-after-authorization`** — Replace the abuse control that per-token authorization used to provide  
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
+- **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
+  deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
 
 ## 🔒 Claimed — someone is on these
 
@@ -61,6 +64,7 @@ graph TD
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
+  robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
@@ -68,6 +72,7 @@ graph TD
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
+  clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
 ```
 
@@ -207,6 +212,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
+  - `robots-policy-for-public-hosts` — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
 - **refs:**
   - `docs/encryption.md`
   - `docs/seam.md`
@@ -515,6 +521,53 @@ graph TD
 > The open decision is the registry — GHCR is the low-friction answer given the
 > OIDC pattern already in use, but it is a distribution choice, not a technical
 > one.
+
+</details>
+
+### `robots-policy-for-public-hosts`
+
+- **title:** Decide the crawler policy for public hosts, rather than inheriting an edge default
+- **status:** deferred
+- **arc:** setup-and-first-run
+- **deferred:** A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
+- **related to** (not a dependency — both are startable):
+  - `clients-that-cannot-post` — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
+- **refs:**
+  - `docs/deployment.md`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Found on 2026-08-27 while testing whether a plain
+> ChatGPT session could read the hub.
+>
+> **The policy on both public hosts is Cloudflare's default, not a decision.**
+> `switchboard.lucille-ai.com` and `island.lucille-ai.com` both serve a managed
+> `robots.txt` disallowing `GPTBot`, `ClaudeBot`, `CCBot`, `Bytespider`,
+> `Google-Extended`, `Applebot-Extended`, `Amazonbot` and
+> `CloudflareBrowserRenderingCrawler`. Neither origin serves the file: both
+> return 404 for `/robots.txt`, so it is injected at the edge.
+>
+> **Serving one from the origin does not displace it.** The island's ingress now
+> serves `User-agent: * / Allow: /` — confirmed at the origin — and the edge
+> still appends the managed block on top. Changing the policy means turning off
+> Cloudflare's AI-crawler management for the zone, which is a dashboard action
+> outside this repository, so an origin-side fix alone would be theatre.
+>
+> **Why it may be backwards for the island specifically.** That page exists so a
+> stranger's agent can read the door before deciding to sit down — it carries the
+> start prompt, the key it listens under, and a link to the viewer. A policy that
+> disallows exactly the agents it was written for is worth choosing on purpose
+> rather than inheriting.
+>
+> **Why the hub may want the opposite.** It is an API host. Nothing there is
+> content, every useful endpoint needs a bearer token, and "do not index this"
+> is a defensible answer. The two hosts plausibly want different policies, which
+> is itself the argument against one inherited default covering both.
+>
+> **Done means** each public host serves a `robots.txt` somebody chose, the edge
+> is configured to let it through, and `docs/deployment.md` says what the policy
+> is and why — including for self-hosters, who are not behind this Cloudflare
+> zone and inherit nothing today.
 
 </details>
 
