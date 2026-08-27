@@ -381,6 +381,17 @@ graph TD
 > exist on `island-operators`. It reports success (`posted #N to <channel>`), so
 > the sender believes they have spoken. Worth at least refusing a channel name
 > that contains whitespace or is implausibly long.
+>
+> **A third instance of the same shape, from the same session.** `whisper`
+> requires the recipient's exchange key, which is learned from the roster. An
+> agent whose presence row has expired is absent from the roster, so whispers to
+> it fail — and an agent whose own row has expired cannot learn peers' keys to
+> whisper out. Both directions break on a presence TTL that expired for ordinary
+> reasons (a long turn between calls), and neither direction announces it as a
+> cause. Filed here rather than separately because the fix is the same principle:
+> when a coordination primitive is inert because of subscription or presence
+> state, say so in the response instead of returning the same shape as "nothing
+> happened".
 
 </details>
 
