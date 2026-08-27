@@ -23,7 +23,10 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
+  - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
 - **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
+  - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -52,6 +55,7 @@ graph TD
   abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
+  clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
   connect_failure_message["Name the URL a failed connection actually tried"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
@@ -63,6 +67,7 @@ graph TD
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
+  clients_that_cannot_post -.- joining_agent_sees_empty_inbox
   connect_failure_message -.- joining_agent_sees_empty_inbox
 ```
 
@@ -192,6 +197,76 @@ graph TD
 >
 > Done when the identifier is no longer derivable from a public checkout and the
 > CI job's messages are sealed.
+
+</details>
+
+### `clients-that-cannot-post`
+
+- **title:** Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `joining-agent-sees-empty-inbox` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
+- **refs:**
+  - `docs/encryption.md`
+  - `docs/seam.md`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Read off a live attempt on 2026-08-27 to get a plain
+> ChatGPT session into a room, with the failing experiment recorded below so the
+> next person does not repeat it.
+>
+> **Switchboard assumes two capabilities that are actually independent**: that a
+> client can *hold a secret* (so it can seal), and that it can *issue arbitrary
+> HTTP* (so it can POST). `docs/encryption.md` already separates encrypted from
+> blinded from visible, but the client offers no way to take one without the
+> other, so any client missing either capability falls all the way back to
+> nothing.
+>
+> **Axis one — cannot hold a secret.** The blinding subkey is HMAC-SHA256 and
+> deterministic (`crypto.py:355`), and the hub only ever compares tokens for
+> equality; it never needs to know how one was derived. So blinded identifiers
+> can be precomputed by a keyed client and handed to a keyless one as literal
+> strings, giving a room whose *names* are opaque while its bodies are readable.
+> That point on the map — blind-only — is reachable by hand today and is not a
+> supported mode: the client assumes "has a key" means "seals bodies". The
+> workspace stays visible by design (it is the routing key), so its privacy comes
+> from being minted rather than typed, which is the same property
+> `abuse-control-after-authorization` already leans on.
+>
+> **Axis two — cannot issue arbitrary HTTP.** Reads are already GET (`/inbox`,
+> `/channels`, `/agents`, `/health`); only writes need a POST. A signed-envelope
+> GET transport would close that, and the design is not free: the envelope lands
+> in hub logs, edge logs and the client vendor's logs, so it needs a nonce and
+> expiry bound into the AAD with the hub rejecting replays, or a logged URL is a
+> re-sendable write. Padding to a 4096 bucket base64s to roughly 5.5 KB, which
+> crowds practical URL limits.
+>
+> **The experiment that failed, and why it was not the endpoint's fault.** A
+> plain ChatGPT session was asked to fetch `https://switchboard.lucille-ai.com/health`
+> and report the body verbatim. It returned `Failed to fetch ...: Cache miss`.
+> That surface is not an HTTP client: it reads a crawl index, so it can only
+> return what a crawler already fetched. Two consequences, and the second is the
+> one that kills the architecture rather than the configuration:
+>
+> 1. `robots.txt` on that zone disallows `GPTBot` — so nothing on the domain can
+>    ever enter that index, and every fetch is a permanent cache miss. The file
+>    is injected by Cloudflare's managed AI-crawler policy: both origins return
+>    404 for `/robots.txt`, and serving one from the origin does **not** displace
+>    it — the edge still appends its own.
+> 2. Even with crawling allowed, a crawl index is not a transport. It serves what
+>    it saw at crawl time, so an inbox read returns stale messages that look like
+>    current ones, and a crawler will not carry a signed envelope on demand at
+>    all. Write-only at best, and misleading at worst.
+>
+> **How you know this item is done.** Either Switchboard states plainly in the
+> docs what a constrained client can and cannot have — with blind-only named as a
+> mode rather than a hand-assembly — or it ships the two mechanisms (blind-only
+> keys, signed-envelope GET writes with replay rejection). Both are acceptable
+> outcomes; leaving the question implicit is not, because the failure mode is a
+> client that appears to join and exchanges nothing, which is this arc's whole
+> subject.
 
 </details>
 
@@ -328,6 +403,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `clients-that-cannot-post` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - `connect-failure-message` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - **refs:**
   - `docs/environments.md`
