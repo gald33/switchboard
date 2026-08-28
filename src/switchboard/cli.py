@@ -4684,7 +4684,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     if argv is None:
         argv = sys.argv[1:]
-    args = parser.parse_args(_escape_dash_leading_positionals(parser, argv))
+    args, extras = parser.parse_known_args(_escape_dash_leading_positionals(parser, argv))
+    if extras:
+        # `say general --thread plan hello` used to die on "unrecognized
+        # arguments: hello" — argparse cannot place a `nargs="*"` positional
+        # once an option has intervened, so the message an agent typed came
+        # back as the error. Worse than confusing: the shape of the complaint
+        # blames the message rather than the ordering, and the post silently
+        # does not happen.
+        #
+        # Deliberately narrow, in the spirit of the escaping above: only a
+        # command that actually takes a free-text `message`, and only tokens
+        # that are not trying to be flags. A mistyped `--tread` still errors
+        # rather than being posted as somebody's words.
+        message = getattr(args, "message", None)
+        if isinstance(message, list) and all(not e.startswith("-") for e in extras):
+            args.message = [*message, *extras]
+        else:
+            parser.error("unrecognized arguments: " + " ".join(extras))
     try:
         return args.func(args)
     except LeaseHeld as exc:
