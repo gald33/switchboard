@@ -45,7 +45,7 @@ from .store import (
 )
 from .timing import unwrap_forecast, wrap_forecast
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 __all__ = [
     "Invite",
