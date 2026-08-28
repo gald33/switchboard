@@ -1933,8 +1933,43 @@ def _unopenable_note(message: dict[str, Any], *, peek: bool) -> str | None:
             "consuming.")
 
 
+def _learn_senders(hub: Any) -> None:
+    """Read the roster before draining, so a sealed whisper can be opened.
+
+    **Without this the CLI can never open a pairwise whisper, and destroys it
+    trying.** Opening one needs the sender's `exchange_key`, and the only thing
+    that puts it in `Client._peer_exchange_keys` is a roster call. The MCP
+    server gets away with never doing it explicitly because it holds one
+    long-lived client, so any earlier `roster` call has already filled the
+    cache. Every CLI command is a fresh process, so the cache is always empty
+    and every whisper arrives unopenable -- and `inbox` marks it read on the
+    way past.
+
+    Found the hard way in island game `g5`, where it hit BOTH traders at once.
+    Each was sealed their private capacities and tastes, neither could open a
+    single one, and no resend came; they played all eight episodes blind to
+    their own preferences and settled two trades out of ten. One of them
+    diagnosed it precisely and rebuilt the reader in Python as
+    `register -> agents() -> inbox()`, which is exactly this function.
+
+    `#172` added a sentence at the moment of loss, which was right and is not
+    enough: it tells you what was destroyed after it is gone. This stops the
+    destruction.
+
+    Never raises. A roster that cannot be read is a worse inbox, not a failed
+    one, and the note from `#172` still fires on anything that stays sealed.
+    """
+    try:
+        hub.agents()
+    except Exception:      # noqa: BLE001 -- see the docstring
+        pass
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
+        # Before the drain, never after: `inbox` consumes.
+        if getattr(hub, "encrypted", False):
+            _learn_senders(hub)
         messages = hub.inbox(
             channels=args.channel,
             wait=args.wait,
