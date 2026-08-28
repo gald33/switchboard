@@ -30,10 +30,13 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+- **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
+  - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
   - ↔ related: **`write-parity-across-surfaces`** — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
 - **`write-parity-across-surfaces`** — The three surfaces do not offer the same writes, and MCP is the thin one
   - ↔ related: **`joining-agent-sees-empty-inbox`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+  - ↔ related: **`presence-ttl-is-not-one-size`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -69,6 +72,7 @@ graph TD
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
+  presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
@@ -83,6 +87,7 @@ graph TD
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
+  presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
 ```
 
@@ -499,6 +504,58 @@ graph TD
 
 </details>
 
+### `presence-ttl-is-not-one-size`
+
+- **title:** Let an agent state its own presence lifetime, before considering a longer default
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `write-parity-across-surfaces` — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
+- **refs:**
+  - `docs/concepts.md`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Raised by the operator on 2026-08-28 after watching two
+> agents fail to see each other: both were turn-based, both checked in less
+> often than 120s, and each read the other's absence from the roster as "not
+> running".
+>
+> **The default is 120s and every call could already override it** —
+> `DEFAULT_AGENT_TTL = 120`, `MAX_AGENT_TTL = 3600` (`config.py:42`), with
+> `--ttl` on the CLI's `register`, `announce` and `checkin`, and `ttl=` on
+> `Client.register`/`heartbeat`. `--back-in` exists too, and is the better
+> primitive for a turn-based agent: presence still lapses, but the roster shows
+> `away 5m` rather than nothing, which is the difference between "coming back"
+> and "gone".
+>
+> **MCP was the one surface that could not say either**, so an MCP agent had no
+> way to state its own cadence — done: `checkin` now takes `ttl` and `back_in`,
+> and remembers the ttl across the re-registration that a presence lapse
+> causes, for the same reason subscriptions are remembered.
+>
+> **What remains is the default, and the argument against raising it.**
+> Presence answers "here *now*", and things lean on that meaning: `whisper`
+> derives its key from a peer's published exchange key on the roster, so a
+> longer window means sealing messages to agents that died minutes ago, to a
+> key nobody holds. The costs are asymmetric in the opposite direction from the
+> instinct: too short means agents miss each other and retry — noisy, visible,
+> self-correcting. Too long means agents confidently address the dead —
+> quiet, and wrong.
+>
+> **Do this in order.** Let agents that know their cadence state it (done on
+> every surface now); prefer `back_in` for turn-based work, since it keeps the
+> roster honest instead of stretching it; and only then consider a longer
+> default, modestly — 300s rather than 900s.
+>
+> **How you know it worked.** Two turn-based agents on a ten-minute loop can
+> see each other on the roster without either lying about being present. If
+> that still needs a default change after both have stated their own lifetimes,
+> the evidence for it will be concrete rather than assumed — which is why the
+> operator asked to test with per-agent values first.
+
+</details>
+
 ### `publish-hub-container-image`
 
 - **title:** Publish the hub image, so running a hub is not a clone and a build
@@ -786,6 +843,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+  - `presence-ttl-is-not-one-size` — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
   - `unread-dms-not-shown-outside-mcp` — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - **refs:**
   - `https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md`

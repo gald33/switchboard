@@ -259,6 +259,19 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _schema({
             "task": {**_STR, "description": "what you are working on right now"},
             "wait": {**_NUM, "description": "seconds to long-poll for messages (0-25)"},
+            "ttl": {**_NUM, "description": (
+                "how long your presence should last, in seconds (default 120, max "
+                "3600). Raise it if you check in less often than that — a turn-based "
+                "agent on a ten-minute loop drops off the roster between turns, and a "
+                "peer who cannot see you there cannot whisper to you. State your own "
+                "cadence rather than leaving the default to guess it."
+            )},
+            "back_in": {**_NUM, "description": (
+                "seconds until you expect to be back. Presence still lapses on the "
+                "ttl, but the roster says 'away, back in ~N' instead of simply not "
+                "listing you — which is the difference between a peer waiting for you "
+                "and a peer concluding you are gone."
+            )},
             "execution_class": _TIMING_CLASS,
             "effort": _TIMING_EFFORT,
         }),
@@ -561,6 +574,11 @@ class Bridge:
     #: which an instance-only attribute would leave half-constructed.
     _subscriptions: tuple[str, ...] = ()
 
+    #: Presence lifetime this agent asked for, or None for the hub's default.
+    #: Class-level for the same reasons as above: immutable, and present on a
+    #: bridge built by `Bridge.__new__`.
+    _presence_ttl: float | None = None
+
     def __init__(self) -> None:
         self.config = ClientConfig.from_env()
         self.identity: Identity = detect_identity()
@@ -671,6 +689,7 @@ class Bridge:
             branch=self.identity.branch,
             meta=self.identity.meta,
             channels=list(self._subscriptions),
+            ttl=self._presence_ttl,
         )
         self._registered = True
 
@@ -883,17 +902,26 @@ class Bridge:
         }
 
     def checkin(self, task: str | None = None, wait: float = 0.0,
+                ttl: float | None = None, back_in: float | None = None,
                 execution_class: str | None = None,
                 effort: str | None = None) -> dict[str, Any]:
+        # A ttl given here is remembered, for the same reason subscriptions
+        # are: presence lapsing re-registers, and re-registering under the
+        # 120s default would silently undo the one thing an agent said about
+        # its own cadence — on the call that looks like nothing happened.
+        if ttl is not None:
+            self._presence_ttl = ttl
         self._ensure_registered()
         try:
-            result = self.client.heartbeat(task=task)
+            result = self.client.heartbeat(task=task, ttl=self._presence_ttl,
+                                           back_in=back_in)
         except SwitchboardError as exc:
             if exc.status == 404:
                 # Presence expired while we were busy; re-register and retry.
                 self._registered = False
                 self._ensure_registered()
-                result = self.client.heartbeat(task=task)
+                result = self.client.heartbeat(task=task, ttl=self._presence_ttl,
+                                               back_in=back_in)
             else:
                 raise
         messages = self.client.inbox(wait=min(max(wait, 0.0), 25.0))

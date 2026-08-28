@@ -1,0 +1,50 @@
+id: presence-ttl-is-not-one-size
+title: Let an agent state its own presence lifetime, before considering a longer default
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: write-parity-across-surfaces
+  note: 'Same gap, found the same way: a capability every other surface had, missing
+    from MCP, where the agent that needs it cannot reach it. The MCP half is done; what
+    remains here is the question of the default.'
+refs:
+- 'docs/concepts.md'
+evidence: |
+  **Not a filed issue.** Raised by the operator on 2026-08-28 after watching two
+  agents fail to see each other: both were turn-based, both checked in less
+  often than 120s, and each read the other's absence from the roster as "not
+  running".
+
+  **The default is 120s and every call could already override it** —
+  `DEFAULT_AGENT_TTL = 120`, `MAX_AGENT_TTL = 3600` (`config.py:42`), with
+  `--ttl` on the CLI's `register`, `announce` and `checkin`, and `ttl=` on
+  `Client.register`/`heartbeat`. `--back-in` exists too, and is the better
+  primitive for a turn-based agent: presence still lapses, but the roster shows
+  `away 5m` rather than nothing, which is the difference between "coming back"
+  and "gone".
+
+  **MCP was the one surface that could not say either**, so an MCP agent had no
+  way to state its own cadence — done: `checkin` now takes `ttl` and `back_in`,
+  and remembers the ttl across the re-registration that a presence lapse
+  causes, for the same reason subscriptions are remembered.
+
+  **What remains is the default, and the argument against raising it.**
+  Presence answers "here *now*", and things lean on that meaning: `whisper`
+  derives its key from a peer's published exchange key on the roster, so a
+  longer window means sealing messages to agents that died minutes ago, to a
+  key nobody holds. The costs are asymmetric in the opposite direction from the
+  instinct: too short means agents miss each other and retry — noisy, visible,
+  self-correcting. Too long means agents confidently address the dead —
+  quiet, and wrong.
+
+  **Do this in order.** Let agents that know their cadence state it (done on
+  every surface now); prefer `back_in` for turn-based work, since it keeps the
+  roster honest instead of stretching it; and only then consider a longer
+  default, modestly — 300s rather than 900s.
+
+  **How you know it worked.** Two turn-based agents on a ten-minute loop can
+  see each other on the roster without either lying about being present. If
+  that still needs a default change after both have stated their own lifetimes,
+  the evidence for it will be concrete rather than assumed — which is why the
+  operator asked to test with per-agent values first.
