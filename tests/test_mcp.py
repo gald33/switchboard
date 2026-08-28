@@ -1091,3 +1091,36 @@ def test_the_signer_is_started_only_when_this_process_owns_the_key(monkeypatch):
     mcp.main([])
 
     assert started == [], "a borrowed key must never be served"
+
+
+# --- an unopenable message says it has been consumed ----------------------
+#
+# Reported downstream: an agent received a whisper it could not decrypt, ran
+# `inbox` again to look closer, and destroyed it. It never learned why its move
+# had been refused. `--peek` already existed; nothing said so at the moment it
+# mattered.
+
+
+def test_an_unopenable_message_is_told_it_was_consumed():
+    from switchboard.cli import _unopenable_note
+
+    sealed = {"body": {"$swb": 1, "n": "x", "c": "y"}, "unreadable": True}
+    note = _unopenable_note(sealed, peek=False)
+
+    assert note and "could not be opened" in note
+    assert "HAS been marked read" in note, "the loss is named, not implied"
+    assert "--peek" in note, "and so is the escape"
+    assert "agents" in note, "and the cause: sealing is pairwise"
+
+
+def test_a_peek_consumed_nothing_so_says_nothing():
+    from switchboard.cli import _unopenable_note
+
+    sealed = {"body": {"$swb": 1}, "unreadable": True}
+    assert _unopenable_note(sealed, peek=True) is None
+
+
+def test_a_message_that_opened_fine_is_not_warned_about():
+    from switchboard.cli import _unopenable_note
+
+    assert _unopenable_note({"body": "not settled: over budget"}, peek=False) is None

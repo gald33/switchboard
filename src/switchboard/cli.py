@@ -1912,6 +1912,27 @@ def _read_body(args: argparse.Namespace) -> Any:
     return text
 
 
+def _unopenable_note(message: dict[str, Any], *, peek: bool) -> str | None:
+    """What to say about a message that arrived sealed and would not open.
+
+    **Said at the moment it is lost, because that is the only useful moment.**
+    A whisper you cannot open looks like noise, so the reasonable next move is
+    to run `inbox` again and look closer — which advances the cursor past it
+    and destroys it. Reported by an agent that did exactly that and never
+    learned why its move had been refused: it was punished for being careful.
+
+    `--peek` has always existed. Nothing told anyone at the point they needed
+    it, which is the whole defect — the capability was there and the sentence
+    was not. Nothing is said on a peek, because then nothing was consumed.
+    """
+    if not message.get("unreadable") or peek:
+        return None
+    return ("  ^ could not be opened: sealing is pairwise, so call `agents` to "
+            "read the sender's exchange key, then ask them to resend. This "
+            "message HAS been marked read — use `--peek` to look without "
+            "consuming.")
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         messages = hub.inbox(
@@ -1944,6 +1965,9 @@ def cmd_inbox(args: argparse.Namespace) -> int:
             head += f" {fmt.dim('[' + m['type'] + ']')}"
         print(head)
         print(f"  {_body_text(m['body'])}")
+        note = _unopenable_note(m, peek=args.peek)
+        if note:
+            print(fmt.dim(note))
         _, incoming = unwrap_forecast(m["body"])
         if incoming:
             print(_forecast_line(fmt, incoming, "they expect to be"))
