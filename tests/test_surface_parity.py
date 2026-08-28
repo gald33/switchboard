@@ -249,3 +249,48 @@ def test_an_mcp_agent_can_state_its_own_presence_lifetime():
     seen.clear()
     bridge.checkin(back_in=300)
     assert seen["back_in"] == 300, "back_in never reached the hub"
+
+
+# --- the message must survive its own flags -----------------------------------
+
+def test_a_message_after_a_flag_is_not_lost():
+    """`say general --thread plan hello` used to die on "unrecognized
+    arguments: hello".
+
+    argparse cannot place a `nargs="*"` positional once an option has
+    intervened, so the words an agent typed came back as the error text. The
+    failure blamed the message rather than the ordering, and — worse — the post
+    did not happen while the command looked like it had merely complained.
+    """
+    captured = {}
+
+    import switchboard.cli as cli
+
+    def fake(args):
+        captured["channel"] = args.channel
+        captured["thread"] = args.thread
+        captured["message"] = args.message
+        return 0
+
+    original = cli.cmd_say
+    cli.cmd_say = fake
+    try:
+        cli.main(["say", "general", "--thread", "plan", "hello", "there"])
+        assert captured["channel"] == "general"
+        assert captured["thread"] == "plan"
+        assert captured["message"] == ["hello", "there"], "the message was dropped"
+
+        # A mistyped flag becomes message text rather than an error, and that
+        # is deliberate upstream of here: `_escape_dash_leading_positionals`
+        # escapes unknown dash-leading tokens because hub-minted agent ids are
+        # base64url and about one in sixty-six starts with `-`, so `dm -yLAoQ63
+        # hi` must work. The cost is that `--tread plan` posts those words
+        # instead of refusing them. Asserted rather than left implicit, because
+        # it is a real trade-off and the next reader deserves to meet it here
+        # rather than in a message that went to no thread.
+        captured.clear()
+        cli.main(["say", "general", "--tread", "plan", "hello"])
+        assert captured["thread"] is None
+        assert captured["message"] == ["--tread", "plan", "hello"]
+    finally:
+        cli.cmd_say = original
