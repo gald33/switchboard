@@ -208,3 +208,61 @@ def test_the_ask_alias_still_sends_and_a_0_11_0_typed_message_still_opens(key):
         assert got["type"] == "ask"
         assert got["body"] == "sealed by the old name"
         assert not got.get("unreadable")
+
+
+# --- the CLI's fresh-process problem -----------------------------------------
+
+
+def test_the_cli_reads_the_roster_before_draining_so_a_whisper_opens(key):
+    """A fresh CLI process must open a whisper on the first look.
+
+    **This is island game `g5`, reproduced.** Both traders were sealed their
+    private capacities and tastes; neither could open a single one; no resend
+    came; they played eight episodes blind to their own preferences. Opening a
+    whisper needs the sender's `exchange_key`, and only a roster call puts it
+    in `_peer_exchange_keys` -- a cache that is per process. The MCP server
+    never hits this because it holds one long-lived client. Every CLI command
+    is a new process, so the cache is always empty.
+
+    The empty cache below is the whole of what a fresh process differs by: a
+    signing daemon gives the CLI the same identity and therefore the same
+    keys, and nothing carries the peer cache across.
+    """
+    with make_hub(workspace=WS, key=key) as h:
+        mgr, trader = h.client("manager"), h.client("trader")
+        mgr.register(name="manager")
+        trader.register(name="trader")
+        mgr.agents()          # the sender needs the recipient's key to seal
+        mgr.whisper(trader.agent_id, "your capacities: salt 1.5894 per labour")
+
+        trader._peer_exchange_keys.clear()          # a new process starts here
+
+        # `--peek`, so asserting on the failure does not also destroy it --
+        # which is precisely the trap `#172` warns about.
+        [blind] = trader.inbox(peek=True)
+        assert blind.get("unreadable"), "what both g5 traders saw, every time"
+
+        from switchboard import cli
+
+        cli._learn_senders(trader)
+        [got] = trader.inbox()
+        assert not got.get("unreadable")
+        assert got["body"] == "your capacities: salt 1.5894 per labour"
+
+
+def test_learning_senders_never_raises_when_the_roster_cannot_be_read(key):
+    """A roster that fails is a worse inbox, not a failed one.
+
+    `inbox` is how an agent finds out why a move was refused. It must still
+    drain when the roster call fails, and `#172`'s note still fires on
+    anything that stays sealed.
+    """
+    from switchboard import cli
+
+    class Broken:
+        encrypted = True
+
+        def agents(self):
+            raise RuntimeError("hub unreachable")
+
+    cli._learn_senders(Broken())      # must not raise
