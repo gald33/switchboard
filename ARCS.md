@@ -74,7 +74,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 8 item(s), 7 startable
+`setup-and-first-run` · 9 item(s), 8 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -100,6 +100,7 @@ wrong says so.
 | `init-writes-rooms-file` | ready | next |
 | `clients-that-cannot-post` | ready | — |
 | `joining-agent-sees-empty-inbox` | ready | — |
+| `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
 | `unread-dms-not-shown-outside-mcp` | ready | — |
 | `write-parity-across-surfaces` | ready | — |

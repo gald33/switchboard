@@ -207,3 +207,45 @@ def test_leaving_takes_the_agent_off_the_roster(key):
 
         assert goer.deregister() is True
         assert goer.agent_id not in [a["agent_id"] for a in stayer.agents()]
+
+
+# --- presence lifetime, which only MCP could not state -----------------------
+
+def test_an_mcp_agent_can_state_its_own_presence_lifetime():
+    """The 120s default suits an agent that calls often. A turn-based agent on
+    a ten-minute loop drops off the roster between turns, and a peer who cannot
+    see it there cannot whisper to it — `whisper` needs an exchange key learned
+    from the roster. Every other surface could already say so; MCP could not.
+    """
+    from switchboard.mcp_server import Bridge
+
+    seen: dict[str, object] = {}
+
+    class _Client:
+        def heartbeat(self, **kw):
+            seen.update(kw)
+            return {"agent": {}, "leases": [], "unread_dms": 0}
+
+        def inbox(self, **kw):
+            return []
+
+    bridge = Bridge.__new__(Bridge)
+    bridge.client = _Client()
+    bridge._registered = True
+    bridge._ensure_registered = lambda: None
+    bridge._note_look = lambda: None
+    bridge._declare = lambda *a, **k: None
+
+    bridge.checkin(ttl=900)
+    assert seen["ttl"] == 900, "the ttl an agent asked for never reached the hub"
+
+    # Remembered: a later check-in that says nothing must not silently revert
+    # to the default, because presence lapsing re-registers and that is exactly
+    # the call that looks like nothing happened.
+    seen.clear()
+    bridge.checkin()
+    assert seen["ttl"] == 900, "the agent's stated cadence was forgotten"
+
+    seen.clear()
+    bridge.checkin(back_in=300)
+    assert seen["back_in"] == 300, "back_in never reached the hub"
