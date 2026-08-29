@@ -32,9 +32,7 @@
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     display: flex; flex-direction: column; overflow: hidden;
   }
-  @media (max-width: 900px) {
-    body { height: auto; overflow: visible; }
-  }
+  .panes { display: none; }
   header {
     display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
     padding: 12px 18px; border-bottom: 1px solid var(--line);
@@ -56,10 +54,6 @@
          overflow: hidden; }
   main > div { min-height: 0; height: 100%; display: flex; flex-direction: column; }
   main > div:last-child { overflow-y: auto; display: block; }
-  @media (max-width: 900px) {
-    main { grid-template-columns: minmax(0,1fr); overflow: visible; }
-    main > div, main > div:last-child { height: auto; overflow: visible; }
-  }
   section { background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
   section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
@@ -69,6 +63,7 @@
   /* Which channel you are reading, in the heading — a chip can be scrolled out
      of sight on a narrow window, and then nothing on the page says it. */
   h2 .scope { text-transform: none; letter-spacing: 0; font-size: 12px; }
+  h2 .scope::before { content: "· "; }
   h2 .scope.on { color: var(--accent); font-weight: 600; }
   h2 .clear { text-transform: none; letter-spacing: 0; }
   h2 .clear[hidden] { display: none; }
@@ -107,10 +102,7 @@
            min-height: 0; flex: 1; margin-bottom: 0; }
   #messages { flex: 1; min-height: 200px; overflow-y: auto;
               overscroll-behavior: contain; }
-  @media (max-width: 900px) {
-    .convo { flex: none; }
-    #messages { max-height: 70vh; }
-  }
+
   .jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
           background: var(--accent); border: 0; color: #fff; border-radius: 999px;
           padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
@@ -152,12 +144,28 @@
   /* Sixty channels is a wall of chips, and a row meant to say where the work is
      says nothing at all. */
   .chip.more { border-style: dashed; color: var(--dim); }
-  /* Related state groups; a key nobody can read groups with the others that
-     cannot be read, which is itself the explanation. */
-  #board > div.group { padding: 10px 14px 2px; border-bottom: 0; color: var(--dim);
-                       font-size: 11px; text-transform: uppercase;
-                       letter-spacing: .08em; }
-  #board > div.group:first-child { padding-top: 8px; }
+  /* The blackboard is a tree, because its keys are paths. A branch is a row
+     you can fold; the leaves are the entries. */
+  #board > div.twig { padding: 0; border-bottom: 0; }
+  .twiglabel { display: flex; align-items: baseline; gap: 7px; width: 100%;
+               background: none; border: 0; cursor: pointer; font: inherit;
+               font-size: 12px; color: var(--dim); text-align: left;
+               padding: 7px 14px 4px; }
+  .twiglabel:hover { color: var(--ink); }
+  .twiglabel:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .twiglabel .mono { color: var(--ink); }
+  .twiglabel .sub { margin-left: auto; }
+  .caret { display: inline-block; transform: rotate(90deg); font-size: 11px;
+           line-height: 1; transition: transform .12s ease-out; }
+  .caret.shut { transform: none; }
+  @media (prefers-reduced-motion: reduce) { .caret { transition: none; } }
+  /* Depth. Four levels of indent is already deeper than a key ought to go, and
+     the fifth stops moving rather than walking the panel off its own edge. */
+  #board > .d1 { padding-left: 28px; } #board > .d1.twig .twiglabel { padding-left: 28px; }
+  #board > .d2 { padding-left: 42px; } #board > .d2.twig .twiglabel { padding-left: 42px; }
+  #board > .d3 { padding-left: 56px; } #board > .d3.twig .twiglabel { padding-left: 56px; }
+  #board > .d4 { padding-left: 70px; } #board > .d4.twig .twiglabel { padding-left: 70px; }
+
   .msg { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 14px; }
   @media (max-width: 640px) { .msg { grid-template-columns: minmax(0,1fr); } }
   .msg .who { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
@@ -243,6 +251,37 @@
   .arrived p { color: var(--dim); margin: 10px 0; }
   .arrived ol { color: var(--dim); padding-left: 20px; }
   .arrived li { margin: 10px 0; }
+
+  /* --- narrow windows -------------------------------------------------
+     Last in the sheet on purpose: every rule here overrides one above it,
+     and a media query does nothing for specificity. --- */
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0,1fr); padding-top: 10px; }
+    /* One column, one pane: the switcher above chooses which. */
+    .panes { display: flex; gap: 6px; padding: 12px 18px 0; }
+    .pane { flex: 1; border: 1px solid var(--line); background: var(--panel);
+            color: var(--ink); font: inherit; font-size: 13px; cursor: pointer;
+            padding: 7px 4px; border-radius: 8px; display: flex;
+            align-items: baseline; justify-content: center; gap: 5px; }
+    .pane.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .pane .count { color: var(--dim); font-variant-numeric: tabular-nums; }
+    .pane.on .count { color: #dbeafe; }
+    .pane:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    main[data-pane="convo"] > div:last-child { display: none; }
+    main:not([data-pane="convo"]) > div:first-child { display: none; }
+    main[data-pane="agents"] #p-leases, main[data-pane="agents"] #p-board,
+    main[data-pane="leases"] #p-agents, main[data-pane="leases"] #p-board,
+    main[data-pane="board"] #p-agents, main[data-pane="board"] #p-leases {
+      display: none;
+    }
+    /* Nothing left to fold once a pane is a choice of its own. */
+    .panel > summary { display: none; }
+    /* The switcher above already says this is the conversation, and the room
+       is too narrow to say it twice. */
+    #convo-head > span:first-child { display: none; }
+    h2 .scope::before { content: none; }
+    .search { width: 130px; }
+  }
 </style>
 </head>
 <body>
@@ -309,7 +348,20 @@
 </header>
 <div class="rooms" id="rooms"></div>
 <div class="notes" id="notes"></div>
-<main>
+<!-- Narrow windows only. Above 900px there is room for the conversation and
+     the three panels at once, and a switcher would be furniture; below it the
+     panels used to sit under a conversation long enough that the roster and
+     the claims were, in practice, unreachable. -->
+<nav class="panes" id="panes" aria-label="Show">
+  <button class="pane on" type="button" data-pane="convo">Talk</button>
+  <button class="pane" type="button" data-pane="agents">Awake<span
+    class="count" data-count="agents"></span></button>
+  <button class="pane" type="button" data-pane="leases">Claims<span
+    class="count" data-count="leases"></span></button>
+  <button class="pane" type="button" data-pane="board">Board<span
+    class="count" data-count="board"></span></button>
+</nav>
+<main data-pane="convo">
   <div>
     <section class="convo">
       <!-- Painted around rather than rewritten: the search box holds a caret and
@@ -333,15 +385,15 @@
          shrinks. A count in each heading says what is inside without opening
          it, and what a reader folds away stays folded. -->
     <details class="panel" id="p-agents" open>
-      <summary>Who's awake<span class="count" id="n-agents"></span></summary>
+      <summary>Who's awake<span class="count" id="n-agents" data-count="agents"></span></summary>
       <div class="rows" id="agents"></div>
     </details>
     <details class="panel" id="p-leases" open>
-      <summary>Claims<span class="count" id="n-leases"></span></summary>
+      <summary>Claims<span class="count" id="n-leases" data-count="leases"></span></summary>
       <div class="rows" id="leases"></div>
     </details>
     <details class="panel" id="p-board" open>
-      <summary>Blackboard<span class="count" id="n-board"></span></summary>
+      <summary>Blackboard<span class="count" id="n-board" data-count="board"></span></summary>
       <div class="rows" id="board"></div>
     </details>
   </div>
@@ -725,6 +777,32 @@ try {
     if ($(id)) $(id).open = false;
   }
 } catch { /* as above */ }
+
+// --- one pane at a time, on a narrow window ----------------------------------
+//
+// The switcher is CSS-hidden above 900px, so this costs a wide window nothing.
+// What it cannot do in CSS is open a `<details>` the reader folded away on a
+// wide one: below the breakpoint the summary is gone, so a folded panel would
+// be a segment that shows nothing. Picking a segment opens it — which is the
+// reader asking for it, so it is theirs to keep either way.
+const NARROW = matchMedia("(max-width: 900px)");
+
+function showPane(which) {
+  document.querySelector("main").dataset.pane = which;
+  for (const button of document.querySelectorAll(".pane")) {
+    button.classList.toggle("on", button.dataset.pane === which);
+  }
+  const panel = $("p-" + which);
+  if (panel) panel.open = true;
+}
+
+for (const button of document.querySelectorAll(".pane")) {
+  button.onclick = () => showPane(button.dataset.pane);
+}
+
+// Coming back to a wide window, everything is on screen at once again, so the
+// pane a reader chose down there is not a state to still be in.
+NARROW.addEventListener("change", (e) => { if (!e.matches) showPane("convo"); });
 
 // --- the keyboard ------------------------------------------------------------
 //

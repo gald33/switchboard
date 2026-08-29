@@ -68,15 +68,26 @@ exactly as it was found.
 
 The claims and the blackboard are ordered by the thing you came to them for:
 claims by what lapses soonest, with a countdown that ticks and turns amber
-under a minute, and the board by what was written most recently — then grouped
-by the segment before the first separator, each group placed by its own newest
-entry, so related state sits together without burying what just changed. A
-heading appears only where it organises more than one thing, and keys nobody
-can read are one group at the end, where the heading is the explanation. A long
-value is clamped rather than allowed to push the panel below it off the page.
+under a minute; and the board as the tree its keys already are. A blackboard
+key is a path — `handoff/lexer/state`, not a name that happens to contain a
+slash — so the panel is an explorer over it: branches fold, and recency runs
+through the whole thing, every branch and every leaf placed by the newest entry
+beneath it, so "what just changed is near the top" holds at each level rather
+than only at the top. A folded branch carries how much is behind it and when
+that last moved, so folding one never hides that something inside it moved. A
+branch leading to exactly one thing is a longer name rather than a level and is
+drawn as one row; a key that is also a branch is a child of itself, named in
+full. Keys nobody can read are not paths at all — the hub only ever saw a
+token — so they are one branch at the end, where the label is the explanation.
+A long value is clamped rather than allowed to push the panel below it off the
+page.
 
 Each of the three side panels says how much is inside it and folds away, and
-what you fold stays folded. If your
+what you fold stays folded. On a window too narrow for two columns they stop
+being a stack under the conversation — where, the talking being long and never
+finished, they were unreachable in practice — and become a switcher: the
+conversation, the roster, the claims and the board, one at a time, each with
+its count on the way in, and the conversation with the whole screen back. If your
 invite carried a proof-of-room, the pass is now said as well as the failure —
 a quiet `✓ verified` beside the room name, and the probe entry itself is kept
 off the blackboard, being this viewer's machinery rather than something an

@@ -190,9 +190,15 @@ function countdown(secs, generatedAt) {
 }
 
 const URGENT = 60;    // seconds; below this a claim is about to lapse
-const CHIP_CAP = 12;  // channels shown before the row offers the rest
 
 let allChips = false;
+
+/** How many channels a glance can use, which is not a constant: twelve chips
+ *  are one row on a wide window and four rows on a phone, where they push the
+ *  conversation they are meant to organise off the screen. */
+function chipCap() {
+  return matchMedia("(max-width: 900px)").matches ? 6 : 12;
+}
 
 function tick() {
   const now = Date.now();
@@ -263,59 +269,143 @@ function bodyHtml(body) {
   return `<div class="clamp">${inner}<button class="more" type="button">show more</button></div>`;
 }
 
-/** The blackboard, in an order and in groups.
+/** The blackboard, as the tree its keys already are.
  *
  *  Hub order is no order at all: the entry that changed thirty seconds ago sits
  *  wherever it happened to land, so the panel has to be re-read from the top
- *  every time. Most recently written first, then — because keys in practice
- *  share a prefix per concern, and state that belongs together should be
- *  together — grouped by the segment before the first separator, each group
- *  placed by its own newest entry so what just changed is still near the top.
+ *  every time. And a blackboard key is a path — `handoff/lexer/state`, not a
+ *  name that happens to contain a slash — so a flat list throws away structure
+ *  the room itself put there.
  *
- *  A heading appears only where it organises more than one thing; a lone key
- *  with a prefix is not a category. Blinded keys cannot group at all, which is
- *  not a gap to hide: they are one group at the end, and the heading is the
- *  explanation.
+ *  So: a tree, with recency running through it. Every branch is placed by the
+ *  newest entry beneath it, and so is every leaf, which keeps "what just
+ *  changed is near the top" true at each level rather than only at the top. A
+ *  branch folds, and carries how much is behind it and when that last moved, so
+ *  folding one never hides that something inside it moved.
+ *
+ *  A branch that leads to exactly one thing is not a branch, it is a longer
+ *  name: those compress into a single row, which is also why a lone key with a
+ *  prefix never grows a heading of its own.
+ *
+ *  Blinded keys are not paths — the hub only ever saw a token — so they cannot
+ *  join the tree. They are one branch at the end, where the label is the
+ *  explanation rather than a gap.
  */
 function boardRows(s) {
   const when = (e) => Date.parse(e.updated_at || 0) || 0;
-  const groups = new Map();   // name -> entries
-  for (const e of s.board.slice().sort((a, b) => when(b) - when(a))) {
-    const name = e.sealed ? SEALED_GROUP
-      : (e.key.includes("/") ? e.key.slice(0, e.key.indexOf("/")) : null);
-    // A key with no prefix belongs to nothing, and is its own company.
-    const at = name === null ? "\u0000" + e.key : name;
-    if (!groups.has(at)) groups.set(at, { name, entries: [] });
-    groups.get(at).entries.push(e);
-  }
-  const rows = [];
-  const ordered = [...groups.values()].sort((a, b) =>
-    (a.name === SEALED_GROUP ? 1 : 0) - (b.name === SEALED_GROUP ? 1 : 0));
-  for (const group of ordered) {
-    if (group.name !== null && (group.entries.length > 1 || group.name === SEALED_GROUP)) {
-      rows.push({
-        key: "group:" + group.name,
-        cls: "group",
-        html: group.name === SEALED_GROUP
-          ? `🔒 sealed under another key`
-          : esc(group.name) + "/",
-      });
+
+  // --- grow it ---
+  const root = { kids: new Map(), entry: null, at: 0, n: 0 };
+  for (const e of s.board) {
+    if (e.sealed) continue;
+    let node = root;
+    for (const segment of e.key.split("/").filter(Boolean)) {
+      if (!node.kids.has(segment)) {
+        node.kids.set(segment, { kids: new Map(), entry: null, at: 0, n: 0 });
+      }
+      node = node.kids.get(segment);
     }
-    for (const e of group.entries) {
-      rows.push({
-        key: e.key,
-        cls: "",
-        html: `
-      <div>${ident(e.key, e.sealed)} <span class="sub">rev ${e.revision}</span></div>
+    node.entry = e;
+  }
+
+  // --- and let recency and weight settle back down it ---
+  const settle = (node) => {
+    node.at = node.entry ? when(node.entry) : 0;
+    node.n = node.entry ? 1 : 0;
+    for (const kid of node.kids.values()) {
+      settle(kid);
+      node.at = Math.max(node.at, kid.at);
+      node.n += kid.n;
+    }
+  };
+  settle(root);
+
+  const rows = [];
+  const leaf = (e, name) => ({
+    key: e.key,
+    cls: "",
+    html: `
+      <div><span class="mono" title="${esc(e.key)}">${esc(name)}</span> <span class="sub">rev ${e.revision}</span></div>
       ${bodyHtml(e.value)}
       <div class="sub">${who(e.updated_by)} · ${stamp(e.updated_at)} · expires in ${countdown(e.expires_in, s.generated_at)}</div>`,
-      });
+  });
+
+  const walk = (node, path, name, depth) => {
+    // A branch leading to one thing, and holding nothing itself, is a longer
+    // name rather than a level: `alone/here` is one row, and the reader is
+    // spared a heading that organises nothing.
+    while (node.kids.size === 1 && !node.entry) {
+      const [only] = node.kids.keys();
+      name = name + "/" + only;
+      path = path + "/" + only;
+      node = node.kids.get(only);
+    }
+    if (node.kids.size === 0) {
+      if (node.entry) rows.push(indent(leaf(node.entry, name), depth));
+      return;
+    }
+    const shut = folded.has(path);
+    rows.push(twig(path, name + "/", node, depth, shut));
+    if (shut) return;
+    // A key that is also a branch — `build` written, and `build/ci/unit`
+    // written under it — is a child of itself, and reads as one. Named in
+    // full, because a row saying `build` directly under `build/` is the one
+    // place a tail segment is genuinely ambiguous.
+    if (node.entry) rows.push(indent(leaf(node.entry, node.entry.key), depth + 1));
+    for (const [kid, child] of [...node.kids.entries()]
+        .sort((a, b) => b[1].at - a[1].at)) {
+      walk(child, path + "/" + kid, kid, depth + 1);
+    }
+  };
+
+  for (const [name, node] of [...root.kids.entries()]
+      .sort((a, b) => b[1].at - a[1].at)) {
+    walk(node, KEYS + name, name, 0);
+  }
+
+  const sealed = s.board.filter((e) => e.sealed).sort((a, b) => when(b) - when(a));
+  if (sealed.length) {
+    const shut = folded.has(SEALED);
+    rows.push(twig(SEALED, "🔒 sealed under another key",
+                   { n: sealed.length, at: when(sealed[0]) }, 0, shut));
+    if (!shut) {
+      for (const e of sealed) rows.push(indent(leaf(e, short(e.key)), 1));
     }
   }
   return rows;
 }
 
-const SEALED_GROUP = "\u0001sealed";
+/** A branch: what is under it, when it last moved, and a way to fold it. */
+function twig(path, label, node, depth, shut) {
+  return indent({
+    key: "twig:" + path,
+    cls: "twig",
+    html: `<button class="twiglabel" type="button" data-twig="${esc(path)}"
+             aria-expanded="${shut ? "false" : "true"}">
+        <span class="caret ${shut ? "shut" : ""}" aria-hidden="true">›</span>
+        <span class="mono">${esc(label)}</span>
+        <span class="sub">${node.n}${node.at
+          ? " · " + stamp(new Date(node.at).toISOString()) : ""}</span>
+      </button>`,
+  }, depth);
+}
+
+/** Depth as a class rather than an inline style, because `sync` compares
+ *  markup: a row that only moved a level should move, not be rebuilt. */
+function indent(row, depth) {
+  row.cls = (row.cls ? row.cls + " " : "") + "d" + Math.min(depth, 4);
+  return row;
+}
+
+//: Paths are namespaced so the sealed branch cannot be collided with by a room
+//: that happens to keep a key called "sealed".
+const KEYS = "key/";
+const SEALED = "sealed";
+
+/** Branches the reader folded away, by path. In memory rather than in storage:
+ *  a key is a path in one room and means nothing at all in the next.
+ */
+const folded = new Set();
 
 export function render(s, { onRoom, onClose } = {}) {
   last = s;
@@ -431,17 +521,18 @@ export function render(s, { onRoom, onClose } = {}) {
   if (query) parts.push(`matching "${query}"`);
   const narrowed = filter !== null || sender !== null || Boolean(query);
   const head = $("convo-scope");
-  head.textContent = "· " + parts.join(" · ");
+  head.textContent = parts.join(" · ");
   head.className = narrowed ? "scope on" : "scope";
   $("convo-clear").hidden = !narrowed;
 
   // Sixty channels is not a switcher, it is a wall. The row keeps what a
   // glance can use and offers the rest, and whatever you are reading is in it
   // however far down the list it sorted.
-  const capped = chans.length > CHIP_CAP && !allChips;
+  const cap = chipCap();
+  const capped = chans.length > cap && !allChips;
   const visible = capped
-    ? chans.slice(0, CHIP_CAP).concat(
-        here && !chans.slice(0, CHIP_CAP).includes(here) ? [here] : [])
+    ? chans.slice(0, cap).concat(
+        here && !chans.slice(0, cap).includes(here) ? [here] : [])
     : chans;
 
   let firstDm = true;
@@ -465,8 +556,8 @@ export function render(s, { onRoom, onClose } = {}) {
       }))
       .concat(capped
         ? [`<button class="chip more" type="button" data-chips="all">` +
-           `+${chans.length - CHIP_CAP} more</button>`]
-        : (chans.length > CHIP_CAP
+           `+${chans.length - cap} more</button>`]
+        : (chans.length > cap
             ? [`<button class="chip more" type="button" data-chips="few">fewer</button>`]
             : []))
       .join("");
@@ -477,6 +568,10 @@ export function render(s, { onRoom, onClose } = {}) {
   // content, and "was the reader at the bottom" can no longer be asked.
   const room = `${s.hub.url}/${s.hub.workspace}`;
   const fresh = room !== following;
+  // A path folded in one room means nothing in the next: the keys are that
+  // room's, and carrying the folds across would hide another room's state
+  // behind a decision nobody made about it.
+  if (fresh) folded.clear();
   const scopeKey = JSON.stringify(scope());
   const rescoped = scopeKey !== lastScope;
   lastScope = scopeKey;
@@ -568,6 +663,13 @@ export function render(s, { onRoom, onClose } = {}) {
         scopeChanged();
         return;
       }
+      const branch = e.target.closest("[data-twig]");
+      if (branch) {
+        const path = branch.dataset.twig;
+        if (folded.has(path)) folded.delete(path); else folded.add(path);
+        if (last) render(last);
+        return;
+      }
       const chips = e.target.closest("[data-chips]");
       if (chips) {
         allChips = chips.dataset.chips === "all";
@@ -633,9 +735,15 @@ export function render(s, { onRoom, onClose } = {}) {
     emptyPane($("board"), "nothing on the board");
   }
 
-  $("n-agents").textContent = s.agents.length || "";
-  $("n-leases").textContent = s.leases.length || "";
-  $("n-board").textContent = s.board.length || "";
+  // Addressed by what they count, not by where they are shown: a narrow window
+  // shows the same number twice, once on the panel and once on the switcher
+  // that reaches it.
+  for (const [what, n] of [["agents", s.agents.length], ["leases", s.leases.length],
+                           ["board", s.board.length]]) {
+    for (const el of document.querySelectorAll(`[data-count="${what}"]`)) {
+      el.textContent = n || "";
+    }
+  }
 
   // Before the scroll is settled, not after: a row is inserted with an empty
   // `<time>` in it, and an empty inline element occupies no line box at all.

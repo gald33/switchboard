@@ -1038,36 +1038,80 @@ def test_a_wall_of_channels_is_offered_rather_than_shown(browser, page, hub):
         tab.close()
 
 
-def test_the_blackboard_groups_the_keys_that_belong_together(browser, page, hub):
-    """Keys share a prefix per concern, and state that belongs together should
-    be together — without losing "what changed is near the top"."""
+def test_the_blackboard_reads_as_the_tree_its_keys_already_are(browser, page, hub):
+    """A key is a path, not a name with a slash in it, and a flat list throws
+    away structure the room itself put there — while recency has to keep
+    running through it, or "what just changed" is lost to tidiness."""
     config = ClientConfig(url=hub["url"], url_source="explicit",
                           workspace="w_browser-board", key=KEY)
     agent = Client(config, agent_id="writer", key=KEY)
     agent.register(name="writer", kind="local")
     agent.post("build", "so the page has something to wait for")
-    agent.board_set("handoff/lexer", {"next": "escapes"})
-    agent.board_set("status/build", "green")
-    agent.board_set("handoff/parser", {"next": "tokens"})
-    agent.board_set("status/deploy", "pending")
+    agent.board_set("build/ci/unit", "green")
+    agent.board_set("build/ci/lint", "green")
+    agent.board_set("build", "a key that is also a branch")
     agent.board_set("alone/here", "a prefix shared with nothing")
+    agent.board_set("handoff/lexer", {"next": "escapes"})
     agent.board_set("solo", "no prefix at all")
     tab, errors = open_page(browser, page, config)
     try:
         rows = tab.eval_on_selector_all(
             "#board > div",
-            "els => els.map(e => e.className + '|' + e.textContent.trim().split('\\n')[0])")
-        # Newest first still, so the two keys it wrote last lead — and neither
-        # gets a heading: one has no prefix, and a lone key with a prefix is
-        # not a category.
-        assert rows[0].startswith("|solo")
-        assert rows[1].startswith("|alone/here")
-        # Then the groups, each placed by its own newest entry, and each
-        # ordered by recency inside.
-        assert rows[2] == "group|status/"
-        assert "status/deploy" in rows[3] and "status/build" in rows[4]
-        assert rows[5] == "group|handoff/"
-        assert "handoff/parser" in rows[6] and "handoff/lexer" in rows[7]
+            "els => els.map(e => e.className + '|' "
+            "+ e.textContent.trim().split('\\n').map(t => t.trim()).join(' '))")
+        # Newest first at every level, so the last two keys written lead — and
+        # neither grows a branch, because a branch leading to one thing is a
+        # longer name rather than a level.
+        assert rows[0].startswith("d0|solo")
+        assert rows[1].startswith("d0|handoff/lexer")
+        assert rows[2].startswith("d0|alone/here")
+        # Then the one real branch, carrying what is behind it.
+        assert rows[3].startswith("d0 twig|") or rows[3].startswith("twig d0|")
+        assert "build/" in rows[3] and "3" in rows[3]
+        # A key that is also a branch is a child of itself, named in full
+        # because that is the one place a tail segment is ambiguous.
+        assert rows[4].startswith("d1|build ")
+        assert "ci/" in rows[5]
+        assert rows[6].startswith("d2|") and rows[7].startswith("d2|")
+        assert {"lint", "unit"} == {r.split("|")[1].split(" ")[0] for r in rows[6:8]}
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()
+
+
+def test_a_branch_folds_and_stays_folded_across_a_refresh(browser, page, hub):
+    """Folding is only useful if it survives the three-second repaint — and it
+    must not hide that something moved inside what was folded, which is why the
+    branch carries its own count and its own newest."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-fold", key=KEY)
+    agent = Client(config, agent_id="writer", key=KEY)
+    agent.register(name="writer", kind="local")
+    agent.post("build", "so the page has something to wait for")
+    agent.board_set("deep/one", "1")
+    agent.board_set("deep/two", "2")
+    agent.board_set("shallow", "3")
+    tab, errors = open_page(browser, page, config)
+    try:
+        assert tab.eval_on_selector_all("#board > div", "e => e.length") == 4
+        branch = tab.query_selector('[data-twig="key/deep"]')
+        assert "2" in branch.inner_text()      # what is behind it, before folding
+
+        branch.click()
+        tab.wait_for_function(
+            "document.querySelectorAll('#board > div').length === 2", timeout=10_000)
+        assert "deep/" in tab.inner_text("#board")
+        assert "one" not in tab.inner_text("#board")
+
+        # Through a repaint, and still folded.
+        tab.wait_for_timeout(3500)
+        assert tab.eval_on_selector_all("#board > div", "e => e.length") == 2
+        assert tab.query_selector('[data-twig="key/deep"] .caret.shut') is not None
+
+        tab.click('[data-twig="key/deep"]')
+        tab.wait_for_function(
+            "document.querySelectorAll('#board > div').length === 4", timeout=10_000)
         assert errors == []
     finally:
         agent.close()
@@ -1114,6 +1158,89 @@ def test_the_page_answers_the_keyboard(browser, page, busy_room):
         tab.wait_for_function(
             "document.querySelectorAll('#messages .msg').length === 4", timeout=10_000)
         assert tab.input_value("#q") == ""
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_narrow_window_shows_one_pane_at_a_time(browser, page, room):
+    """Stacked under the conversation, the roster and the claims were in
+    practice unreachable on a phone: the talking is long and never stops
+    arriving. A switcher makes each of them a place you can go, and gives the
+    conversation the whole screen back."""
+    tab = browser.new_page(viewport={"width": 430, "height": 880})
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        assert tab.query_selector("#panes").is_visible() is True
+        # The conversation first, and the counts say what is behind the rest
+        # without going there.
+        assert tab.query_selector(".convo").is_visible() is True
+        assert tab.query_selector("#leases").is_visible() is False
+        assert "1" in tab.inner_text('.pane[data-pane="leases"]')
+
+        tab.click('.pane[data-pane="leases"]')
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'leases'", timeout=10_000)
+        assert tab.query_selector(".convo").is_visible() is False
+        assert "rewriting the lexer" in tab.inner_text("#leases")
+        assert tab.query_selector("#agents").is_visible() is False
+
+        # And the page still does not scroll sideways or as a whole: the pane
+        # scrolls, the way it does on a wide window.
+        assert tab.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth + 1")
+        assert tab.evaluate(
+            "document.documentElement.scrollHeight <= window.innerHeight + 2")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_panel_folded_on_a_wide_window_still_opens_on_a_narrow_one(
+    browser, page, room,
+):
+    """Below the breakpoint the summary is gone, so a panel the reader folded
+    away on a desktop would be a segment that shows nothing at all."""
+    tab = browser.new_page(viewport={"width": 1280, "height": 860})
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.query_selector("#panes").is_visible() is False
+
+        tab.click("#p-leases > summary")
+        tab.wait_for_function(
+            "document.getElementById('p-leases').open === false", timeout=10_000)
+
+        tab.set_viewport_size({"width": 430, "height": 880})
+        tab.click('.pane[data-pane="leases"]')
+        tab.wait_for_function(
+            "document.getElementById('p-leases').open === true", timeout=10_000)
+        assert "rewriting the lexer" in tab.inner_text("#leases")
+
+        # Back on a wide window all three are on screen at once again, so the
+        # pane chosen down there is not a state to still be in.
+        tab.set_viewport_size({"width": 1280, "height": 860})
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'convo'", timeout=10_000)
+        for panel in ("#agents", "#leases", "#board"):
+            assert tab.query_selector(panel).is_visible() is True
+        assert tab.query_selector(".convo").is_visible() is True
         assert errors == []
     finally:
         tab.close()
