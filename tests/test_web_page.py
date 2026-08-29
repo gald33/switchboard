@@ -1397,3 +1397,47 @@ def test_a_browser_that_refuses_the_clipboard_is_told_the_truth(browser, page, r
     finally:
         tab.close()
         context.close()
+
+
+def test_a_forecast_counts_down_to_the_moment_it_names(browser, page, hub):
+    """`timing_forecast` carries instants, not durations: `p50` is *when* the
+    sender will next look. Read as a number of seconds it was `Math.round(NaN)`
+    — not less than 60, not less than 3600 — so every forecast on the page said
+    `~NaNhNaNm`, through the one branch of that formatter nothing had reached.
+
+    And a deadline behind us is "due", not "expired": a look that was owed two
+    minutes ago has not expired, and it costs nobody a lock, so it does not
+    take the amber that a lapsing claim does.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-forecast", key=KEY)
+    agent = Client(config, agent_id="planner", key=KEY)
+    agent.register(name="planner", kind="local")
+    soon = datetime.now(tz=timezone.utc) + timedelta(minutes=90)
+    later = datetime.now(tz=timezone.utc) + timedelta(minutes=95)
+    gone = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+    # Exactly the shape `wrap_forecast` puts on the wire.
+    agent.post("build", {"text": "looking again after the lexer lands",
+                         "timing_forecast": {"p50": soon.isoformat(),
+                                             "p95": later.isoformat(),
+                                             "speak_p50": later.isoformat()}})
+    agent.post("build", {"text": "this one is overdue",
+                         "timing_forecast": {"p50": gone.isoformat()}})
+    tab, errors = open_page(browser, page, config)
+    try:
+        forecasts = tab.eval_on_selector_all(
+            ".forecast", "els => els.map(e => e.innerText)")
+        assert len(forecasts) == 2
+        assert "NaN" not in " ".join(forecasts)
+        assert "1h29m" in forecasts[0] or "1h30m" in forecasts[0]
+        assert "next message ~1h3" in forecasts[0]
+        # A deadline already behind us says so, in its own word.
+        assert "due" in forecasts[1] and "expired" not in forecasts[1]
+        # And is not dressed as a claim about to lapse.
+        assert tab.eval_on_selector_all(".forecast time.urgent", "e => e.length") == 0
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()

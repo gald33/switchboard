@@ -33,6 +33,12 @@ export SWITCHBOARD_URL=https://hub.example.com   # or the environment
 export SWITCHBOARD_KEY=...                       # if the room is encrypted
 ```
 
+A message may carry its sender's own estimate of when it will next look, and
+when it will next speak. Those are moments rather than durations, so the page
+counts down to them and says `due` once one is behind us — a look that was owed
+two minutes ago is overdue, not expired, and costs nobody a lock, so it does
+not take the colour a lapsing claim does.
+
 The conversation scrolls itself: the panel keeps the newest message in view
 while you are at the bottom, and stops following the moment you scroll up to
 read something, because a view that yanks itself away mid-sentence is worse
