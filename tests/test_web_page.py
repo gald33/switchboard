@@ -1275,7 +1275,13 @@ def test_the_room_you_are_reading_can_be_handed_to_somebody(browser, page, room)
         tab.wait_for_selector("#share[open]", timeout=10_000)
         link = tab.input_value("#share-url")
 
-        # In the clipboard, and said to be — never the other way round.
+        # In the clipboard, and said to be — never the other way round. The
+        # clipboard is a round trip through a permission check, so the sheet
+        # says it is copying until it knows, and this waits for that answer
+        # rather than for the sheet.
+        tab.wait_for_function(
+            "!document.getElementById('share-said').textContent.endsWith('…')",
+            timeout=10_000)
         assert "Copied" in tab.inner_text("#share-said")
         assert tab.evaluate("navigator.clipboard.readText()") == link
 
@@ -1342,3 +1348,52 @@ def test_a_shared_link_opens_the_room_in_a_browser_that_never_saw_it(
     finally:
         other.close()
         stranger.close()
+
+
+def test_a_browser_that_refuses_the_clipboard_is_told_the_truth(browser, page, room):
+    """The one unacceptable outcome is saying "copied" when nothing was: the
+    reader pastes an empty clipboard into a chat window and sends nobody
+    anything. A refusal says so, and leaves the link on screen.
+
+    The wait is the point as much as the message. The clipboard is a round trip
+    through a permission check, so the sheet cannot know its own status when it
+    opens — it says it is copying, and says what happened once it knows.
+    """
+    context = browser.new_context()
+    # Slow, then refuse: the sheet must be honest at both ends of that.
+    context.add_init_script("""
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {writeText: () => new Promise((_, no) =>
+            setTimeout(() => no(new Error('denied')), 400))},
+        });
+    """)
+    tab = context.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        # Never blank, and never a claim it cannot make yet.
+        assert tab.inner_text("#share-said").endswith("…")
+
+        tab.wait_for_function(
+            "!document.getElementById('share-said').textContent.endsWith('…')",
+            timeout=10_000)
+        said = tab.inner_text("#share-said")
+        assert "Copied" not in said
+        assert "clipboard" in said and "copy it from there" in said
+        # And the link is still there to copy by hand.
+        assert "#swb1_" in tab.input_value("#share-url")
+        assert errors == []
+    finally:
+        tab.close()
+        context.close()

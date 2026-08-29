@@ -788,6 +788,11 @@ async function openShare() {
     (offer.room.workspaceToken ? "." : ". They can read the room from this link " +
      "but not write it down: this page was given the room's identifier, never " +
      "the token a rooms file records.");
+  // Said before the clipboard has answered, because the answer is a round trip
+  // through a permission check and the line is read the instant the sheet
+  // opens. Blank would be the one reading a person could take either way.
+  $("share-said").className = "sub";
+  $("share-said").textContent = "Copying…";
   $("share").showModal();
   // Selected from the start rather than scrolled to the end: the host this
   // link points at is the part worth reading before you send it.
