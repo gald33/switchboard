@@ -300,12 +300,19 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
 
     channels = section("the channel list", hub.channels) or []
     if len(channels) > MAX_CHANNELS:
+        # Volume alone drops the channel that was created this morning in
+        # favour of one that was busy last week and is finished — which is
+        # exactly backwards for a page whose job is to say where the work is
+        # now. Recency leads, and volume breaks its ties.
         notes.append(
             f"showing {MAX_CHANNELS} of {len(channels)} channels — "
-            "the busiest by message count"
+            "the ones that moved most recently"
         )
-        channels = sorted(channels, key=lambda c: c.get("messages", 0),
-                          reverse=True)[:MAX_CHANNELS]
+        channels = sorted(
+            channels,
+            key=lambda c: (c.get("latest_at") or 0, c.get("messages", 0)),
+            reverse=True,
+        )[:MAX_CHANNELS]
 
     # The live end of the conversation, whatever it is spread across.
     # `channels()` names these the way the hub does — blinded tokens in an

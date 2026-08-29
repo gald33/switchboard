@@ -6,9 +6,42 @@
 // keeps them one product rather than two that drift — the state shape is the
 // contract, and `tests/test_web_page.py` holds the two builders to it.
 
+// --- what you are reading ----------------------------------------------------
+//
+// A channel was the only way to narrow the conversation, which leaves the two
+// questions a reader most often arrives with unanswerable: what did this agent
+// say, and where was that message about the lexer. All three narrow the same
+// list and all three are said in the same heading, so no combination of them
+// can leave you looking at less than you think.
+
 export let filter = null;   // channel name, or null for everything
+export let query = "";      // free text over message bodies
+export let sender = null;   // agent id, or null
+
+let onScope = null;         // told when any of the three change
 
 export function setFilter(value) { filter = value; toBottom = true; }
+
+/** The whole scope, for a caller that keeps it somewhere — the URL, say. */
+export function scope() { return { c: filter, q: query, from: sender }; }
+
+export function setScope({ c = null, q = "", from = null } = {}) {
+  filter = c || null;
+  query = q || "";
+  sender = from || null;
+  toBottom = true;
+}
+
+/** Told after every change a reader makes, never for one restored from a URL —
+ *  otherwise restoring a scope would immediately rewrite the thing it came
+ *  from. */
+export function onScopeChange(fn) { onScope = fn; }
+
+function scopeChanged() {
+  toBottom = true;   // a narrower list starts at its newest, not mid-way
+  if (onScope) onScope(scope());
+  if (last) render(last);
+}
 
 // --- following the conversation ---------------------------------------------
 //
@@ -30,6 +63,7 @@ let seenSeq = 0;          // newest seq the reader has actually been shown
 let newestSeq = 0;
 let wired = false;
 let painted = false;      // a room has been drawn, so arrivals are arrivals
+let lastScope = null;     // the scope those rows were drawn under
 
 // The last state and handlers, so a click on a chip can repaint without
 // waiting for the next poll and without the caller re-plumbing them.
@@ -155,7 +189,10 @@ function countdown(secs, generatedAt) {
   return `<time data-until="${esc(at)}"></time>`;
 }
 
-const URGENT = 60;   // seconds; below this a claim is about to lapse
+const URGENT = 60;    // seconds; below this a claim is about to lapse
+const CHIP_CAP = 12;  // channels shown before the row offers the rest
+
+let allChips = false;
 
 function tick() {
   const now = Date.now();
@@ -200,6 +237,22 @@ function ident(text, sealed) {
  */
 const CLAMP_LINES = 15;
 
+/** The text a search is searching. A sealed body has none, and saying "no
+ *  match" for a message nobody can read would be a lie of the same shape as
+ *  rendering it empty. */
+function bodyText(m) {
+  if (m.sealed_body) return "";
+  if (typeof m.body === "string") return m.body;
+  return m.body == null ? "" : JSON.stringify(m.body);
+}
+
+function matches(m) {
+  if (filter !== null && m.channel !== filter) return false;
+  if (sender !== null && !(m.from && m.from.id === sender)) return false;
+  if (query && !bodyText(m).toLowerCase().includes(query.toLowerCase())) return false;
+  return true;
+}
+
 function bodyHtml(body) {
   if (body === null || body === undefined) return `<div class="body sub">(empty)</div>`;
   const text = typeof body === "string" ? body : JSON.stringify(body, null, 2);
@@ -209,6 +262,60 @@ function bodyHtml(body) {
   if (text.split("\n").length <= CLAMP_LINES && text.length < 1200) return inner;
   return `<div class="clamp">${inner}<button class="more" type="button">show more</button></div>`;
 }
+
+/** The blackboard, in an order and in groups.
+ *
+ *  Hub order is no order at all: the entry that changed thirty seconds ago sits
+ *  wherever it happened to land, so the panel has to be re-read from the top
+ *  every time. Most recently written first, then — because keys in practice
+ *  share a prefix per concern, and state that belongs together should be
+ *  together — grouped by the segment before the first separator, each group
+ *  placed by its own newest entry so what just changed is still near the top.
+ *
+ *  A heading appears only where it organises more than one thing; a lone key
+ *  with a prefix is not a category. Blinded keys cannot group at all, which is
+ *  not a gap to hide: they are one group at the end, and the heading is the
+ *  explanation.
+ */
+function boardRows(s) {
+  const when = (e) => Date.parse(e.updated_at || 0) || 0;
+  const groups = new Map();   // name -> entries
+  for (const e of s.board.slice().sort((a, b) => when(b) - when(a))) {
+    const name = e.sealed ? SEALED_GROUP
+      : (e.key.includes("/") ? e.key.slice(0, e.key.indexOf("/")) : null);
+    // A key with no prefix belongs to nothing, and is its own company.
+    const at = name === null ? "\u0000" + e.key : name;
+    if (!groups.has(at)) groups.set(at, { name, entries: [] });
+    groups.get(at).entries.push(e);
+  }
+  const rows = [];
+  const ordered = [...groups.values()].sort((a, b) =>
+    (a.name === SEALED_GROUP ? 1 : 0) - (b.name === SEALED_GROUP ? 1 : 0));
+  for (const group of ordered) {
+    if (group.name !== null && (group.entries.length > 1 || group.name === SEALED_GROUP)) {
+      rows.push({
+        key: "group:" + group.name,
+        cls: "group",
+        html: group.name === SEALED_GROUP
+          ? `🔒 sealed under another key`
+          : esc(group.name) + "/",
+      });
+    }
+    for (const e of group.entries) {
+      rows.push({
+        key: e.key,
+        cls: "",
+        html: `
+      <div>${ident(e.key, e.sealed)} <span class="sub">rev ${e.revision}</span></div>
+      ${bodyHtml(e.value)}
+      <div class="sub">${who(e.updated_by)} · ${stamp(e.updated_at)} · expires in ${countdown(e.expires_in, s.generated_at)}</div>`,
+      });
+    }
+  }
+  return rows;
+}
+
+const SEALED_GROUP = "\u0001sealed";
 
 export function render(s, { onRoom, onClose } = {}) {
   last = s;
@@ -308,19 +415,39 @@ export function render(s, { onRoom, onClose } = {}) {
     a.name.localeCompare(b.name));
   if (filter && !chans.some((c) => c.name === filter)) filter = null;
   const here = chans.find((c) => c.name === filter) || null;
+  // A sender who has left the roster stops narrowing anything, and a scope you
+  // cannot see the edge of is worse than no scope.
+  if (sender && !s.agents.some((a) => a.id === sender)) sender = null;
+  const speaker = s.agents.find((a) => a.id === sender) || null;
 
   // Where you are, said in the panel's own heading rather than left to a chip
-  // that can be scrolled out of sight on a narrow window.
-  $("convo-head").innerHTML = filter === null
-    ? `Conversation <span class="scope">· all channels</span>`
-    : `Conversation <span class="scope on">· ${here && !here.named
-        ? "🔒 " + esc(short(filter)) : esc(filter)}</span>` +
-      `<button class="link clear" type="button" data-c="">show all</button>`;
+  // that can be scrolled out of sight on a narrow window. All three parts of
+  // the scope, so no combination of them can leave a reader looking at less
+  // than they think they are.
+  const label = filter === null ? "all channels"
+    : (here && !here.named ? "🔒 " + short(filter) : filter);
+  const parts = [label];
+  if (speaker) parts.push("from " + (speaker.name || speaker.id));
+  if (query) parts.push(`matching "${query}"`);
+  const narrowed = filter !== null || sender !== null || Boolean(query);
+  const head = $("convo-scope");
+  head.textContent = "· " + parts.join(" · ");
+  head.className = narrowed ? "scope on" : "scope";
+  $("convo-clear").hidden = !narrowed;
+
+  // Sixty channels is not a switcher, it is a wall. The row keeps what a
+  // glance can use and offers the rest, and whatever you are reading is in it
+  // however far down the list it sorted.
+  const capped = chans.length > CHIP_CAP && !allChips;
+  const visible = capped
+    ? chans.slice(0, CHIP_CAP).concat(
+        here && !chans.slice(0, CHIP_CAP).includes(here) ? [here] : [])
+    : chans;
 
   let firstDm = true;
   $("chips").innerHTML =
     [`<button class="chip ${filter === null ? "on" : ""}" data-c="">all<span class="n">${s.messages.length}</span></button>`]
-      .concat(chans.map((c) => {
+      .concat(visible.map((c) => {
         // One divider, at the seam. Two groups need to be visibly two.
         const seam = c.dm && firstDm;
         if (seam) firstDm = false;
@@ -335,14 +462,24 @@ export function render(s, { onRoom, onClose } = {}) {
                           `this viewer does not hold"`) +
           `>${c.named ? esc(c.name) : "🔒 " + esc(short(c.name))}` +
           `<span class="n">${c.count}${c.unreadable ? " ⚠" : ""}</span></button>`;
-      })).join("");
+      }))
+      .concat(capped
+        ? [`<button class="chip more" type="button" data-chips="all">` +
+           `+${chans.length - CHIP_CAP} more</button>`]
+        : (chans.length > CHIP_CAP
+            ? [`<button class="chip more" type="button" data-chips="few">fewer</button>`]
+            : []))
+      .join("");
 
-  const shown = s.messages.filter((m) => filter === null || m.channel === filter);
+  const shown = s.messages.filter(matches);
   const pane = $("messages");
   // Measured before the repaint: afterwards these numbers describe the new
   // content, and "was the reader at the bottom" can no longer be asked.
   const room = `${s.hub.url}/${s.hub.workspace}`;
   const fresh = room !== following;
+  const scopeKey = JSON.stringify(scope());
+  const rescoped = scopeKey !== lastScope;
+  lastScope = scopeKey;
   const follow = toBottom || fresh || atBottom(pane);
   const keep = pane.scrollTop;
   if (shown.length) {
@@ -365,9 +502,14 @@ export function render(s, { onRoom, onClose } = {}) {
     })));
     // A message that arrived while you were looking used to be indis-
     // tinguishable from one an hour old: the pane was simply a row longer.
-    // One quiet fade says "this is new" without moving anything, and the
-    // first paint of a room is not an arrival — all of it is new then.
-    if (painted && !fresh) {
+    // One quiet fade says "this is new" without moving anything.
+    //
+    // Only for messages that actually arrived, though. The first paint of a
+    // room is not an arrival — all of it is new then — and neither is widening
+    // the scope, which brings back rows the reader themselves filtered away.
+    // Six old messages lighting up because a search was cleared says exactly
+    // the wrong thing.
+    if (painted && !fresh && !rescoped) {
       for (const node of made) {
         node.classList.add("arrived");
         node.addEventListener("animationend",
@@ -375,7 +517,10 @@ export function render(s, { onRoom, onClose } = {}) {
       }
     }
   } else {
-    emptyPane(pane, filter === null ? "nothing said yet" : "nothing on this channel");
+    emptyPane(pane, !narrowed ? "nothing said yet"
+      : query ? "nothing here matches that"
+      : sender ? "nothing from them here"
+      : "nothing on this channel");
   }
   painted = true;
 
@@ -408,7 +553,24 @@ export function render(s, { onRoom, onClose } = {}) {
       const pick = e.target.closest("[data-c]");
       if (pick) {
         filter = pick.dataset.c || null;
-        toBottom = true;   // a different channel starts at its newest, not mid-way
+        // "Show all" is the way out of the whole scope, not out of one third of
+        // it: a reader who cleared the channel and was still looking at one
+        // agent's messages would have no idea why the room had gone quiet.
+        if (pick.id === "convo-clear") { query = ""; sender = null; $("q").value = ""; }
+        scopeChanged();
+        return;
+      }
+      const speaker = e.target.closest("[data-from]");
+      if (speaker) {
+        // Clicking the same name again is the way back out — a filter you can
+        // only enter is a trap.
+        sender = sender === speaker.dataset.from ? null : speaker.dataset.from;
+        scopeChanged();
+        return;
+      }
+      const chips = e.target.closest("[data-chips]");
+      if (chips) {
+        allChips = chips.dataset.chips === "all";
         if (last) render(last);
         return;
       }
@@ -427,7 +589,11 @@ export function render(s, { onRoom, onClose } = {}) {
       key: a.id,
       cls: "",
       html: `
-      <div><span class="dot ${a.stale ? "stale" : ""}"></span><span class="name">${esc(a.name || a.id)}</span></div>
+      <div><span class="dot ${a.stale ? "stale" : ""}"></span><button
+        class="link name ${sender === a.id ? "on" : ""}" type="button"
+        data-from="${esc(a.id)}"
+        title="${sender === a.id ? "Show everybody again" : "Only what they said"}"
+        >${esc(a.name || a.id)}</button></div>
       <div class="sub">${esc(a.kind || "")}${a.branch ? " · " + esc(a.branch) : ""} · seen ${stamp(a.last_seen_at)}</div>
       ${a.task ? `<div class="sub">${esc(a.task)}</div>` : ""}
       ${a.channels.length ? `<div class="sub">watching ` + a.channels.map((c) =>
@@ -461,24 +627,15 @@ export function render(s, { onRoom, onClose } = {}) {
     emptyPane($("leases"), "nothing claimed");
   }
 
-  // Hub order is no order at all: the entry that changed thirty seconds ago
-  // sits wherever it happened to land, so the panel has to be re-read from the
-  // top every time. Most recently written first — which is also the one a
-  // reader came to look at.
-  const board = s.board.slice().sort((a, b) =>
-    Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
-  if (board.length) {
-    sync($("board"), board.map((e) => ({
-      key: e.key,
-      cls: "",
-      html: `
-      <div>${ident(e.key, e.sealed)} <span class="sub">rev ${e.revision}</span></div>
-      ${bodyHtml(e.value)}
-      <div class="sub">${who(e.updated_by)} · ${stamp(e.updated_at)} · expires in ${countdown(e.expires_in, s.generated_at)}</div>`,
-    })));
+  if (s.board.length) {
+    sync($("board"), boardRows(s));
   } else {
     emptyPane($("board"), "nothing on the board");
   }
+
+  $("n-agents").textContent = s.agents.length || "";
+  $("n-leases").textContent = s.leases.length || "";
+  $("n-board").textContent = s.board.length || "";
 
   // Before the scroll is settled, not after: a row is inserted with an empty
   // `<time>` in it, and an empty inline element occupies no line box at all.

@@ -41,6 +41,9 @@
     background: var(--panel); position: sticky; top: 0; z-index: 2;
   }
   header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+  .room-id { display: flex; align-items: baseline; gap: 7px; }
+  .room-id code { font-family: var(--mono); font-size: 14px; font-weight: 600;
+                  color: var(--ink); }
   .meta { color: var(--dim); font-size: 12px; }
   .meta code { font-family: var(--mono); }
   .spacer { flex: 1; }
@@ -67,7 +70,35 @@
      of sight on a narrow window, and then nothing on the page says it. */
   h2 .scope { text-transform: none; letter-spacing: 0; font-size: 12px; }
   h2 .scope.on { color: var(--accent); font-weight: 600; }
-  h2 .clear { margin-left: auto; text-transform: none; letter-spacing: 0; }
+  h2 .clear { text-transform: none; letter-spacing: 0; }
+  h2 .clear[hidden] { display: none; }
+  .search { margin-left: auto; width: 190px; max-width: 40%; font: inherit;
+            font-size: 12px; text-transform: none; letter-spacing: 0;
+            padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line);
+            background: var(--bg); color: var(--ink); }
+  .search::placeholder { color: var(--dim); }
+  .search:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  /* The side panels fold, and the summary is the heading. */
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  .panel > summary { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+                     color: var(--dim); padding: 10px 14px; cursor: pointer;
+                     display: flex; align-items: baseline; gap: 8px; }
+  .panel[open] > summary { border-bottom: 1px solid var(--line); }
+  /* A flex summary loses the browser's own triangle, and a panel that folds has
+     to look as though it does. */
+  .panel > summary { list-style: none; }
+  .panel > summary::-webkit-details-marker { display: none; }
+  .panel > summary::before { content: "›"; font-size: 13px; line-height: 1;
+                             transition: transform .12s ease-out;
+                             display: inline-block; }
+  .panel[open] > summary::before { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) {
+    .panel > summary::before { transition: none; }
+  }
+  .panel > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .panel .count { margin-left: auto; font-variant-numeric: tabular-nums;
+                  letter-spacing: 0; }
   .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .rows > div:last-child { border-bottom: 0; }
   /* The conversation scrolls itself and the page does not, so the roster and
@@ -118,6 +149,15 @@
   /* The seam between the room talking and one agent talking to another. */
   .seam { width: 1px; align-self: stretch; background: var(--line); margin: 0 3px; }
   .chanlink { font-size: inherit; }
+  /* Sixty channels is a wall of chips, and a row meant to say where the work is
+     says nothing at all. */
+  .chip.more { border-style: dashed; color: var(--dim); }
+  /* Related state groups; a key nobody can read groups with the others that
+     cannot be read, which is itself the explanation. */
+  #board > div.group { padding: 10px 14px 2px; border-bottom: 0; color: var(--dim);
+                       font-size: 11px; text-transform: uppercase;
+                       letter-spacing: .08em; }
+  #board > div.group:first-child { padding-top: 8px; }
   .msg { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 14px; }
   @media (max-width: 640px) { .msg { grid-template-columns: minmax(0,1fr); } }
   .msg .who { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
@@ -150,7 +190,12 @@
   .sub.warn { color: var(--warn); }
   .verified { color: var(--ok); font-size: 12px; }
   .verified[hidden] { display: none; }
+  /* A roster name narrows the conversation to its speaker, so it has to look
+     like it does something — without turning the roster into a page of links. */
   .name { font-weight: 600; }
+  button.name { color: var(--ink); text-align: left; }
+  button.name:hover { text-decoration: underline; }
+  button.name.on { color: var(--accent); text-decoration: underline; }
   .sub { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   code, .mono { font-family: var(--mono); }
   .sealed { color: var(--dim); }
@@ -249,10 +294,16 @@
 </noscript>
 <header>
   <h1>switchboard</h1>
-  <span class="meta"><span id="live" class="dot"></span><span id="status">connecting…</span></span>
-  <span class="meta">room <code id="ws">—</code><span class="verified" id="verified" hidden> ✓ verified</span></span>
-  <span class="meta" id="hub"></span>
+  <!-- The room is this page's identity and reads as it: the hub and the time of
+       the last poll are provenance, and provenance sits behind the thing it is
+       provenance for rather than beside it at the same weight. -->
+  <span class="room-id">
+    <span id="live" class="dot"></span><code id="ws">—</code>
+    <span class="verified" id="verified" hidden>✓ verified</span>
+  </span>
+  <span class="meta" id="status">connecting…</span>
   <span class="spacer"></span>
+  <span class="meta" id="hub"></span>
   <span class="meta" id="stamp"></span>
   <button class="link" id="settings-open" hidden>settings</button>
 </header>
@@ -261,16 +312,38 @@
 <main>
   <div>
     <section class="convo">
-      <h2 id="convo-head">Conversation</h2>
+      <!-- Painted around rather than rewritten: the search box holds a caret and
+           a selection, and a heading rebuilt every three seconds would take
+           both away mid-word. -->
+      <h2 id="convo-head">
+        <span>Conversation</span>
+        <span class="scope" id="convo-scope">· all channels</span>
+        <button class="link clear" id="convo-clear" type="button" data-c="" hidden>show all</button>
+        <input class="search" id="q" type="search" autocomplete="off"
+               placeholder="search messages  /" aria-label="Search messages">
+      </h2>
       <div class="chips" id="chips"></div>
       <div class="rows" id="messages"><div class="empty">nothing said yet</div></div>
       <button class="jump" id="jump" type="button" hidden></button>
     </section>
   </div>
   <div>
-    <section><h2>Who's awake</h2><div class="rows" id="agents"></div></section>
-    <section><h2>Claims</h2><div class="rows" id="leases"></div></section>
-    <section><h2>Blackboard</h2><div class="rows" id="board"></div></section>
+    <!-- Three panels of equal weight and no order: on a busy room the claims —
+         the one thing here that expires — end up below a roster that never
+         shrinks. A count in each heading says what is inside without opening
+         it, and what a reader folds away stays folded. -->
+    <details class="panel" id="p-agents" open>
+      <summary>Who's awake<span class="count" id="n-agents"></span></summary>
+      <div class="rows" id="agents"></div>
+    </details>
+    <details class="panel" id="p-leases" open>
+      <summary>Claims<span class="count" id="n-leases"></span></summary>
+      <div class="rows" id="leases"></div>
+    </details>
+    <details class="panel" id="p-board" open>
+      <summary>Blackboard<span class="count" id="n-board"></span></summary>
+      <div class="rows" id="board"></div>
+    </details>
   </div>
 </main>
 <footer id="foot"></footer>
@@ -326,11 +399,12 @@
 // version you have read, or run the local viewer, which asks you to trust
 // only a package you installed.
 
-import { render, setFilter } from "./render.js";
+import { render, scope, setScope, onScopeChange } from "./render.js";
 import { decodeInvite, InviteError, snapshot, summarise } from "./switchboard-room.js";
 
 const LOCAL = document.documentElement.dataset.source === "local";
 const STORE = "switchboard.rooms.v1";
+const PANELS = "switchboard.panels.v1";
 
 // The managed hub, and the token every client uses to reach it. Both are
 // copied from `config.py`, where the token is published on purpose: nothing
@@ -571,7 +645,7 @@ if (!LOCAL) {
     $("settings-form").reset();
     invitedProbe = "";
     $("invite-ok").hidden = $("invite-warn").hidden = true;
-    setFilter(null);
+    setScope({});
     refresh();
   });
   invitedByUrl();
@@ -585,6 +659,111 @@ if (!LOCAL) {
       "and the browser will not provide the crypto it needs.";
   }
 }
+
+// --- the scope lives in the URL ----------------------------------------------
+//
+// A filter that only lives in a module variable is forgotten on every reload,
+// and cannot be sent to anybody: "look at what the parser said about escapes"
+// stays a sentence rather than becoming a link.
+//
+// In the fragment, under a prefix of our own. The fragment is where an invite
+// arrives, so the invite is read first and scrubbed first; and a fragment this
+// page did not write — an anchor somebody else put there — is left exactly
+// where it was found, which means we only ever overwrite our own.
+const VIEW = "#view=";
+
+function scopeToUrl(current) {
+  const parts = [];
+  if (current.c) parts.push("c=" + encodeURIComponent(current.c));
+  if (current.from) parts.push("from=" + encodeURIComponent(current.from));
+  if (current.q) parts.push("q=" + encodeURIComponent(current.q));
+  const ours = location.hash === "" || location.hash.startsWith(VIEW);
+  if (!ours) return;
+  const hash = parts.length ? VIEW + parts.join("&") : "";
+  // replaceState, not push: a back button that walks a reader through every
+  // chip they tried is not history, it is a log.
+  history.replaceState(null, "", location.pathname + location.search + hash);
+}
+
+function scopeFromUrl() {
+  if (!location.hash.startsWith(VIEW)) return;
+  const fields = new URLSearchParams(location.hash.slice(VIEW.length));
+  setScope({ c: fields.get("c"), q: fields.get("q"), from: fields.get("from") });
+  $("q").value = fields.get("q") || "";
+}
+
+onScopeChange(scopeToUrl);
+// After `invitedByUrl` in browser mode, which scrubs an invite fragment before
+// anything else is allowed to read one.
+scopeFromUrl();
+
+// --- searching ---------------------------------------------------------------
+//
+// On input rather than on submit, and debounced only as far as one frame: the
+// list is already in memory, so there is nothing to wait for, and a search that
+// answers as you type is the difference between narrowing a room and querying
+// one.
+$("q").addEventListener("input", () => {
+  setScope({ ...scope(), q: $("q").value });
+  scopeToUrl(scope());
+  if (latest) render(latest);
+});
+
+// --- the side panels remember what you folded away ---------------------------
+for (const panel of document.querySelectorAll(".panel")) {
+  panel.addEventListener("toggle", () => {
+    try {
+      const shut = JSON.parse(localStorage.getItem(PANELS) || "[]")
+        .filter((id) => id !== panel.id);
+      localStorage.setItem(PANELS,
+        JSON.stringify(panel.open ? shut : [...shut, panel.id]));
+    } catch { /* a browser that refuses storage still gets a working page */ }
+  });
+}
+try {
+  for (const id of JSON.parse(localStorage.getItem(PANELS) || "[]")) {
+    if ($(id)) $(id).open = false;
+  }
+} catch { /* as above */ }
+
+// --- the keyboard ------------------------------------------------------------
+//
+// This is a page people leave open all day beside the work it is describing,
+// which is exactly the kind of page that should not need the mouse.
+document.addEventListener("keydown", (e) => {
+  const typing = e.target.matches("input, textarea, select");
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.querySelector("dialog[open]")) return;
+
+  if (e.key === "/" && !typing) { e.preventDefault(); $("q").focus(); return; }
+  if (e.key === "Escape") {
+    // One step at a time, narrowest first: a reader with a caret in the search
+    // box means the search, and only a second press leaves the channel behind.
+    const now = scope();
+    if (now.q) { $("q").value = ""; setScope({ ...now, q: "" }); }
+    else { $("q").blur(); setScope({}); }
+    scopeToUrl(scope());
+    if (latest) render(latest);
+    return;
+  }
+  if (typing) return;
+  if (e.key === "End" || e.key === "g") {
+    e.preventDefault();
+    const jump = $("jump"), pane = $("messages");
+    // The pill does the catching-up as well as the scrolling, so use it when
+    // there is one; otherwise there is nothing to catch up on.
+    if (jump && !jump.hidden) jump.click();
+    else pane.scrollTo({ top: pane.scrollHeight, behavior: "auto" });
+    return;
+  }
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const tabs = [...document.querySelectorAll(".room")];
+    if (tabs.length < 2) return;
+    const at = tabs.findIndex((t) => t.classList.contains("on"));
+    const next = tabs[(at + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    if (next) { e.preventDefault(); next.click(); }
+  }
+});
 
 refresh();
 </script>

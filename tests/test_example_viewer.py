@@ -720,3 +720,24 @@ def test_a_mangled_invite_stops_before_anything_is_served(capsys, monkeypatch):
 
     assert viewer_app.main(["--invite", "swb1_nonsense"]) == 1
     assert "corrupt or truncated" in capsys.readouterr().err
+
+
+def test_a_truncated_channel_list_keeps_the_ones_that_moved_last(h, monkeypatch):
+    """Volume alone drops the channel created this morning in favour of one
+    that was busy last week and is finished — exactly backwards for a page
+    whose job is to say where the work is now."""
+    monkeypatch.setattr(viewer_app, "MAX_CHANNELS", 2)
+    key = generate_key()
+    agent = h.client("talker", key=key, register=True)
+    for n in range(5):
+        agent.post("busy-and-done", f"a while ago {n}")
+    h.advance(2)
+    agent.post("also-current", "and the one before it")
+    h.advance(2)
+    agent.post("quiet-but-current", "the newest thing anybody said")
+
+    view = snapshot(viewer(h, key=key))
+
+    kept = [c["name"] for c in view["channels"]]
+    assert kept == ["quiet-but-current", "also-current"]
+    assert any("moved most recently" in n for n in view["notes"])

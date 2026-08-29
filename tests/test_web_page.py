@@ -883,3 +883,237 @@ def test_the_proof_of_room_is_said_when_it_passes_and_stays_off_the_board(
         assert errors == []
     finally:
         tab.close()
+
+
+def test_searching_narrows_the_conversation_and_says_so(browser, page, busy_room):
+    """A channel was the only way to narrow the room, which leaves "where was
+    that message about the lexer" unanswerable on anything busy."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.fill("#q", "middle")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 1", timeout=10_000)
+        assert "something in the middle" in tab.inner_text("#messages")
+        assert 'matching "middle"' in tab.inner_text("#convo-head")
+
+        # A search that matches nothing says which of the three narrowed it
+        # away, rather than "nothing said yet" — which would read as a quiet
+        # room and is wrong twice.
+        tab.fill("#q", "no message anywhere says this")
+        tab.wait_for_function(
+            "document.getElementById('messages').innerText.includes('matches')",
+            timeout=10_000)
+        assert "nothing here matches that" in tab.inner_text("#messages")
+
+        # And the way out puts the whole room back.
+        tab.click("#convo-clear")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 4", timeout=10_000)
+        assert tab.input_value("#q") == ""
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_name_on_the_roster_narrows_to_what_they_said(browser, page, hub):
+    """Reading one agent's side of a busy room meant reading past everybody
+    else's, and the roster already knows who said what."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-speakers", key=KEY)
+    one = Client(config, agent_id="parser-agent", key=KEY)
+    one.register(name="parser", kind="local")
+    two = Client(config, agent_id="tests-agent", key=KEY)
+    two.register(name="tests", kind="local")
+    one.post("build", "something the parser said")
+    two.post("build", "something the tests said")
+    tab, errors = open_page(browser, page, config)
+    try:
+        tab.click("#agents button.name:text-is('parser')")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 1", timeout=10_000)
+        assert "something the parser said" in tab.inner_text("#messages")
+        assert "from parser" in tab.inner_text("#convo-head")
+
+        # Clicking the same name again is the way back out: a filter you can
+        # only enter is a trap.
+        tab.click("#agents button.name:text-is('parser')")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 2", timeout=10_000)
+        assert errors == []
+    finally:
+        one.close()
+        two.close()
+        tab.close()
+
+
+def test_the_scope_survives_a_reload_and_can_be_sent_to_somebody(
+    browser, page, busy_room,
+):
+    """A filter that lives only in a module variable is forgotten on every
+    reload and cannot be handed to anyone: "look at what the parser said about
+    escapes" stays a sentence instead of becoming a link."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.click('.chip[data-c="review"]')
+        tab.wait_for_function(
+            "document.getElementById('convo-head').innerText.includes('review')",
+            timeout=10_000)
+        assert "#view=" in tab.url and "c=review" in tab.url
+
+        tab.reload(wait_until="networkidle")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert "review" in tab.inner_text("#convo-head")
+        assert "something in the middle" in tab.inner_text("#messages")
+        assert "the newest thing anybody said" not in tab.inner_text("#messages")
+
+        # And leaving the scope leaves the URL as it found it.
+        tab.click("#convo-clear")
+        tab.wait_for_function("!location.hash", timeout=10_000)
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_an_anchor_somebody_else_put_in_the_url_is_not_overwritten(
+    browser, page, busy_room,
+):
+    """The fragment is shared ground — an invite arrives in it, and so does
+    anything else that wants one. The page writes only where it already
+    wrote."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.evaluate("history.replaceState(null, '', location.pathname + '#anchor')")
+        tab.click('.chip[data-c="review"]')
+        tab.wait_for_function(
+            "document.getElementById('convo-head').innerText.includes('review')",
+            timeout=10_000)
+        assert tab.url.endswith("#anchor")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_widening_the_scope_does_not_pretend_old_messages_just_arrived(
+    browser, page, busy_room,
+):
+    """Rows the reader filtered away come back as the same rows. Six of them
+    lighting up because a search was cleared says exactly the wrong thing."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.fill("#q", "no message anywhere says this")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 0", timeout=10_000)
+        tab.fill("#q", "")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 4", timeout=10_000)
+        assert tab.eval_on_selector_all("#messages .msg.arrived", "e => e.length") == 0
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_wall_of_channels_is_offered_rather_than_shown(browser, page, hub):
+    """Sixty chips is not a switcher. The row keeps what a glance can use, and
+    whatever you are reading stays in it however far down it sorted."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-many", key=KEY)
+    agent = Client(config, agent_id="talker", key=KEY)
+    agent.register(name="talker", kind="local")
+    for n in range(20):
+        agent.post(f"topic{n:02d}", f"a word in topic {n}")
+    tab, errors = open_page(browser, page, config)
+    try:
+        shown = tab.eval_on_selector_all("#chips .chip:not(.more)", "e => e.length")
+        assert shown == 13            # twelve channels, plus "all"
+        assert "+8 more" in tab.inner_text(".chip.more")
+
+        tab.click(".chip.more")
+        tab.wait_for_function(
+            "document.querySelectorAll('#chips .chip:not(.more)').length === 21",
+            timeout=10_000)
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()
+
+
+def test_the_blackboard_groups_the_keys_that_belong_together(browser, page, hub):
+    """Keys share a prefix per concern, and state that belongs together should
+    be together — without losing "what changed is near the top"."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-board", key=KEY)
+    agent = Client(config, agent_id="writer", key=KEY)
+    agent.register(name="writer", kind="local")
+    agent.post("build", "so the page has something to wait for")
+    agent.board_set("handoff/lexer", {"next": "escapes"})
+    agent.board_set("status/build", "green")
+    agent.board_set("handoff/parser", {"next": "tokens"})
+    agent.board_set("status/deploy", "pending")
+    agent.board_set("alone/here", "a prefix shared with nothing")
+    agent.board_set("solo", "no prefix at all")
+    tab, errors = open_page(browser, page, config)
+    try:
+        rows = tab.eval_on_selector_all(
+            "#board > div",
+            "els => els.map(e => e.className + '|' + e.textContent.trim().split('\\n')[0])")
+        # Newest first still, so the two keys it wrote last lead — and neither
+        # gets a heading: one has no prefix, and a lone key with a prefix is
+        # not a category.
+        assert rows[0].startswith("|solo")
+        assert rows[1].startswith("|alone/here")
+        # Then the groups, each placed by its own newest entry, and each
+        # ordered by recency inside.
+        assert rows[2] == "group|status/"
+        assert "status/deploy" in rows[3] and "status/build" in rows[4]
+        assert rows[5] == "group|handoff/"
+        assert "handoff/parser" in rows[6] and "handoff/lexer" in rows[7]
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()
+
+
+def test_a_panel_folded_away_stays_folded(browser, page, room):
+    """Three panels of equal weight and no order means the claims — the one
+    thing here that expires — sit below a roster that never shrinks."""
+    tab, errors = open_page(browser, page, room)
+    try:
+        assert tab.inner_text("#n-agents") == "1"
+        tab.click("#p-agents > summary")
+        tab.wait_for_function(
+            "localStorage.getItem('switchboard.panels.v1')"
+            "?.includes('p-agents') === true", timeout=10_000)
+        assert tab.evaluate("document.getElementById('p-agents').open") is False
+
+        tab.reload(wait_until="networkidle")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.evaluate("document.getElementById('p-agents').open") is False
+        assert tab.evaluate("document.getElementById('p-leases').open") is True
+        # And the count is readable with the panel shut, which is the point.
+        assert tab.inner_text("#n-agents") == "1"
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_the_page_answers_the_keyboard(browser, page, busy_room):
+    """A page people leave open all day beside the work it describes should not
+    need the mouse."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.press("body", "/")
+        assert tab.evaluate("document.activeElement.id") == "q"
+        tab.keyboard.type("middle")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 1", timeout=10_000)
+
+        # One step at a time, narrowest first.
+        tab.keyboard.press("Escape")
+        tab.wait_for_function(
+            "document.querySelectorAll('#messages .msg').length === 4", timeout=10_000)
+        assert tab.input_value("#q") == ""
+        assert errors == []
+    finally:
+        tab.close()
