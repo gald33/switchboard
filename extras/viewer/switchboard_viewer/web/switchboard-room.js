@@ -365,9 +365,15 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   let channels = (await section("the channel list",
     async () => (await get(config, "/channels")).channels)) ?? [];
   if (channels.length > MAX_CHANNELS) {
+    // Volume alone drops the channel that was created this morning in favour
+    // of one that was busy last week and is finished — which is exactly
+    // backwards for a page whose job is to say where the work is now. Recency
+    // leads, and volume breaks its ties.
     notes.push(`showing ${MAX_CHANNELS} of ${channels.length} channels — ` +
-               "the busiest by message count");
-    channels = [...channels].sort((a, b) => b.messages - a.messages).slice(0, MAX_CHANNELS);
+               "the ones that moved most recently");
+    channels = [...channels].sort((a, b) =>
+      (b.latest_at ?? 0) - (a.latest_at ?? 0) || b.messages - a.messages
+    ).slice(0, MAX_CHANNELS);
   }
 
   const tokens = channels.map((c) => c.channel);
