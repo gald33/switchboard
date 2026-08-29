@@ -25,10 +25,44 @@ from pathlib import Path
 
 import pytest
 
+from switchboard import rooms
 from switchboard.invite import PREFIX, VERSION, Invite
 
 ROOM_JS = (Path(__file__).resolve().parents[1] / "extras" / "viewer"
            / "switchboard_viewer" / "web" / "switchboard-room.js")
+
+
+@pytest.fixture(scope="module")
+def encode(tmp_path_factory):
+    """`encode(room)` → the blob the page would hand somebody, run by node.
+
+    The other direction of the same parity. A viewer that could produce an
+    invite the CLI cannot read would be worse than one that produces none: the
+    failure lands on the person who was sent it, in a room they cannot join,
+    with a string they cannot check.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("no node on PATH")
+    harness = tmp_path_factory.mktemp("invite") / "encode.mjs"
+    harness.write_text(
+        "import { encodeInvite } from " + json.dumps(ROOM_JS.as_uri()) + ";\n"
+        "try {\n"
+        "  process.stdout.write(JSON.stringify(\n"
+        "    {ok: true, value: encodeInvite(JSON.parse(process.argv[2]))}));\n"
+        "} catch (e) {\n"
+        "  process.stdout.write(JSON.stringify(\n"
+        "    {ok: false, error: String(e?.message ?? e)}));\n"
+        "}\n"
+    )
+
+    def run(room):
+        out = subprocess.run([node, str(harness), json.dumps(room)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    return run
 
 
 @pytest.fixture(scope="module")
@@ -183,3 +217,65 @@ def test_the_browser_sees_the_room_token_when_one_travels(decode):
     assert result["ok"], result.get("error")
     assert result["value"]["workspaceToken"] == "tok-ops"
     assert result["value"]["workspace"] == workspace_for("tok-ops")
+
+
+def test_the_page_writes_an_invite_the_cli_can_read(encode):
+    """The viewer can hand a room on now, and the string it hands on has to be
+    the same string `switchboard invite` would produce — byte for byte, or the
+    two implementations have started to drift and only the recipient finds
+    out."""
+    # The identifier is the hash of the token, so the pair cannot be invented:
+    # an invite carrying two that disagree is refused at the parse, which is
+    # exactly the check this is passing through.
+    workspace_token = "swb_room_token_0143"
+    room = {
+        "url": "https://hub.example.com",
+        "workspace": rooms.workspace_for(workspace_token),
+        "token": "tok_abc123",
+        "key": "9ikzU6p1vI4jCT9gn7gA9cpj-XkMxE7RK54ZRvNTl5E",
+        "note": "parser room",
+        "probe": "join/probe/deadbeef",
+        "keyId": "parser",
+        "workspaceToken": workspace_token,
+    }
+
+    result = encode(room)
+
+    assert result["ok"], result.get("error")
+    written = Invite.decode(result["value"])
+    assert written.url == room["url"]
+    assert written.token == room["token"]
+    assert written.key == room["key"]
+    assert written.note == room["note"]
+    assert written.probe == room["probe"]
+    assert written.key_id == room["keyId"]
+    assert written.workspace_token == room["workspaceToken"]
+    # And byte-identical to what the CLI would have written for the same room,
+    # which is a stronger claim than "the CLI can read it".
+    assert result["value"] == Invite(
+        url=room["url"], workspace=room["workspace"], token=room["token"],
+        key=room["key"], note=room["note"], probe=room["probe"],
+        key_id=room["keyId"], workspace_token=room["workspaceToken"],
+    ).encode()
+
+
+def test_a_room_with_no_hub_or_no_workspace_is_refused_rather_than_written(encode):
+    """Half an invite is the silent failure this whole format exists to
+    remove, and minting one is a worse way to arrive at it than mistyping."""
+    assert encode({"workspace": "w_abc"})["error"].endswith("needs a hub URL")
+    assert encode({"url": "https://hub.example.com"})["error"] \
+        .endswith("needs a workspace")
+
+
+def test_what_the_page_writes_survives_the_round_trip_through_a_link(encode):
+    """The fragment is the only reason a link can carry a key at all, and it is
+    also a place strings get mangled: `+` and `/` in base64 would not survive
+    it, which is why the format is base64url and unpadded."""
+    room = {"url": "https://hub.example.com", "workspace": "w_abc",
+            "key": "9ikzU6p1vI4jCT9gn7gA9cpj-XkMxE7RK54ZRvNTl5E"}
+
+    blob = encode(room)["value"]
+
+    assert blob.startswith(PREFIX)
+    assert "+" not in blob and "/" not in blob and "=" not in blob
+    assert Invite.decode(blob).key == room["key"]

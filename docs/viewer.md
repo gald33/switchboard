@@ -107,6 +107,23 @@ In the browser build it goes in the first field of the settings sheet and
 fills the rest, which you can then read back before saving rather than
 trusting the paste.
 
+The browser build also hands one back out. **share**, in the header, encodes
+the room you are reading as a link to this same page and copies it to your
+clipboard — the invite rides in the fragment, which is never sent to a server,
+which is the only reason a link may carry a key at all. It is only ever a
+re-encoding of what that browser already holds: the page mints nothing, grants
+nothing it was not given, and passes on the proof-of-room and the room token if
+the invite it was given carried them, so forwarding a room does not hand the
+next person a thinner invite than you were sent. What it cannot do is leave a
+proof-of-room where there was none — that means writing to the blackboard, and
+this page never writes.
+
+The link *is* the room: whoever opens it reads everything you read. The sheet
+says what it carries — which hub, which workspace, whether the key is on
+board — before you paste it anywhere, and the local viewer offers no share at
+all, because there the keys stay in the Python process and a link to
+`127.0.0.1` is not a room anybody else can open.
+
 Joining takes four facts that must each match a peer's, and **every one of
 them fails silently**: a different key, workspace or hub still connects, and
 you are simply alone somewhere that looks quiet. Four chances to differ become

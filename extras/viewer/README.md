@@ -31,7 +31,11 @@ switchboard-viewer --invite swb1_…
 ```
 
 One string instead of four fields, from `switchboard invite`. In the browser
-build it is the first field of the settings sheet and fills in the rest. If
+build it is the first field of the settings sheet and fills in the rest — and
+**share** in the header hands the room you are reading back out as a link,
+copied to your clipboard. Only what that browser already holds, re-encoded: the
+page mints nothing and grants nothing it was not given. The link is a
+credential, and the sheet says so before you paste it anywhere. If
 the invite carries a proof-of-room, the viewer checks it on every refresh and
 says `WRONG ROOM` rather than showing you an empty room you assume is quiet.
 

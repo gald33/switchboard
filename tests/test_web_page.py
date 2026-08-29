@@ -1244,3 +1244,101 @@ def test_a_panel_folded_on_a_wide_window_still_opens_on_a_narrow_one(
         assert errors == []
     finally:
         tab.close()
+
+
+def test_the_room_you_are_reading_can_be_handed_to_somebody(browser, page, room):
+    """A viewer that can only be arrived at is half a tool: the person who has
+    the room open is exactly the person asked to share it, and retyping four
+    fields into a chat window is the silent-failure path invites exist to
+    remove.
+
+    It hands on only what this browser already holds, so the link grants what
+    its sender had and nothing more.
+    """
+    from switchboard.invite import Invite
+
+    context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+    tab = context.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-label", "parser")
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        link = tab.input_value("#share-url")
+
+        # In the clipboard, and said to be — never the other way round.
+        assert "Copied" in tab.inner_text("#share-said")
+        assert tab.evaluate("navigator.clipboard.readText()") == link
+
+        # The key rides in the fragment, which is the only reason a link may
+        # carry one: it is never sent to this page's host.
+        assert "#swb1_" in link
+        assert KEY not in link.split("#")[0]
+        # And what it carries is said before it is pasted anywhere.
+        carries = tab.inner_text("#share-carries")
+        assert room.workspace in carries and "with the key" in carries
+
+        # The CLI reads what the page wrote.
+        invite = Invite.decode(link.split("#", 1)[1])
+        assert invite.url == room.url
+        assert invite.workspace == room.workspace
+        assert invite.key == KEY
+        assert errors == []
+    finally:
+        tab.close()
+        context.close()
+
+
+def test_a_shared_link_opens_the_room_in_a_browser_that_never_saw_it(
+    browser, page, room,
+):
+    """The whole loop, which is the only proof that matters: the link one
+    reader copies is a room the next one can actually read."""
+    context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+    tab = context.new_page()
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        link = tab.input_value("#share-url")
+    finally:
+        tab.close()
+        context.close()
+
+    stranger = browser.new_context()
+    other = stranger.new_page()
+    errors: list[str] = []
+    other.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        other.goto(link, wait_until="networkidle")
+        # Filled and shown, never joined behind the reader — a link arrives
+        # from somewhere, often forwarded, and is less trustworthy than a
+        # paste.
+        other.wait_for_selector("#settings[open]", timeout=10_000)
+        assert other.input_value("#f-workspace") == room.workspace
+        assert other.input_value("#f-key") == KEY
+        assert "#" not in other.url          # and scrubbed from the address bar
+
+        other.click("#settings-save")
+        other.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                                timeout=10_000)
+        assert "parser.py is mine for ~20 minutes" in other.inner_text("#messages")
+        assert errors == []
+    finally:
+        other.close()
+        stranger.close()
