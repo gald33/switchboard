@@ -623,6 +623,36 @@ def test_a_probe_the_key_can_open_says_nothing_at_all(h):
     view = snapshot(viewer(h, key=key), probe="join/probe/abcd")
 
     assert not any("proof-of-room" in n or "WRONG ROOM" in n for n in view["notes"])
+    # Not nothing at all, though. Silence was right only while there was
+    # nowhere to put a success; the page has a place for one beside the room
+    # name now, and the notes strip is still only for warnings.
+    assert view["hub"]["verified"] is True
+
+
+def test_the_probe_is_machinery_and_is_kept_off_the_blackboard(h):
+    """An invite's proof-of-room is an ordinary board entry — that is the
+    elegant part of its design — but it is this viewer's own machinery, not
+    state an agent published, and its value is a sentinel that means nothing
+    to a reader. The room's own entries are untouched."""
+    from switchboard.invite import PROBE_SENTINEL
+
+    key = generate_key()
+    inviter = h.client("inviter", key=key, register=True)
+    inviter.board_set("join/probe/abcd", PROBE_SENTINEL)
+    inviter.board_set("handoff/lexer", {"next": "escapes"})
+
+    view = snapshot(viewer(h, key=key), probe="join/probe/abcd")
+
+    assert [e["key"] for e in view["board"]] == ["handoff/lexer"]
+
+
+def test_a_room_nobody_asked_us_to_verify_says_neither_yes_nor_no(h):
+    """Without an invite there is nothing to check, and "not verified" would
+    read as a failure rather than as an absence of any claim."""
+    key = generate_key()
+    h.client("inviter", key=key, register=True).board_set("plan", {"next": "0143"})
+
+    assert snapshot(viewer(h, key=key))["hub"]["verified"] is None
 
 
 def test_a_probe_this_key_cannot_open_is_the_forty_minute_failure_caught(h):

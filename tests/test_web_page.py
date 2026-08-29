@@ -692,3 +692,194 @@ def test_a_link_naming_a_key_it_did_not_carry_says_which_one(browser, page, room
         assert tab.input_value("#f-key") == ""
     finally:
         tab.close()
+
+
+@pytest.fixture(scope="module")
+def busy_room(hub):
+    """A room with several channels, a DM among them, in its own workspace."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-channels", key=KEY)
+    agent = Client(config, agent_id="parser-agent", key=KEY)
+    agent.register(name="parser", kind="local", channels=["build"])
+    agent.post("plan", "the oldest channel here")
+    agent.post("review", "something in the middle")
+    agent.post("@tests", "a word meant for one agent")
+    agent.post("build", "the newest thing anybody said")
+    yield config
+    agent.close()
+
+
+def test_the_page_says_which_channel_you_are_reading(browser, page, busy_room):
+    """A chip is not a location.
+
+    On a narrow window the row of chips scrolls, so the filled-in one can be
+    off-screen entirely — and then nothing on the page says what you are
+    looking at. The heading says it, and offers the way back out.
+    """
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        assert "all channels" in tab.inner_text("#convo-head")
+
+        tab.click('.chip[data-c="review"]')
+        tab.wait_for_function(
+            "document.getElementById('convo-head').innerText.includes('review')",
+            timeout=10_000)
+        assert "something in the middle" in tab.inner_text("#messages")
+        assert "the newest thing anybody said" not in tab.inner_text("#messages")
+
+        # And back out again, from the heading rather than by hunting for the
+        # chip that started it.
+        tab.click("#convo-head .clear")
+        tab.wait_for_function(
+            "document.getElementById('convo-head').innerText.includes('all channels')",
+            timeout=10_000)
+        assert "the newest thing anybody said" in tab.inner_text("#messages")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_channels_are_ordered_by_what_moved_last_and_dms_sort_after(
+    browser, page, busy_room,
+):
+    """Alphabetical order puts the busy channel wherever its name falls.
+
+    Recency is what a reader is actually after, and `latest_at` was already
+    being carried by both builders. A direct message is a different kind of
+    thing from the room talking, so the two groups are visibly two.
+    """
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        chips = tab.eval_on_selector_all(
+            "#chips .chip", "els => els.map(e => e.dataset.c)")
+        assert chips[0] == ""                     # "all" stays pinned first
+        assert chips[1] == "build"                # the newest thing said
+        assert chips.index("review") < chips.index("plan")
+        assert chips[-1] == "@tests"              # a DM sorts after the room
+        assert tab.eval_on_selector_all(
+            "#chips .chip.dm", "els => els.map(e => e.dataset.c)") == ["@tests"]
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_the_roster_reaches_the_channels_it_names(browser, page, busy_room):
+    """"watching build" names exactly what the chips filter, so it may as well
+    reach it rather than sending the reader hunting for the matching chip."""
+    tab, errors = open_page(browser, page, busy_room)
+    try:
+        tab.click("#agents .chanlink")
+        tab.wait_for_function(
+            "document.getElementById('convo-head').innerText.includes('build')",
+            timeout=10_000)
+        assert "the newest thing anybody said" in tab.inner_text("#messages")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_refresh_leaves_the_rows_it_did_not_change_alone(
+    browser, page, room, hub,
+):
+    """The page used to be rebuilt with `innerHTML` every few seconds.
+
+    That cancels a selection mid-drag, drops focus, and makes anything the
+    reader adjusted — an expanded value — impossible to keep, because the node
+    holding it is gone. Rows are keyed and reconciled now, so a poll that adds
+    one message touches one node.
+    """
+    tab, errors = open_page(browser, page, room)
+    talker = Client(room, agent_id="chatty", key=KEY)
+    try:
+        # Mark the nodes that exist now. A mark is a property rather than an
+        # attribute, so only the actual node surviving can carry it.
+        tab.evaluate("""() => {
+            document.querySelectorAll('#messages .msg')
+                    .forEach((n, i) => { n.__mark = i; });
+            document.querySelectorAll('#agents > div')
+                    .forEach((n, i) => { n.__mark = i; });
+        }""")
+        before = tab.evaluate("document.querySelectorAll('#messages .msg').length")
+
+        talker.post("build", "one more, and only one more")
+        tab.wait_for_function(
+            "document.getElementById('messages').innerText"
+            ".includes('one more, and only one more')", timeout=15_000)
+
+        kept = tab.evaluate("""() => ({
+            msgs: [...document.querySelectorAll('#messages .msg')]
+                    .filter(n => n.__mark !== undefined).length,
+            agents: [...document.querySelectorAll('#agents > div')]
+                    .filter(n => n.__mark !== undefined).length,
+        })""")
+        assert kept["msgs"] == before      # every earlier message is the same node
+        assert kept["agents"] > 0          # and so is the roster beside it
+        assert errors == []
+    finally:
+        talker.close()
+        tab.close()
+
+
+def test_claims_lead_with_what_lapses_soonest(browser, page, hub):
+    """Expiry is the one time-critical thing on that panel, and it read the
+    same at four minutes and four seconds."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-claims", key=KEY)
+    agent = Client(config, agent_id="holder", key=KEY)
+    agent.register(name="holder", kind="local")
+    agent.post("build", "so the page has something to wait for")
+    agent.acquire("src/slow.py", note="the long hold", ttl=3000)
+    agent.acquire("src/soon.py", note="about to lapse", ttl=30)
+    tab, errors = open_page(browser, page, config)
+    try:
+        notes = tab.eval_on_selector_all(
+            "#leases > div", "els => els.map(e => e.innerText)")
+        assert "about to lapse" in notes[0]
+        assert "the long hold" in notes[1]
+        # And a countdown that is nearly out says so in more than digits.
+        assert tab.query_selector("#leases time.urgent") is not None
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()
+
+
+def test_the_proof_of_room_is_said_when_it_passes_and_stays_off_the_board(
+    browser, page, hub,
+):
+    """Silence was the right answer for a success only while there was nowhere
+    to put one: these notes are drawn as warnings. There is a place now — and
+    the probe entry itself is this viewer's machinery, not state an agent
+    published, so it comes off the blackboard either way.
+    """
+    from switchboard.invite import PROBE_SENTINEL, Invite
+
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-probe", key=KEY)
+    inviter = Client(config, agent_id="inviter", key=KEY)
+    inviter.register(name="inviter", kind="local")
+    inviter.post("build", "so the page has something to wait for")
+    inviter.board_set("join/probe/bbbb", PROBE_SENTINEL)
+    inviter.board_set("handoff/lexer", {"next": "escapes"})
+    inviter.close()
+
+    blob = Invite(url=config.url, workspace=config.workspace, key=KEY,
+                  probe="join/probe/bbbb").encode()
+    tab = browser.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-invite", blob)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.query_selector("#verified").is_visible() is True
+        assert "WRONG ROOM" not in tab.inner_text("#notes")
+        # The room's own state is still there; only the machinery is not.
+        assert "handoff/lexer" in tab.inner_text("#board")
+        assert "join/probe" not in tab.inner_text("#board")
+        assert PROBE_SENTINEL not in tab.inner_text("#board")
+        assert errors == []
+    finally:
+        tab.close()

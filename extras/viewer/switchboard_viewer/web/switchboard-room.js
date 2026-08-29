@@ -293,6 +293,8 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
     hub: {
       url: config.url, workspace: config.workspace,
       encrypted: Boolean(room), reachable: true,
+      // null until an invite gives us something to check. See below.
+      verified: null,
     },
     agents: [], leases: [], board: [], channels: [], messages: [], notes,
   };
@@ -349,6 +351,15 @@ export async function snapshot(config, { limit = 50, refresh = 3 } = {}) {
   if (config.probe) {
     const verdict = probeVerdict(config.probe, view.board);
     if (verdict) notes.push(verdict);
+    // A failure is a warning and a success is a fact, and the page has a place
+    // for each: the notes strip shouts WRONG ROOM, and a quiet word beside the
+    // room name says the proof opened. Silence was right when there was
+    // nowhere to put the good outcome.
+    view.hub.verified = verdict === null;
+    // And the probe itself comes off the board — this viewer's machinery, not
+    // state an agent published, carrying a sentinel that means nothing to a
+    // reader. The Python builder drops it in the same place.
+    view.board = view.board.filter((e) => e.key !== config.probe);
   }
 
   let channels = (await section("the channel list",
