@@ -11,18 +11,29 @@
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --ink: #14171a;
     --dim: #6b7280; --accent: #2563eb; --warn: #b45309; --ok: #15803d;
+    --accent-wash: #dbeafe;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1216; --panel: #161a20; --line: #262c35; --ink: #e6e9ee;
       --dim: #9aa4b2; --accent: #60a5fa; --warn: #fbbf24; --ok: #4ade80;
+      --accent-wash: #1e293b;
     }
   }
   * { box-sizing: border-box; }
+  /* The page itself never scrolls: the header, the tabs and the notes take
+     what they need, and the conversation takes the rest. `max-height` on the
+     pane used to hardcode the height of everything above it, so the pane
+     jumped by a row whenever a note or a tab row appeared. */
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  @media (max-width: 900px) {
+    body { height: auto; overflow: visible; }
   }
   header {
     display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
@@ -38,20 +49,37 @@
   .dot.off { background: #ef4444; }
   .dot.stale { background: var(--warn); }
   main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 18px;
-         padding: 18px; align-items: start; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0,1fr); } }
+         padding: 18px; align-items: start; flex: 1; min-height: 0;
+         overflow: hidden; }
+  main > div { min-height: 0; height: 100%; display: flex; flex-direction: column; }
+  main > div:last-child { overflow-y: auto; display: block; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0,1fr); overflow: visible; }
+    main > div, main > div:last-child { height: auto; overflow: visible; }
+  }
   section { background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
   section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
                  color: var(--dim); margin: 0; padding: 10px 14px;
-                 border-bottom: 1px solid var(--line); }
+                 border-bottom: 1px solid var(--line);
+                 display: flex; align-items: baseline; gap: 8px; }
+  /* Which channel you are reading, in the heading — a chip can be scrolled out
+     of sight on a narrow window, and then nothing on the page says it. */
+  h2 .scope { text-transform: none; letter-spacing: 0; font-size: 12px; }
+  h2 .scope.on { color: var(--accent); font-weight: 600; }
+  h2 .clear { margin-left: auto; text-transform: none; letter-spacing: 0; }
   .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .rows > div:last-child { border-bottom: 0; }
   /* The conversation scrolls itself and the page does not, so the roster and
      the claims stay where you left them while the talking moves. */
-  .convo { position: relative; }
-  #messages { max-height: calc(100vh - 250px); min-height: 200px; overflow-y: auto;
+  .convo { position: relative; display: flex; flex-direction: column;
+           min-height: 0; flex: 1; margin-bottom: 0; }
+  #messages { flex: 1; min-height: 200px; overflow-y: auto;
               overscroll-behavior: contain; }
+  @media (max-width: 900px) {
+    .convo { flex: none; }
+    #messages { max-height: 70vh; }
+  }
   .jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px;
           background: var(--accent); border: 0; color: #fff; border-radius: 999px;
           padding: 6px 14px; font: inherit; font-size: 12px; cursor: pointer;
@@ -82,6 +110,14 @@
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chip .n { color: var(--dim); margin-left: 5px; }
   .chip.on .n { color: #dbeafe; }
+  /* A name this viewer could not open is not a name, and saying so at the chip
+     beats saying it in a banner at the top of the page. */
+  .chip.sealed { border-style: dashed; color: var(--dim); }
+  .chip.dm { border-color: var(--accent); color: var(--accent); }
+  .chip.dm.on { color: #fff; }
+  /* The seam between the room talking and one agent talking to another. */
+  .seam { width: 1px; align-self: stretch; background: var(--line); margin: 0 3px; }
+  .chanlink { font-size: inherit; }
   .msg { display: grid; grid-template-columns: 190px minmax(0,1fr); gap: 14px; }
   @media (max-width: 640px) { .msg { grid-template-columns: minmax(0,1fr); } }
   .msg .who { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
@@ -93,14 +129,39 @@
          padding: 0 5px; color: var(--dim); margin-right: 6px; }
   .tag.dm { border-color: var(--accent); color: var(--accent); }
   .forecast { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  /* A message that arrived while you were looking used to be indistinguishable
+     from an old one. One fade, and nothing moves. */
+  @keyframes arrived { from { background: var(--accent-wash); } to { background: transparent; } }
+  .msg.arrived { animation: arrived 1.4s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .msg.arrived { animation: none; } }
+  /* One big value used to push the panel below it off the page. */
+  .clamp { position: relative; max-height: 15em; overflow: hidden; }
+  .clamp.open { max-height: none; }
+  .clamp::after { content: ""; position: absolute; inset: auto 0 0; height: 40px;
+                  background: linear-gradient(transparent, var(--panel)); }
+  .clamp.open::after { display: none; }
+  .clamp .more { position: absolute; right: 0; bottom: 0; z-index: 1;
+                 background: var(--panel); border: 1px solid var(--line);
+                 border-radius: 6px; color: var(--accent); font: inherit;
+                 font-size: 12px; padding: 1px 8px; cursor: pointer; }
+  .clamp.open { padding-bottom: 24px; }
+  .clamp.open .more { background: transparent; border-color: transparent; }
+  time[data-until].urgent { color: var(--warn); font-weight: 600; }
+  .sub.warn { color: var(--warn); }
+  .verified { color: var(--ok); font-size: 12px; }
+  .verified[hidden] { display: none; }
   .name { font-weight: 600; }
   .sub { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   code, .mono { font-family: var(--mono); }
   .sealed { color: var(--dim); }
   .notes { margin: 0 18px; }
+  .notes { flex: none; }
   .notes div { background: var(--panel); border: 1px solid var(--warn);
                color: var(--warn); border-radius: 8px; padding: 8px 12px;
                margin-bottom: 8px; font-size: 13px; }
+  /* "WRONG ROOM" means everything below it is the wrong room. That is not the
+     same kind of news as "one channel is sealed under another key". */
+  .notes div.fatal { border-width: 2px; font-weight: 600; }
   footer { color: var(--dim); font-size: 12px; padding: 0 18px 24px; }
   .link { background: none; border: 0; color: var(--accent); cursor: pointer;
           font: inherit; font-size: 12px; padding: 0; }
@@ -189,7 +250,7 @@
 <header>
   <h1>switchboard</h1>
   <span class="meta"><span id="live" class="dot"></span><span id="status">connecting…</span></span>
-  <span class="meta">room <code id="ws">—</code></span>
+  <span class="meta">room <code id="ws">—</code><span class="verified" id="verified" hidden> ✓ verified</span></span>
   <span class="meta" id="hub"></span>
   <span class="spacer"></span>
   <span class="meta" id="stamp"></span>
@@ -200,7 +261,7 @@
 <main>
   <div>
     <section class="convo">
-      <h2>Conversation</h2>
+      <h2 id="convo-head">Conversation</h2>
       <div class="chips" id="chips"></div>
       <div class="rows" id="messages"><div class="empty">nothing said yet</div></div>
       <button class="jump" id="jump" type="button" hidden></button>
@@ -291,6 +352,10 @@ let rooms = [];          // browser mode only
 let selected = null;     // room id
 let timer = null;
 let latest = null;
+// One failed poll used to flip the header to "hub unreachable" and back on the
+// next one, so a connection that hiccups strobed. A single failure is a
+// hiccup; two in a row is a hub that has gone away.
+let misses = 0;
 
 function load() {
   try {
@@ -367,6 +432,7 @@ async function refresh() {
   try {
     const state = LOCAL ? await readLocal() : await readHere();
     if (state) {
+      misses = 0;
       latest = state;
       render(state, {
         onRoom: (which) => { selected = which; refresh(); },
@@ -384,8 +450,16 @@ async function refresh() {
       if (!$("settings").open) $("settings").showModal();
     }
   } catch (e) {
-    $("live").className = "dot off";
-    $("status").textContent = LOCAL ? "viewer unreachable" : "page error: " + e.message;
+    misses += 1;
+    if (misses === 1 && latest) {
+      // Keep showing the last good room rather than blanking it: it is a few
+      // seconds stale, which the header says, and that beats a page that
+      // throws away everything it knows over one dropped request.
+      render({ ...latest, hub: { ...latest.hub, reachable: false }, stale: true });
+    } else {
+      $("live").className = "dot off";
+      $("status").textContent = LOCAL ? "viewer unreachable" : "page error: " + e.message;
+    }
   } finally {
     const wait = latest ? latest.refresh_ms : 3000;
     timer = setTimeout(refresh, document.hidden ? Math.max(wait, 15000) : wait);

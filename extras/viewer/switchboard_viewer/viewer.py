@@ -195,6 +195,8 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
             "workspace": hub.workspace,
             "encrypted": sealed_ids,
             "reachable": True,
+            # None until an invite gives us something to check. See below.
+            "verified": None,
         },
         "agents": [],
         "leases": [],
@@ -285,6 +287,16 @@ def snapshot(hub: Client, *, limit: int = DEFAULT_LIMIT,
         verdict = _probe_verdict(probe, view["board"])
         if verdict:
             notes.append(verdict)
+        # A failure is a warning and a success is a fact, and the page has a
+        # place for each: the notes strip shouts WRONG ROOM, and a quiet word
+        # beside the room name says the proof opened. Silence was right when
+        # there was nowhere to put the good outcome.
+        view["hub"]["verified"] = verdict is None
+        # And the probe itself comes off the board. It is an ordinary entry —
+        # that is the elegant part of its design — but it is this viewer's
+        # machinery, not state an agent published, and its value is a sentinel
+        # that means nothing to a reader.
+        view["board"] = [e for e in view["board"] if e.get("key") != probe]
 
     channels = section("the channel list", hub.channels) or []
     if len(channels) > MAX_CHANNELS:
