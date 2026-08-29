@@ -76,7 +76,11 @@ can read are one group at the end, where the heading is the explanation. A long
 value is clamped rather than allowed to push the panel below it off the page.
 
 Each of the three side panels says how much is inside it and folds away, and
-what you fold stays folded. If your
+what you fold stays folded. On a window too narrow for two columns they stop
+being a stack under the conversation — where, the talking being long and never
+finished, they were unreachable in practice — and become a switcher: the
+conversation, the roster, the claims and the board, one at a time, each with
+its count on the way in, and the conversation with the whole screen back. If your
 invite carried a proof-of-room, the pass is now said as well as the failure —
 a quiet `✓ verified` beside the room name, and the probe entry itself is kept
 off the blackboard, being this viewer's machinery rather than something an

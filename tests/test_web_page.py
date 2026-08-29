@@ -1117,3 +1117,86 @@ def test_the_page_answers_the_keyboard(browser, page, busy_room):
         assert errors == []
     finally:
         tab.close()
+
+
+def test_a_narrow_window_shows_one_pane_at_a_time(browser, page, room):
+    """Stacked under the conversation, the roster and the claims were in
+    practice unreachable on a phone: the talking is long and never stops
+    arriving. A switcher makes each of them a place you can go, and gives the
+    conversation the whole screen back."""
+    tab = browser.new_page(viewport={"width": 430, "height": 880})
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        assert tab.query_selector("#panes").is_visible() is True
+        # The conversation first, and the counts say what is behind the rest
+        # without going there.
+        assert tab.query_selector(".convo").is_visible() is True
+        assert tab.query_selector("#leases").is_visible() is False
+        assert "1" in tab.inner_text('.pane[data-pane="leases"]')
+
+        tab.click('.pane[data-pane="leases"]')
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'leases'", timeout=10_000)
+        assert tab.query_selector(".convo").is_visible() is False
+        assert "rewriting the lexer" in tab.inner_text("#leases")
+        assert tab.query_selector("#agents").is_visible() is False
+
+        # And the page still does not scroll sideways or as a whole: the pane
+        # scrolls, the way it does on a wide window.
+        assert tab.evaluate(
+            "document.documentElement.scrollWidth <= window.innerWidth + 1")
+        assert tab.evaluate(
+            "document.documentElement.scrollHeight <= window.innerHeight + 2")
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_panel_folded_on_a_wide_window_still_opens_on_a_narrow_one(
+    browser, page, room,
+):
+    """Below the breakpoint the summary is gone, so a panel the reader folded
+    away on a desktop would be a segment that shows nothing at all."""
+    tab = browser.new_page(viewport={"width": 1280, "height": 860})
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.query_selector("#panes").is_visible() is False
+
+        tab.click("#p-leases > summary")
+        tab.wait_for_function(
+            "document.getElementById('p-leases').open === false", timeout=10_000)
+
+        tab.set_viewport_size({"width": 430, "height": 880})
+        tab.click('.pane[data-pane="leases"]')
+        tab.wait_for_function(
+            "document.getElementById('p-leases').open === true", timeout=10_000)
+        assert "rewriting the lexer" in tab.inner_text("#leases")
+
+        # Back on a wide window all three are on screen at once again, so the
+        # pane chosen down there is not a state to still be in.
+        tab.set_viewport_size({"width": 1280, "height": 860})
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'convo'", timeout=10_000)
+        for panel in ("#agents", "#leases", "#board"):
+            assert tab.query_selector(panel).is_visible() is True
+        assert tab.query_selector(".convo").is_visible() is True
+        assert errors == []
+    finally:
+        tab.close()

@@ -190,9 +190,15 @@ function countdown(secs, generatedAt) {
 }
 
 const URGENT = 60;    // seconds; below this a claim is about to lapse
-const CHIP_CAP = 12;  // channels shown before the row offers the rest
 
 let allChips = false;
+
+/** How many channels a glance can use, which is not a constant: twelve chips
+ *  are one row on a wide window and four rows on a phone, where they push the
+ *  conversation they are meant to organise off the screen. */
+function chipCap() {
+  return matchMedia("(max-width: 900px)").matches ? 6 : 12;
+}
 
 function tick() {
   const now = Date.now();
@@ -431,17 +437,18 @@ export function render(s, { onRoom, onClose } = {}) {
   if (query) parts.push(`matching "${query}"`);
   const narrowed = filter !== null || sender !== null || Boolean(query);
   const head = $("convo-scope");
-  head.textContent = "· " + parts.join(" · ");
+  head.textContent = parts.join(" · ");
   head.className = narrowed ? "scope on" : "scope";
   $("convo-clear").hidden = !narrowed;
 
   // Sixty channels is not a switcher, it is a wall. The row keeps what a
   // glance can use and offers the rest, and whatever you are reading is in it
   // however far down the list it sorted.
-  const capped = chans.length > CHIP_CAP && !allChips;
+  const cap = chipCap();
+  const capped = chans.length > cap && !allChips;
   const visible = capped
-    ? chans.slice(0, CHIP_CAP).concat(
-        here && !chans.slice(0, CHIP_CAP).includes(here) ? [here] : [])
+    ? chans.slice(0, cap).concat(
+        here && !chans.slice(0, cap).includes(here) ? [here] : [])
     : chans;
 
   let firstDm = true;
@@ -465,8 +472,8 @@ export function render(s, { onRoom, onClose } = {}) {
       }))
       .concat(capped
         ? [`<button class="chip more" type="button" data-chips="all">` +
-           `+${chans.length - CHIP_CAP} more</button>`]
-        : (chans.length > CHIP_CAP
+           `+${chans.length - cap} more</button>`]
+        : (chans.length > cap
             ? [`<button class="chip more" type="button" data-chips="few">fewer</button>`]
             : []))
       .join("");
@@ -633,9 +640,15 @@ export function render(s, { onRoom, onClose } = {}) {
     emptyPane($("board"), "nothing on the board");
   }
 
-  $("n-agents").textContent = s.agents.length || "";
-  $("n-leases").textContent = s.leases.length || "";
-  $("n-board").textContent = s.board.length || "";
+  // Addressed by what they count, not by where they are shown: a narrow window
+  // shows the same number twice, once on the panel and once on the switcher
+  // that reaches it.
+  for (const [what, n] of [["agents", s.agents.length], ["leases", s.leases.length],
+                           ["board", s.board.length]]) {
+    for (const el of document.querySelectorAll(`[data-count="${what}"]`)) {
+      el.textContent = n || "";
+    }
+  }
 
   // Before the scroll is settled, not after: a row is inserted with an empty
   // `<time>` in it, and an empty inline element occupies no line box at all.
