@@ -33,6 +33,13 @@ export SWITCHBOARD_URL=https://hub.example.com   # or the environment
 export SWITCHBOARD_KEY=...                       # if the room is encrypted
 ```
 
+Times are relative while that is the useful answer and absolute once it is not:
+under a day, how long ago; past that, the date and hour it happened, with the
+year too when it is not this one. Every one of them carries the whole moment on
+hover and a real `datetime` in the markup, so "when exactly" is never more than
+a pointer away, and durations count days rather than reporting a week-long
+claim as `168h00m`.
+
 A message may carry its sender's own estimate of when it will next look, and
 when it will next speak. Those are moments rather than durations, so the page
 counts down to them and says `due` once one is behind us — a look that was owed
