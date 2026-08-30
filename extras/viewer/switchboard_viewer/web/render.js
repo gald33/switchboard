@@ -172,8 +172,47 @@ function emptyPane(container, text) {
 // once a second. Absolute on purpose: the markup for an unchanged row then
 // stays byte-identical across polls, which is what lets `sync` leave it alone.
 
+// --- and when, exactly ------------------------------------------------------
+//
+// Every clock on this page was relative and only relative: "9s ago", "23h59m",
+// with no attribute and nothing to hover. Which is right for the last minute
+// and useless past it — a room you come back to in the morning said "17h ago"
+// where a person wanted Friday at 14:05, and one you come back to on Monday
+// said "73h12m ago", because the formatter had no unit above hours at all.
+//
+// So: a real `datetime` on every one of them, the full local moment on hover,
+// and an age that stops counting hours once counting hours has stopped
+// meaning anything. The decision between the two forms is made in the ticker
+// rather than in the markup, so a row crossing midnight re-reads without
+// being rebuilt.
+
+const DAY = 86400;
+
+/** The whole moment, for a tooltip and for anyone reading the DOM. */
+function moment(iso) {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime())
+    ? "" : at.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" });
+}
+
+/** Past a day, the date itself — the year too once it is not this one, because
+ *  "26 Aug" in January is a worse answer than no answer. */
+function calendar(iso) {
+  const at = new Date(iso);
+  const sameYear = at.getFullYear() === new Date().getFullYear();
+  return at.toLocaleString(undefined, sameYear
+    ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
+    : { year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit" });
+}
+
 function stamp(iso) {
-  return iso ? `<time data-at="${esc(iso)}"></time>` : "";
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const exact = at.toISOString();
+  return `<time datetime="${esc(exact)}" data-at="${esc(exact)}"` +
+         ` title="${esc(moment(exact))}"></time>`;
 }
 
 /** A countdown, from a deadline rather than a duration.
@@ -205,7 +244,9 @@ function until(iso, { lapsed = "expired", quiet = false } = {}) {
   if (!iso) return "—";
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return "—";
-  return `<time data-until="${esc(new Date(at).toISOString())}"` +
+  const exact = new Date(at).toISOString();
+  return `<time datetime="${esc(exact)}" data-until="${esc(exact)}"` +
+         ` title="${esc(moment(exact))}"` +
          ` data-lapsed="${esc(lapsed)}"${quiet ? " data-quiet" : ""}></time>`;
 }
 
@@ -223,7 +264,10 @@ function chipCap() {
 function tick() {
   const now = Date.now();
   for (const el of document.querySelectorAll("time[data-at]")) {
-    el.textContent = dur((now - Date.parse(el.dataset.at)) / 1000) + " ago";
+    const age = (now - Date.parse(el.dataset.at)) / 1000;
+    // Relative while relative is the useful answer, and the date once it is
+    // not. The hover carries the exact moment either way.
+    el.textContent = age < DAY ? dur(age) + " ago" : calendar(el.dataset.at);
   }
   for (const el of document.querySelectorAll("time[data-until]")) {
     const left = (Date.parse(el.dataset.until) - now) / 1000;
@@ -238,7 +282,14 @@ function dur(secs) {
   secs = Math.max(0, Math.round(secs));
   if (secs < 60) return secs + "s";
   if (secs < 3600) return Math.floor(secs / 60) + "m" + String(secs % 60).padStart(2, "0") + "s";
-  return Math.floor(secs / 3600) + "h" + String(Math.floor((secs % 3600) / 60)).padStart(2, "0") + "m";
+  // Days, because a week-long claim reading "168h00m" is a number a reader has
+  // to divide before it says anything.
+  if (secs < DAY) {
+    return Math.floor(secs / 3600) + "h" +
+           String(Math.floor((secs % 3600) / 60)).padStart(2, "0") + "m";
+  }
+  return Math.floor(secs / DAY) + "d" +
+         String(Math.floor((secs % DAY) / 3600)).padStart(2, "0") + "h";
 }
 function who(w) {
   if (!w || !w.id) return "—";
@@ -460,7 +511,10 @@ export function render(s, { onRoom, onClose } = {}) {
     verified.title = "an invite's proof-of-room opened here: same hub, same " +
                      "workspace, same key";
   }
+  // A clock time is the right length for a line that changes every few seconds;
+  // the date it belongs to is a hover away rather than absent.
   $("stamp").textContent = "updated " + new Date(s.generated_at).toLocaleTimeString();
+  $("stamp").title = moment(s.generated_at);
   $("notes").innerHTML = (s.notes || []).map((n) =>
     `<div class="${/WRONG ROOM/.test(n) ? "fatal" : ""}">${esc(n)}</div>`).join("");
 

@@ -1441,3 +1441,55 @@ def test_a_forecast_counts_down_to_the_moment_it_names(browser, page, hub):
     finally:
         agent.close()
         tab.close()
+
+
+def test_a_clock_says_when_and_not_only_how_long_ago(browser, page, room):
+    """Every time on this page was relative and only relative — right for the
+    last minute, useless past it. A room you came back to in the morning said
+    "17h ago" where a person wanted the hour; one you came back to on Monday
+    said "73h12m ago", because the formatter had no unit above hours.
+
+    So: a real `datetime` on each of them, the whole moment on hover, an age
+    that becomes a date once counting hours stops meaning anything, and a
+    countdown that counts days.
+    """
+    tab, errors = open_page(browser, page, room)
+    try:
+        # Machine-readable and hoverable, on everything that shows a time.
+        assert tab.eval_on_selector_all(
+            "time", "els => els.every(e => e.getAttribute('datetime'))")
+        assert tab.eval_on_selector_all(
+            "time", "els => els.every(e => (e.getAttribute('title') || '').length > 8)")
+        assert "ago" in tab.eval_on_selector("#messages time", "e => e.textContent")
+
+        # The ticker is what decides between the two forms, so it is what this
+        # drives: two ages and two deadlines, filled in by the page itself.
+        tab.evaluate("""() => {
+          const iso = (ms) => new Date(Date.now() + ms).toISOString();
+          document.getElementById('board').insertAdjacentHTML('afterbegin', `
+            <div id="probe">
+              <time data-at="${iso(-3 * 86400e3)}"></time>
+              <time data-at="${iso(-2 * 3600e3)}"></time>
+              <time data-until="${iso(3 * 86400e3)}"></time>
+              <time data-until="${iso(-60e3)}" data-lapsed="due"></time>
+            </div>`);
+        }""")
+        tab.wait_for_function(
+            "document.querySelector('#probe time').textContent !== ''", timeout=5_000)
+        old, recent, far, past = tab.eval_on_selector_all(
+            "#probe time", "els => els.map(e => e.textContent)")
+
+        # Three days back is a date and a clock time, not a count of hours.
+        assert "ago" not in old
+        assert ":" in old                      # an hour of the day
+        assert any(ch.isalpha() for ch in old)  # and the month it belongs to
+        assert "72h" not in old
+        # Two hours back is still the useful relative form.
+        assert recent.endswith("ago") and recent.startswith("2h")
+        # Three days out counts days rather than seventy-two hours.
+        assert far.startswith("2d") or far.startswith("3d")
+        # And a deadline behind us still says so in its own word.
+        assert past == "due"
+        assert errors == []
+    finally:
+        tab.close()
