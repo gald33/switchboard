@@ -344,6 +344,7 @@
   <span class="spacer"></span>
   <span class="meta" id="hub"></span>
   <span class="meta" id="stamp"></span>
+  <button class="link" id="share-open" hidden>share</button>
   <button class="link" id="settings-open" hidden>settings</button>
 </header>
 <div class="rooms" id="rooms"></div>
@@ -436,6 +437,27 @@
     <div class="saved" id="settings-saved"></div>
   </form>
 </dialog>
+<dialog id="share">
+  <form class="sheet" method="dialog">
+    <h2>Share this room</h2>
+    <!-- Shown before it is pasted anywhere, because this link *is* the room:
+         whoever opens it reads everything you read. The fragment is never sent
+         to a server, which is the only reason a link can carry a key at all —
+         but a link that leaves your hands has left them. -->
+    <p>This link carries the room and its key. Anyone who opens it can read
+       everything you can read, so hand it over the way you would a
+       password.</p>
+    <label for="share-url">Link</label>
+    <input id="share-url" readonly>
+    <div class="ok" id="share-said"></div>
+    <div class="sub" id="share-carries"></div>
+    <div class="actions">
+      <button value="close">Done</button>
+      <button class="go" id="share-copy" value="copy" type="button">Copy again</button>
+    </div>
+  </form>
+</dialog>
+
 <script type="module">
 // Two ways to get a room, one page.
 //
@@ -452,7 +474,8 @@
 // only a package you installed.
 
 import { render, scope, setScope, onScopeChange } from "./render.js";
-import { decodeInvite, InviteError, snapshot, summarise } from "./switchboard-room.js";
+import { decodeInvite, encodeInvite, InviteError, snapshot, summarise }
+  from "./switchboard-room.js";
 
 const LOCAL = document.documentElement.dataset.source === "local";
 const STORE = "switchboard.rooms.v1";
@@ -613,11 +636,18 @@ function prefill() {
  *  settings" into "the same room", so it is deliberately not shown as a field.
  */
 let invitedProbe = "";
+//: The two fields an invite may carry that no form has a box for: the room's
+//: token, which is what lets a joiner *write the room down* rather than merely
+//: visit it, and the id of a key it named but did not carry. Kept so that
+//: forwarding a room passes on what arrived with it instead of handing the
+//: next person a thinner invite than the one you were given.
+let invitedToken = "";
+let invitedKeyId = "";
 
 function applyInvite(text) {
   const warn = $("invite-warn"), ok = $("invite-ok");
   warn.hidden = ok.hidden = true;
-  invitedProbe = "";
+  invitedProbe = invitedToken = invitedKeyId = "";
   if (!String(text).trim()) return;
   let invite;
   try {
@@ -633,6 +663,8 @@ function applyInvite(text) {
   if (invite.token) $("f-token").value = invite.token;
   if (invite.note && !$("f-label").value) $("f-label").value = invite.note;
   invitedProbe = invite.probe;
+  invitedToken = invite.workspaceToken || "";
+  invitedKeyId = invite.keyId || "";
   ok.hidden = false;
   ok.textContent = "read this invite: " + invite.workspace + " on " + invite.url
     + (invite.key ? ", with a key"
@@ -676,6 +708,8 @@ function invitedByUrl() {
 if (!LOCAL) {
   rooms = load();
   $("settings-open").hidden = false;
+  $("share-open").hidden = false;
+  $("share-open").onclick = openShare;
   $("settings-open").onclick = () => { drawSaved(); prefill(); $("settings").showModal(); };
   // On input rather than on submit: a bad invite should say so while the
   // string is still on screen to compare against, not after the sheet closes.
@@ -687,6 +721,8 @@ if (!LOCAL) {
       [...data.entries()].map(([k, v]) => [k, String(v).trim()]));
     delete entry.invite;   // the fields it filled are what gets stored
     if (invitedProbe) entry.probe = invitedProbe;
+    if (invitedToken) entry.workspaceToken = invitedToken;
+    if (invitedKeyId) entry.keyId = invitedKeyId;
     if (!entry.url || !entry.workspace) return;
     entry.url = entry.url.replace(/\/$/, "");
     // The managed hub's token is the same for everyone and nobody types it.
@@ -695,7 +731,7 @@ if (!LOCAL) {
     save([...rooms.filter((r) => id(r) !== id(entry)), entry]);
     selected = id(entry);
     $("settings-form").reset();
-    invitedProbe = "";
+    invitedProbe = invitedToken = invitedKeyId = "";
     $("invite-ok").hidden = $("invite-warn").hidden = true;
     setScope({});
     refresh();
@@ -711,6 +747,80 @@ if (!LOCAL) {
       "and the browser will not provide the crypto it needs.";
   }
 }
+
+// --- handing the room to somebody --------------------------------------------
+//
+// Only what this browser already holds, re-encoded: the page mints nothing and
+// grants nothing it was not given, which is what keeps a viewer a client.
+//
+// The link is the room. It rides in the fragment, which is never sent to a
+// server — not to this page's host, not in a Referer, not into a proxy's log —
+// and that is the only reason a link can carry a key at all. It does not
+// protect against whoever serves the page, and no URL shape can; nor against
+// the link leaving the hands you gave it to. So the sheet says what it carries
+// before it is pasted anywhere.
+//
+// Nothing to offer in the local viewer: there the keys stay in the Python
+// process and never reach this page, and a link to 127.0.0.1 is not a room
+// anyone else can open.
+function shareable() {
+  const current = rooms.find((r) => id(r) === selected) || rooms[0];
+  if (!current) return null;
+  return {
+    blob: encodeInvite({
+      url: current.url, workspace: current.workspace, token: current.token,
+      key: current.key, note: current.label || "", probe: current.probe || "",
+      keyId: current.keyId || "", workspaceToken: current.workspaceToken || "",
+    }),
+    room: current,
+  };
+}
+
+async function openShare() {
+  const offer = shareable();
+  if (!offer) return;
+  const link = location.origin + location.pathname + "#" + offer.blob;
+  $("share-url").value = link;
+  $("share-carries").textContent =
+    `${offer.room.workspace} on ${offer.room.url}` +
+    (offer.room.key ? ", with the key" : ", no key — they will need their own") +
+    (offer.room.probe ? ", and a proof-of-room" : ", and no proof-of-room") +
+    (offer.room.workspaceToken ? "." : ". They can read the room from this link " +
+     "but not write it down: this page was given the room's identifier, never " +
+     "the token a rooms file records.");
+  // Said before the clipboard has answered, because the answer is a round trip
+  // through a permission check and the line is read the instant the sheet
+  // opens. Blank would be the one reading a person could take either way.
+  $("share-said").className = "sub";
+  $("share-said").textContent = "Copying…";
+  $("share").showModal();
+  // Selected from the start rather than scrolled to the end: the host this
+  // link points at is the part worth reading before you send it.
+  $("share-url").setSelectionRange(0, link.length);
+  $("share-url").focus();
+  $("share-url").scrollLeft = 0;
+  await copyShare();
+}
+
+async function copyShare() {
+  const said = $("share-said");
+  try {
+    // Only in a secure context, and only with permission. Where it is refused
+    // the link is on screen and selected, which is a worse copy but not a
+    // dead end — saying "copied" when nothing was is the only unacceptable
+    // outcome.
+    await navigator.clipboard.writeText($("share-url").value);
+    said.className = "ok";
+    said.textContent = "Copied to your clipboard.";
+  } catch {
+    said.className = "warn";
+    said.textContent = "This browser would not let the page reach the " +
+                       "clipboard — the link is selected above, copy it from " +
+                       "there.";
+  }
+}
+
+$("share-copy").onclick = copyShare;
 
 // --- the scope lives in the URL ----------------------------------------------
 //

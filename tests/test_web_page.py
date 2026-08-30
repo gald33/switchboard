@@ -1244,3 +1244,200 @@ def test_a_panel_folded_on_a_wide_window_still_opens_on_a_narrow_one(
         assert errors == []
     finally:
         tab.close()
+
+
+def test_the_room_you_are_reading_can_be_handed_to_somebody(browser, page, room):
+    """A viewer that can only be arrived at is half a tool: the person who has
+    the room open is exactly the person asked to share it, and retyping four
+    fields into a chat window is the silent-failure path invites exist to
+    remove.
+
+    It hands on only what this browser already holds, so the link grants what
+    its sender had and nothing more.
+    """
+    from switchboard.invite import Invite
+
+    context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+    tab = context.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-label", "parser")
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        link = tab.input_value("#share-url")
+
+        # In the clipboard, and said to be — never the other way round. The
+        # clipboard is a round trip through a permission check, so the sheet
+        # says it is copying until it knows, and this waits for that answer
+        # rather than for the sheet.
+        tab.wait_for_function(
+            "!document.getElementById('share-said').textContent.endsWith('…')",
+            timeout=10_000)
+        assert "Copied" in tab.inner_text("#share-said")
+        assert tab.evaluate("navigator.clipboard.readText()") == link
+
+        # The key rides in the fragment, which is the only reason a link may
+        # carry one: it is never sent to this page's host.
+        assert "#swb1_" in link
+        assert KEY not in link.split("#")[0]
+        # And what it carries is said before it is pasted anywhere.
+        carries = tab.inner_text("#share-carries")
+        assert room.workspace in carries and "with the key" in carries
+
+        # The CLI reads what the page wrote.
+        invite = Invite.decode(link.split("#", 1)[1])
+        assert invite.url == room.url
+        assert invite.workspace == room.workspace
+        assert invite.key == KEY
+        assert errors == []
+    finally:
+        tab.close()
+        context.close()
+
+
+def test_a_shared_link_opens_the_room_in_a_browser_that_never_saw_it(
+    browser, page, room,
+):
+    """The whole loop, which is the only proof that matters: the link one
+    reader copies is a room the next one can actually read."""
+    context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+    tab = context.new_page()
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        link = tab.input_value("#share-url")
+    finally:
+        tab.close()
+        context.close()
+
+    stranger = browser.new_context()
+    other = stranger.new_page()
+    errors: list[str] = []
+    other.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        other.goto(link, wait_until="networkidle")
+        # Filled and shown, never joined behind the reader — a link arrives
+        # from somewhere, often forwarded, and is less trustworthy than a
+        # paste.
+        other.wait_for_selector("#settings[open]", timeout=10_000)
+        assert other.input_value("#f-workspace") == room.workspace
+        assert other.input_value("#f-key") == KEY
+        assert "#" not in other.url          # and scrubbed from the address bar
+
+        other.click("#settings-save")
+        other.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                                timeout=10_000)
+        assert "parser.py is mine for ~20 minutes" in other.inner_text("#messages")
+        assert errors == []
+    finally:
+        other.close()
+        stranger.close()
+
+
+def test_a_browser_that_refuses_the_clipboard_is_told_the_truth(browser, page, room):
+    """The one unacceptable outcome is saying "copied" when nothing was: the
+    reader pastes an empty clipboard into a chat window and sends nobody
+    anything. A refusal says so, and leaves the link on screen.
+
+    The wait is the point as much as the message. The clipboard is a round trip
+    through a permission check, so the sheet cannot know its own status when it
+    opens — it says it is copying, and says what happened once it knows.
+    """
+    context = browser.new_context()
+    # Slow, then refuse: the sheet must be honest at both ends of that.
+    context.add_init_script("""
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {writeText: () => new Promise((_, no) =>
+            setTimeout(() => no(new Error('denied')), 400))},
+        });
+    """)
+    tab = context.new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", room.url)
+        tab.fill("#f-workspace", room.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+
+        tab.click("#share-open")
+        tab.wait_for_selector("#share[open]", timeout=10_000)
+        # Never blank, and never a claim it cannot make yet.
+        assert tab.inner_text("#share-said").endswith("…")
+
+        tab.wait_for_function(
+            "!document.getElementById('share-said').textContent.endsWith('…')",
+            timeout=10_000)
+        said = tab.inner_text("#share-said")
+        assert "Copied" not in said
+        assert "clipboard" in said and "copy it from there" in said
+        # And the link is still there to copy by hand.
+        assert "#swb1_" in tab.input_value("#share-url")
+        assert errors == []
+    finally:
+        tab.close()
+        context.close()
+
+
+def test_a_forecast_counts_down_to_the_moment_it_names(browser, page, hub):
+    """`timing_forecast` carries instants, not durations: `p50` is *when* the
+    sender will next look. Read as a number of seconds it was `Math.round(NaN)`
+    — not less than 60, not less than 3600 — so every forecast on the page said
+    `~NaNhNaNm`, through the one branch of that formatter nothing had reached.
+
+    And a deadline behind us is "due", not "expired": a look that was owed two
+    minutes ago has not expired, and it costs nobody a lock, so it does not
+    take the amber that a lapsing claim does.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-forecast", key=KEY)
+    agent = Client(config, agent_id="planner", key=KEY)
+    agent.register(name="planner", kind="local")
+    soon = datetime.now(tz=timezone.utc) + timedelta(minutes=90)
+    later = datetime.now(tz=timezone.utc) + timedelta(minutes=95)
+    gone = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+    # Exactly the shape `wrap_forecast` puts on the wire.
+    agent.post("build", {"text": "looking again after the lexer lands",
+                         "timing_forecast": {"p50": soon.isoformat(),
+                                             "p95": later.isoformat(),
+                                             "speak_p50": later.isoformat()}})
+    agent.post("build", {"text": "this one is overdue",
+                         "timing_forecast": {"p50": gone.isoformat()}})
+    tab, errors = open_page(browser, page, config)
+    try:
+        forecasts = tab.eval_on_selector_all(
+            ".forecast", "els => els.map(e => e.innerText)")
+        assert len(forecasts) == 2
+        assert "NaN" not in " ".join(forecasts)
+        assert "1h29m" in forecasts[0] or "1h30m" in forecasts[0]
+        assert "next message ~1h3" in forecasts[0]
+        # A deadline already behind us says so, in its own word.
+        assert "due" in forecasts[1] and "expired" not in forecasts[1]
+        # And is not dressed as a claim about to lapse.
+        assert tab.eval_on_selector_all(".forecast time.urgent", "e => e.length") == 0
+        assert errors == []
+    finally:
+        agent.close()
+        tab.close()

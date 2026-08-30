@@ -47,6 +47,38 @@ export const PROBE_SENTINEL = "switchboard-room-proof";
 
 export class InviteError extends Error {}
 
+/** Write one, which is the half this page did not have.
+ *
+ *  Only ever for a room this browser is already holding: the page mints
+ *  nothing, and an invite it produces grants exactly what its reader already
+ *  had, no more. That is also why it stays a client rather than becoming a
+ *  second way to make rooms.
+ *
+ *  Byte-compatible with `Invite.encode`, and held there by
+ *  `tests/test_web_invite.py`, which encodes here and decodes with the Python
+ *  `Invite` — the same parity the reader half is held to, in the other
+ *  direction. Field order matters for nothing but reading the two side by
+ *  side, so it is the Python one.
+ */
+export function encodeInvite(room) {
+  const payload = {
+    v: INVITE_VERSION,
+    u: room.url || "",
+    w: room.workspace || "",
+    t: room.token || "",
+    k: room.key || "",
+    n: room.note || "",
+    p: room.probe || "",
+    ki: room.keyId || "",
+    wt: room.workspaceToken || "",
+  };
+  if (!payload.u) throw new InviteError("an invite needs a hub URL");
+  if (!payload.w) throw new InviteError("an invite needs a workspace");
+  const raw = new TextEncoder().encode(JSON.stringify(payload));
+  return INVITE_PREFIX + btoa(String.fromCharCode(...raw))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /** Read an invite, or throw. Never a partial join: a string this cannot fully
  *  understand is refused rather than half-applied. */
 export function decodeInvite(text) {

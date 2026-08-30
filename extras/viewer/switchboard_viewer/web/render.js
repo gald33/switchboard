@@ -185,8 +185,28 @@ function stamp(iso) {
  */
 function countdown(secs, generatedAt) {
   if (secs == null) return "—";
-  const at = new Date(Date.parse(generatedAt) + secs * 1000).toISOString();
-  return `<time data-until="${esc(at)}"></time>`;
+  return until(new Date(Date.parse(generatedAt) + secs * 1000).toISOString());
+}
+
+/** A moment, counted down to.
+ *
+ *  `timing_forecast` carries instants — `p50` is *when* the sender will next
+ *  look, an ISO timestamp — and they were being read as a number of seconds.
+ *  `dur` of a string is `Math.round(NaN)`, which is not less than 60 and not
+ *  less than 3600, so every forecast on the page read `~NaNhNaNm`: the one
+ *  branch of that function no test had ever reached.
+ *
+ *  `lapsed` is the word for a deadline already behind us, because "expired" is
+ *  right for a claim and wrong for a forecast — a look that was due two
+ *  minutes ago has not expired, it is overdue. `quiet` keeps the amber for the
+ *  things that actually lapse: a forecast running late costs nobody a lock.
+ */
+function until(iso, { lapsed = "expired", quiet = false } = {}) {
+  if (!iso) return "—";
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "—";
+  return `<time data-until="${esc(new Date(at).toISOString())}"` +
+         ` data-lapsed="${esc(lapsed)}"${quiet ? " data-quiet" : ""}></time>`;
 }
 
 const URGENT = 60;    // seconds; below this a claim is about to lapse
@@ -207,8 +227,9 @@ function tick() {
   }
   for (const el of document.querySelectorAll("time[data-until]")) {
     const left = (Date.parse(el.dataset.until) - now) / 1000;
-    el.textContent = left <= 0 ? "expired" : dur(left);
-    el.classList.toggle("urgent", left <= URGENT);
+    el.textContent = left <= 0 ? (el.dataset.lapsed || "expired") : dur(left);
+    el.classList.toggle("urgent",
+                        el.dataset.quiet === undefined && left <= URGENT);
   }
 }
 
@@ -591,8 +612,12 @@ export function render(s, { onRoom, onClose } = {}) {
       <div>
         ${m.sealed_body ? `<div class="body sealed">🔒 sealed — this viewer holds no key</div>`
                         : bodyHtml(m.body)}
-        ${m.forecast ? `<div class="forecast">next look ~${dur(m.forecast.p50)} (p50)` +
-          (m.forecast.speak_p50 ? `, next message ~${dur(m.forecast.speak_p50)}` : "") + `</div>` : ""}
+        ${m.forecast ? `<div class="forecast">next look ~` +
+          until(m.forecast.p50, { lapsed: "due", quiet: true }) + ` (p50)` +
+          (m.forecast.speak_p50
+            ? `, next message ~` +
+              until(m.forecast.speak_p50, { lapsed: "due", quiet: true })
+            : "") + `</div>` : ""}
       </div>`,
     })));
     // A message that arrived while you were looking used to be indis-
