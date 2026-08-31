@@ -192,6 +192,16 @@ a lease.
 > scopes — is exactly what made deriving the identifier the answer rather than
 > assigning one. See #61, and #72 for what replaces the abuse control that
 > went with it.
+>
+> **This note used to be the only marker, and that was not enough.** On
+> 2026-08-31 an operator reading the present-tense passage below concluded
+> that self-issued keys superseded `SWITCHBOARD_TOKEN` and commented the token
+> out of a live hub's `.env`. Nothing changed until the container was next
+> recreated, weeks later, at which point the perimeter opened silently —
+> `/health` reporting `auth:false` and unauthenticated calls answering 200.
+> A reader who arrives mid-section, by grep or by scrolling, must not be able
+> to mistake the passage for current behaviour, so the stale claims below now
+> carry their own markers rather than relying on this one.
 
 Given that, a self-issued key is worthless *unless binding it also scopes
 it* — `Principal(workspaces={that one})`, exactly what `StaticKeyResolver`
@@ -208,9 +218,11 @@ feature rather than a CLI trick: two different tokens racing to claim the
 same workspace name (first wins; the loser needs a different name, the same
 way a squatted username would).
 
-That is exactly what `SelfIssuedKeyResolver` (`auth.py`) does. A hub run
-with `--self-issued-keys` (or `SWITCHBOARD_SELF_ISSUED_KEYS=1`) has no
-config file of keys at all; instead, `key_bindings` in the store — token
+That is exactly what `SelfIssuedKeyResolver` (`auth.py`) **did — none of
+this exists any more; see the Superseded note above.** A hub run with
+`--self-issued-keys` (or `SWITCHBOARD_SELF_ISSUED_KEYS=1`) **— neither the
+flag nor the variable exists now, and setting the variable does nothing —**
+had no config file of keys at all; instead, `key_bindings` in the store — token
 hash to workspace, never expiring, unlike everything else in this schema —
 is the entire key store. A client runs `switchboard register-key
 --workspace <name>`, which generates a token locally and calls
