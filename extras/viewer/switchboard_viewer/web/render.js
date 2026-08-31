@@ -393,11 +393,19 @@ function boardRows(s) {
   settle(root);
 
   const rows = [];
+  // A key is a control only where choosing one leads somewhere: the wide view
+  // has a half-screen to show it in, and a narrow window has no room for one at
+  // all, so there it is text.
+  const keyish = (e, name) => matchMedia("(max-width: 900px)").matches
+    ? `<span class="mono" title="${esc(e.key)}">${esc(name)}</span>`
+    : `<button class="link mono" type="button" data-board="${esc(e.key)}"
+         title="${esc(e.key)}">${esc(name)}</button>`;
+
   const leaf = (e, name) => ({
     key: e.key,
-    cls: "",
+    cls: opened === e.key ? "on" : "",
     html: `
-      <div><span class="mono" title="${esc(e.key)}">${esc(name)}</span> <span class="sub">rev ${e.revision}</span></div>
+      <div>${keyish(e, name)} <span class="sub">rev ${e.revision}</span></div>
       ${bodyHtml(e.value)}
       <div class="sub">${who(e.updated_by)} · ${stamp(e.updated_at)} · expires in ${countdown(e.expires_in, s.generated_at)}</div>`,
   });
@@ -478,6 +486,40 @@ const SEALED = "sealed";
  *  a key is a path in one room and means nothing at all in the next.
  */
 const folded = new Set();
+
+/** The entry the wide view is showing, by key. Also in memory, and dropped
+ *  along with the folds when the room changes. */
+let opened = null;
+
+/** One entry with room around it: the whole key, who wrote it and when, and a
+ *  value that keeps its own line breaks rather than being folded to fit a
+ *  sidebar. Only ever drawn where there is somewhere to draw it. */
+function drawDetail(s) {
+  const pane = $("board-detail");
+  if (!pane) return;
+  const entry = s.board.find((e) => e.key === opened)
+    // Nothing chosen yet, or the chosen key is gone: show the newest, because
+    // an empty half-screen is a worse answer than the thing most likely wanted.
+    || s.board.slice().sort((a, b) =>
+         Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0];
+  if (!entry) {
+    pane.innerHTML = `<div class="nothing">nothing on the board</div>`;
+    return;
+  }
+  const html = `
+    <div class="key">${ident(entry.key, entry.sealed)}</div>
+    <div class="meta">
+      <span>rev ${entry.revision}</span>
+      <span>${who(entry.updated_by)}</span>
+      <span>${stamp(entry.updated_at)}</span>
+      <span>expires in ${countdown(entry.expires_in, s.generated_at)}</span>
+    </div>
+    ${bodyHtml(entry.value)}`;
+  if (pane.dataset.html !== html) {
+    pane.innerHTML = html;
+    pane.dataset.html = html;
+  }
+}
 
 export function render(s, { onRoom, onClose } = {}) {
   last = s;
@@ -646,7 +688,7 @@ export function render(s, { onRoom, onClose } = {}) {
   // A path folded in one room means nothing in the next: the keys are that
   // room's, and carrying the folds across would hide another room's state
   // behind a decision nobody made about it.
-  if (fresh) folded.clear();
+  if (fresh) { folded.clear(); opened = null; }
   const scopeKey = JSON.stringify(scope());
   const rescoped = scopeKey !== lastScope;
   lastScope = scopeKey;
@@ -742,6 +784,12 @@ export function render(s, { onRoom, onClose } = {}) {
         scopeChanged();
         return;
       }
+      const entry = e.target.closest("[data-board]");
+      if (entry) {
+        opened = entry.dataset.board;
+        if (last) render(last);
+        return;
+      }
       const branch = e.target.closest("[data-twig]");
       if (branch) {
         const path = branch.dataset.twig;
@@ -813,6 +861,7 @@ export function render(s, { onRoom, onClose } = {}) {
   } else {
     emptyPane($("board"), "nothing on the board");
   }
+  drawDetail(s);
 
   // Addressed by what they count, not by where they are shown: a narrow window
   // shows the same number twice, once on the panel and once on the switcher
