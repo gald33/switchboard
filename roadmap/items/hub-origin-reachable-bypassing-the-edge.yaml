@@ -1,0 +1,70 @@
+id: hub-origin-reachable-bypassing-the-edge
+title: The hub's origin answers directly by IP, so its Cloudflare edge is optional
+status: ready
+arc: hub-boundary
+blocked_on: []
+related_to:
+- key: identity-rebinds-on-branch-change
+  note: 'Found in the same engagement, and the same lesson underneath: a signal that
+    keeps reporting after the thing behind it stopped being true. There it was an
+    agent id; here it was a firewall counter reading zero because the rule could not
+    be reached.'
+refs:
+- 'https://github.com/gald33/Lucille/pull/1374'
+evidence: |
+  **Not a filed issue.** Measured 2026-08-30 from an external, non-Cloudflare
+  client, with a positive control in the same run.
+
+      control  https://switchboard.lucille-ai.com/health  -> 200, server: cloudflare, cf-ray present
+      probe    --resolve …:8444:<origin ip> /health       -> 200, server: uvicorn, NO cf-ray, connect 0.070
+
+  The hub answers on its origin port to anyone who declines the edge. Cloudflare
+  is therefore optional for reaching it, which makes edge-side protection
+  optional too.
+
+  **What was fixed, and what was deliberately not.** Until 2026-08-30
+  `LUCILLE_CONNLIMIT` hooked INPUT only, while `:8444` is docker-published and
+  therefore DNAT'd and FORWARDed — so its ceiling was present, correctly formed
+  and **unreachable**. Its counter had read 0 for six days and was believed to
+  be an idle ceiling. Lucille#1374 moved published ports into a DOCKER-USER
+  chain; the ceiling now demonstrably fires (counter 80 -> 85 under a 25-
+  connection burst from one /32, at a chosen time, control proven first).
+
+  **`:8444` got the ceiling but NOT a Cloudflare allowlist**, unlike `:2096`.
+  That was a deliberate call, not an omission: the lock's failure mode is losing
+  the hub itself — the coordination channel every agent depends on — and
+  recovery needs VM access. `:2096` gained an env-var escape hatch in
+  Lucille#1372; `:8444` has none.
+
+  **Why this is not simply "add the lock".** Nobody has enumerated who actually
+  connects to `:8444`. Concentration was measured (peak 1 concurrent per source
+  /32 against a ceiling of 20) but **provenance was not**. Locking before
+  knowing whether every client traverses the edge would cut off an unknown one
+  silently — a nightly cron, a CI job, a cloud agent, anything reaching the
+  origin by IP or by an unproxied name.
+
+  Note also that the measured headroom is a property of Cloudflare rather than
+  of the workload: 16 live connections arrived across 16 distinct edge /32s.
+  Serve `:8444` unproxied and a ceiling of 20 becomes three agents deep instead
+  of one edge node deep.
+
+  **How you know it worked.** Two steps, in order, and the first gates the
+  second:
+
+  1. Enumerate. Collect source addresses reaching `:8444` over a window that
+     actually contains your clients, and classify them against the *pinned*
+     `CLOUDFLARE_V4` list — the same list the rule would use, not an idealised
+     one. Scripts written and tested in both directions during this engagement:
+     `collect-8444-sources.sh` (read-only, samples over a window) piped into
+     `classify-8444-sources.py` (exits non-zero and names the addresses that
+     would have been cut off). A clean result is only as good as the window, so
+     a nightly job needs a window containing a night.
+  2. Only if step 1 is clean: ship a `SWITCHBOARD_CF_ONLY` hatch **first**,
+     mirroring `ISLAND_CF_ONLY` and surfaced in `docker-compose.vm.yml` so it
+     can be flipped without editing a file on the box — then add the allowlist.
+     Shipping the lock before the hatch means the recovery path for "the hub is
+     unreachable" requires reaching the box.
+
+  Done means: direct-to-origin on `:8444` refused **and** the hub still reachable
+  by every real client — verified the way `:2096` was, by a counter moving on
+  demand rather than by a rule existing.

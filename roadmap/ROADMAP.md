@@ -26,12 +26,21 @@ Claim before starting: `roadmap claim <key>`
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`robots-policy-for-public-hosts`** — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
+- **`hub-origin-reachable-bypassing-the-edge`** — The hub's origin answers directly by IP, so its Cloudflare edge is optional
+  - ↔ related: **`identity-rebinds-on-branch-change`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
+  - ↔ related: **`standing-checks-that-nothing-runs`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
+- **`identity-rebinds-on-branch-change`** — A branch checkout silently mints a new agent identity, orphaning leases, DMs and status
+  - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
+  - ↔ related: **`joining-agent-sees-empty-inbox`** — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
 - **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
   - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - ↔ related: **`identity-rebinds-on-branch-change`** — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
+- **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
+  - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
   - ↔ related: **`write-parity-across-surfaces`** — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
 - **`write-parity-across-surfaces`** — The three surfaces do not offer the same writes, and MCP is the thin one
@@ -70,6 +79,8 @@ graph TD
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
   connect_failure_message["Name the URL a failed connection actually tried"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
+  hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
+  identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
@@ -77,6 +88,7 @@ graph TD
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
+  standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
@@ -86,6 +98,9 @@ graph TD
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
+  hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
+  hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
+  identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
@@ -369,6 +384,162 @@ graph TD
 
 </details>
 
+### `hub-origin-reachable-bypassing-the-edge`
+
+- **title:** The hub's origin answers directly by IP, so its Cloudflare edge is optional
+- **status:** ready
+- **arc:** hub-boundary
+- **related to** (not a dependency — both are startable):
+  - `identity-rebinds-on-branch-change` — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
+  - `standing-checks-that-nothing-runs` — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
+- **refs:**
+  - `https://github.com/gald33/Lucille/pull/1374`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Measured 2026-08-30 from an external, non-Cloudflare
+> client, with a positive control in the same run.
+>
+>     control  https://switchboard.lucille-ai.com/health  -> 200, server: cloudflare, cf-ray present
+>     probe    --resolve …:8444:<origin ip> /health       -> 200, server: uvicorn, NO cf-ray, connect 0.070
+>
+> The hub answers on its origin port to anyone who declines the edge. Cloudflare
+> is therefore optional for reaching it, which makes edge-side protection
+> optional too.
+>
+> **What was fixed, and what was deliberately not.** Until 2026-08-30
+> `LUCILLE_CONNLIMIT` hooked INPUT only, while `:8444` is docker-published and
+> therefore DNAT'd and FORWARDed — so its ceiling was present, correctly formed
+> and **unreachable**. Its counter had read 0 for six days and was believed to
+> be an idle ceiling. Lucille#1374 moved published ports into a DOCKER-USER
+> chain; the ceiling now demonstrably fires (counter 80 -> 85 under a 25-
+> connection burst from one /32, at a chosen time, control proven first).
+>
+> **`:8444` got the ceiling but NOT a Cloudflare allowlist**, unlike `:2096`.
+> That was a deliberate call, not an omission: the lock's failure mode is losing
+> the hub itself — the coordination channel every agent depends on — and
+> recovery needs VM access. `:2096` gained an env-var escape hatch in
+> Lucille#1372; `:8444` has none.
+>
+> **Why this is not simply "add the lock".** Nobody has enumerated who actually
+> connects to `:8444`. Concentration was measured (peak 1 concurrent per source
+> /32 against a ceiling of 20) but **provenance was not**. Locking before
+> knowing whether every client traverses the edge would cut off an unknown one
+> silently — a nightly cron, a CI job, a cloud agent, anything reaching the
+> origin by IP or by an unproxied name.
+>
+> Note also that the measured headroom is a property of Cloudflare rather than
+> of the workload: 16 live connections arrived across 16 distinct edge /32s.
+> Serve `:8444` unproxied and a ceiling of 20 becomes three agents deep instead
+> of one edge node deep.
+>
+> **How you know it worked.** Two steps, in order, and the first gates the
+> second:
+>
+> 1. Enumerate. Collect source addresses reaching `:8444` over a window that
+>    actually contains your clients, and classify them against the *pinned*
+>    `CLOUDFLARE_V4` list — the same list the rule would use, not an idealised
+>    one. Scripts written and tested in both directions during this engagement:
+>    `collect-8444-sources.sh` (read-only, samples over a window) piped into
+>    `classify-8444-sources.py` (exits non-zero and names the addresses that
+>    would have been cut off). A clean result is only as good as the window, so
+>    a nightly job needs a window containing a night.
+> 2. Only if step 1 is clean: ship a `SWITCHBOARD_CF_ONLY` hatch **first**,
+>    mirroring `ISLAND_CF_ONLY` and surfaced in `docker-compose.vm.yml` so it
+>    can be flipped without editing a file on the box — then add the allowlist.
+>    Shipping the lock before the hatch means the recovery path for "the hub is
+>    unreachable" requires reaching the box.
+>
+> Done means: direct-to-origin on `:8444` refused **and** the hub still reachable
+> by every real client — verified the way `:2096` was, by a counter moving on
+> demand rather than by a rule existing.
+
+</details>
+
+### `identity-rebinds-on-branch-change`
+
+- **title:** A branch checkout silently mints a new agent identity, orphaning leases, DMs and status
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `hub-origin-reachable-bypassing-the-edge` — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
+  - `joining-agent-sees-empty-inbox` — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
+- **refs:**
+  - `src/switchboard/client.py:157`
+  - `src/switchboard/client.py:195`
+  - `src/switchboard/client.py:218`
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Observed live on 2026-08-29 in the `island-access`
+> coordination room — three agents under four ids, and the overcount is the
+> bug. It cost that room a wrong ruling and two rounds of correspondence
+> before anyone found the cause. The first draft of this item called it a
+> "four-agent room", which is the same miscount happening again in the
+> writeup about it.
+>
+> **The derivation.** `detect_identity` (`client.py:195-201`) builds an unpinned
+> id as `kind-<branch-slug>-<host>-<session>`, where the session component comes
+> from `session_suffix()` (`client.py:157-161`) hashing the first of
+> `SWITCHBOARD_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`,
+> `CLAUDE_CODE_HOST_SESSION_ID`, `TERM_SESSION_ID`. The branch is therefore part
+> of who you are, and the session suffix is stable across processes — so **one
+> session that checks out a different branch registers as a different agent.**
+>
+> **This is not a bug in the implementation.** `whoami` says the identity is
+> derived from repo + branch + session; it does exactly what it documents. It is
+> a bug in consequence, and the consequence is only visible from outside.
+>
+> **What breaks on the transition, none of it with an error:**
+> - leases held under the old id cannot be renewed or released by the new one
+> - DMs addressed to the old id go to a channel nobody is listening on
+> - the agent's `coord/status/<id>` entry stops being the one anyone reads
+> - the roster gains a phantom peer, carrying the same task string, because the
+>   status was written by the same session before the checkout
+>
+> **Observed, not inferred.** Agent `TvE4mh2q6CjLvlRYS3dS9Q` was instructed by
+> the room's coordinator to open a PR. Opening a PR requires a branch. On
+> `claude/connlimit-island-hatch-ceiling` the same session registered as
+> `igi5Rw8b9E2SKL6ccDFkxw`. Verified by switching branches and back in one
+> worktree. The coordinator read the roster, saw two ids with one task string,
+> and issued a formal role split to resolve a contention that did not exist.
+>
+> **The identity change was a side effect of obeying an instruction.** That is
+> what makes it worth fixing rather than documenting: the agents most likely to
+> hit it are the ones doing what they were told to do, and "open a PR" is the
+> most ordinary instruction there is.
+>
+> **The corroboration trap, worth recording because it is how the wrong reading
+> survived scrutiny.** The coordinator cited differing `meta.pid` values (11844
+> vs 14592) as independent evidence of two sessions. It is not evidence of
+> anything: the CLI is not a daemon, so every invocation is a fresh process and
+> any two calls by one agent show different pids. Two independent-looking
+> signals, one non-fact. **On this hub neither a new `agent_id` nor a new pid is
+> evidence of a new agent**, and any room that counts roster rows will overcount
+> every agent it asked to ship something.
+>
+> **`identity_drift_warning` already exists for the neighbouring case.**
+> `client.py:218` warns when an id was derived outside a git checkout — the
+> *directory* half of the same problem. There is no equivalent for the branch
+> half, which is the one an agent reaches by working normally rather than by
+> running a command from the wrong place.
+>
+> **The fix is not settled, and "stop deriving from branch" is probably wrong** —
+> that derivation is load-bearing for one-agent-per-branch rooms. Plausible
+> shapes, cheapest first: `whoami` reporting that this session has registered
+> under a different id before; a warning when a known session's branch changes
+> under it; or carrying leases and the DM channel across a rebind so the old id
+> forwards to the new one.
+>
+> **How you know it worked.** In one worktree, register on branch A, take a
+> lease, check out branch B, and call any coordination primitive. Either the
+> lease and the DM channel follow the session, or the response says in words
+> that this session has been renamed and names the previous id. What must stop
+> being true is that the only way to discover the rebind is a third party
+> noticing two roster rows and guessing why.
+
+</details>
+
 ### `init-writes-rooms-file`
 
 - **title:** Make init produce the rooms record the model says is authoritative
@@ -426,6 +597,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `clients-that-cannot-post` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - `connect-failure-message` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - `identity-rebinds-on-branch-change` — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
   - `write-parity-across-surfaces` — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **refs:**
   - `docs/environments.md`
@@ -724,6 +896,67 @@ graph TD
 > the schema so new hubs never create it, and no migration drops it, because
 > deleting data on deploy is the wrong default. Decide explicitly whether that
 > gets a cleanup path or a documented "it is inert, leave it".
+
+</details>
+
+### `standing-checks-that-nothing-runs`
+
+- **title:** Three checks exist to catch silent decay, and nothing is scheduled to run any of them
+- **status:** ready
+- **arc:** hub-boundary
+- **related to** (not a dependency — both are startable):
+  - `hub-origin-reachable-bypassing-the-edge` — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Identified across the island-access engagement,
+> 2026-08-29/30, and recorded here because each check was written, tested, and
+> then left with no trigger. A check nobody runs is indistinguishable from a
+> check nobody wrote — except that it looks like coverage.
+>
+> Three, each guarding something that decays without anyone touching it:
+>
+> **1. Cloudflare range drift.** `scripts/check_cloudflare_ranges.py` (Lucille#1372)
+> diffs the pinned `CLOUDFLARE_V4` list against Cloudflare's published one and
+> was observed firing in both directions against synthetic fixtures. It is
+> deliberately off the container start path, so a failed fetch degrades to "we
+> did not check" rather than "the island will not boot" — which also means
+> **nothing invokes it at all.** It is a script for CI or cron with neither.
+>
+> The asymmetry is what makes this urgent rather than tidy: if Cloudflare ADDS a
+> range, readers behind the new PoPs are dropped **while C1-style checks keep
+> passing**, because our own probe lands on a PoP still in the list. "It works
+> for me", and it is the likelier direction, since Cloudflare grows. Pinned and
+> live were identical on 2026-08-30 (15/15) — which is exactly when a detector
+> is easiest to forget.
+>
+> **2. `:8444` source provenance.** `collect-8444-sources.sh` |
+> `classify-8444-sources.py`, written and tested in both directions during the
+> engagement. Needed once as the prerequisite in
+> [[hub-origin-reachable-bypassing-the-edge]] — and then periodically, because
+> the measured ceiling headroom (peak 1 concurrent per source /32 against a
+> ceiling of 20) is **a property of Cloudflare, not of the workload**: 16 live
+> connections arrived across 16 distinct edge /32s. Serve the hub unproxied and
+> 20 becomes three agents deep. Nothing would announce that change.
+>
+> **3. The VM's global IPv6.** The `:2096` Cloudflare lock is v4-only, and is
+> complete rather than partial **solely because `ip -6 addr show scope global`
+> was empty on 2026-08-29.** Every other precondition here changes only when one
+> of us changes it; this one can change because a *provider* enabled something.
+> Nothing in change control would catch it, the lock silently becomes half a
+> lock, C2 can pass over v4 while v6 walks in, and every signal stays green.
+>
+> **How you know it worked.** Each check runs on a schedule whose period is
+> shorter than the decay it guards, and a failure reaches a person rather than a
+> log — a filed issue, a notification, something with a reader. Cheapest
+> plausible shape is one scheduled job running all three and opening an issue on
+> any non-zero exit; the drift checker already distinguishes exit 1 (drift found)
+> from exit 2 (could not check), and that distinction must survive, because
+> collapsing them reintroduces the silent pass the check exists to prevent.
+>
+> Do not schedule these on the box they watch. The IPv6 and provenance checks
+> need the VM, but a scheduler living there cannot report that the VM is the
+> thing that broke.
 
 </details>
 

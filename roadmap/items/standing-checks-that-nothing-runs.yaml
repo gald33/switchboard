@@ -1,0 +1,59 @@
+id: standing-checks-that-nothing-runs
+title: Three checks exist to catch silent decay, and nothing is scheduled to run any of them
+status: ready
+arc: hub-boundary
+blocked_on: []
+related_to:
+- key: hub-origin-reachable-bypassing-the-edge
+  note: 'That item needs one of these checks run once as its prerequisite; this one
+    is about all three never running again afterwards. Read that one first for what
+    the :8444 enumeration is for.'
+evidence: |
+  **Not a filed issue.** Identified across the island-access engagement,
+  2026-08-29/30, and recorded here because each check was written, tested, and
+  then left with no trigger. A check nobody runs is indistinguishable from a
+  check nobody wrote — except that it looks like coverage.
+
+  Three, each guarding something that decays without anyone touching it:
+
+  **1. Cloudflare range drift.** `scripts/check_cloudflare_ranges.py` (Lucille#1372)
+  diffs the pinned `CLOUDFLARE_V4` list against Cloudflare's published one and
+  was observed firing in both directions against synthetic fixtures. It is
+  deliberately off the container start path, so a failed fetch degrades to "we
+  did not check" rather than "the island will not boot" — which also means
+  **nothing invokes it at all.** It is a script for CI or cron with neither.
+
+  The asymmetry is what makes this urgent rather than tidy: if Cloudflare ADDS a
+  range, readers behind the new PoPs are dropped **while C1-style checks keep
+  passing**, because our own probe lands on a PoP still in the list. "It works
+  for me", and it is the likelier direction, since Cloudflare grows. Pinned and
+  live were identical on 2026-08-30 (15/15) — which is exactly when a detector
+  is easiest to forget.
+
+  **2. `:8444` source provenance.** `collect-8444-sources.sh` |
+  `classify-8444-sources.py`, written and tested in both directions during the
+  engagement. Needed once as the prerequisite in
+  [[hub-origin-reachable-bypassing-the-edge]] — and then periodically, because
+  the measured ceiling headroom (peak 1 concurrent per source /32 against a
+  ceiling of 20) is **a property of Cloudflare, not of the workload**: 16 live
+  connections arrived across 16 distinct edge /32s. Serve the hub unproxied and
+  20 becomes three agents deep. Nothing would announce that change.
+
+  **3. The VM's global IPv6.** The `:2096` Cloudflare lock is v4-only, and is
+  complete rather than partial **solely because `ip -6 addr show scope global`
+  was empty on 2026-08-29.** Every other precondition here changes only when one
+  of us changes it; this one can change because a *provider* enabled something.
+  Nothing in change control would catch it, the lock silently becomes half a
+  lock, C2 can pass over v4 while v6 walks in, and every signal stays green.
+
+  **How you know it worked.** Each check runs on a schedule whose period is
+  shorter than the decay it guards, and a failure reaches a person rather than a
+  log — a filed issue, a notification, something with a reader. Cheapest
+  plausible shape is one scheduled job running all three and opening an issue on
+  any non-zero exit; the drift checker already distinguishes exit 1 (drift found)
+  from exit 2 (could not check), and that distinction must survive, because
+  collapsing them reintroduces the silent pass the check exists to prevent.
+
+  Do not schedule these on the box they watch. The IPv6 and provenance checks
+  need the VM, but a scheduler living there cannot report that the VM is the
+  thing that broke.

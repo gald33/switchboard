@@ -41,7 +41,7 @@ issue — read off a line in the README rather than reported by anyone.
 
 ### 🟠 What protects a room once the hub stops authorizing anyone
 
-`hub-boundary` · 4 item(s), 3 startable
+`hub-boundary` · 6 item(s), 5 startable
 
 `https://github.com/gald33/switchboard/issues/61` · `https://github.com/gald33/switchboard/issues/73` · `docs/model.md` · `docs/encryption.md`
 
@@ -71,10 +71,12 @@ under pressure.
 | `stale-resolver-references` | ready | now |
 | `seal-agent-meta` | ready | next |
 | `abuse-control-after-authorization` | deferred | — |
+| `hub-origin-reachable-bypassing-the-edge` | ready | — |
+| `standing-checks-that-nothing-runs` | ready | — |
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 9 item(s), 8 startable
+`setup-and-first-run` · 10 item(s), 9 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -99,6 +101,7 @@ wrong says so.
 | `connect-failure-message` | ready | next |
 | `init-writes-rooms-file` | ready | next |
 | `clients-that-cannot-post` | ready | — |
+| `identity-rebinds-on-branch-change` | ready | — |
 | `joining-agent-sees-empty-inbox` | ready | — |
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
