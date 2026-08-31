@@ -355,9 +355,13 @@ registration step. Nothing about the workflow is switchboard-specific: it
 just needs a runner with Docker and a checkout of this repo somewhere
 (`SWITCHBOARD_DEPLOY_DIR`, default `~/switchboard`).
 
-Auth mode (`SWITCHBOARD_TOKEN` / `SWITCHBOARD_KEYS_FILE` /
-`SWITCHBOARD_SELF_ISSUED_KEYS`) lives entirely in `.env`, which is gitignored
-and untouched by `git fetch`/`checkout`. Don't hand-edit the mode into
+Auth mode (`SWITCHBOARD_TOKEN`) lives entirely in `.env`, which is gitignored
+and untouched by `git fetch`/`checkout`. There is one mode now: an optional
+bearer token, a front door rather than authorization. `SWITCHBOARD_KEYS_FILE`
+and `SWITCHBOARD_SELF_ISSUED_KEYS` are **read by nothing** — the resolvers
+behind them went in #73 and #76 — so setting either configures a hub that does
+not exist, and *unsetting the token* leaves no perimeter at all rather than
+falling back to one. Don't hand-edit the mode into
 `docker-compose.yml` itself — that file is meant to stay identical to
 `origin/main` so an automated pull never has local changes to stomp on or
 conflict with.

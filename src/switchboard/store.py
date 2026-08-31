@@ -119,16 +119,13 @@ CREATE TABLE IF NOT EXISTS counters (
     value INTEGER NOT NULL
 );
 
--- Self-issued auth keys (see auth.SelfIssuedKeyResolver): a client generates
--- its own token locally and the hub binds it to a workspace on first use.
--- First-claim-wins in both directions — a token binds to exactly one
--- workspace, and a workspace accepts exactly one token — enforced by this
--- table having both columns as independently-checked uniqueness boundaries,
--- not a composite key. Unlike everything else in this schema, rows here do
--- NOT expire: a token is a credential, not coordination state, and losing it
--- on a timer would be a surprise outage rather than the usual harmless decay.
--- token_hash, never the raw token — this table is the one place in the store
--- that would matter if the database file leaked.
+-- There is no key_bindings table. A long comment describing one used to sit
+-- here, in the present tense, after the table itself was removed in #73/#76 --
+-- prose about a credential store, inside the live schema, for a store that does
+-- not exist. Room identifiers are hash(workspace_token), derived rather than
+-- claimed, so nothing binds a token to a workspace and there is nothing to keep.
+-- Removed 2026-08-31, after the same class of stale text in docs/managed-hub.md
+-- was read as current and cost a live hub its perimeter. History is in git.
 """
 
 
