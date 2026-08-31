@@ -49,11 +49,16 @@
          background: var(--ok); margin-right: 6px; vertical-align: middle; }
   .dot.off { background: #ef4444; }
   .dot.stale { background: var(--warn); }
-  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 18px;
-         padding: 18px; align-items: start; flex: 1; min-height: 0;
+  /* Not one width for every screen: 340px is right beside a laptop's
+     conversation and mean beside a desktop's, where the column stayed exactly
+     as wide while a thousand pixels went spare. */
+  main { display: grid; grid-template-columns: minmax(0,1fr) clamp(340px, 26vw, 560px);
+         gap: 18px; padding: 18px; align-items: start; flex: 1; min-height: 0;
          overflow: hidden; }
   main > div { min-height: 0; height: 100%; display: flex; flex-direction: column; }
-  main > div:last-child { overflow-y: auto; display: block; }
+  /* By name rather than by position: a third child added to `main` silently
+     stops `:last-child` matching the one it was written for. */
+  #side { overflow-y: auto; display: block; }
   section { background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
   section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
@@ -94,6 +99,54 @@
   .panel > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .panel .count { margin-left: auto; font-variant-numeric: tabular-nums;
                   letter-spacing: 0; }
+  .panel .wide { text-transform: none; letter-spacing: 0; margin-left: 4px; }
+  .detail { display: none; }
+
+  /* --- the board, given the window ------------------------------------------
+     A tree down one side and the whole of one entry down the other: the shape
+     the panel wanted all along and could not have in a sidebar. */
+  .wideboard { display: none; }
+  @media (min-width: 901px) {
+    main[data-pane="board"] { grid-template-columns: minmax(0,1fr);
+                              align-items: stretch; }
+    main[data-pane="board"] #talk, main[data-pane="board"] #side { display: none; }
+    main[data-pane="board"] .wideboard {
+      display: flex; flex-direction: column; min-height: 0; margin-bottom: 0;
+    }
+    .wideboard > h2 { flex: none; }
+    .wideboard #board-split {
+      display: grid; grid-template-columns: minmax(280px, 22%) minmax(0, 1fr);
+      flex: 1; min-height: 0;
+    }
+    .wideboard #board { overflow-y: auto; border-right: 1px solid var(--line); }
+    .wideboard .detail { display: block; overflow: auto; padding: 16px 20px; }
+    /* The tree is an index here, not a listing: the entry itself is on the
+       right, and repeating every value in both halves is how a wide view ends
+       up harder to read than the column it replaced. */
+    .wideboard #board > div > .body,
+    .wideboard #board > div > pre,
+    .wideboard #board > div > .clamp,
+    .wideboard #board > div > .sub { display: none; }
+    .wideboard #board > div { padding-top: 6px; padding-bottom: 6px; }
+    /* Wide enough that a value can keep its own line breaks rather than being
+       folded to fit — and scroll sideways on the rare one that still will not. */
+    .wideboard .detail pre { white-space: pre; overflow-x: auto; }
+    .wideboard .detail .clamp { max-height: none; }
+    .wideboard .detail .clamp::after, .wideboard .detail .more { display: none; }
+  }
+  .detail .key { font-family: var(--mono); font-size: 15px; font-weight: 600;
+                 overflow-wrap: anywhere; }
+  .detail .meta { color: var(--dim); font-size: 12px; margin: 4px 0 14px;
+                  display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .detail .body, .detail pre { font-size: 13px; }
+  .detail .nothing { color: var(--dim); font-size: 13px; }
+  /* A key is the row's own text, so it reads as text — and as something that
+     does something only where it does something. */
+  #board button.mono { color: var(--ink); text-align: left; }
+  .wideboard #board button.mono:hover { text-decoration: underline; }
+  /* Which entry the wide view is showing. */
+  #board > div.on { background: var(--accent-wash); }
+  #board > div.on button.mono { color: var(--accent); }
   .rows > div { padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .rows > div:last-child { border-bottom: 0; }
   /* The conversation scrolls itself and the page does not, so the roster and
@@ -267,8 +320,8 @@
     .pane .count { color: var(--dim); font-variant-numeric: tabular-nums; }
     .pane.on .count { color: #dbeafe; }
     .pane:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    main[data-pane="convo"] > div:last-child { display: none; }
-    main:not([data-pane="convo"]) > div:first-child { display: none; }
+    main[data-pane="convo"] #side { display: none; }
+    main:not([data-pane="convo"]) #talk { display: none; }
     main[data-pane="agents"] #p-leases, main[data-pane="agents"] #p-board,
     main[data-pane="leases"] #p-agents, main[data-pane="leases"] #p-board,
     main[data-pane="board"] #p-agents, main[data-pane="board"] #p-leases {
@@ -363,7 +416,7 @@
     class="count" data-count="board"></span></button>
 </nav>
 <main data-pane="convo">
-  <div>
+  <div id="talk">
     <section class="convo">
       <!-- Painted around rather than rewritten: the search box holds a caret and
            a selection, and a heading rebuilt every three seconds would take
@@ -380,7 +433,7 @@
       <button class="jump" id="jump" type="button" hidden></button>
     </section>
   </div>
-  <div>
+  <div id="side">
     <!-- Three panels of equal weight and no order: on a busy room the claims —
          the one thing here that expires — end up below a roster that never
          shrinks. A count in each heading says what is inside without opening
@@ -394,10 +447,30 @@
       <div class="rows" id="leases"></div>
     </details>
     <details class="panel" id="p-board" open>
-      <summary>Blackboard<span class="count" id="n-board" data-count="board"></span></summary>
-      <div class="rows" id="board"></div>
+      <summary>Blackboard<span class="count" id="n-board" data-count="board"></span>
+        <!-- The board is the one panel whose content has no natural width: a
+             key is a path and a value is whatever an agent wrote. In a 340px
+             column that is a JSON blob forty lines tall with the rest of the
+             screen unused, so it can have the screen. -->
+        <button class="link wide" id="board-wide" type="button"
+                aria-expanded="false">open</button>
+      </summary>
+      <div class="split" id="board-split">
+        <div class="rows" id="board"></div>
+        <div class="detail" id="board-detail"></div>
+      </div>
     </details>
   </div>
+  <!-- Where the board goes when it is given the window. The panes are *moved*
+       here rather than restyled in place: a `details` element puts everything
+       that is not its summary into a box of its own, which no selector can
+       portably reach and which a height cannot be passed through. The nodes
+       are the same nodes, so nothing the reader had folded, selected or
+       scrolled is disturbed by the move. -->
+  <section class="panel wideboard" id="wide-host" hidden>
+    <h2>Blackboard<span class="count" data-count="board"></span>
+      <button class="link" id="board-narrow" type="button">close</button></h2>
+  </section>
 </main>
 <footer id="foot"></footer>
 
@@ -910,9 +983,53 @@ for (const button of document.querySelectorAll(".pane")) {
   button.onclick = () => showPane(button.dataset.pane);
 }
 
+// --- and the same on a wide window, for the board alone ----------------------
+//
+// The switcher is for a window with room for one thing. A desktop has room for
+// both, and the board is still the panel that suffers most from a column: a key
+// is a path and a value is whatever an agent wrote, neither of which has any
+// reason to fit in 340px. So it can be opened across the window — the tree down
+// one side, the whole of one entry down the other — and closed again.
+function wideBoard(open) {
+  // The panes move; nothing about them is rebuilt. `render` addresses them by
+  // id and never by where they sit, so a fold, a selection and a scroll all
+  // survive being carried across the page.
+  (open ? $("wide-host") : $("p-board")).append($("board-split"));
+  $("wide-host").hidden = !open;
+  showPane(open ? "board" : "convo");
+  // Its own label never changes: while the board has the window this button is
+  // off screen with the sidebar it lives in, and the way back is the close in
+  // the wide view's heading.
+  $("board-wide").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+$("board-wide").onclick = (e) => {
+  // Opening the panel is not the same act as opening it across the window, and
+  // one click on a button inside a summary must not do both.
+  e.preventDefault();
+  wideBoard(document.querySelector("main").dataset.pane !== "board");
+};
+$("board-narrow").onclick = () => wideBoard(false);
+
+// A key in the sidebar is a way into the wide view rather than a control that
+// selects something nothing is showing: there is nowhere in a 340px column to
+// put the entry it just chose.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("[data-board]") || NARROW.matches) return;
+  if (document.querySelector("main").dataset.pane !== "board") wideBoard(true);
+});
+
 // Coming back to a wide window, everything is on screen at once again, so the
 // pane a reader chose down there is not a state to still be in.
-NARROW.addEventListener("change", (e) => { if (!e.matches) showPane("convo"); });
+// Coming back to a narrow window, the board cannot hold two columns, so the
+// wide view is not a state to still be in either.
+NARROW.addEventListener("change", () => {
+  wideBoard(false);
+  // Crossing the breakpoint changes what a row *is* — a key is a control on one
+  // side of it and text on the other — and nothing else would ask for the
+  // repaint until the next poll, leaving a control that opens nothing.
+  if (latest) render(latest);
+});
 
 // --- the keyboard ------------------------------------------------------------
 //

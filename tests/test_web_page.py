@@ -1493,3 +1493,126 @@ def test_a_clock_says_when_and_not_only_how_long_ago(browser, page, room):
         assert errors == []
     finally:
         tab.close()
+
+
+@pytest.fixture(scope="module")
+def deep_board(hub):
+    """A board with the shapes a real room grows: nested paths, a value with
+    real structure in it, and a couple of scalars."""
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-deep", key=KEY)
+    agent = Client(config, agent_id="writer", key=KEY)
+    agent.register(name="writer", kind="local")
+    agent.post("build", "so the page has something to wait for")
+    agent.board_set("build/ci/unit/last-run", {
+        "suite": "pytest -q", "failed": 2, "duration_seconds": 412.5,
+        "failures": ["tests/test_lexer.py::test_escapes",
+                     "tests/test_lexer.py::test_unicode_identifiers"]})
+    agent.board_set("build/ci/lint", "green")
+    agent.board_set("handoff/lexer/state", {"phase": "escapes", "owner": "parser"})
+    agent.board_set("status", "the room is mid-rewrite")
+    yield config
+    agent.close()
+
+
+def test_the_board_can_have_the_window_on_a_wide_one(browser, page, deep_board):
+    """A key is a path and a value is whatever an agent wrote, neither of which
+    has any reason to fit in a 340px column — where one CI result was a JSON
+    blob forty lines tall with a thousand pixels of screen unused beside it.
+
+    So it can have the window: the tree as an index down one side, the whole of
+    one entry down the other.
+    """
+    tab = browser.new_context().new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.set_viewport_size({"width": 1600, "height": 950})
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", deep_board.url)
+        tab.fill("#f-workspace", deep_board.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        assert tab.query_selector("#board-detail").is_visible() is False
+
+        # A key in the sidebar is the way in: there is nowhere in a column to
+        # put the entry it just chose.
+        tab.click('[data-board="handoff/lexer/state"]')
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'board'", timeout=10_000)
+        assert "handoff/lexer/state" in tab.inner_text("#board-detail .key")
+
+        # The entry gets the larger half, and the tree is an index rather than a
+        # second copy of every value.
+        tree = tab.evaluate(
+            "document.getElementById('board').getBoundingClientRect().width")
+        detail = tab.evaluate(
+            "document.getElementById('board-detail').getBoundingClientRect().width")
+        assert detail > tree * 2
+        assert tab.eval_on_selector_all(
+            "#board pre", "els => els.every(e => e.offsetParent === null)")
+
+        # And a structured value keeps its own line breaks instead of being
+        # folded to fit, and is not clamped where there is room for it.
+        tab.click('[data-board="build/ci/unit/last-run"]')
+        tab.wait_for_function(
+            "document.querySelector('#board-detail .key').innerText"
+            ".includes('last-run')", timeout=10_000)
+        lines = tab.eval_on_selector(
+            "#board-detail pre",
+            "e => Math.round(e.getBoundingClientRect().height / 18)")
+        assert lines < 14                      # it is 41 in the column
+        assert tab.eval_on_selector_all(
+            "#board-detail .more", "els => els.every(e => e.offsetParent === null)")
+        assert tab.eval_on_selector_all("#board > div.on", "e => e.length") == 1
+
+        # Closing gives the conversation back.
+        tab.click("#board-narrow")
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'convo'", timeout=10_000)
+        assert tab.query_selector(".convo").is_visible() is True
+        assert tab.query_selector("#board-detail").is_visible() is False
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_a_narrow_window_has_no_room_for_the_wide_board_and_says_so_by_not_offering_it(
+    browser, page, deep_board,
+):
+    """Two columns do not fit, and a key that opens nothing is a dead control —
+    so on a phone the keys are text, and a wide view left open when the window
+    shrinks is not a state to stay in."""
+    tab = browser.new_context().new_page()
+    errors: list[str] = []
+    tab.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        tab.set_viewport_size({"width": 1600, "height": 950})
+        tab.goto(page, wait_until="networkidle")
+        tab.fill("#f-url", deep_board.url)
+        tab.fill("#f-workspace", deep_board.workspace)
+        tab.fill("#f-key", KEY)
+        tab.click("#settings-save")
+        tab.wait_for_function("document.querySelectorAll('.msg').length > 0",
+                              timeout=10_000)
+        tab.click("#board-wide")
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'board'", timeout=10_000)
+
+        tab.set_viewport_size({"width": 430, "height": 880})
+        tab.wait_for_function(
+            "document.querySelector('main').dataset.pane === 'convo'", timeout=10_000)
+        assert tab.query_selector("#wide-host").is_visible() is False
+        # The panes went back where they came from rather than being rebuilt.
+        assert tab.evaluate(
+            "document.getElementById('board-split').parentElement.id") == "p-board"
+
+        tab.click('.pane[data-pane="board"]')
+        tab.wait_for_timeout(300)
+        assert tab.eval_on_selector_all("#board [data-board]", "e => e.length") == 0
+        assert "the room is mid-rewrite" in tab.inner_text("#board")
+        assert errors == []
+    finally:
+        tab.close()

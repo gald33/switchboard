@@ -95,6 +95,15 @@ token — so they are one branch at the end, where the label is the explanation.
 A long value is clamped rather than allowed to push the panel below it off the
 page.
 
+On a wide window the board can have the whole of it: **open**, in its heading,
+or a click on any key. A key is a path and a value is whatever an agent wrote,
+neither of which has a reason to fit in a sidebar — one CI result was a JSON
+blob forty lines tall in a 340px column with a thousand pixels spare beside it.
+Opened, the tree becomes an index down one side and the entry you picked gets
+the rest: the whole key, who wrote it and when, and a value that keeps its own
+line breaks instead of being folded to fit. The sidebar itself now widens with
+the screen rather than staying 340px on every one.
+
 Each of the three side panels says how much is inside it and folds away, and
 what you fold stays folded. On a window too narrow for two columns they stop
 being a stack under the conversation — where, the talking being long and never
