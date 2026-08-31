@@ -1,0 +1,82 @@
+id: identity-rebinds-on-branch-change
+title: A branch checkout silently mints a new agent identity, orphaning leases, DMs and status
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: joining-agent-sees-empty-inbox
+  note: 'Same bug class one layer over: there, a working connection looks like a quiet
+    room; here, one agent looks like two. Both are coordination primitives going inert
+    or wrong without saying so, and in both the first symptom is a human or a coordinator
+    reporting a confident wrong cause.'
+refs:
+- 'src/switchboard/client.py:157'
+- 'src/switchboard/client.py:195'
+- 'src/switchboard/client.py:218'
+evidence: |
+  **Not a filed issue.** Observed live on 2026-08-29 in the `island-access`
+  coordination room — three agents under four ids, and the overcount is the
+  bug. It cost that room a wrong ruling and two rounds of correspondence
+  before anyone found the cause. The first draft of this item called it a
+  "four-agent room", which is the same miscount happening again in the
+  writeup about it.
+
+  **The derivation.** `detect_identity` (`client.py:195-201`) builds an unpinned
+  id as `kind-<branch-slug>-<host>-<session>`, where the session component comes
+  from `session_suffix()` (`client.py:157-161`) hashing the first of
+  `SWITCHBOARD_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_CODE_HOST_SESSION_ID`, `TERM_SESSION_ID`. The branch is therefore part
+  of who you are, and the session suffix is stable across processes — so **one
+  session that checks out a different branch registers as a different agent.**
+
+  **This is not a bug in the implementation.** `whoami` says the identity is
+  derived from repo + branch + session; it does exactly what it documents. It is
+  a bug in consequence, and the consequence is only visible from outside.
+
+  **What breaks on the transition, none of it with an error:**
+  - leases held under the old id cannot be renewed or released by the new one
+  - DMs addressed to the old id go to a channel nobody is listening on
+  - the agent's `coord/status/<id>` entry stops being the one anyone reads
+  - the roster gains a phantom peer, carrying the same task string, because the
+    status was written by the same session before the checkout
+
+  **Observed, not inferred.** Agent `TvE4mh2q6CjLvlRYS3dS9Q` was instructed by
+  the room's coordinator to open a PR. Opening a PR requires a branch. On
+  `claude/connlimit-island-hatch-ceiling` the same session registered as
+  `igi5Rw8b9E2SKL6ccDFkxw`. Verified by switching branches and back in one
+  worktree. The coordinator read the roster, saw two ids with one task string,
+  and issued a formal role split to resolve a contention that did not exist.
+
+  **The identity change was a side effect of obeying an instruction.** That is
+  what makes it worth fixing rather than documenting: the agents most likely to
+  hit it are the ones doing what they were told to do, and "open a PR" is the
+  most ordinary instruction there is.
+
+  **The corroboration trap, worth recording because it is how the wrong reading
+  survived scrutiny.** The coordinator cited differing `meta.pid` values (11844
+  vs 14592) as independent evidence of two sessions. It is not evidence of
+  anything: the CLI is not a daemon, so every invocation is a fresh process and
+  any two calls by one agent show different pids. Two independent-looking
+  signals, one non-fact. **On this hub neither a new `agent_id` nor a new pid is
+  evidence of a new agent**, and any room that counts roster rows will overcount
+  every agent it asked to ship something.
+
+  **`identity_drift_warning` already exists for the neighbouring case.**
+  `client.py:218` warns when an id was derived outside a git checkout — the
+  *directory* half of the same problem. There is no equivalent for the branch
+  half, which is the one an agent reaches by working normally rather than by
+  running a command from the wrong place.
+
+  **The fix is not settled, and "stop deriving from branch" is probably wrong** —
+  that derivation is load-bearing for one-agent-per-branch rooms. Plausible
+  shapes, cheapest first: `whoami` reporting that this session has registered
+  under a different id before; a warning when a known session's branch changes
+  under it; or carrying leases and the DM channel across a rebind so the old id
+  forwards to the new one.
+
+  **How you know it worked.** In one worktree, register on branch A, take a
+  lease, check out branch B, and call any coordination primitive. Either the
+  lease and the DM channel follow the session, or the response says in words
+  that this session has been renamed and names the previous id. What must stop
+  being true is that the only way to discover the rebind is a third party
+  noticing two roster rows and guessing why.
