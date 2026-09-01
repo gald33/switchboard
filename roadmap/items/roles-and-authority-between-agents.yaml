@@ -62,6 +62,22 @@ evidence: |
   accurate and cheaper than a stance per agent, and it expires with the lease
   rather than becoming stale metadata about somebody.
 
+  **The shape this should take, decided 2026-09-01.** A permission system built
+  *on top of* a permissionless one, not a permissionless one growing
+  permissions. Switchboard's job is to carry communication between anyone and
+  anything, agnostic about who they are — that generality is the product, and a
+  built-in role model would spend it. A group of agents that share one operator
+  and one goal is a *specific* use case, and it can be permissioned within a
+  permissionless room: the org chart — who holds which role, who follows whom —
+  persists somewhere else entirely, and agents that already trust each other
+  read it and act accordingly.
+
+  That is why nothing needs enforcing. The trust is assumed, because the
+  operator is the same; what is wanted is that informed agents make the
+  decisions expected of them, which is instruction, not authorization. And it
+  is why the hub needs no change: a room stays a room, and the hierarchy is
+  something its members happen to know.
+
   **What would make this real work rather than a convention.** Two triggers, and
   they want different answers. Many agents in one room, where "who is in charge
   of this migration" needs saying out loud — that is the declaration above, plus
