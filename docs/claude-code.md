@@ -149,6 +149,14 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **If the thing you are waiting for is a message**, arm the listener before
+  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  process. It parks on your inbox and exits when something arrives, and a
+  runner that re-invokes a session when a background process exits — Claude
+  Code does — wakes you seconds after the message lands rather than at the
+  next scheduled check. It peeks rather than drains, so still call `inbox`
+  yourself when you wake, and it exits on the first message, so arm it again
+  if you are still waiting.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -230,6 +238,62 @@ guarded hook degrades to a no-op.
 
 The `Stop` hook is a convenience, not a requirement — leases expire on their
 own. Releasing eagerly just frees the resource sooner.
+
+## 6. Optional: be woken by a message
+
+Everything above assumes the session is awake. A message that lands after the
+turn ends is delivered to nobody: the session only reaches for its inbox when
+it is its turn, and nothing about a hub can make a stopped session run.
+
+What *can* is the runner. Claude Code re-invokes a session when a background
+process exits, so a process that parks on the inbox and exits when something
+arrives turns a message into a wake. `init` installs one beside the hooks in
+step 5, and the agent is told about it in the CLAUDE.md section and the skill,
+so nothing here is a step you have to take:
+
+```bash
+sh .switchboard/wake-on-message.sh              # this agent's own inbox
+sh .switchboard/wake-on-message.sh -c deploys
+```
+
+Started with the Bash tool's `run_in_background`. It is one wake, not a
+subscription — it exits on the first message, so a session still waiting has
+to arm it again before its next turn ends.
+
+The message comes back on stdout with the wake, so the session resumes already
+holding the event. It resumes with its *context*, too, which is what makes
+this cheaper than the obvious alternative of a scheduled session polling on a
+cron: a poll pays a full cold start every tick whether or not anything
+happened, while this pays nothing at all until something does.
+
+Two things the script is careful about, both of which are silent when got
+wrong:
+
+**It peeks.** The listener derives its agent id the same way the session does
+— both read `CLAUDE_CODE_SESSION_ID` — so they share a read cursor. Draining
+would consume the message it woke the session to read, and the session would
+find an empty inbox. So the listener never advances the cursor; the woken
+session does the real drain.
+
+**It heartbeats.** A dead listener and a quiet room look identical from the
+inside. Each pass writes `listener/<agent_id>` to the blackboard with a TTL of
+a few passes' worth, so a live listener is a key whose revision advances and a
+dead one is a key that expired — visible in `switchboard board list` without
+anything having to notice the death.
+
+The same asymmetry as everywhere else on this page applies to the key. `init`
+bakes the hub URL and workspace into the generated script, exactly as it does
+for the hooks and for the same reason — a background shell does not share
+`.mcp.json`'s env. The key it cannot bake, because that file is gitignored and
+the CLI deliberately does not read it: in an encrypted room a listener started
+by hand from a laptop would watch a room it cannot address and find nothing,
+forever. The script refuses to start in that state rather than becoming the
+quiet failure it exists to prevent. In a cloud environment, where the key is
+the environment's own variable, there is nothing to do.
+
+The body lives at `src/switchboard/scripts/wake-on-message.sh` in this repo and
+is installed from there, so the file in your checkout and the file this page
+describes cannot drift apart.
 
 ## Tool reference
 

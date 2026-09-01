@@ -71,6 +71,14 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **If the thing you are waiting for is a message**, arm the listener before
+  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  process. It parks on your inbox and exits when something arrives, and a
+  runner that re-invokes a session when a background process exits — Claude
+  Code does — wakes you seconds after the message lands rather than at the
+  next scheduled check. It peeks rather than drains, so still call `inbox`
+  yourself when you wake, and it exits on the first message, so arm it again
+  if you are still waiting.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns

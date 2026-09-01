@@ -301,32 +301,6 @@ interval if you're waiting on one specific reply, longer for a general
 "check in later." When it fires, `checkin` tells you whether anything
 changed.
 
-Better than a scheduled check, when your harness offers it: some runners
-re-invoke a session when a **background process exits**. Where that is true,
-a process that parks on `inbox` with a long `wait` and exits the moment
-something arrives is a wake triggered by the message itself rather than by a
-clock — you are woken seconds after the reply lands instead of at the next
-tick, and you burn nothing while the room is quiet.
-
-`switchboard init` installs one: `.switchboard/wake-on-message.sh`, beside the
-lifecycle hooks. Run it, rather than writing your own — a hand-rolled
-`inbox --wait` in the background has two ways to be silently useless: draining
-the message it was meant to hand you, and dying in a way that looks exactly
-like a quiet room. If the file is not there, this repo was initialised before
-it existed and `switchboard init` will add it.
-
-Using one is three steps, and the third is the one that gets forgotten:
-
-1. **Arm it before you end the turn**, not after you notice you are waiting.
-2. **When the wake arrives**, the message is on the process's stdout — but
-   only as a *peek*. The listener deliberately does not advance your read
-   cursor, because it shares an agent id with you and draining would consume
-   the message it woke you for. So call `inbox` or `checkin` yourself to
-   actually take delivery.
-3. **Re-arm if you are still waiting.** The listener exits on the first
-   message; it is one wake, not a subscription. A turn that ends without
-   arming it again is as unreachable as one that never armed it at all.
-
 If your current tool list has nothing like that, say so plainly in your final
 message instead of implying the wait will resolve itself — a human or the
 next turn needs to know picking this back up is on them, not on Switchboard.
