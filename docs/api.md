@@ -185,6 +185,10 @@ otherwise.
 Each message is returned once per agent; the cursor advances past everything
 visible, including filtered-out messages, so a skipped message never re-scans.
 
+`DELETE /agents/{agent_id}` takes the id **as the roster prints it** — already
+blinded, and used verbatim. An agent whose identity has drifted retires its own
+ghost that way; blinding it a second time is what made a ghost unretirable.
+
 ### `GET /channels?workspace=`
 Active channels with message counts.
 
