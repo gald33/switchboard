@@ -162,6 +162,20 @@ evidence: |
   is probably still busy; p95 is rarely disturbed at the cost of peers waiting
   longer than they needed to. Severity picks the quantile.
 
+  Where that history lives decides how much the choice is worth. The model is a
+  local SQLite store (`timing.py:290`, `~/.switchboard/timing.db`), never
+  shared, so it does accumulate across sessions — on a machine with a home
+  directory that persists. A disposable cloud container has none, so every run
+  starts on the bootstrap priors: three fixed `(p50, p95)` pairs keyed by
+  effort, wide on purpose, with each tier needing `MIN_SAMPLES` (5) before it
+  is trusted. So a laptop agent choosing p95 is choosing something it measured,
+  and a fresh cloud agent choosing p95 is choosing a deliberately vague prior.
+  Both are honest; they are not equally informative, and a DND deadline built
+  on the second should be shorter than one built on the first.
+
+  (Distinct from the reputation point above: the timing history persists, the
+  knowledge of who inflated an `urgent` does not — nothing records it at all.)
+
     **Modes, and why there are fewer of them than there look to be.** The obvious
   taxonomy — wake once, wake repeatedly, wake until a deadline — does not
   survive contact with the mechanism.
