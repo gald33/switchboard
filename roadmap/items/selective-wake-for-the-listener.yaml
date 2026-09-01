@@ -48,6 +48,21 @@ evidence: |
   holds the key and has already decrypted the message in order to print it, so
   matching happens on plaintext that exists anyway, at no extra round trip.
 
+  **The bounded park is observed too, same day, second run.** Agent A armed
+  with `--until +120`, ended its turn, and was woken at its own deadline with
+  exit 2 — then re-armed without being told again, and the second listener
+  found the peer's message already waiting and woke A a second time, which
+  replied 40 seconds after the deadline. So a non-zero exit wakes a session as
+  surely as a message does, which is what everything above depends on, and
+  re-arming (step 3, the one most likely to be dropped) happened unprompted.
+
+  That run also produced the presence fix now in the script: the listener wrote
+  its heartbeat and announced itself nowhere, so `agents` was empty and the
+  sending peer was warned its message would be "read by nobody". The peer
+  concluded the listener had died — correctly reasoning from the evidence it
+  had, about an agent that was working. A listener now announces each pass with
+  the deadline as `--back-in`.
+
   **The ceiling is built (2026-09-01); the filters are not.** `--until` takes
   an ISO time, `+SECONDS`, or `forecast:p50`/`forecast:p95` from the local
   timing model, resolved once at startup and clamped against the last poll so
