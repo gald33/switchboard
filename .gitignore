@@ -12,6 +12,7 @@ build/
 *.db-shm
 .env
 .cursor/
+.codex/
 **/.claude/settings.local.json
 
 # This repo does not commit its own switchboard wiring. The hooks and
@@ -26,3 +27,6 @@ build/
 .claude/worktrees/
 CLAUDE.md
 uv.lock
+
+# repoctx: generated index + feedback state, per-machine.
+.repoctx/
