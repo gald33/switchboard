@@ -1794,11 +1794,27 @@ def cmd_leave(args: argparse.Namespace) -> int:
     actually present is worth more to whoever reads it next.
     """
     with _make_client(args) as hub:
-        removed = hub.deregister()
+        target = None
+        if args.agent:
+            # Verbatim, and only if the roster is actually showing it. An id
+            # read off the roster has already been blinded; blinding it again
+            # is what made a ghost unretirable — three attempts across three
+            # drifted identities, each told "was not on the roster" while the
+            # roster printed exactly that id.
+            roster = {a.get("agent_id") for a in hub.agents()}
+            if args.agent not in roster:
+                print(f"error: {args.agent} is not on this roster. `agents` "
+                      "lists the ids this command accepts; a local id, a "
+                      "branch or a name is not one of them.", file=sys.stderr)
+                return EXIT_ERROR
+            target = args.agent
+        removed = hub.deregister(agent_id=target)
     if args.json:
-        _print_json({"left": removed})
+        _print_json({"left": removed, "agent_id": target or hub.agent_id})
     elif not args.quiet:
-        print("left the roster" if removed else "was not on the roster")
+        who = f" {target}" if target else ""
+        print(f"left the roster{who}" if removed
+              else f"was not on the roster{who}")
     return EXIT_OK
 
 
@@ -5125,7 +5141,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ttl", type=float, help="seconds to extend it by")
     p.set_defaults(func=cmd_renew)
 
-    p = sub.add_parser("leave", help="drop off the roster deliberately")
+    p = sub.add_parser(
+        "leave", help="drop off the roster deliberately",
+        description="Retire an agent from the roster. Yourself by default, or "
+                    "an id `agents` is showing — which is how you clear a ghost "
+                    "of your own, left behind when a branch checkout re-derived "
+                    "your identity and stranded the old one with a return time "
+                    "it will never honour.",
+    )
+    p.add_argument("agent", nargs="?",
+                   help="an agent id as `agents` prints it (default: yourself)")
     p.set_defaults(func=cmd_leave)
 
     p = sub.add_parser("claims", help="list live leases")

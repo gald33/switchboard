@@ -1332,8 +1332,19 @@ class Client(_Base):
     def agents(self, workspace: str | None = None) -> list[dict[str, Any]]:
         return self._call("GET", "/agents", params={"workspace": self._ws(workspace)})["agents"]
 
-    def deregister(self, workspace: str | None = None) -> bool:
-        return self._call("DELETE", f"/agents/{self.agent_id}",
+    def deregister(self, workspace: str | None = None, *,
+                   agent_id: str | None = None) -> bool:
+        """Drop an agent off the roster. Yourself by default.
+
+        `agent_id` is a **wire** id — the one the roster prints — and is used
+        verbatim rather than blinded, because it has already been through that
+        transformation. Blinding it a second time is what made a ghost
+        unretirable: an agent whose identity had drifted read its old id off
+        the roster, passed it back, and was told it was not there while the
+        roster went on printing it.
+        """
+        target = agent_id or self.agent_id
+        return self._call("DELETE", f"/agents/{target}",
                           params={"workspace": self._ws(workspace)})["removed"]
 
     # --- leases ---
