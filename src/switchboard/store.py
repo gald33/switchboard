@@ -435,7 +435,13 @@ class Store:
                     name=excluded.name,
                     kind=excluded.kind,
                     branch=excluded.branch,
-                    task=excluded.task,
+                    -- Omitting a task keeps the one already there. A heartbeat
+                    -- is not a statement about what you are doing, and the old
+                    -- behaviour made it one: a bare `announce` silently blanked
+                    -- the task you had published, and any second writer under
+                    -- the same id — a parked listener, say — painted over it
+                    -- every pass. Pass an empty string to clear it deliberately.
+                    task=COALESCE(excluded.task, agents.task),
                     channels=excluded.channels,
                     meta=excluded.meta,
                     pubkey=excluded.pubkey,

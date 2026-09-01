@@ -440,3 +440,35 @@ def test_sweep_deletes_expired_cursors_on_their_own_ttl(store):
 
 # --- key bindings -------------------------------------------------------
 
+
+
+# --- a heartbeat is not a statement about your work -------------------------
+#
+# Found in a live room: an agent announced what it was doing, a listener parked
+# under the same id, and the roster text flapped between the two every pass.
+# The listener was the visible half; the underlying rule was that any register
+# without a task blanked the one already published — so a bare `announce` did
+# it too, silently.
+
+
+def test_a_register_without_a_task_keeps_the_one_already_there(store):
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="migrating auth")
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60)
+
+    assert store.list_agents(workspace=WS)[0].task == "migrating auth"
+
+
+def test_an_empty_task_clears_it_deliberately(store):
+    """Omission and clearing have to be different acts, or there is no way to
+    say "I am done with that" without inventing a new field."""
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="migrating auth")
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="")
+
+    assert store.list_agents(workspace=WS)[0].task == ""
+
+
+def test_a_new_task_still_replaces_the_old_one(store):
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="migrating auth")
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="reviewing the diff")
+
+    assert store.list_agents(workspace=WS)[0].task == "reviewing the diff"

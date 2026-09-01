@@ -153,6 +153,12 @@ slashes.
 
 ## Messages
 
+A heartbeat is not a statement about your work: **omitting `task` keeps the one
+already recorded**, and an empty string clears it. Two writers under one agent
+id — an agent describing its work and a parked listener renewing presence —
+otherwise overwrite each other on every pass, and a bare re-announce silently
+blanks what you published.
+
 ### `POST /messages`
 ```json
 {"workspace": "my-repo", "channel": "build", "agent_id": "...",
