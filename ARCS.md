@@ -76,7 +76,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 11 item(s), 10 startable
+`setup-and-first-run` · 12 item(s), 10 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -106,6 +106,7 @@ wrong says so.
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
 | `selective-wake-for-the-listener` | ready | — |
+| `timing-cold-start-in-ephemeral-environments` | deferred | — |
 | `unread-dms-not-shown-outside-mcp` | ready | — |
 | `write-parity-across-surfaces` | ready | — |
 | `hooks-warning-false-positive` | ready | later |

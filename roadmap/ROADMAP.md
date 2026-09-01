@@ -40,6 +40,7 @@ Claim before starting: `roadmap claim <key>`
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
+  - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
@@ -63,6 +64,8 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
+- **`timing-cold-start-in-ephemeral-environments`** — A disposable container relearns its own timing from scratch, every run  
+  deferred: Noted deliberately on 2026-09-01 rather than started, and with one boundary fixed in advance: **this is not the hub's problem and must not become one.** The timing model is local and never shared by design (`docs/adaptive-timing.md`, "a local, learned primitive"). A hub that stored per-agent timing histories would be holding exactly the kind of client-side state this project keeps out of it — the hub carries coordination, not its participants' internals — so any answer here lives in the environment, not in a new endpoint, a new table, or a new dependency. Un-defer on measurement, not on the idea being appealing: a cloud agent whose forecasts are visibly worse than the same work on a laptop, or a DND deadline that was wrong in a way a warm history would have got right. Until then the cost is theoretical and the fix is a synchronisation problem nobody has yet had to have.
 
 ## 🔒 Claimed — someone is on these
 
@@ -93,6 +96,7 @@ graph TD
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
   standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
+  timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
@@ -107,6 +111,7 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
+  selective_wake_for_the_listener -.- timing_cold_start_in_ephemeral_environments
   selective_wake_for_the_listener -.- unread_dms_not_shown_outside_mcp
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
 ```
@@ -870,6 +875,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **refs:**
   - `docs/claude-code.md`
@@ -1191,6 +1197,54 @@ graph TD
 > Do not schedule these on the box they watch. The IPv6 and provenance checks
 > need the VM, but a scheduler living there cannot report that the VM is the
 > thing that broke.
+
+</details>
+
+### `timing-cold-start-in-ephemeral-environments`
+
+- **title:** A disposable container relearns its own timing from scratch, every run
+- **status:** deferred
+- **arc:** setup-and-first-run
+- **deferred:** Noted deliberately on 2026-09-01 rather than started, and with one boundary fixed in advance: **this is not the hub's problem and must not become one.** The timing model is local and never shared by design (`docs/adaptive-timing.md`, "a local, learned primitive"). A hub that stored per-agent timing histories would be holding exactly the kind of client-side state this project keeps out of it — the hub carries coordination, not its participants' internals — so any answer here lives in the environment, not in a new endpoint, a new table, or a new dependency. Un-defer on measurement, not on the idea being appealing: a cloud agent whose forecasts are visibly worse than the same work on a laptop, or a DND deadline that was wrong in a way a warm history would have got right. Until then the cost is theoretical and the fix is a synchronisation problem nobody has yet had to have.
+- **related to** (not a dependency — both are startable):
+  - `selective-wake-for-the-listener` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
+- **refs:**
+  - `docs/adaptive-timing.md`
+  - `docs/environments.md`
+  - `src/switchboard/timing.py`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported** — no agent has yet
+> complained that its cloud forecasts are poor. Discount accordingly.
+>
+> **The mechanism.** `timing.py:290` keeps the history in a local SQLite store
+> at `~/.switchboard/timing.db`. On a developer machine that persists, so
+> forecasts improve across sessions and across repos. A disposable cloud
+> container has no such home directory: every run starts on the bootstrap
+> priors — three fixed `(p50, p95)` pairs keyed by effort, wide on purpose —
+> and each tier needs `MIN_SAMPLES` (5) observations before it is trusted. A
+> container that is wiped between sessions may never reach five.
+>
+> **Why it is worth anything at all.** Containers in one fleet are more alike
+> than a container and a laptop: same image, same network, comparable work. A
+> history accumulated by previous containers is a genuinely informative prior
+> for the next one, in a way another user's history would not be. That is the
+> whole of the idea — not shared learning between agents, but one environment
+> remembering how *it* behaves.
+>
+> **What it would take, all environment-side.** Persisting or seeding the store
+> between runs: a mounted volume for `~/.switchboard/`, a seeded db baked into
+> the image and refreshed periodically, or an export/import pair around the
+> session. Each is a choice about that environment's storage, which is where
+> `docs/environments.md` already puts this class of decision.
+>
+> **What it must not become.** A hub-side store of per-agent timing. Besides the
+> boundary above, the forecast's local-and-private property is load-bearing:
+> what leaves an agent today is `{p50, p95}` attached to a message it was
+> already sending, and nothing else — no raw durations, no sample counts. A
+> synchronisation route through the hub would turn a published pair into a
+> published history.
 
 </details>
 
