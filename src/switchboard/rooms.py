@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -94,6 +95,44 @@ class Room:
         a readable room name on the hub just because someone wrote a word.
         """
         return workspace_for(self.workspace_token)
+
+
+#: Domain separator for the lobby derivation. Versioned, because changing it
+#: moves every lobby at once and that should be a deliberate, dateable event
+#: rather than a silent consequence of an edit.
+LOBBY_INFO = b"switchboard-lobby-v1"
+
+
+def lobby_token(key: str) -> str:
+    """The token of the room every holder of `key` already shares.
+
+    A repo gets its own room, which is right for isolation and leaves agents
+    in *different* repos with nowhere to meet: today they must agree on a
+    workspace name out of band, and getting it wrong is silent — an agent
+    alone in a room it chose by typo looks exactly like an agent in a quiet
+    one. The key is already the thing that means "these agents are mine", so
+    it can name the meeting place and nobody has to agree on anything they
+    could mistype.
+
+    Derived from the key rather than being a well-known constant, and that is
+    the whole of the design. A constant would hand every switchboard user on
+    earth the same room identifier — contents still sealed, but the hub would
+    hold one room with everybody's metadata in it, and what protects a room
+    here is that its identifier is unguessable (`docs/model.md`). Derived, a
+    lobby is exactly as unguessable as any other room and reachable by exactly
+    the agents that already share the key.
+
+    HMAC rather than a bare hash so the key is the secret rather than merely
+    an input, and with an explicit `info` so this derivation can never collide
+    with another use of the same key.
+    """
+    digest = hmac.new(key.encode("utf-8", "replace"), LOBBY_INFO, hashlib.sha256)
+    return "lobby-" + base64.urlsafe_b64encode(digest.digest()).decode().rstrip("=")[:32]
+
+
+def lobby(key: str) -> Room:
+    """The lobby as a room record, so it is handled like any other."""
+    return Room(name="lobby", key_id=DEFAULT_KEY_ID, workspace_token=lobby_token(key))
 
 
 def env_var_for(key_id: str) -> str:

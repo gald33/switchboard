@@ -26,6 +26,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - **`a-lobby-derived-from-the-key`** — Give every key a lobby, so agents that share one can find each other without naming a room
   - ↔ related: **`init-writes-rooms-file`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
+  - ↔ related: **`one-resolved-context-across-surfaces`** — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
   - ↔ related: **`selective-wake-for-the-listener`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
@@ -68,6 +69,8 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
 
 - **`abuse-control-after-authorization`** — Replace the abuse control that per-token authorization used to provide  
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
+- **`one-resolved-context-across-surfaces`** — Decide whether a session may change its room once, for every surface at once  
+  deferred: Filed on 2026-09-01 as a design question, not started, because the thing it fixes has a working explicit answer and the shape of the fix needs deciding before it is built rather than after. One correction to make first, because the obvious objection is wrong. The invariant in `docs/environments.md` — "the client reads all four from the environment and nowhere else" — is about the two **secrets**. Rooms already live in files: `switchboard join --save` writes a room record, and `docs/model.md` states the split as doctrine — "the repo declares rooms, the environment holds keys, the agent joins the intersection". So writing down a room is the existing design, not a departure from it. That is what makes the idea affordable: only the room has to travel between surfaces. The key stays exactly where it is. Un-defer on evidence that the explicit route is failing in practice: an agent that demonstrably split itself across two rooms while trying to do the right thing, or a task where passing the room on every call proved unworkable.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
 - **`roles-and-authority-between-agents`** — Decide what an agent may ask of another, before a room full of them decides by accident  
@@ -98,6 +101,7 @@ graph TD
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
+  one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
@@ -111,6 +115,7 @@ graph TD
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
   a_lobby_derived_from_the_key -.- init_writes_rooms_file
+  a_lobby_derived_from_the_key -.- one_resolved_context_across_surfaces
   a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
@@ -138,6 +143,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `init-writes-rooms-file` — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
+  - `one-resolved-context-across-surfaces` — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
   - `selective-wake-for-the-listener` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **refs:**
   - `docs/model.md`
@@ -757,6 +763,95 @@ graph TD
 > which it has to know to do. Tracked as a write gap in
 > [[write-parity-across-surfaces]]; fix them together, since closing the
 > default without closing the capability leaves MCP exactly where it started.
+
+</details>
+
+### `one-resolved-context-across-surfaces`
+
+- **title:** Decide whether a session may change its room once, for every surface at once
+- **status:** deferred
+- **arc:** setup-and-first-run
+- **deferred:** Filed on 2026-09-01 as a design question, not started, because the thing it fixes has a working explicit answer and the shape of the fix needs deciding before it is built rather than after. One correction to make first, because the obvious objection is wrong. The invariant in `docs/environments.md` — "the client reads all four from the environment and nowhere else" — is about the two **secrets**. Rooms already live in files: `switchboard join --save` writes a room record, and `docs/model.md` states the split as doctrine — "the repo declares rooms, the environment holds keys, the agent joins the intersection". So writing down a room is the existing design, not a departure from it. That is what makes the idea affordable: only the room has to travel between surfaces. The key stays exactly where it is. Un-defer on evidence that the explicit route is failing in practice: an agent that demonstrably split itself across two rooms while trying to do the right thing, or a task where passing the room on every call proved unworkable.
+- **related to** (not a dependency — both are startable):
+  - `a-lobby-derived-from-the-key` — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
+- **refs:**
+  - `docs/environments.md`
+  - `docs/model.md`
+  - `src/switchboard/mcp_server.py`
+
+<details><summary>evidence</summary>
+
+> **Raised in a design conversation, from a real observation.** The MCP server
+> is a subprocess that receives its environment from `.mcp.json` at startup. An
+> agent cannot change it mid-session: a later `export` in a Bash call reaches
+> only that Bash process. So the surfaces can end up in different rooms — MCP
+> calls in the repo's, CLI calls wherever the agent pointed them — and neither
+> errors, because being alone in a room is indistinguishable from a quiet one.
+>
+> Today that is answered per call: MCP has `join_room` and `room=`, the CLI has
+> `--invite` and now `--lobby`. It works, and it is verbose.
+>
+> **The proposal, as put: hold the resolved values in memory — key, room,
+> signing identity — and have every surface use them.** Within one process
+> that is already true, and is not the problem: a CLI invocation resolves once
+> in `_make_config`, and the MCP server resolves at startup with `join_room`
+> handles living in its memory.
+>
+> The gap is between processes, and memory cannot cross it. A `switchboard`
+> run is a different process from the MCP server, so "one context for every
+> surface" is necessarily either IPC or a file — which is the tier
+> `environments.md` rules out, and is why this item is about the model rather
+> than about caching.
+>
+> Built as a store, it is `rooms.local.json` with a shorter life: the same
+> non-secret record (`workspace_token`, `hub_url`, `key_id`), session-scoped by
+> the harness session id agent identity already derives from
+> (`client.py:_SESSION_ID_VARS`) so concurrent sessions in one checkout do not
+> share it. Resolution: flags > session record > environment > repo. No secret
+> is written, which removes the objection that mattered.
+>
+> The one mechanical obstacle is `mcp_server.py:583` — the bridge builds its
+> config once from `ClientConfig.from_env()` at startup, so it would have to
+> re-resolve per call for a record written mid-session to reach it. The CLI
+> already re-resolves every invocation, so that half is free.
+>
+> **The cheap version, which needs none of that.** Have the surface that
+> resolves a room hand back the line that carries it: MCP `join_room` returning
+> the `switchboard --invite <blob> listen` an agent should run in Bash. The
+> context moves explicitly, in one string, and nothing outlives the call. Worth
+> doing first whatever is decided here, because it removes most of the pain
+> without adding a tier.
+>
+> **A dead end worth recording**, since it is the natural next thought: having
+> the MCP server spawn the listener itself, inheriting its already-resolved
+> context. The wake depends on the *runner* re-invoking the session when a
+> background process it started exits — a process the MCP server spawned is not
+> one the runner is watching, so it would park correctly and wake nobody.
+>
+> **The argument for.** One `join_room` and everything the agent does next is
+> in that room, including the listener it arms through Bash. Cross-repo work
+> stops needing the room named on every line, which is where a human or an
+> agent forgets one.
+>
+> **The argument against, and it is the same shape as every other bug in this
+> project.** Routing state that persists is state that can be silently stale.
+> An agent that joined a room, went on to something else, and later says
+> something specific has posted to the wrong room with no error and nothing in
+> the invocation to show why. An explicit flag cannot drift: the verbosity is
+> the receipt. Note also that the store would hold a key, which is not a new
+> class of secret on disk — `.claude/settings.local.json` already does — but
+> is a second place to leak one from.
+>
+> **If it is built, the shape that keeps the invariant honest.** Make the state
+> say where every value came from, and have `whoami` print that provenance
+> rather than only the values — this repo has already been bitten twice by a
+> command that reported a configuration nothing else used (`cmd_whoami`'s own
+> comments, and the `--lobby` display fixed alongside this item's filing).
+>
+> **How you will know it worked.** An agent switches room once and every
+> surface follows — including a listener armed afterwards through Bash — and
+> `whoami` says which room it is in and why, in a way that makes a stale
+> context visible rather than merely correct.
 
 </details>
 
