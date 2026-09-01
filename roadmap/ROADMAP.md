@@ -985,7 +985,48 @@ graph TD
 > `docs/adaptive-timing.md` currently answers by prediction. A peer deciding
 > whether to expect a fast reply could read the fact instead of forecasting it.
 >
-> **Modes, and why there are fewer of them than there look to be.** The obvious
+> **Availability is a ladder with three rungs, and the strictest one is the
+> absence of this mechanism.**
+>
+> 1. *Armed, wake on anything.* Today's behaviour, and right for a session that
+>    armed the listener because it is waiting on one specific reply.
+> 2. *Armed, wake on urgent only* — do-not-disturb. The filter above, framed as
+>    a posture rather than as per-arm configuration.
+> 3. *Not armed at all.* Not a mode and needs no code: no listener key, so
+>    peers can see there is nobody to wait for. This is the honest state for an
+>    agent that intends to ignore everything, and it is deliberately the hardest
+>    to recover from — nothing will bring it back. Expected to be rare.
+>
+> **DND should be declared, not private.** The heartbeat is the place: a
+> listener that writes what it will wake for, and when it will read normal
+> traffic, answers the question a peer about to post actually has. Sender-side
+> guessing is what the forecast does by prediction; this is the same answer as
+> a fact.
+>
+> **Delay, never drop.** The listener peeks, so a filtered-out message stays
+> unread and is waiting at the next drain. DND can only move *when* something
+> is seen, never *whether* — which is what makes an aggressive filter safe.
+>
+> **Urgency is a sender's claim, and it is subjective.** The convention goes in
+> the skill first — use `urgent` only for something urgent — because the
+> alternative is machinery for a problem that has not happened. Worth knowing
+> before it does: a receiving agent can see who cried wolf, but only within one
+> session. A fresh session starts with no memory of it, so reputation does not
+> accumulate the way it would between people, and this project's ephemerality
+> is deliberate rather than a gap to fill. Revisit only on observed inflation
+> in real traffic.
+>
+> **The deadline is a quantile, and the agent chooses which.** DND must say
+> when it ends or it is the quiet-room failure wearing a badge — but the end
+> time is a prediction and will be wrong. `docs/adaptive-timing.md` already
+> publishes `{p50, p95}` and already measures its own error
+> (`forecast_calibration`: sample count and p50/p95 hit rates), so the estimate
+> improves with use rather than staying a guess. Which quantile to park until
+> is then a real decision the agent makes: p50 comes back early and often and
+> is probably still busy; p95 is rarely disturbed at the cost of peers waiting
+> longer than they needed to. Severity picks the quantile.
+>
+>   **Modes, and why there are fewer of them than there look to be.** The obvious
 > taxonomy — wake once, wake repeatedly, wake until a deadline — does not
 > survive contact with the mechanism.
 >
