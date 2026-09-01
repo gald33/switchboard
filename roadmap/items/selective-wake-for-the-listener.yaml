@@ -140,12 +140,21 @@ evidence: |
 
   What a supervisor *can* do is survive them: two tracked processes, one
   long-lived that parks, filters and counts down, plus a disposable waker it
-  signals when something matters. That buys **state**, not liveness — and there
-  is no state worth keeping today. Parking is stateless, re-arming is one call,
+  signals when something matters. **Declined**, on 2026-09-01 — it buys state,
+  not liveness, and it is not a shape to reach for later either.
+
+  There is no state worth keeping. Parking is stateless, re-arming is one call,
   and because the listener peeks, a message landing between exit and re-arm is
-  still unread and comes back on the next park. The gap costs seconds, not
-  messages. Revisit this shape when the supervisor would hold something
-  expensive: a claim-derived filter, a deadline, a cache.
+  still unread and comes back on the next park: the gap costs seconds, not
+  messages. Against that, a second process is a second thing that can die
+  silently, and the failure this whole design fights is a listener that looks
+  alive and is not. One tracked process whose death expires one board key is
+  legible; a supervisor holding filter state, a countdown and a child is three
+  more ways to be quietly wrong.
+
+  If a future filter needs expensive state, the answer is to derive it at park
+  time — claims and forecasts are one hub call each — not to keep a daemon
+  warm to hold it.
 
   *Agent types are already distinguished, and the distinction is prior to any
   mode.* `SKILL.md` separates turn-based sessions from always-on daemons. A
