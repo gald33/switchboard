@@ -1332,13 +1332,16 @@ class Client(_Base):
 
     # --- presence ---
     def register(self, *, name: str, kind: str = "unknown", branch: str | None = None,
-                 task: str | None = None, channels: Sequence[str] = (),
+                 task: str | None = None, channels: Sequence[str] | None = None,
                  meta: dict[str, Any] | None = None, ttl: float | None = None,
                  back_in: float | None = None,
                  workspace: str | None = None) -> dict[str, Any]:
         return self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
-            "kind": kind, "branch": branch, "task": task, "channels": list(channels),
+            "kind": kind, "branch": branch, "task": task,
+            # None travels as None: "leave my subscriptions alone", as
+            # distinct from [] meaning "clear them".
+            "channels": None if channels is None else list(channels),
             "meta": meta or {}, "pubkey": self.public_key, "exchange_key": self.exchange_key,
             "ttl": ttl, "back_in": back_in,
         })["agent"]
@@ -1620,13 +1623,16 @@ class AsyncClient(_Base):
         return await self._call("GET", "/stats", params={"workspace": self._ws(workspace)})
 
     async def register(self, *, name: str, kind: str = "unknown", branch: str | None = None,
-                       task: str | None = None, channels: Sequence[str] = (),
+                       task: str | None = None, channels: Sequence[str] | None = None,
                        meta: dict[str, Any] | None = None, ttl: float | None = None,
                        back_in: float | None = None,
                        workspace: str | None = None) -> dict[str, Any]:
         result = await self._call("POST", "/agents/register", json={
             "workspace": self._ws(workspace), "agent_id": self.agent_id, "name": name,
-            "kind": kind, "branch": branch, "task": task, "channels": list(channels),
+            "kind": kind, "branch": branch, "task": task,
+            # None travels as None: "leave my subscriptions alone", as
+            # distinct from [] meaning "clear them".
+            "channels": None if channels is None else list(channels),
             "meta": meta or {}, "pubkey": self.public_key, "exchange_key": self.exchange_key,
             "ttl": ttl, "back_in": back_in,
         })

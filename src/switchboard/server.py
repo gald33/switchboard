@@ -90,7 +90,7 @@ class RegisterIn(BaseModel):
     kind: str = "unknown"
     branch: str | None = None
     task: str | None = None
-    channels: list[str] = Field(default_factory=list)
+    channels: list[str] | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     ttl: float | None = Field(default=None, gt=0)
     #: Seconds from now until this agent expects to be back, or None if it is
