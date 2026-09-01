@@ -491,6 +491,13 @@ class ClientConfig:
     #: did. See `rooms_warning`.
     room_problem: str | None = None
     token: str | None = None
+    #: Which tier supplied `token`, for the same reason `url_source` exists and
+    #: with a sharper failure behind it: "invalid or missing bearer token" is
+    #: the same sentence whether nothing was sent, a stale export was sent, or
+    #: a repo default was. Those want three different next actions, and the
+    #: value alone cannot tell them apart — a wrong token and a right one are
+    #: both opaque strings. See the CLI's 401 handler.
+    token_source: str = "none"
     workspace: str = field(default_factory=default_workspace)
     agent_id: str | None = None
     #: Workspace key for end-to-end encryption. When set, payloads are sealed
@@ -559,6 +566,7 @@ class ClientConfig:
             url=url or MANAGED_HUB_URL,
             url_source=url_source or "default",
             token=os.environ.get("SWITCHBOARD_TOKEN") or None,
+            token_source="env" if os.environ.get("SWITCHBOARD_TOKEN") else "none",
             # Resolved against the directory this config is *for*, not the
             # process's cwd: a hook or a bridge asking about a checkout it is
             # not sitting inside would otherwise derive somebody else's repo.
@@ -624,8 +632,13 @@ class ClientConfig:
         if not config.token:
             # This machine's token before the one the checkout ships with: a
             # personal token should win over a shared repo default.
-            config.token = (local_setting(where, "SWITCHBOARD_TOKEN")
-                            or mcp_env(where, "SWITCHBOARD_TOKEN"))
+            from_local = local_setting(where, "SWITCHBOARD_TOKEN")
+            if from_local:
+                config.token, config.token_source = from_local, "settings.local.json"
+            else:
+                from_mcp_token = mcp_env(where, "SWITCHBOARD_TOKEN")
+                if from_mcp_token:
+                    config.token, config.token_source = from_mcp_token, "mcp.json"
         if include_secrets:
             config.key = config.key or local_setting(where, "SWITCHBOARD_KEY")
             config.token = config.token or dotenv_setting(where, "SWITCHBOARD_TOKEN")
