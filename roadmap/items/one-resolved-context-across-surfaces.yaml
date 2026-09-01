@@ -1,0 +1,92 @@
+id: one-resolved-context-across-surfaces
+title: Decide whether a session may change its room once, for every surface at once
+status: deferred
+arc: setup-and-first-run
+blocked_on: []
+defer_reason: |
+  Filed on 2026-09-01 as a design question, not started, because it reverses a
+  documented invariant and the thing it fixes has a working explicit answer.
+
+  `docs/environments.md`: "The client reads all four from the environment and
+  nowhere else — there is no config file, no `~/.switchboard/config`, no
+  user-level scope." What looks per-repo is a runner injecting environment from
+  committed files. A session-scoped store is exactly the tier that sentence
+  rules out, so adding one is a decision about the model rather than a feature.
+
+  Un-defer on evidence that the explicit route is failing in practice: an agent
+  that demonstrably split itself across two rooms while trying to do the right
+  thing, or a task where passing the room on every call proved unworkable.
+related_to:
+- key: a-lobby-derived-from-the-key
+  note: 'The same problem, answered explicitly rather than by remembering: `--lobby`
+    names the room on each invocation. If this item is ever built, that flag becomes
+    the thing a session could set once.'
+refs:
+- 'docs/environments.md'
+- 'docs/model.md'
+- 'src/switchboard/mcp_server.py'
+evidence: |
+  **Raised in a design conversation, from a real observation.** The MCP server
+  is a subprocess that receives its environment from `.mcp.json` at startup. An
+  agent cannot change it mid-session: a later `export` in a Bash call reaches
+  only that Bash process. So the surfaces can end up in different rooms — MCP
+  calls in the repo's, CLI calls wherever the agent pointed them — and neither
+  errors, because being alone in a room is indistinguishable from a quiet one.
+
+  Today that is answered per call: MCP has `join_room` and `room=`, the CLI has
+  `--invite` and now `--lobby`. It works, and it is verbose.
+
+  **The proposal, as put: hold the resolved values in memory — key, room,
+  signing identity — and have every surface use them.** Within one process
+  that is already true, and is not the problem: a CLI invocation resolves once
+  in `_make_config`, and the MCP server resolves at startup with `join_room`
+  handles living in its memory.
+
+  The gap is between processes, and memory cannot cross it. A `switchboard`
+  run is a different process from the MCP server, so "one context for every
+  surface" is necessarily either IPC or a file — which is the tier
+  `environments.md` rules out, and is why this item is about the model rather
+  than about caching.
+
+  If it were built as a store, it would be session-scoped and keyed by the
+  harness session id that agent identity already derives from
+  (`client.py:_SESSION_ID_VARS`), so concurrent sessions in one checkout do
+  not share it. Resolution: flags > session state > environment > repo.
+
+  **The cheap version, which needs none of that.** Have the surface that
+  resolves a room hand back the line that carries it: MCP `join_room` returning
+  the `switchboard --invite <blob> listen` an agent should run in Bash. The
+  context moves explicitly, in one string, and nothing outlives the call. Worth
+  doing first whatever is decided here, because it removes most of the pain
+  without adding a tier.
+
+  **A dead end worth recording**, since it is the natural next thought: having
+  the MCP server spawn the listener itself, inheriting its already-resolved
+  context. The wake depends on the *runner* re-invoking the session when a
+  background process it started exits — a process the MCP server spawned is not
+  one the runner is watching, so it would park correctly and wake nobody.
+
+  **The argument for.** One `join_room` and everything the agent does next is
+  in that room, including the listener it arms through Bash. Cross-repo work
+  stops needing the room named on every line, which is where a human or an
+  agent forgets one.
+
+  **The argument against, and it is the same shape as every other bug in this
+  project.** Routing state that persists is state that can be silently stale.
+  An agent that joined a room, went on to something else, and later says
+  something specific has posted to the wrong room with no error and nothing in
+  the invocation to show why. An explicit flag cannot drift: the verbosity is
+  the receipt. Note also that the store would hold a key, which is not a new
+  class of secret on disk — `.claude/settings.local.json` already does — but
+  is a second place to leak one from.
+
+  **If it is built, the shape that keeps the invariant honest.** Make the state
+  say where every value came from, and have `whoami` print that provenance
+  rather than only the values — this repo has already been bitten twice by a
+  command that reported a configuration nothing else used (`cmd_whoami`'s own
+  comments, and the `--lobby` display fixed alongside this item's filing).
+
+  **How you will know it worked.** An agent switches room once and every
+  surface follows — including a listener armed afterwards through Bash — and
+  `whoami` says which room it is in and why, in a way that makes a stale
+  context visible rather than merely correct.

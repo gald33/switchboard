@@ -77,7 +77,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 13 item(s), 11 startable
+`setup-and-first-run` · 14 item(s), 11 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -105,6 +105,7 @@ wrong says so.
 | `clients-that-cannot-post` | ready | — |
 | `identity-rebinds-on-branch-change` | ready | — |
 | `joining-agent-sees-empty-inbox` | ready | — |
+| `one-resolved-context-across-surfaces` | deferred | — |
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
 | `selective-wake-for-the-listener` | ready | — |

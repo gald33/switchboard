@@ -322,7 +322,41 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
         config.workspace = args.workspace
     if getattr(args, "key", None):
         config.key = args.key
-    return _apply_invite(config, args)
+    config = _apply_invite(config, args)
+    return _apply_lobby(config, args)
+
+
+def _apply_lobby(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
+    """Fold `--lobby` in: the room every holder of this key already shares.
+
+    Below `--invite`, which is a room somebody chose to hand over, and above
+    everything else — like `--invite`, naming a room is the point of the flag,
+    so a workspace from the environment must not quietly win.
+
+    The key has to be resolvable *here*, and unlike everywhere else in this
+    file that includes the repo's own `settings.local.json`: the lobby is
+    derived from the key, so without one there is no room to compute rather
+    than a room we would join in the clear. Saying that out loud is the whole
+    value — the alternative is joining some other room and finding it empty.
+    """
+    if not getattr(args, "lobby", False):
+        return config
+    if getattr(args, "invite", None):
+        raise SystemExit(
+            "--lobby and --invite name different rooms; pass one. An invite is "
+            "a room somebody handed you, a lobby is the one your key already has."
+        )
+    key = config.key or _saved_key(Path(".").resolve())
+    if not key:
+        raise SystemExit(
+            "--lobby needs a workspace key, because the lobby is derived from "
+            "it — there is no lobby to compute without one.\n"
+            "  Export SWITCHBOARD_KEY, pass --key, or run `switchboard init "
+            "--new-key` to mint one."
+        )
+    config.key = key
+    config.workspace = rooms.lobby(key).workspace
+    return config
 
 
 def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
@@ -1345,12 +1379,21 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     # directly to tell "explicitly set" from "defaulted", and prefer what
     # .mcp.json routes to over a placeholder — handing a teammate `-w default`
     # is the same silent misroute this file works to prevent.
-    workspace = (
-        args.workspace
-        or os.environ.get("SWITCHBOARD_WORKSPACE")
-        or _mcp_workspace(directory)
-        or config.workspace
-    )
+    # A flag that *names a room* outranks all of this, and has to, or `whoami`
+    # prints the repo's room while every other command in the same invocation
+    # talks to the one the flag chose. That is precisely the failure the
+    # comment below describes, one flag later: the command you run to find out
+    # where you are pointed, pointing somewhere else.
+    resolved_room = _make_config(args)
+    if getattr(args, "lobby", False) or getattr(args, "invite", None):
+        workspace = resolved_room.workspace
+    else:
+        workspace = (
+            args.workspace
+            or os.environ.get("SWITCHBOARD_WORKSPACE")
+            or _mcp_workspace(directory)
+            or config.workspace
+        )
     # Resolved through the path every *other* command uses rather than off
     # `config` directly. The payload below used to read `config.url`, which is
     # `from_env` alone and skips `.mcp.json` — so in an `init`-ed repo `whoami`
@@ -4539,6 +4582,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--key",
         help="key for end-to-end encryption (env: SWITCHBOARD_KEY). "
              "Never sent to the hub; generate one with `switchboard keygen`.",
+    )
+    parser.add_argument(
+        "--lobby", action="store_true",
+        help="run this command in the room every holder of this key shares. "
+             "Derived from the key rather than agreed by name, so two agents "
+             "in unrelated checkouts meet without either being told a "
+             "workspace — and nobody without the key can find it.",
     )
     parser.add_argument(
         "--invite",
