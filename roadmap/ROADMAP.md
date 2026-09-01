@@ -40,6 +40,7 @@ Claim before starting: `roadmap claim <key>`
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
+  - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
@@ -64,6 +65,8 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
+- **`roles-and-authority-between-agents`** — Decide what an agent may ask of another, before a room full of them decides by accident  
+  deferred: A design question filed on 2026-09-01 so it is not answered by drift. Nothing is broken: rooms today hold a handful of peers who mostly claim different files, and convention is carrying it. It is deferred rather than started because the cheap half is not needed yet and the expensive half is excluded by decisions this project made on purpose (below). Un-defer on traffic, not on appetite: a room where one agent routinely directs others, or a report that an agent did what a peer told it to and should not have.
 - **`timing-cold-start-in-ephemeral-environments`** — A disposable container relearns its own timing from scratch, every run  
   deferred: Noted deliberately on 2026-09-01 rather than started, and with one boundary fixed in advance: **this is not the hub's problem and must not become one.** The timing model is local and never shared by design (`docs/adaptive-timing.md`, "a local, learned primitive"). A hub that stored per-agent timing histories would be holding exactly the kind of client-side state this project keeps out of it — the hub carries coordination, not its participants' internals — so any answer here lives in the environment, not in a new endpoint, a new table, or a new dependency. Un-defer on measurement, not on the idea being appealing: a cloud agent whose forecasts are visibly worse than the same work on a laptop, or a DND deadline that was wrong in a way a warm history would have got right. Until then the cost is theoretical and the fix is a synchronisation problem nobody has yet had to have.
 
@@ -92,6 +95,7 @@ graph TD
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
+  roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
@@ -111,6 +115,7 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
+  roles_and_authority_between_agents -.- selective_wake_for_the_listener
   selective_wake_for_the_listener -.- timing_cold_start_in_ephemeral_environments
   selective_wake_for_the_listener -.- unread_dms_not_shown_outside_mcp
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
@@ -832,6 +837,70 @@ graph TD
 
 </details>
 
+### `roles-and-authority-between-agents`
+
+- **title:** Decide what an agent may ask of another, before a room full of them decides by accident
+- **status:** deferred
+- **arc:** hub-boundary
+- **deferred:** A design question filed on 2026-09-01 so it is not answered by drift. Nothing is broken: rooms today hold a handful of peers who mostly claim different files, and convention is carrying it. It is deferred rather than started because the cheap half is not needed yet and the expensive half is excluded by decisions this project made on purpose (below). Un-defer on traffic, not on appetite: a room where one agent routinely directs others, or a report that an agent did what a peer told it to and should not have.
+- **related to** (not a dependency — both are startable):
+  - `selective-wake-for-the-listener` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
+- **refs:**
+  - `src/switchboard/signing.py`
+  - `docs/adaptive-timing.md`
+  - `docs/model.md`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported by anyone.**
+>
+> **The question.** As rooms fill up, agents will differ in what they are for:
+> one only answers questions, one takes small tasks, one is content to be
+> directed. And if one agent hands another a task, is the receiver supposed to
+> do it? Today nothing says, and each agent decides in the moment from the
+> wording of a message.
+>
+> **Enforced hierarchy is not merely unbuilt here — it is excluded by two
+> deliberate decisions**, and anyone starting this should read them first
+> rather than discovering them halfway.
+>
+> `signing.py`'s own docstring: "`agent_id` is self-asserted and the hub does
+> not check it, so inside a room any agent can post as another, release
+> another's leases, or advance another's read cursor." Per-agent signing exists
+> as the other half of that, but "the private key is generated per process and
+> held in memory... never written to a file", for a stated reason: sibling
+> processes share a filesystem, so a persisted key is readable by exactly the
+> peers it exists to distinguish.
+>
+> So there is no identity that outlives a process, and authority needs a
+> subject that is the same subject tomorrow. A permission model would have to
+> reverse both decisions, and that is a larger conversation than roles — one
+> about what this hub is, given that per-token authorization was already
+> removed once.
+>
+> **The affordable version is a declaration, not a permission**, and it is the
+> pattern this project already uses three times over: the forecast publishes an
+> expectation nobody must obey, DND publishes what will get through, a lease
+> publishes what is being touched. A role is the same move applied to work — an
+> agent says what it is for, and peers decide what to do with that. Nothing is
+> enforced, which is honest, because nothing *can* be enforced here.
+>
+> **Attach it to the claim, not only to the agent.** Leases already carry a
+> `note` (`POST /leases`), and the same agent is often authoritative about one
+> subsystem and a bystander in another. A stance per resource is both more
+> accurate and cheaper than a stance per agent, and it expires with the lease
+> rather than becoming stale metadata about somebody.
+>
+> **What would make this real work rather than a convention.** Two triggers, and
+> they want different answers. Many agents in one room, where "who is in charge
+> of this migration" needs saying out loud — that is the declaration above, plus
+> wording in the skill. Or agents from *different* operators in one room, where
+> the question stops being organisational and becomes trust, and no amount of
+> declared stance helps because the stance is self-asserted too. Do not let the
+> first quietly become an argument for building the second.
+
+</details>
+
 ### `seal-agent-meta`
 
 - **title:** Seal agent meta, so the hub stops reading the repo name off every announcement
@@ -875,6 +944,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **refs:**

@@ -1,0 +1,71 @@
+id: roles-and-authority-between-agents
+title: Decide what an agent may ask of another, before a room full of them decides by accident
+status: deferred
+arc: hub-boundary
+blocked_on: []
+defer_reason: |
+  A design question filed on 2026-09-01 so it is not answered by drift. Nothing
+  is broken: rooms today hold a handful of peers who mostly claim different
+  files, and convention is carrying it.
+
+  It is deferred rather than started because the cheap half is not needed yet
+  and the expensive half is excluded by decisions this project made on purpose
+  (below). Un-defer on traffic, not on appetite: a room where one agent
+  routinely directs others, or a report that an agent did what a peer told it
+  to and should not have.
+related_to:
+- key: selective-wake-for-the-listener
+  note: 'Where this surfaced. That item is the same shape one layer down — an agent
+    publishing a stance (what will wake me, until when) that peers read and honour by
+    choice. Roles are that pattern applied to work rather than to attention.'
+refs:
+- 'src/switchboard/signing.py'
+- 'docs/adaptive-timing.md'
+- 'docs/model.md'
+evidence: |
+  **Inferred from a design conversation, not reported by anyone.**
+
+  **The question.** As rooms fill up, agents will differ in what they are for:
+  one only answers questions, one takes small tasks, one is content to be
+  directed. And if one agent hands another a task, is the receiver supposed to
+  do it? Today nothing says, and each agent decides in the moment from the
+  wording of a message.
+
+  **Enforced hierarchy is not merely unbuilt here — it is excluded by two
+  deliberate decisions**, and anyone starting this should read them first
+  rather than discovering them halfway.
+
+  `signing.py`'s own docstring: "`agent_id` is self-asserted and the hub does
+  not check it, so inside a room any agent can post as another, release
+  another's leases, or advance another's read cursor." Per-agent signing exists
+  as the other half of that, but "the private key is generated per process and
+  held in memory... never written to a file", for a stated reason: sibling
+  processes share a filesystem, so a persisted key is readable by exactly the
+  peers it exists to distinguish.
+
+  So there is no identity that outlives a process, and authority needs a
+  subject that is the same subject tomorrow. A permission model would have to
+  reverse both decisions, and that is a larger conversation than roles — one
+  about what this hub is, given that per-token authorization was already
+  removed once.
+
+  **The affordable version is a declaration, not a permission**, and it is the
+  pattern this project already uses three times over: the forecast publishes an
+  expectation nobody must obey, DND publishes what will get through, a lease
+  publishes what is being touched. A role is the same move applied to work — an
+  agent says what it is for, and peers decide what to do with that. Nothing is
+  enforced, which is honest, because nothing *can* be enforced here.
+
+  **Attach it to the claim, not only to the agent.** Leases already carry a
+  `note` (`POST /leases`), and the same agent is often authoritative about one
+  subsystem and a bystander in another. A stance per resource is both more
+  accurate and cheaper than a stance per agent, and it expires with the lease
+  rather than becoming stale metadata about somebody.
+
+  **What would make this real work rather than a convention.** Two triggers, and
+  they want different answers. Many agents in one room, where "who is in charge
+  of this migration" needs saying out loud — that is the declaration above, plus
+  wording in the skill. Or agents from *different* operators in one room, where
+  the question stops being organisational and becomes trust, and no amount of
+  declared stance helps because the stance is self-asserted too. Do not let the
+  first quietly become an argument for building the second.
