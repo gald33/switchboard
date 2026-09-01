@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
+import httpx
+
 from . import __version__, drill, holds, invite, rendezvous, rooms
 from .client import (
     WHISPER_TYPE,
@@ -285,6 +287,53 @@ def _apply_repo_url(config: ClientConfig, directory: Path) -> None:
         config.url, config.url_source = from_mcp, "mcp.json"
 
 
+#: Where a token came from, said the way somebody would fix it.
+_TOKEN_SOURCES = {
+    "flag": "the --token flag",
+    "env": "SWITCHBOARD_TOKEN in this shell",
+    "settings.local.json": ".claude/settings.local.json in this checkout",
+    "mcp.json": ".mcp.json in this checkout",
+    "invite": "the invite you passed",
+}
+
+
+def _for_report(args: argparse.Namespace) -> ClientConfig | None:
+    """The configuration a failed command was using, for the message about it.
+
+    Resolved from the same arguments rather than remembered from the run. A
+    module global would be one process-wide value shared by everything in it —
+    which is exactly how the first version of this leaked a stale config
+    between two tests, and would have leaked one between two `main()` calls in
+    anything embedding this CLI.
+    """
+    try:
+        return _make_config(args)
+    except Exception:
+        return None
+
+
+def _tried(config: ClientConfig | None) -> str:
+    """One line naming the hub and where its credential came from.
+
+    Both halves are the answer to a real question that the error alone cannot
+    settle. `invalid or missing bearer token` reads identically whether nothing
+    was sent, a stale export was, or a repo default was — and a token is an
+    opaque string, so the value on screen would not distinguish them either.
+    A connection failure has the same shape: what fixes it is knowing which URL
+    was dialled, especially when it is a loopback default nobody chose.
+    """
+    if config is None:
+        return ""
+    origin = _TOKEN_SOURCES.get(config.token_source)
+    credential = f"a token from {origin}" if origin else "no token at all"
+    where = {
+        "flag": "the --url flag", "env": "SWITCHBOARD_URL",
+        "mcp.json": ".mcp.json", "rooms": "this repo's rooms file",
+        "invite": "the invite", "default": "the built-in default",
+    }.get(config.url_source, config.url_source)
+    return f"  tried {config.url} (from {where}) with {credential}."
+
+
 def _make_config(args: argparse.Namespace) -> ClientConfig:
     """Resolve where this command talks to, and as whom.
 
@@ -317,7 +366,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     if args.url:
         config.url, config.url_source = args.url.rstrip("/"), "flag"
     if args.token:
-        config.token = args.token
+        config.token, config.token_source = args.token, "flag"
     if args.workspace:
         config.workspace = args.workspace
     if getattr(args, "key", None):
@@ -5265,6 +5314,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_ERROR
     except SwitchboardError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if getattr(exc, "status", None) == 401:
+            # The one error where the next action depends entirely on facts the
+            # message cannot carry. A stale `SWITCHBOARD_TOKEN` left over from a
+            # throwaway hub produces this against a real one, and reads as the
+            # tool being broken rather than as the shell being dirty.
+            print(_tried(_for_report(args)), file=sys.stderr)
+            print("  Export the hub's token as SWITCHBOARD_TOKEN, pass --token, "
+                  "or use --invite, which carries it.", file=sys.stderr)
+        return EXIT_ERROR
+    except httpx.HTTPError as exc:
+        # From inside httpx rather than at a boundary, so without this it
+        # escapes as forty frames of traceback with the one useful fact — which
+        # URL — nowhere in it. See issue #88.
+        print(f"error: could not reach the hub ({exc.__class__.__name__}: {exc})",
+              file=sys.stderr)
+        print(_tried(_for_report(args)), file=sys.stderr)
+        print("  Set SWITCHBOARD_URL, or check the hub is running.", file=sys.stderr)
         return EXIT_ERROR
     except invite.InviteError as exc:
         # Raised by `--invite` on any command, from inside `_make_config` — so

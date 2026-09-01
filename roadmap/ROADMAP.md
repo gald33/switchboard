@@ -16,7 +16,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
-- `next` **`connect-failure-message`** — Name the URL a failed connection actually tried
+- `next` **`connect-failure-message`** — Name the URL a failed connection actually tried, and where its token came from
   - ↔ related: **`joining-agent-sees-empty-inbox`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
@@ -95,7 +95,7 @@ graph TD
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
-  connect_failure_message["Name the URL a failed connection actually tried"]
+  connect_failure_message["Name the URL a failed connection actually tried, and where its token came from"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
@@ -397,7 +397,7 @@ graph TD
 
 ### `connect-failure-message`
 
-- **title:** Name the URL a failed connection actually tried
+- **title:** Name the URL a failed connection actually tried, and where its token came from
 - **status:** ready
 - **arc:** setup-and-first-run
 - **priority:** next

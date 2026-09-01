@@ -1,6 +1,6 @@
 id: connect-failure-message
-title: Name the URL a failed connection actually tried
-status: ready
+title: Name the URL a failed connection actually tried, and where its token came from
+status: done
 arc: setup-and-first-run
 priority: next
 blocked_on: []
@@ -31,3 +31,17 @@ evidence: |
   fallback to loopback is a failure mode this project already treats as serious
   elsewhere: `docs/environments.md` documents "the three ways an agent ends up
   alone", and a cloud session inheriting a loopback URL is one of them.
+
+resolution: |
+  Done 2026-09-01. `main` catches `httpx.HTTPError` and prints one line naming
+  the URL and which tier chose it — including "the built-in default", which is
+  the case the issue was really about.
+
+  Widened on the way, because the same gap was found again from the other side:
+  `invalid or missing bearer token` reads identically whether nothing was sent,
+  a stale export was, or the checkout's own default was, and the value cannot
+  separate them because a token is an opaque string. A stale `SWITCHBOARD_TOKEN`
+  from a throwaway hub was blamed on a newly added flag for exactly this reason.
+  `ClientConfig` now carries `token_source` alongside `url_source`, and a 401
+  says which tier supplied the credential and offers `--invite`, which carries
+  one.
