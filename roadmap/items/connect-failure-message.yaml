@@ -3,6 +3,7 @@ title: Name the URL a failed connection actually tried, and where its token came
 status: done
 arc: setup-and-first-run
 priority: next
+claim: null
 blocked_on: []
 refs:
 - 'https://github.com/gald33/switchboard/issues/88'

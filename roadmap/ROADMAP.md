@@ -16,8 +16,6 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
-- `next` **`connect-failure-message`** — Name the URL a failed connection actually tried, and where its token came from
-  - ↔ related: **`joining-agent-sees-empty-inbox`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
@@ -398,7 +396,7 @@ graph TD
 ### `connect-failure-message`
 
 - **title:** Name the URL a failed connection actually tried, and where its token came from
-- **status:** ready
+- **status:** done
 - **arc:** setup-and-first-run
 - **priority:** next
 - **related to** (not a dependency — both are startable):

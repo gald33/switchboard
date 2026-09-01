@@ -14,8 +14,6 @@ drew the wrong conclusion from it. The lobby flag was blamed for a stale
 
 from __future__ import annotations
 
-import pytest
-
 from switchboard.cli import _tried, main
 from switchboard.client import SwitchboardError
 from switchboard.config import ClientConfig
