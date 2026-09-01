@@ -10,8 +10,10 @@ wiring agents into a hub. Commands that agents call in hooks all accept
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -4172,8 +4174,73 @@ def _accept_global_flags_after_subcommand(parser: argparse.ArgumentParser) -> No
     walk(parser, None)
 
 
+#: Verbs an agent reaches for that this CLI does not have, and what it wanted.
+#:
+#: Evidence-driven rather than imagined: `send` is here because two different
+#: agents, in two different sessions, typed `switchboard send` — it is the
+#: natural word for "put this message somewhere" when the verbs on offer are
+#: `say`, `dm` and `whisper`. Nothing in the docs ever suggested it. The rest
+#: are the same shape, including the MCP tool names, because an agent that
+#: read the skill knows `roster` and `board_set` and then finds itself at a
+#: CLI that spells them differently.
+#:
+#: The point is not to accept these — a guessed verb should not silently post
+#: to a channel named after an agent — but to answer the question the typo
+#: asked, in the sentence where the mistake is discovered.
+_MISTAKEN_VERBS = {
+    "send": "say <channel> to post where the room can read it, "
+            "or dm <agent> for one peer",
+    "post": "say <channel>",
+    "publish": "say <channel>",
+    "broadcast": "say <channel>",
+    "message": "dm <agent>, or say <channel>",
+    "msg": "dm <agent>, or say <channel>",
+    "tell": "dm <agent>",
+    "notify": "dm <agent>",
+    "read": "inbox",
+    "roster": "agents",
+    "who": "agents",
+    "board_set": "board set",
+    "board_get": "board get",
+    "join_room": "join",
+}
+
+
+class _Parser(argparse.ArgumentParser):
+    """An argument parser that answers "then what should I have typed?".
+
+    argparse's own reply to an unknown subcommand is `invalid choice: 'send'`
+    followed by every command this CLI has, which is a list to search rather
+    than an answer. For an agent that is a wasted round trip, and it is a
+    round trip taken while it is trying to tell somebody something.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        match = re.search(r"invalid choice: '([^']+)'", message)
+        if match:
+            typed = match.group(1)
+            hint = _MISTAKEN_VERBS.get(typed)
+            if hint is None:
+                choices: list[str] = []
+                for action in self._subparsers._group_actions if self._subparsers else []:
+                    choices.extend(getattr(action, "choices", None) or [])
+                near = difflib.get_close_matches(typed, choices, n=2, cutoff=0.7)
+                hint = " or ".join(near) if near else None
+            if hint:
+                print(
+                    f"switchboard: there is no `{typed}` command. Did you mean "
+                    f"{hint}?",
+                    file=sys.stderr,
+                )
+                # 2, which is what argparse exits with for every other usage
+                # error. It collides numerically with EXIT_CONFLICT, and that
+                # is argparse's convention rather than ours to change here.
+                self.exit(2)
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="switchboard",
         description="Ephemeral orchestration hub for AI coding agents.",
     )
