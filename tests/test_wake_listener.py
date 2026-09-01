@@ -310,6 +310,33 @@ def test_parking_does_not_paint_over_what_the_agent_is_doing(listener):
     assert row["task"] == "migrating the auth module"
 
 
+def test_parking_does_not_unsubscribe_you(listener):
+    """Reported from a live room as "a listener with no subscriptions wakes only
+    on DMs" — and the listener was the cause. It sent an empty channel list on
+    every pass, so it removed the subscriptions of the agent it was serving."""
+    me = listener.client(listener.agent_id)
+    me.register(name="worker", channels=["general"], ttl=120)
+
+    assert listener("--until", "+3", timeout=30).returncode == 2
+
+    row = next(a for a in listener.client("observer").agents()
+               if a["agent_id"] == listener.agent_id)
+    assert row["channels"] == ["general"]
+
+
+def test_a_channel_message_wakes_a_listener_that_named_no_channels(listener):
+    """The consequence of the above, from the outside: subscriptions the agent
+    already had must still deliver, or the room is busy while it sleeps."""
+    me = listener.client(listener.agent_id)
+    me.register(name="worker", channels=["general"], ttl=120)
+    listener.client("peer").post("general", "does this wake you")
+
+    result = listener("--until", "+30", timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["messages"][0]["body"] == "does this wake you"
+
+
 def test_the_deadline_can_come_from_the_agents_own_forecast(listener):
     """The quantile is the posture; the timing model supplies the number."""
     result = listener("--until", "forecast:p50", "--effort", "low", timeout=60)

@@ -153,8 +153,9 @@ slashes.
 
 ## Messages
 
-A heartbeat is not a statement about your work: **omitting `task` keeps the one
-already recorded**, and an empty string clears it. Two writers under one agent
+A heartbeat is not a statement about your work or who you listen to: **omitting
+`task` or `channels` keeps what is already recorded**; an empty string clears
+the task, an empty list clears the subscriptions. Two writers under one agent
 id — an agent describing its work and a parked listener renewing presence —
 otherwise overwrite each other on every pass, and a bare re-announce silently
 blanks what you published.

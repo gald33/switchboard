@@ -412,7 +412,7 @@ class Store:
         kind: str = "unknown",
         branch: str | None = None,
         task: str | None = None,
-        channels: Sequence[str] = (),
+        channels: Sequence[str] | None = None,
         meta: dict[str, Any] | None = None,
         pubkey: str | None = None,
         exchange_key: str | None = None,
@@ -422,7 +422,13 @@ class Store:
     ) -> Agent:
         now = time.time() if now is None else now
         agent_id = agent_id or f"agent-{uuid.uuid4().hex[:12]}"
-        chan_json = json.dumps(list(dict.fromkeys(channels)))
+        # None means "leave my subscriptions alone"; an explicit empty list
+        # clears them. Same rule as `task`, and for a sharper reason: a bare
+        # `listen` used to send [] on every pass, so a listener silently
+        # unsubscribed the agent it was serving and then woke it for DMs only —
+        # a room busy on `general` looking exactly like a quiet one.
+        chan_json = (None if channels is None
+                     else json.dumps(list(dict.fromkeys(channels))))
         meta_json = json.dumps(meta or {})
         with self._tx() as conn:
             conn.execute(
@@ -430,7 +436,10 @@ class Store:
                 INSERT INTO agents (workspace, id, name, kind, branch, task, channels, meta,
                                     pubkey, exchange_key, registered_at, last_seen_at,
                                     present_until, expected_back, expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                -- `channels` is NOT NULL, so a fresh row cannot take the
+                -- "say nothing" marker: default it here, and let the update
+                -- below read the undefaulted parameter instead of this column.
+                VALUES (?,?,?,?,?,?,COALESCE(?,'[]'),?,?,?,?,?,?,?,?)
                 ON CONFLICT(workspace, id) DO UPDATE SET
                     name=excluded.name,
                     kind=excluded.kind,
@@ -441,8 +450,8 @@ class Store:
                     -- the task you had published, and any second writer under
                     -- the same id — a parked listener, say — painted over it
                     -- every pass. Pass an empty string to clear it deliberately.
-                    task=COALESCE(excluded.task, agents.task),
-                    channels=excluded.channels,
+                    task=COALESCE(?, agents.task),
+                    channels=COALESCE(?, agents.channels),
                     meta=excluded.meta,
                     pubkey=excluded.pubkey,
                     exchange_key=excluded.exchange_key,
@@ -457,6 +466,9 @@ class Store:
                     # The row outlives presence only as far as the promise. A
                     # promise already in the past keeps nothing alive.
                     max(now + ttl, expected_back or 0.0),
+                    # Read by the UPDATE above, undefaulted, so "say nothing"
+                    # survives as NULL there while the INSERT still gets a value.
+                    task, chan_json,
                 ),
             )
             row = conn.execute(

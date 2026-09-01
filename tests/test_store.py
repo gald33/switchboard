@@ -472,3 +472,31 @@ def test_a_new_task_still_replaces_the_old_one(store):
     store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, task="reviewing the diff")
 
     assert store.list_agents(workspace=WS)[0].task == "reviewing the diff"
+
+
+def test_a_register_without_channels_keeps_the_subscriptions(store):
+    """Same rule as `task`, and a sharper consequence: a bare `listen` sent an
+    empty list every pass, so the listener quietly unsubscribed the agent it
+    was serving and then woke it for DMs only — a room busy on `general`
+    looking exactly like a quiet one."""
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60,
+                         channels=["general", "deploys"])
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60)
+
+    assert store.list_agents(workspace=WS)[0].channels == ["general", "deploys"]
+
+
+def test_an_empty_channel_list_unsubscribes_deliberately(store):
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60,
+                         channels=["general"])
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60, channels=[])
+
+    assert store.list_agents(workspace=WS)[0].channels == []
+
+
+def test_a_first_registration_without_channels_is_simply_unsubscribed(store):
+    """The column is NOT NULL, so "say nothing" has to become something on the
+    way in — without that, the first heartbeat of a new agent failed outright."""
+    store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60)
+
+    assert store.list_agents(workspace=WS)[0].channels == []

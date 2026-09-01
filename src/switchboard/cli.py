@@ -1594,7 +1594,10 @@ def cmd_register(args: argparse.Namespace) -> int:
             kind=args.kind or identity.kind,
             branch=identity.branch,
             task=args.task,
-            channels=args.channel or [],
+            # None rather than []: a re-announce that says nothing about
+            # channels should not remove them. `-c` with nothing after it is
+            # how you clear them deliberately.
+            channels=args.channel or None,
             meta=identity.meta,
             ttl=args.ttl,
             back_in=getattr(args, "back_in", None),
@@ -2282,7 +2285,10 @@ def cmd_listen(args: argparse.Namespace) -> int:
                         # roster into a fight between two writers under one id.
                         # `back_in` below already renders as "away 12m", which
                         # is the fact a peer actually wants.
-                        channels=args.channel or [],
+                        # None, not []: without a `-c` this process has
+                        # nothing to say about subscriptions, and saying []
+                        # every pass was how it removed them.
+                        channels=args.channel or None,
                         meta=identity.meta, ttl=heartbeat_ttl,
                         back_in=(deadline - time.time()) if deadline else None,
                     )
