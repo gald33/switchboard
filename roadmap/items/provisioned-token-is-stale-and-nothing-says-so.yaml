@@ -1,0 +1,62 @@
+id: provisioned-token-is-stale-and-nothing-says-so
+title: The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted
+status: ready
+arc: hub-boundary
+blocked_on: []
+related_to:
+- key: every-silent-failure-looks-like-a-quiet-room
+  note: 'The symptom when this fires is a 401 on the published credential, which two
+    agents spent a day mis-attributing — first to a stale client, then to a perimeter
+    that had moved. Read that item for why a wrong credential is hard to tell from
+    a quiet room.'
+evidence: |
+  **Not a filed issue.** Measured on the managed hub 2026-09-01, after two agents
+  spent a day arguing about a 401 that neither could reproduce.
+
+  **The finding, by measurement.** The running container and its own `.env`
+  disagree about the hub's bearer token:
+
+      sb_public_lucille                  len=17  sha256[:12]=4ca6a169b8c9
+      running container SWITCHBOARD_TOKEN len=17  4ca6a169b8c9   <- accepts this
+      ~/switchboard/.env SWITCHBOARD_TOKEN len=43  0b63c0a8fcf6   <- says this
+
+  **Which one wins depends on how the container was restarted.**
+  `.github/workflows/deploy.yml:63-70` reads `MANAGED_HUB_TOKEN` out of
+  `config.py` on `origin/main` and **exports it** before running compose. So a
+  deploy-driven restart yields the published constant and every client works. A
+  manual `docker compose up -d` in `~/switchboard` falls through to `${SWITCHBOARD_TOKEN:-}`
+  and picks up the 43-character value from `.env` — at which point **every client
+  using the published token gets 401**: `.mcp.json`, `ENTER.md`, every agent, and
+  the `init` default.
+
+  The container currently holds the correct value only because it was last
+  started by a deploy, a full day *after* `.env` was written with the other one.
+
+  **This is a live trap rather than a historical one.** The next person to
+  restart that container by hand — for a config change, after an OOM, following
+  a reboot — silently re-credentials the hub. There is no error at the moment of
+  the change; the failure appears later, to somebody else, as a rejected
+  credential that the docs say is correct.
+
+  **How two agents got it backwards, which is worth recording.** Both concluded
+  the *client* was at fault. One reported their shell token as "stale (17
+  chars)" and treated the 43-character value in `.env` as authoritative — it is
+  the other way round: the 17-character value is `sb_public_lucille`, published
+  on purpose, and it is what the hub accepts. The second agent then
+  "corroborated" that report **without measuring its own token**, and it turned
+  out to hold a *third* value (43 chars, `86c28c4e8f25`) matching neither. Two
+  agents, three tokens, one wrong diagnosis, and no measurement between them
+  until someone hashed all four.
+
+  **How you know it worked.** One source of truth for that credential. Either
+  `.env` stops carrying `SWITCHBOARD_TOKEN` so the deploy's exported value is the
+  only path, or the deploy stops exporting and `.env` becomes authoritative — but
+  not both, silently, with the winner decided by restart method. Whichever way it
+  goes, a restart by either path must leave `curl /health` reporting `auth:true`
+  **and** the published token still admitted; that is the assertion, and it is
+  cheap enough to run after every restart.
+
+  Related, and the reason the client side looked guilty: `whoami` is local-only
+  and never calls the hub, so it prints a clean identity while every hub call is
+  failing. The command an agent naturally reaches for to check its setup is blind
+  to this entire class.
