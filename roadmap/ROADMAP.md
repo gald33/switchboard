@@ -19,10 +19,14 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`connect-failure-message`** — Name the URL a failed connection actually tried
   - ↔ related: **`joining-agent-sees-empty-inbox`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
+  - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- **`a-lobby-derived-from-the-key`** — Give every key a lobby, so agents that share one can find each other without naming a room
+  - ↔ related: **`init-writes-rooms-file`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
+  - ↔ related: **`selective-wake-for-the-listener`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`robots-policy-for-public-hosts`** — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
@@ -40,6 +44,7 @@ Claim before starting: `roadmap claim <key>`
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
+  - ↔ related: **`a-lobby-derived-from-the-key`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
@@ -82,6 +87,7 @@ _Nothing blocked._
 
 ```mermaid
 graph TD
+  a_lobby_derived_from_the_key["Give every key a lobby, so agents that share one can find each other without naming a room"]
   abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
@@ -104,6 +110,8 @@ graph TD
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
+  a_lobby_derived_from_the_key -.- init_writes_rooms_file
+  a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
@@ -122,6 +130,66 @@ graph TD
 ```
 
 ## Items
+
+### `a-lobby-derived-from-the-key`
+
+- **title:** Give every key a lobby, so agents that share one can find each other without naming a room
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `init-writes-rooms-file` — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
+  - `selective-wake-for-the-listener` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+- **refs:**
+  - `docs/model.md`
+  - `src/switchboard/crypto.py`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported.**
+>
+> **The gap.** `init` deliberately derives a separate room per repo, which is
+> right for isolation and leaves cross-repo work with nowhere to meet. Today
+> the answer is "agree on a workspace name out of band and export it in every
+> environment", which is a coordination problem solved by coordination, and it
+> fails silently when one party gets it wrong: an agent alone in a room it
+> chose by typo looks exactly like an agent in a quiet one.
+>
+> A key is already the unit that means "these agents are mine" —
+> `docs/model.md` says so: "usually a person or a team, not one repo: one key
+> opens every room whose `key_id` names it". So the key can name a meeting
+> place, and nobody has to agree on anything they could mistype.
+>
+> **The construction is the whole item.** The lobby's workspace token must be
+> *derived from the key*, `KDF(key, "lobby")`, not a well-known constant.
+> A constant would give every switchboard user on earth the same room
+> identifier: contents still sealed, but the hub would see one room with
+> everyone's metadata in it, and `docs/model.md` is explicit that what protects
+> a room is that its identifier is unguessable. Derived, the lobby is as
+> unguessable as any other room and is reachable by exactly the agents that
+> already share the key.
+>
+> `crypto.py` already has the pieces — HKDF with an `info` binding, and
+> `blind()` for deriving identifiers — so this is a use of the existing
+> construction rather than a new one.
+>
+> **What it buys.** `switchboard lobby` (or `-w lobby` resolving to the derived
+> token) as a place to announce, to ask who is around, and to hand over a room
+> for the actual work. Cross-repo coordination stops needing a shared secret
+> *name* on top of the shared key.
+>
+> **What to be careful about.** A lobby is a room whose membership is "everyone
+> holding this key", which is a wider audience than a repo's room and a poor
+> place for anything specific — the same reason a company has a kitchen and
+> also meeting rooms. The convention should be that a lobby carries presence
+> and pointers, and work moves to a room minted for it
+> (`keygen --as-invite` already does that in one command).
+>
+> **How you will know it worked.** Two agents in two unrelated checkouts, given
+> nothing but the same key, see each other. Today that takes an agreed
+> workspace name and an export in both environments; the test is that it takes
+> neither.
+
+</details>
 
 ### `abuse-control-after-authorization`
 
@@ -562,6 +630,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **priority:** next
 - **related to** (not a dependency — both are startable):
+  - `a-lobby-derived-from-the-key` — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - `ci-workspace-is-public` — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/86`
@@ -960,6 +1029,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `a-lobby-derived-from-the-key` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
   - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.

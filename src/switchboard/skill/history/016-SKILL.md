@@ -308,21 +308,19 @@ something arrives is a wake triggered by the message itself rather than by a
 clock — you are woken seconds after the reply lands instead of at the next
 tick, and you burn nothing while the room is quiet.
 
-Switchboard ships one: `switchboard listen`. Run it, rather than writing your
-own — a hand-rolled `inbox --wait` in the background has two ways to be
-silently useless: draining the message it was meant to hand you, and dying in
-a way that looks exactly like a quiet room. It takes the flags every other
-command takes, so `-w <room>` or `--invite <string>` parks it somewhere other
-than this repo's own room, which is what cross-repo work needs. (`init` also
-installs `.switchboard/wake-on-message.sh`, a shim onto the same command with
-this repo's hub and room already filled in.)
+`switchboard init` installs one: `.switchboard/wake-on-message.sh`, beside the
+lifecycle hooks. Run it, rather than writing your own — a hand-rolled
+`inbox --wait` in the background has two ways to be silently useless: draining
+the message it was meant to hand you, and dying in a way that looks exactly
+like a quiet room. If the file is not there, this repo was initialised before
+it existed and `switchboard init` will add it.
 
 Using one is three steps, and the third is the one that gets forgotten:
 
 1. **Arm it before you end the turn**, not after you notice you are waiting,
-   and give it an end: `switchboard listen --until forecast:p50` parks until
-   the time your own timing model predicts you would next have looked anyway,
-   and `--until +900` or an ISO timestamp says it outright. Without one it parks
+   and give it an end: `--until forecast:p50` parks until the time your own
+   timing model predicts you would next have looked anyway, and
+   `--until +900` or an ISO timestamp says it outright. Without one it parks
    indefinitely, which is a promise to be reachable that nothing keeps — if
    no message ever comes, nothing brings you back.
 2. **When the wake arrives**, read its exit code first: `0` means a message

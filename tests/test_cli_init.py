@@ -683,11 +683,14 @@ def test_init_installs_the_wake_listener(monkeypatch, capsys, tmp_path):
     body = path.read_text()
     # The wrapper is the point: a background shell shares none of .mcp.json's
     # env, and a listener on the wrong hub or workspace waits quietly forever.
+    # That is also all it is now — the listener itself is `switchboard listen`,
+    # so what `init` installs is a way to arm one with a path and no knowledge
+    # of which room this repo is in.
     assert "export SWITCHBOARD_URL=" in body
     assert "export SWITCHBOARD_WORKSPACE=" in body
-    # And the two properties that make it worth shipping rather than improvising.
-    assert "--peek" in body, "a draining listener eats the message it woke you for"
-    assert "board set" in body, "no heartbeat means a dead listener reads as a quiet room"
+    assert "sb listen" in body
+    # Not `exec`: `sb` is a shell function, and exec needs a real command.
+    assert "exec sb" not in body
 
 
 def test_wake_script_reads_the_packaged_body():
