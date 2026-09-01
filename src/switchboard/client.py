@@ -248,14 +248,36 @@ def identity_drift_warning(identity: Identity) -> str | None:
     )
 
 
+#: How much of an unparseable body is worth repeating. Enough to recognise a
+#: proxy's error page, not enough to paste one into somebody's terminal.
+_BODY_EXCERPT = 200
+
+
+def _describe_unparseable(response: httpx.Response) -> str:
+    """What to say when the body is not the hub's JSON.
+
+    Something between the client and the hub can answer instead of it — a
+    proxy, a load balancer, a captive portal — and it answers in HTML. Printing
+    that verbatim put `</div></body></html>` in an agent's output twice in one
+    day, which reads as the tool malfunctioning rather than as the hub being
+    briefly unreachable through something in the way.
+    """
+    kind = response.headers.get("content-type", "").split(";")[0] or "an unreadable body"
+    body = " ".join(response.text.split())[:_BODY_EXCERPT]
+    if "html" in kind:
+        return (f"the hub returned an HTML error page ({response.status_code}), "
+                "not its own reply — something between here and it answered")
+    return f"{response.status_code} with {kind}: {body}" if body else f"{response.status_code}"
+
+
 def _raise_for(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
     try:
         payload = response.json()
     except ValueError:
-        payload = {"detail": response.text}
-    detail = payload.get("detail") or payload.get("error") or response.text
+        payload = {"detail": _describe_unparseable(response)}
+    detail = payload.get("detail") or payload.get("error") or payload.get("detail")
     if payload.get("error") == "lease_conflict":
         raise LeaseHeld(str(detail), status=response.status_code, payload=payload)
     raise SwitchboardError(str(detail), status=response.status_code, payload=payload)
