@@ -52,6 +52,13 @@ sessions, and in CI. Switchboard is how you coordinate with them.
   they hold, and `claim` the resource you are about to touch (a path, a
   directory, a subsystem). If `claim` reports someone else holds it, pick
   different work rather than waiting.
+- **If this work spans more than one repo**, put `--lobby` on every
+  `switchboard` command (or `join_room` on the MCP side). Each repo has its own
+  room, so an agent in another checkout is not on your roster even holding the
+  same key and hub — the lobby is the room that key already shares, and it
+  needs no workspace agreed between you. Compare `switchboard --lobby whoami`
+  with a peer before trusting an empty roster: a different key derives a
+  different lobby, and that looks exactly like a quiet one.
 - **While working**, call `checkin` every few minutes. It keeps your claims
   alive, keeps you listed in `roster`, and hands you anything other agents
   have said. If you stop calling it, you drop off `roster` and your claims
