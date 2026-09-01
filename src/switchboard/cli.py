@@ -2235,7 +2235,11 @@ def cmd_listen(args: argparse.Namespace) -> int:
         # allowed to, which is the failure this whole design exists to avoid.
         try:
             hub.health()
-        except (SwitchboardError, OSError) as exc:
+        except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+            # Including httpx's own errors, so a slow moment at arming time
+            # produces this sentence rather than the generic handler's — and,
+            # more to the point, so it is reported by the thing that knows it
+            # was trying to park.
             print(f"listen: cannot reach {hub.config.url} ({exc})", file=sys.stderr)
             return EXIT_ERROR
         _warn_key_left_behind(args, hub)
@@ -2292,7 +2296,14 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     # woke that session to read. The woken session drains.
                     messages = hub.inbox(
                         channels=args.channel or None, wait=wait, peek=True)
-                except (SwitchboardError, OSError) as exc:
+                except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+                    # httpx.HTTPError belongs here as much as the other two,
+                    # and its absence killed a listener in production: one
+                    # ReadTimeout on a 25-second long-poll escaped this handler
+                    # entirely, reached `main`, and exited 1 — "it never watched
+                    # anything" — without `--max-fails` getting a say. A
+                    # transient timeout is the most ordinary thing that happens
+                    # to a process whose whole job is holding a connection open.
                     fails += 1
                     print(f"listen: hub error ({fails}/{args.max_fails}): {exc}",
                           file=sys.stderr)
