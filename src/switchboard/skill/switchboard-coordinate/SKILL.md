@@ -317,15 +317,27 @@ it existed and `switchboard init` will add it.
 
 Using one is three steps, and the third is the one that gets forgotten:
 
-1. **Arm it before you end the turn**, not after you notice you are waiting.
-2. **When the wake arrives**, the message is on the process's stdout — but
-   only as a *peek*. The listener deliberately does not advance your read
-   cursor, because it shares an agent id with you and draining would consume
-   the message it woke you for. So call `inbox` or `checkin` yourself to
-   actually take delivery.
+1. **Arm it before you end the turn**, not after you notice you are waiting,
+   and give it an end: `--until forecast:p50` parks until the time your own
+   timing model predicts you would next have looked anyway, and
+   `--until +900` or an ISO timestamp says it outright. Without one it parks
+   indefinitely, which is a promise to be reachable that nothing keeps — if
+   no message ever comes, nothing brings you back.
+2. **When the wake arrives**, read its exit code first: `0` means a message
+   arrived and is on stdout, `2` means it reached the time you named with
+   nothing to report, `1` means it never watched anything. On `0` the payload
+   is only a *peek* — the listener does not advance your read cursor, because
+   it shares an agent id with you and draining would consume the message it
+   woke you for. So call `inbox` or `checkin` yourself to take delivery.
 3. **Re-arm if you are still waiting.** The listener exits on the first
    message; it is one wake, not a subscription. A turn that ends without
    arming it again is as unreachable as one that never armed it at all.
+
+Which quantile you park until is a judgment about how much you want to be
+interrupted: `p50` comes back early and often, `p95` leaves you alone longer
+at the cost of peers waiting. The listener says in its exit line whether that
+number was learned from your own history or is the wide starting prior — a
+deadline built on the prior deserves to be a shorter one.
 
 If your current tool list has nothing like that, say so plainly in your final
 message instead of implying the wait will resolve itself — a human or the
