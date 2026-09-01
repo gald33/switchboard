@@ -245,7 +245,10 @@ def test_a_parked_listener_is_on_the_roster(listener):
             )
             time.sleep(0.25)
         assert parked is not None, "a parked listener was invisible on the roster"
-        assert "parked on inbox" in (parked.get("task") or "")
+        # Not the task field — that belongs to the agent, and a listener writing
+        # it every pass fought whatever the agent had published. `back_in` is
+        # the fact a peer wants anyway, and the roster renders it as "away 12m".
+        assert parked.get("back_in"), "a parked listener should say when it is back"
     finally:
         proc.wait(timeout=60)
 
@@ -290,6 +293,21 @@ def test_another_room_is_one_flag_away(listener, live_hub, tmp_path):
     assert elsewhere in result.stderr
     peer.close()
     peer_client.close()
+
+
+def test_parking_does_not_paint_over_what_the_agent_is_doing(listener):
+    """Seen in a live room: the roster text flapped between the agent's task and
+    the listener's every pass, two writers under one id. Presence is this
+    process's business; the work is the agent's, and `back_in` already tells a
+    peer when to expect it."""
+    peer = listener.client("observer")
+    listener.client(listener.agent_id).register(
+        name="worker", task="migrating the auth module", ttl=120)
+
+    assert listener("--until", "+3", timeout=30).returncode == 2
+
+    row = next(a for a in peer.agents() if a["agent_id"] == listener.agent_id)
+    assert row["task"] == "migrating the auth module"
 
 
 def test_the_deadline_can_come_from_the_agents_own_forecast(listener):

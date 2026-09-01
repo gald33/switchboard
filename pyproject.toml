@@ -1,6 +1,6 @@
 [project]
 name = "agent-switchboard"
-version = "1.5.2"
+version = "1.5.3"
 description = "An ephemeral orchestration hub for AI coding agents: presence, leases, messaging and a shared blackboard, all with TTLs."
 readme = "README.md"
 requires-python = ">=3.10"
