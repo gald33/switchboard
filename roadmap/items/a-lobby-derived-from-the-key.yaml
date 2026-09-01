@@ -1,0 +1,60 @@
+id: a-lobby-derived-from-the-key
+title: Give every key a lobby, so agents that share one can find each other without naming a room
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: selective-wake-for-the-listener
+  note: 'What makes a lobby worth having rather than merely tidy: an agent parked with
+    `listen` is visible on a roster, so a lobby is a place peers can actually be found
+    waiting rather than a room that is empty whenever nobody is mid-turn.'
+- key: init-writes-rooms-file
+  note: 'Decide that one first, or near it. A lobby is a room every checkout knows about
+    without being told, which is exactly the record that item proposes writing down.'
+refs:
+- 'docs/model.md'
+- 'src/switchboard/crypto.py'
+evidence: |
+  **Inferred from a design conversation, not reported.**
+
+  **The gap.** `init` deliberately derives a separate room per repo, which is
+  right for isolation and leaves cross-repo work with nowhere to meet. Today
+  the answer is "agree on a workspace name out of band and export it in every
+  environment", which is a coordination problem solved by coordination, and it
+  fails silently when one party gets it wrong: an agent alone in a room it
+  chose by typo looks exactly like an agent in a quiet one.
+
+  A key is already the unit that means "these agents are mine" —
+  `docs/model.md` says so: "usually a person or a team, not one repo: one key
+  opens every room whose `key_id` names it". So the key can name a meeting
+  place, and nobody has to agree on anything they could mistype.
+
+  **The construction is the whole item.** The lobby's workspace token must be
+  *derived from the key*, `KDF(key, "lobby")`, not a well-known constant.
+  A constant would give every switchboard user on earth the same room
+  identifier: contents still sealed, but the hub would see one room with
+  everyone's metadata in it, and `docs/model.md` is explicit that what protects
+  a room is that its identifier is unguessable. Derived, the lobby is as
+  unguessable as any other room and is reachable by exactly the agents that
+  already share the key.
+
+  `crypto.py` already has the pieces — HKDF with an `info` binding, and
+  `blind()` for deriving identifiers — so this is a use of the existing
+  construction rather than a new one.
+
+  **What it buys.** `switchboard lobby` (or `-w lobby` resolving to the derived
+  token) as a place to announce, to ask who is around, and to hand over a room
+  for the actual work. Cross-repo coordination stops needing a shared secret
+  *name* on top of the shared key.
+
+  **What to be careful about.** A lobby is a room whose membership is "everyone
+  holding this key", which is a wider audience than a repo's room and a poor
+  place for anything specific — the same reason a company has a kitchen and
+  also meeting rooms. The convention should be that a lobby carries presence
+  and pointers, and work moves to a room minted for it
+  (`keygen --as-invite` already does that in one command).
+
+  **How you will know it worked.** Two agents in two unrelated checkouts, given
+  nothing but the same key, see each other. Today that takes an agreed
+  workspace name and an export in both environments; the test is that it takes
+  neither.

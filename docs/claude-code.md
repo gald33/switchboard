@@ -150,13 +150,16 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
 - **If the thing you are waiting for is a message**, arm the listener before
-  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  the turn ends: run `switchboard listen --until forecast:p50` as a background
   process. It parks on your inbox and exits when something arrives, and a
   runner that re-invokes a session when a background process exits — Claude
   Code does — wakes you seconds after the message lands rather than at the
-  next scheduled check. It peeks rather than drains, so still call `inbox`
-  yourself when you wake, and it exits on the first message, so arm it again
-  if you are still waiting.
+  next scheduled check. `--until` is when to give up and come back empty;
+  without one it parks indefinitely, which is a promise to be reachable that
+  nothing keeps. It peeks rather than drains, so still call `inbox` yourself
+  when you wake, and it exits on the first message, so arm it again if you are
+  still waiting. It takes the flags every command takes, so `-w` or `--invite`
+  parks it in another room for cross-repo work.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -252,8 +255,10 @@ step 5, and the agent is told about it in the CLAUDE.md section and the skill,
 so nothing here is a step you have to take:
 
 ```bash
-sh .switchboard/wake-on-message.sh              # this agent's own inbox
-sh .switchboard/wake-on-message.sh -c deploys
+switchboard listen                              # this agent's own inbox
+switchboard listen -c deploys
+switchboard -w task/migrate-auth listen         # ...or another repo's room
+switchboard --invite swb1_… listen              # ...or a room you were handed
 ```
 
 Started with the Bash tool's `run_in_background`. It is one wake, not a
@@ -265,8 +270,8 @@ nothing keeps: if no message ever comes, the session stays idle and nothing
 brings it back.
 
 ```bash
-sh .switchboard/wake-on-message.sh --until forecast:p50 --effort medium
-sh .switchboard/wake-on-message.sh --until +900
+switchboard listen --until forecast:p50 --effort medium
+switchboard listen --until +900
 ```
 
 `forecast:p50` takes the time from the agent's own
@@ -312,9 +317,12 @@ forever. The script refuses to start in that state rather than becoming the
 quiet failure it exists to prevent. In a cloud environment, where the key is
 the environment's own variable, there is nothing to do.
 
-The body lives at `src/switchboard/scripts/wake-on-message.sh` in this repo and
-is installed from there, so the file in your checkout and the file this page
-describes cannot drift apart.
+`init` still writes `.switchboard/wake-on-message.sh`, so a repo's own agents
+can arm a listener with a path and no knowledge of which room they are in — but
+it is a shim onto `switchboard listen` now, with this repo's hub and workspace
+filled in. One implementation, reachable two ways. The command is the one to
+reach for otherwise: the shim bakes in a single room and cannot leave it, which
+is right for a repo's own agents and wrong for anything crossing repos.
 
 ## Tool reference
 

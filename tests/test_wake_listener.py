@@ -1,11 +1,14 @@
-"""Tests for the wake-on-message listener, driven as the shell script it is.
+"""Tests for `switchboard listen`, driven as the separate process it must be.
 
-Everything else in this suite reaches the hub in-process. This one cannot: the
-listener is a POSIX shell script that shells out to the CLI, so the only
-faithful test is a real hub on a real port with the real script talking to it.
-The fixture is therefore heavier than the rest of the suite — one subprocess
-hub per module — and the deadlines are seconds rather than minutes so it stays
-quick.
+Everything else in this suite reaches the hub in-process. This one cannot, and
+not because of how the listener is written: the whole mechanism is *a process
+that exits*, so a faithful test needs a real process, a real socket and a real
+hub. The fixture is therefore heavier than the rest of the suite — one
+subprocess hub per module — and the deadlines are seconds rather than minutes
+so it stays quick.
+
+Both surfaces are exercised: the command, which is the implementation, and the
+`init`-installed shim, which is what a repo's agents actually type.
 
 What is being pinned here is not the shell. It is the four properties that are
 silent when they break: a wake carries the message, the peek leaves it unread
@@ -93,6 +96,8 @@ def listener(live_hub, tmp_path, request):
     script.write_text(_wake_script(live_hub, workspace, bootstrap=False))
     script.chmod(0o755)
 
+    base = ["switchboard", "--url", live_hub, "-w", workspace, "listen"]
+
     # Pinned rather than derived. An id is normally repo + branch + session,
     # and under pytest there is no session-id variable to hash — so each
     # subprocess would fall back to a per-process random and the listener
@@ -110,15 +115,24 @@ def listener(live_hub, tmp_path, request):
 
     def run(*args, timeout=60):
         return subprocess.run(
-            ["sh", str(script), *args], capture_output=True, text=True,
+            [*base, *args], capture_output=True, text=True,
             timeout=timeout, env=env, cwd=tmp_path,
         )
 
     def start(*args):
         return subprocess.Popen(
-            ["sh", str(script), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [*base, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=env, cwd=tmp_path,
         )
+
+    def via_shim(*args, timeout=60):
+        """What a repo's own agents run: the file `init` installed."""
+        return subprocess.run(
+            ["sh", str(script), *args], capture_output=True, text=True,
+            timeout=timeout, env=env, cwd=tmp_path,
+        )
+
+    run.via_shim = via_shim
 
     def client(agent_id):
         return Client(
@@ -127,6 +141,7 @@ def listener(live_hub, tmp_path, request):
         )
 
     run.agent_id = agent_id
+    run.env = env
     run.start = start
     run.client = client
     run.workspace = workspace
@@ -181,7 +196,7 @@ def test_an_argument_it_cannot_understand_refuses_to_park(listener):
     for bad in ("nonsense", "forecast:p90"):
         result = listener("--until", bad, timeout=30)
         assert result.returncode == 1, f"{bad!r} did not refuse: {result.stderr}"
-        assert "wake-on-message" in result.stderr
+        assert "--until" in result.stderr
 
 
 def test_the_heartbeat_says_what_it_is_doing_and_when_it_stops(listener):
@@ -199,7 +214,7 @@ def test_the_heartbeat_says_what_it_is_doing_and_when_it_stops(listener):
         assert entry is not None, "the listener never published a heartbeat"
         value = entry["value"]
         assert value["waiting_on"] == "inbox"
-        assert value["until_source"] == "+15s"
+        assert value["until_source"] == "+15"
         assert "until" in value
         # The one key whose expiry is not housekeeping says so itself, because
         # the viewer renders every board key the same way and cannot know.
@@ -233,6 +248,48 @@ def test_a_parked_listener_is_on_the_roster(listener):
         assert "parked on inbox" in (parked.get("task") or "")
     finally:
         proc.wait(timeout=60)
+
+
+def test_the_installed_shim_is_the_same_listener(listener):
+    """`init` still writes a file, because a repo's agents should be able to
+    arm one with a path and no knowledge of which room they are in. It is a
+    shim now — one implementation, reachable two ways."""
+    target = listener.agent_id
+    listener.client("peer").post(f"@{target}", "through the shim")
+
+    result = listener.via_shim("--until", "+30", timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["messages"][0]["body"] == "through the shim"
+
+
+def test_another_room_is_one_flag_away(listener, live_hub, tmp_path):
+    """The gap that prompted the command. The generated wrapper bakes in one
+    hub and workspace, so cross-repo work meant hand-assembling a script; every
+    other command takes `-w`, and now so does this one."""
+    elsewhere = f"{listener.workspace}-elsewhere"
+    peer = Client(
+        ClientConfig(url=live_hub, workspace=elsewhere, token=HUB_TOKEN),
+        agent_id=listener.agent_id,
+    )
+    peer_client = Client(
+        ClientConfig(url=live_hub, workspace=elsewhere, token=HUB_TOKEN),
+        agent_id="peer-elsewhere",
+    )
+    peer_client.post(f"@{listener.agent_id}", "in the other room")
+
+    result = subprocess.run(
+        ["switchboard", "--url", live_hub, "-w", elsewhere, "listen", "--until", "+30"],
+        capture_output=True, text=True, timeout=60,
+        env=listener.env, cwd=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["messages"][0]["body"] == "in the other room"
+    # And it did not stray into the repo's own room on the way.
+    assert elsewhere in result.stderr
+    peer.close()
+    peer_client.close()
 
 
 def test_the_deadline_can_come_from_the_agents_own_forecast(listener):

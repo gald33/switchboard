@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
@@ -2013,6 +2013,226 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- listen -------------------------------------------------------------
+#
+# The wake-on-message listener, as a command rather than a file.
+#
+# It shipped first as a shell script `init` wrote into each repo, which was the
+# right shape for a hook and the wrong one for this: the generated wrapper
+# bakes in the hub and workspace, so the listener was the only thing here that
+# could not be pointed at another room. `-w`, `--invite` and the environment
+# work on every other command; an agent coordinating across repos had to
+# hand-assemble a script to get what `--invite` gives away for free.
+#
+# The mechanism never needed a file. A wake is a *process that exits*, and this
+# process exits exactly as well as that one did.
+
+#: How long a heartbeat lives without renewal. Three passes' slack, so one slow
+#: long-poll cannot stage a death.
+_LISTEN_TTL = 90.0
+
+#: What the heartbeat says about its own absence. The viewer renders every
+#: board key alike, and "expired" reads as housekeeping on all of them — true
+#: for a stale handoff, badly wrong for this one.
+_LISTEN_MEANS = (
+    "this agent is parked and reachable; if this key is gone, nobody is "
+    "listening and nothing will revive it"
+)
+
+#: 0 woken, 1 never watched anything, 2 reached the deadline. Distinct because
+#: a woken agent has to tell them apart to know what to do next.
+EXIT_DEADLINE = 2
+
+
+def _listen_deadline(args: argparse.Namespace) -> tuple[float | None, str]:
+    """Resolve `--until` to one absolute time, once.
+
+    Once, not per pass: a forecast is "when will I next look, counting from
+    now", so re-asking each time would push the deadline away every 25 seconds
+    and the listener would never arrive at it.
+    """
+    raw: str | None = args.until
+    if not raw:
+        return None, ""
+    if raw.startswith("forecast:"):
+        quantile = raw.split(":", 1)[1]
+        if quantile not in ("p50", "p95"):
+            raise SystemExit(
+                f"--until forecast:{quantile} — the timing model publishes p50 "
+                "and p95, and nothing in between"
+            )
+        timing = _Timing(args)
+        model = timing.model
+        if model is None:
+            raise SystemExit("--until forecast:… needs the local timing model, "
+                             "and this machine has no readable store")
+        try:
+            # A preview, not a declaration: asking what the model would say
+            # must not be recorded as having said it.
+            forecast = model.forecast(
+                timing.agent_id, timing.workspace,
+                args.execution_class, args.effort)
+        finally:
+            timing.close()
+        seconds = forecast.p50_seconds if quantile == "p50" else forecast.p95_seconds
+        # `source` and `samples` decide what the number is worth: learned from
+        # this machine's own history, or the deliberately wide bootstrap prior
+        # a fresh container starts on. A deadline built on the prior should be
+        # a shorter one, and the agent can only know that if we say so.
+        return time.time() + seconds, (
+            f"{quantile} {forecast.source}, {forecast.samples} sample(s)")
+    if raw.startswith("+"):
+        try:
+            return time.time() + float(raw[1:]), raw
+        except ValueError:
+            raise SystemExit(f"--until {raw} is not a number of seconds") from None
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise SystemExit(
+            f"--until {raw} is not an ISO-8601 time, +SECONDS, or "
+            "forecast:p50 / forecast:p95"
+        ) from None
+    if when.tzinfo is None:
+        when = when.astimezone()
+    return when.timestamp(), "given"
+
+
+def cmd_listen(args: argparse.Namespace) -> int:
+    """Park on the inbox until something arrives, then exit so the runner wakes
+    this session.
+
+    A coding session only reaches for its inbox when it is its turn, so a
+    message that lands after the turn ends is delivered to nobody until a human
+    types something. Runners that re-invoke a session when a background process
+    exits — Claude Code does — make process death an available wake signal, and
+    this turns "a message arrived" into "a process exited".
+    """
+    deadline, source = _listen_deadline(args)
+    described = (
+        datetime.fromtimestamp(deadline, timezone.utc).isoformat() if deadline else ""
+    )
+    if deadline and deadline <= time.time():
+        print(f"listen: {described} ({source}) is already past", file=sys.stderr)
+        return EXIT_DEADLINE
+
+    identity = detect_identity(agent_id=args.agent_id)
+    heartbeat_ttl = args.ttl or _LISTEN_TTL
+    fails = 0
+    passes = 0
+
+    with _make_client(args) as hub:
+        # The room, before the wait. A listener on the wrong hub or in the
+        # wrong room does not fail — it waits, quietly, for as long as it is
+        # allowed to, which is the failure this whole design exists to avoid.
+        try:
+            hub.health()
+        except (SwitchboardError, OSError) as exc:
+            print(f"listen: cannot reach {hub.config.url} ({exc})", file=sys.stderr)
+            return EXIT_ERROR
+        _warn_key_left_behind(args, hub)
+
+        agent_id = hub.agent_id
+        heartbeat = f"listener/{agent_id}"
+        if not args.quiet:
+            print(f"listen: parked as {agent_id} in {hub.config.workspace}"
+                  + (f" until {described} [{source}]" if deadline else ""),
+                  file=sys.stderr)
+        try:
+            while True:
+                passes += 1
+                wait = 25.0
+                if deadline:
+                    left = deadline - time.time()
+                    # Never poll past the deadline: an unclamped last wait
+                    # overshoots by up to 25 seconds, which is the whole margin
+                    # on a short do-not-disturb and turns a time the agent
+                    # named into one it approximated.
+                    wait = min(wait, left)
+                    if wait <= 0:
+                        if not args.quiet:
+                            print(f"listen: reached {described} [{source}] with "
+                                  "nothing to report", file=sys.stderr)
+                        return EXIT_DEADLINE
+                try:
+                    # Presence as well as the board key. A parked agent is the
+                    # most reachable an agent ever is, and without this the
+                    # roster says it does not exist: `agents` comes back empty
+                    # and `dm` warns the sender their message will be read by
+                    # nobody. `back_in` is the deadline, so an empty roster can
+                    # be told from one that is merely between turns.
+                    hub.register(
+                        name=identity.name, kind=identity.kind,
+                        branch=identity.branch,
+                        task="parked on inbox" + (f" until {described}" if deadline else ""),
+                        channels=args.channel or [],
+                        meta=identity.meta, ttl=heartbeat_ttl,
+                        back_in=(deadline - time.time()) if deadline else None,
+                    )
+                    hub.board_set(heartbeat, {
+                        "pass": passes, "pid": os.getpid(), "waiting_on": "inbox",
+                        **({"until": described, "until_source": source} if deadline else {}),
+                        "means": _LISTEN_MEANS,
+                    }, ttl=heartbeat_ttl)
+                    # peek: this process shares a read cursor with the session
+                    # it serves, so draining would consume the very message it
+                    # woke that session to read. The woken session drains.
+                    messages = hub.inbox(
+                        channels=args.channel or None, wait=wait, peek=True)
+                except (SwitchboardError, OSError) as exc:
+                    fails += 1
+                    print(f"listen: hub error ({fails}/{args.max_fails}): {exc}",
+                          file=sys.stderr)
+                    if fails >= args.max_fails:
+                        # A non-zero exit is still a wake, and that is the
+                        # point: the session finds out its listener is gone
+                        # rather than mistaking a broken hub for a quiet room.
+                        print(f"listen: giving up after {fails} consecutive failures",
+                              file=sys.stderr)
+                        return EXIT_ERROR
+                    time.sleep(min(fails * 2, 10))
+                    continue
+                fails = 0
+                if messages:
+                    # To stdout, because the wake carries it: the session comes
+                    # back already holding the event instead of having to ask.
+                    _print_json({"messages": messages})
+                    if not args.quiet:
+                        print(f"listen: message arrived on pass {passes} — "
+                              "waking the session", file=sys.stderr)
+                    return EXIT_OK
+        finally:
+            # Best effort, and only best effort: the TTL is what makes a dead
+            # listener visible. This makes a deliberate stop visible sooner.
+            try:
+                hub.board_delete(heartbeat)
+            except (SwitchboardError, OSError):
+                pass
+
+
+def _warn_key_left_behind(args: argparse.Namespace, hub: Client) -> None:
+    """Say so when this invocation will watch a room it cannot read.
+
+    `switchboard` does not read the workspace key out of
+    `.claude/settings.local.json`, because a plain shell is not the MCP
+    subprocess that file's env reaches. In an encrypted room a listener without
+    the key watches a room it cannot address and finds nothing, ever — the same
+    silence as a quiet room, for as long as anyone cares to wait.
+    """
+    if getattr(hub, "encrypted", False):
+        return
+    if _saved_key(Path(".").resolve()):
+        print(
+            "listen: this repo has a workspace key and this invocation does "
+            "not have it.\n"
+            "  You would watch a different room than the session you serve and "
+            "never see a thing.\n"
+            "  Pass --key, or export it:  export $(switchboard whoami --env | xargs)",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_ERROR)
+
+
 def cmd_timing(args: argparse.Namespace) -> int:
     """Show this agent's own timing model — the local diagnostics the MCP
     bridge surfaces on its tool calls, which had no CLI surface at all.
@@ -2923,13 +3143,16 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
 - **If the thing you are waiting for is a message**, arm the listener before
-  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  the turn ends: run `switchboard listen --until forecast:p50` as a background
   process. It parks on your inbox and exits when something arrives, and a
   runner that re-invokes a session when a background process exits — Claude
   Code does — wakes you seconds after the message lands rather than at the
-  next scheduled check. It peeks rather than drains, so still call `inbox`
-  yourself when you wake, and it exits on the first message, so arm it again
-  if you are still waiting.
+  next scheduled check. `--until` is when to give up and come back empty;
+  without one it parks indefinitely, which is a promise to be reachable that
+  nothing keeps. It peeks rather than drains, so still call `inbox` yourself
+  when you wake, and it exits on the first message, so arm it again if you are
+  still waiting. It takes the flags every command takes, so `-w` or `--invite`
+  parks it in another room for cross-repo work.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -3179,6 +3402,69 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **Optionally, when a message precedes a stretch of heads-down work**, pass
+  `execution_class` (a short label like "coding") and `effort`
+  (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
+  that pair into an estimate of when you will next read messages and attaches
+  it for collaborators — you never estimate seconds. Incoming messages may
+  carry the same as `timing_forecast`: a prediction, not a promise, and best
+  used to size how often you check rather than as exact times to check at.
+- **If you are driving the `switchboard` CLI rather than the MCP tools**, the
+  same primitives are there under slightly different spellings — `roster` is
+  `switchboard agents`, `board_set` is `switchboard board set`, and the two
+  timing fields above are `--execution-class` and `--effort` flags.
+  `.claude/skills/switchboard-coordinate/SKILL.md` has the full mapping and
+  the two things only the MCP surface offers.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
+
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
+- **If the thing you are waiting for is a message**, arm the listener before
+  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  process. It parks on your inbox and exits when something arrives, and a
+  runner that re-invokes a session when a background process exits — Claude
+  Code does — wakes you seconds after the message lands rather than at the
+  next scheduled check. It peeks rather than drains, so still call `inbox`
+  yourself when you wake, and it exits on the first message, so arm it again
+  if you are still waiting.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -4708,6 +4994,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-own", action="store_true")
     _add_timing_args(p)
     p.set_defaults(func=cmd_inbox)
+
+    p = sub.add_parser(
+        "listen",
+        help="park until a message arrives, then exit so your runner wakes you",
+        description="Park on this agent's inbox and exit the moment something "
+                    "arrives, with the message on stdout. Meant to be run as a "
+                    "background process by a runner that re-invokes a session "
+                    "when one exits — that exit is the wake. It peeks rather "
+                    "than drains, so the woken session still calls `inbox` to "
+                    "take delivery. Exit 0 a message arrived, 2 the deadline "
+                    "passed, 1 it never watched anything.",
+    )
+    p.add_argument("-c", "--channel", action="append",
+                   help="wake on these channels instead of this agent's own inbox")
+    p.add_argument(
+        "--until", metavar="WHEN",
+        help="when to give up and come back empty: an ISO-8601 time, +SECONDS, "
+             "or forecast:p50 / forecast:p95 to park until the moment this "
+             "agent's own timing model says it would next have looked anyway. "
+             "Without one it parks indefinitely, which is a promise to be "
+             "reachable that nothing keeps.",
+    )
+    p.add_argument("--execution-class", metavar="LABEL",
+                   help="with --until forecast:…, the kind of work ahead")
+    p.add_argument("--effort", choices=["low", "medium", "high"],
+                   help="with --until forecast:…, the rough size of it")
+    p.add_argument("--ttl", type=float,
+                   help=f"heartbeat TTL in seconds (default {int(_LISTEN_TTL)})")
+    p.add_argument("--max-fails", type=int, default=5,
+                   help="consecutive hub errors tolerated before giving up")
+    p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")
     p.add_argument("-c", "--channel", action="append")
