@@ -103,3 +103,51 @@ def test_the_help_text_does_not_advertise_the_duplicates(capsys):
     rendered = capsys.readouterr().out
     assert "--execution-class" in rendered  # a real say option is documented
     assert "--token" not in rendered  # the borrowed global is not
+
+
+# --- unknown verbs ----------------------------------------------------------
+#
+# Two different agents, in two different sessions, typed `switchboard send`.
+# Nothing in the docs or the skill ever suggested it — it is simply the word
+# you reach for when you want to put a message somewhere and the verbs on
+# offer are `say`, `dm` and `whisper`. argparse's reply was the full list of
+# commands, which is a search rather than an answer, and it arrives at the
+# moment the agent was trying to tell somebody something.
+
+
+@pytest.mark.parametrize(
+    "typed, expected",
+    [
+        ("send", "say <channel>"),      # the observed one, twice
+        ("send", "dm <agent>"),         # and it names both, because both are plausible
+        ("post", "say <channel>"),
+        ("tell", "dm <agent>"),
+        ("roster", "agents"),           # the MCP tool name for the same thing
+        ("board_set", "board set"),     # ...and one that is only spelled differently
+    ],
+)
+def test_a_verb_we_do_not_have_says_which_one_to_use(typed, expected, capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args([typed, "hello"])
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert f"no `{typed}` command" in err
+    assert expected in err
+
+
+def test_a_near_miss_falls_back_to_the_closest_command(capsys):
+    """Nothing to look up for a typo, so the suggestion is computed."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["agens"])
+    assert "Did you mean agents?" in capsys.readouterr().err
+
+
+def test_something_unrecognisable_still_gets_argparse_s_own_answer(capsys):
+    """No guess is better than a wrong guess: an argument that resembles
+    nothing falls through to the full list, which is at least complete."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["zzzzzzzz"])
+    assert "invalid choice" in capsys.readouterr().err
