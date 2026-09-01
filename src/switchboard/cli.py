@@ -2256,7 +2256,12 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     hub.register(
                         name=identity.name, kind=identity.kind,
                         branch=identity.branch,
-                        task="parked on inbox" + (f" until {described}" if deadline else ""),
+                        # Deliberately no task. Presence is this process's
+                        # business; what the agent is working on is the agent's,
+                        # and a listener that rewrites it every pass turns the
+                        # roster into a fight between two writers under one id.
+                        # `back_in` below already renders as "away 12m", which
+                        # is the fact a peer actually wants.
                         channels=args.channel or [],
                         meta=identity.meta, ttl=heartbeat_ttl,
                         back_in=(deadline - time.time()) if deadline else None,

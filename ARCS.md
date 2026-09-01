@@ -100,6 +100,7 @@ wrong says so.
 
 | item | status | priority |
 |---|---|---|
+| `one-symptom-seven-causes-doctor` | ready | now |
 | `connect-failure-message` | done | next |
 | `init-writes-rooms-file` | ready | next |
 | `a-lobby-derived-from-the-key` | ready | — |
