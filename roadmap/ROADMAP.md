@@ -15,10 +15,6 @@ Claim before starting: `roadmap claim <key>`
 - `now` **`ci-workspace-is-public`** — Stop publishing the one room identifier that was never meant to be guessable
   - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
-- `now` **`one-symptom-seven-causes-doctor`** — Every silent failure here looks like a quiet room; add one command that says which one it is
-  - ↔ related: **`connect-failure-message`** — The precedent, now done: it made two failures name what they tried instead of what they were. This applies the same move to the failures that produce no error at all.
-  - ↔ related: **`identity-rebinds-on-branch-change`** — One of the causes this command has to be able to name, and the one a coordinator is least likely to guess. Read that item for the mechanism; this one is about making it visible without knowing to look.
-  - ↔ related: **`joining-agent-sees-empty-inbox`** — The same symptom reported from the joining side. That item fixes one cause; this one accepts that there will always be several and makes the symptom diagnosable.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
@@ -37,6 +33,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
+  - ↔ related: **`selective-wake-for-the-listener`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
 - **`hub-origin-reachable-bypassing-the-edge`** — The hub's origin answers directly by IP, so its Cloudflare edge is optional
   - ↔ related: **`identity-rebinds-on-branch-change`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
   - ↔ related: **`standing-checks-that-nothing-runs`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
@@ -44,13 +41,11 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
-  - ↔ related: **`one-symptom-seven-causes-doctor`** — One of the causes this command has to be able to name, and the one a coordinator is least likely to guess. Read that item for the mechanism; this one is about making it visible without knowing to look.
 - **`joining-agent-sees-empty-inbox`** — An agent that joins a busy room sees an inbox indistinguishable from a quiet one
   - ↔ related: **`clients-that-cannot-post`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
   - ↔ related: **`connect-failure-message`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - ↔ related: **`identity-rebinds-on-branch-change`** — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
-  - ↔ related: **`one-symptom-seven-causes-doctor`** — The same symptom reported from the joining side. That item fixes one cause; this one accepts that there will always be several and makes the symptom diagnosable.
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
@@ -58,6 +53,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
   - ↔ related: **`a-lobby-derived-from-the-key`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
@@ -115,7 +111,6 @@ graph TD
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
-  one_symptom_seven_causes_doctor["Every silent failure here looks like a quiet room; add one command that says which one it is"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
@@ -138,15 +133,13 @@ graph TD
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
-  connect_failure_message -.- one_symptom_seven_causes_doctor
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
+  every_silent_failure_looks_like_a_quiet_room -.- selective_wake_for_the_listener
   hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
-  identity_rebinds_on_branch_change -.- one_symptom_seven_causes_doctor
-  joining_agent_sees_empty_inbox -.- one_symptom_seven_causes_doctor
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   roles_and_authority_between_agents -.- selective_wake_for_the_listener
@@ -424,7 +417,6 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
-  - `one-symptom-seven-causes-doctor` — The precedent, now done: it made two failures name what they tried instead of what they were. This applies the same move to the failures that produce no error at all.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/88`
 
@@ -466,9 +458,17 @@ graph TD
   - `identity-rebinds-on-branch-change` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `joining-agent-sees-empty-inbox` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - `provisioned-token-is-stale-and-nothing-says-so` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
+  - `selective-wake-for-the-listener` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
 
 <details><summary>evidence</summary>
 
+> **Filed twice, independently, and merged here.** The reporting agents wrote
+> this list; a switchboard-side session read it off the blackboard and filed the
+> same pattern as `one-symptom-seven-causes-doctor`, since merged and folded in
+> below. Two sessions reaching the same item from opposite ends is itself
+> evidence for it. Their split was the better one and is kept: the stale
+> credential is separate, because it has an owner outside this repo.
+>
 > **Not a filed issue.** Measured over 2026-08-31/09-01 by two agents on two
 > machines — one local, one cloud — coordinating through this hub. Every item
 > below was hit for real, and the list was assembled by the pair who lost the
@@ -563,6 +563,58 @@ graph TD
 > in `docker ps` throughout. Same shape, different subsystem — and this project
 > found the identical thing in its own firewall on 2026-08-30, where a connlimit
 > rule was present, correctly formed, and in a chain the traffic never traversed.
+>
+> **The proposal, in the reporters' words: assert the effect, not the process.**
+> One command that performs a real round trip and says which link broke, rather
+> than seven warnings each describing a mechanism. They cite a precedent from
+> their own runbook — fail2ban jails that load, never match, and show green
+> throughout.
+>
+> **Shape.** `switchboard doctor`, each step naming the tier the value came
+> from the way the 1.5.1 failure messages do:
+>
+> 1. **reach** — `GET /health`, naming the URL and which tier chose it. "The
+>    built-in default" is the answer that matters.
+> 2. **auth** — one authenticated call, naming where the token came from.
+> 3. **room** — seal a probe onto the blackboard and read it back *decrypted*.
+>    This is the one step that proves hub, workspace and key agree, and it is
+>    exactly what an invite's proof-of-room already does; a round trip is
+>    self-consistent under a wrong key, so only the read-back settles it.
+> 4. **presence** — announce, then find yourself on the roster. Catches both
+>    "the CLI never registered you" and "you are listed under an id that is not
+>    the one you published".
+> 5. **delivery** — post to a probe channel and read it back with `history`,
+>    which leaves the cursor alone. Deliberately not `inbox`: the diagnostic
+>    must not consume the mail it is testing for, which is failure five in the
+>    table above.
+> 6. **subscription** — say plainly when the only channel this agent would
+>    receive on is its own `@id`, since a busy room and an unsubscribed agent
+>    look identical from the inside.
+> 7. **identity** — print the derivation inputs (repo, branch, session) and say
+>    that a checkout would change them unless `SWITCHBOARD_AGENT_ID` is pinned.
+>
+> Cleanup on the way out: delete the probe key, and give the probe message a
+> short TTL so a doctored room does not fill with diagnostics.
+>
+> **The limit, found by walking into it while filing this item.** A listener
+> started as a detached process — `&`, `nohup`, anything the runner is not
+> tracking — parks correctly, heartbeats correctly, publishes its deadline and
+> appears on the roster, and can wake nobody, because the session's runner
+> never knew the process existed. Every check `doctor` can make would pass.
+>
+> That is a ninth cause with the same symptom, and it is outside this project
+> entirely: the fault is in the wire between the process and the session, which
+> no hub can observe. So `doctor` must not claim to certify the wake. It can
+> prove the room works; the guidance has to carry the rest, which is why the
+> skill now leads with "start it with your runner's own background mechanism"
+> as step zero.
+>
+> **How you will know it worked.** Reproduce each row of the table — a wrong
+> token, an unregistered agent, a mismatched key, an unsubscribed one, a pinned
+> vs derived id — and `doctor` names the right one each time, exiting non-zero.
+> The test that matters most is the negative: a genuinely quiet room in a
+> correct setup must come back clean, or the command becomes noise and stops
+> being run.
 
 </details>
 
@@ -685,7 +737,6 @@ graph TD
   - `every-silent-failure-looks-like-a-quiet-room` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `hub-origin-reachable-bypassing-the-edge` — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
   - `joining-agent-sees-empty-inbox` — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
-  - `one-symptom-seven-causes-doctor` — One of the causes this command has to be able to name, and the one a coordinator is least likely to guess. Read that item for the mechanism; this one is about making it visible without knowing to look.
 - **refs:**
   - `src/switchboard/client.py:157`
   - `src/switchboard/client.py:195`
@@ -822,7 +873,6 @@ graph TD
   - `connect-failure-message` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
   - `every-silent-failure-looks-like-a-quiet-room` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - `identity-rebinds-on-branch-change` — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
-  - `one-symptom-seven-causes-doctor` — The same symptom reported from the joining side. That item fixes one cause; this one accepts that there will always be several and makes the symptom diagnosable.
   - `write-parity-across-surfaces` — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **refs:**
   - `docs/environments.md`
@@ -987,106 +1037,6 @@ graph TD
 > surface follows — including a listener armed afterwards through Bash — and
 > `whoami` says which room it is in and why, in a way that makes a stale
 > context visible rather than merely correct.
-
-</details>
-
-### `one-symptom-seven-causes-doctor`
-
-- **title:** Every silent failure here looks like a quiet room; add one command that says which one it is
-- **status:** ready
-- **arc:** setup-and-first-run
-- **priority:** now
-- **related to** (not a dependency — both are startable):
-  - `connect-failure-message` — The precedent, now done: it made two failures name what they tried instead of what they were. This applies the same move to the failures that produce no error at all.
-  - `identity-rebinds-on-branch-change` — One of the causes this command has to be able to name, and the one a coordinator is least likely to guess. Read that item for the mechanism; this one is about making it visible without knowing to look.
-  - `joining-agent-sees-empty-inbox` — The same symptom reported from the joining side. That item fixes one cause; this one accepts that there will always be several and makes the symptom diagnosable.
-- **refs:**
-  - `docs/model.md`
-  - `src/switchboard/cli.py`
-
-<details><summary>evidence</summary>
-
-> **Reported by two agents on two machines, from a real day of coordination
-> (2026-08-31/09-01), and left on the blackboard of the lobby they were
-> debugging.** Not a filed issue, and better evidence than one: every claim in
-> it was hit while trying to do something else.
->
-> **The finding is not the list, it is the pattern.** Seven or eight distinct
-> causes, one symptom, and the symptom is indistinguishable from the ordinary
-> case where nobody has anything to say:
->
-> | cause | what it looks like |
-> |---|---|
-> | stale `SWITCHBOARD_TOKEN` in the shell | every call fails, or (before 1.5.1) fails without saying which token |
-> | `whoami` cannot detect that, being local-only | a clean bill of health from the command you would check |
-> | the CLI does not auto-register, the MCP bridge does | you read a roster you are absent from |
-> | subscribed to nothing but your own DM channel | a busy room where `inbox` returns nothing |
-> | a hand-rolled poller built on `inbox` | it drains what it was meant to announce |
-> | blinded ids differ per workspace | an id you published is not the one you hold |
-> | a `git checkout` re-derives the agent id | the address you gave a peer goes dead mid-task |
-> | an invite with no proof-of-room | two agents in two rooms, each concluding the other is absent |
->
-> Three of these are answered already — 1.5.1 makes a 401 name its token's
-> source; `listen` peeks precisely so a listener cannot eat the message it
-> exists to hand over; and the identity rebind is filed separately. The point
-> of this item is that fixing them one at a time never removes the symptom,
-> because the next cause produces exactly the same silence.
->
-> **What was reported as the cost:** "six hours, both correctly concluding the
-> other was absent." And, from the same report: an agent's own presence monitor
-> reporting *itself* as a newly arrived peer after a branch checkout.
->
-> **The proposal, in the reporters' words: assert the effect, not the process.**
-> One command that performs a real round trip and says which link broke, rather
-> than seven warnings each describing a mechanism. They cite a precedent from
-> their own runbook — fail2ban jails that load, never match, and show green
-> throughout.
->
-> **Shape.** `switchboard doctor`, each step naming the tier the value came
-> from the way the 1.5.1 failure messages do:
->
-> 1. **reach** — `GET /health`, naming the URL and which tier chose it. "The
->    built-in default" is the answer that matters.
-> 2. **auth** — one authenticated call, naming where the token came from.
-> 3. **room** — seal a probe onto the blackboard and read it back *decrypted*.
->    This is the one step that proves hub, workspace and key agree, and it is
->    exactly what an invite's proof-of-room already does; a round trip is
->    self-consistent under a wrong key, so only the read-back settles it.
-> 4. **presence** — announce, then find yourself on the roster. Catches both
->    "the CLI never registered you" and "you are listed under an id that is not
->    the one you published".
-> 5. **delivery** — post to a probe channel and read it back with `history`,
->    which leaves the cursor alone. Deliberately not `inbox`: the diagnostic
->    must not consume the mail it is testing for, which is failure five in the
->    table above.
-> 6. **subscription** — say plainly when the only channel this agent would
->    receive on is its own `@id`, since a busy room and an unsubscribed agent
->    look identical from the inside.
-> 7. **identity** — print the derivation inputs (repo, branch, session) and say
->    that a checkout would change them unless `SWITCHBOARD_AGENT_ID` is pinned.
->
-> Cleanup on the way out: delete the probe key, and give the probe message a
-> short TTL so a doctored room does not fill with diagnostics.
->
-> **The limit, found by walking into it while filing this item.** A listener
-> started as a detached process — `&`, `nohup`, anything the runner is not
-> tracking — parks correctly, heartbeats correctly, publishes its deadline and
-> appears on the roster, and can wake nobody, because the session's runner
-> never knew the process existed. Every check `doctor` can make would pass.
->
-> That is a ninth cause with the same symptom, and it is outside this project
-> entirely: the fault is in the wire between the process and the session, which
-> no hub can observe. So `doctor` must not claim to certify the wake. It can
-> prove the room works; the guidance has to carry the rest, which is why the
-> skill now leads with "start it with your runner's own background mechanism"
-> as step zero.
->
-> **How you will know it worked.** Reproduce each row of the table — a wrong
-> token, an unregistered agent, a mismatched key, an unsubscribed one, a pinned
-> vs derived id — and `doctor` names the right one each time, exiting non-zero.
-> The test that matters most is the negative: a genuinely quiet room in a
-> correct setup must come back clean, or the command becomes noise and stops
-> being run.
 
 </details>
 
@@ -1423,6 +1373,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - `every-silent-failure-looks-like-a-quiet-room` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.

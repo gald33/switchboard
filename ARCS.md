@@ -78,7 +78,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 16 item(s), 12 startable
+`setup-and-first-run` · 15 item(s), 11 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -100,7 +100,6 @@ wrong says so.
 
 | item | status | priority |
 |---|---|---|
-| `one-symptom-seven-causes-doctor` | ready | now |
 | `connect-failure-message` | done | next |
 | `init-writes-rooms-file` | ready | next |
 | `a-lobby-derived-from-the-key` | ready | — |
