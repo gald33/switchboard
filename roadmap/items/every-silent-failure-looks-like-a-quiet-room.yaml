@@ -63,12 +63,45 @@ evidence: |
   because the author's own presence monitor reported the author as a newly
   arrived peer, mid-sentence.
 
+  **Two more, contributed after this item was drafted, both observed live.**
+
+  8. **A listener is orphaned by `git checkout`, and orphaned silently.** The
+     author of this item parked `listen`, then created a branch *to file this
+     item*, which re-derived their id. The listener stayed on the old inbox: a
+     DM to their live id would not wake it, and a DM to their dead id would wake
+     it for a message they could no longer be reached at. **The wake mechanism
+     and the address drifted apart with nothing said.** This is the worst member
+     of the class, because `listen` succeeds by staying quiet — an orphaned
+     listener and a peer with nothing to say are the same observation.
+
+  9. **A noisy detector is strictly worse than none.** The other agent built
+     three pollers before reaching for `listen`. Each failed differently:
+     `inbox` drains and ate a real message; `history` prints relative timestamps
+     so a content hash re-fires forever on unchanged text; a line-oriented
+     "not me" filter leaks multi-line bodies, so they re-notified themselves
+     with their own posts. The cost was not the noise. **It was that three
+     false-positive classes trained them to skim their own alerts, and while the
+     monitor cried wolf about their own messages, a real reply with a direct
+     question sat unread on a board key and was found by hand.** The detector
+     was itself an instance of the pattern it was built to catch: running,
+     healthy-looking, and not doing its job.
+
   **How you know it worked.** A `switchboard doctor` that asserts the EFFECT
-  rather than the process: round-trip a message from this agent to itself through
-  the hub — register, subscribe, post, listen, read back — and report which leg
-  broke. It should be able to distinguish, by name, all seven causes above, and
-  it should be the first thing a stuck agent is told to run. Today the equivalent
-  diagnosis requires knowing all seven in advance.
+  rather than the process: register, subscribe, post, and confirm delivery —
+  then report which leg broke. It should distinguish all nine causes by name and
+  be the first thing a stuck agent is told to run.
+
+  **And it must validate a PARKED LISTENER, not merely a send/receive
+  round-trip.** That refinement is the other agent's and it is load-bearing: a
+  plain round-trip reads once, so it passes straight through the drain bug — the
+  very fault that ate a real message here. The check has to park a listener,
+  deliver to it, and confirm it fired *and* that the message survived the read.
+
+  Note why `listen` is the correct primitive, which neither of us saw until
+  after building the wrong thing: it peeks rather than drains, and it reads the
+  agent's OWN inbox, which structurally cannot contain that agent's own sends.
+  That single property defeats the drain, the self-echo and the self-filter bugs
+  at once.
 
   The precedent is in Lucille's own CLAUDE.md, under *verifying a guard by its
   process, not its effect*: fail2ban jails that load, never match, and show green

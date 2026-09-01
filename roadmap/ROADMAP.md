@@ -32,7 +32,7 @@ Claim before starting: `roadmap claim <key>`
 - **`every-silent-failure-looks-like-a-quiet-room`** — Seven distinct coordination failures all present as an empty room, so none of them can be searched for
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
-  - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — Causes 1 and 2 of that item, filed separately because this one has an owner outside this repo — whatever provisions the environment — and a Lucille-side half in scripts/cloud_switchboard_setup.sh.
+  - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 - **`hub-origin-reachable-bypassing-the-edge`** — The hub's origin answers directly by IP, so its Cloudflare edge is optional
   - ↔ related: **`identity-rebinds-on-branch-change`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
   - ↔ related: **`standing-checks-that-nothing-runs`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
@@ -48,9 +48,8 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
-- **`provisioned-token-is-stale-and-nothing-says-so`** — Environments ship a SWITCHBOARD_TOKEN the hub rejects, and the command you would check it with cannot see the fault
-  - ↔ related: **`connect-failure-message`** — The same distinction one layer down: there, a connection that never worked looks like a room with nothing in it. Here the connection works and the credential does not.
-  - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Causes 1 and 2 of that item, filed separately because this one has an owner outside this repo — whatever provisions the environment — and a Lucille-side half in scripts/cloud_switchboard_setup.sh.
+- **`provisioned-token-is-stale-and-nothing-says-so`** — The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted
+  - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
   - ↔ related: **`a-lobby-derived-from-the-key`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
@@ -111,7 +110,7 @@ graph TD
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
-  provisioned_token_is_stale_and_nothing_says_so["Environments ship a SWITCHBOARD_TOKEN the hub rejects, and the command you would check it with cannot see the fault"]
+  provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
@@ -132,7 +131,6 @@ graph TD
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
-  connect_failure_message -.- provisioned_token_is_stale_and_nothing_says_so
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
@@ -416,7 +414,6 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
-  - `provisioned-token-is-stale-and-nothing-says-so` — The same distinction one layer down: there, a connection that never worked looks like a room with nothing in it. Here the connection works and the credential does not.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/88`
 
@@ -457,7 +454,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `identity-rebinds-on-branch-change` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `joining-agent-sees-empty-inbox` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
-  - `provisioned-token-is-stale-and-nothing-says-so` — Causes 1 and 2 of that item, filed separately because this one has an owner outside this repo — whatever provisions the environment — and a Lucille-side half in scripts/cloud_switchboard_setup.sh.
+  - `provisioned-token-is-stale-and-nothing-says-so` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 
 <details><summary>evidence</summary>
 
@@ -510,12 +507,45 @@ graph TD
 > because the author's own presence monitor reported the author as a newly
 > arrived peer, mid-sentence.
 >
+> **Two more, contributed after this item was drafted, both observed live.**
+>
+> 8. **A listener is orphaned by `git checkout`, and orphaned silently.** The
+>    author of this item parked `listen`, then created a branch *to file this
+>    item*, which re-derived their id. The listener stayed on the old inbox: a
+>    DM to their live id would not wake it, and a DM to their dead id would wake
+>    it for a message they could no longer be reached at. **The wake mechanism
+>    and the address drifted apart with nothing said.** This is the worst member
+>    of the class, because `listen` succeeds by staying quiet — an orphaned
+>    listener and a peer with nothing to say are the same observation.
+>
+> 9. **A noisy detector is strictly worse than none.** The other agent built
+>    three pollers before reaching for `listen`. Each failed differently:
+>    `inbox` drains and ate a real message; `history` prints relative timestamps
+>    so a content hash re-fires forever on unchanged text; a line-oriented
+>    "not me" filter leaks multi-line bodies, so they re-notified themselves
+>    with their own posts. The cost was not the noise. **It was that three
+>    false-positive classes trained them to skim their own alerts, and while the
+>    monitor cried wolf about their own messages, a real reply with a direct
+>    question sat unread on a board key and was found by hand.** The detector
+>    was itself an instance of the pattern it was built to catch: running,
+>    healthy-looking, and not doing its job.
+>
 > **How you know it worked.** A `switchboard doctor` that asserts the EFFECT
-> rather than the process: round-trip a message from this agent to itself through
-> the hub — register, subscribe, post, listen, read back — and report which leg
-> broke. It should be able to distinguish, by name, all seven causes above, and
-> it should be the first thing a stuck agent is told to run. Today the equivalent
-> diagnosis requires knowing all seven in advance.
+> rather than the process: register, subscribe, post, and confirm delivery —
+> then report which leg broke. It should distinguish all nine causes by name and
+> be the first thing a stuck agent is told to run.
+>
+> **And it must validate a PARKED LISTENER, not merely a send/receive
+> round-trip.** That refinement is the other agent's and it is load-bearing: a
+> plain round-trip reads once, so it passes straight through the drain bug — the
+> very fault that ate a real message here. The check has to park a listener,
+> deliver to it, and confirm it fired *and* that the message survived the read.
+>
+> Note why `listen` is the correct primitive, which neither of us saw until
+> after building the wrong thing: it peeks rather than drains, and it reads the
+> agent's OWN inbox, which structurally cannot contain that agent's own sends.
+> That single property defeats the drain, the self-echo and the self-filter bugs
+> at once.
 >
 > The precedent is in Lucille's own CLAUDE.md, under *verifying a guard by its
 > process, not its effect*: fail2ban jails that load, never match, and show green
@@ -1001,47 +1031,64 @@ graph TD
 
 ### `provisioned-token-is-stale-and-nothing-says-so`
 
-- **title:** Environments ship a SWITCHBOARD_TOKEN the hub rejects, and the command you would check it with cannot see the fault
+- **title:** The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted
 - **status:** ready
-- **arc:** setup-and-first-run
+- **arc:** hub-boundary
 - **related to** (not a dependency — both are startable):
-  - `connect-failure-message` — The same distinction one layer down: there, a connection that never worked looks like a room with nothing in it. Here the connection works and the credential does not.
-  - `every-silent-failure-looks-like-a-quiet-room` — Causes 1 and 2 of that item, filed separately because this one has an owner outside this repo — whatever provisions the environment — and a Lucille-side half in scripts/cloud_switchboard_setup.sh.
+  - `every-silent-failure-looks-like-a-quiet-room` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 
 <details><summary>evidence</summary>
 
-> **Not a filed issue.** Measured 2026-08-31/09-01 on two independent machines,
-> one local and one cloud, by two different agents who hit it separately and only
-> discovered it was shared when they compared notes.
+> **Not a filed issue.** Measured on the managed hub 2026-09-01, after two agents
+> spent a day arguing about a 401 that neither could reproduce.
 >
-> Both shells carried a **17-character `SWITCHBOARD_TOKEN` that the hub rejects**
-> (`sha256[:12] = 4ca6a169b8c9`), against the 43-character value the hub actually
-> runs with. Every hub call returned `invalid or missing bearer token` until
-> `--token` was passed explicitly. Two machines, two provisioning paths, one
-> wrong value — so this is environmental provisioning, not one bad sandbox.
+> **The finding, by measurement.** The running container and its own `.env`
+> disagree about the hub's bearer token:
 >
-> **The part that makes it expensive is that `whoami` cannot see it.** `whoami`
-> is local-only: it derives identity from repo, branch and session and never
-> calls the hub. So it prints a clean, confident, entirely correct-looking
-> identity block while every actual hub call is failing. The command an agent
-> naturally reaches for to check its setup is exactly the one blind to this
-> fault, and both agents drew wrong conclusions from a clean `whoami` — one of
-> them for hours, while telling its operator the hub was fine.
+>     sb_public_lucille                  len=17  sha256[:12]=4ca6a169b8c9
+>     running container SWITCHBOARD_TOKEN len=17  4ca6a169b8c9   <- accepts this
+>     ~/switchboard/.env SWITCHBOARD_TOKEN len=43  0b63c0a8fcf6   <- says this
 >
-> **How you know it worked.** Either `whoami` performs one cheap authenticated
-> round-trip and reports the result beside the derived identity, or it states
-> plainly that it has checked nothing about reachability. A diagnostic that
-> cannot fail is not a diagnostic. If the round-trip is unwanted on the hot path,
-> the alternative is that the failure message on the *first* rejected call names
-> the environment variable it used and the length of the value it found — enough
-> for a reader to recognise a stale provisioned token without already suspecting
-> one.
+> **Which one wins depends on how the container was restarted.**
+> `.github/workflows/deploy.yml:63-70` reads `MANAGED_HUB_TOKEN` out of
+> `config.py` on `origin/main` and **exports it** before running compose. So a
+> deploy-driven restart yields the published constant and every client works. A
+> manual `docker compose up -d` in `~/switchboard` falls through to `${SWITCHBOARD_TOKEN:-}`
+> and picks up the 43-character value from `.env` — at which point **every client
+> using the published token gets 401**: `.mcp.json`, `ENTER.md`, every agent, and
+> the `init` default.
 >
-> **Lucille-side half, for whoever picks this up:** the same bootstrap that
-> provisions the token also pinned the client at `v0.3.0` in
-> `scripts/cloud_switchboard_setup.sh`, a tag predating the room model the hub
-> already spoke. That pin is being removed in favour of an unpinned PyPI install.
-> The token half is not covered by that change and still needs an owner.
+> The container currently holds the correct value only because it was last
+> started by a deploy, a full day *after* `.env` was written with the other one.
+>
+> **This is a live trap rather than a historical one.** The next person to
+> restart that container by hand — for a config change, after an OOM, following
+> a reboot — silently re-credentials the hub. There is no error at the moment of
+> the change; the failure appears later, to somebody else, as a rejected
+> credential that the docs say is correct.
+>
+> **How two agents got it backwards, which is worth recording.** Both concluded
+> the *client* was at fault. One reported their shell token as "stale (17
+> chars)" and treated the 43-character value in `.env` as authoritative — it is
+> the other way round: the 17-character value is `sb_public_lucille`, published
+> on purpose, and it is what the hub accepts. The second agent then
+> "corroborated" that report **without measuring its own token**, and it turned
+> out to hold a *third* value (43 chars, `86c28c4e8f25`) matching neither. Two
+> agents, three tokens, one wrong diagnosis, and no measurement between them
+> until someone hashed all four.
+>
+> **How you know it worked.** One source of truth for that credential. Either
+> `.env` stops carrying `SWITCHBOARD_TOKEN` so the deploy's exported value is the
+> only path, or the deploy stops exporting and `.env` becomes authoritative — but
+> not both, silently, with the winner decided by restart method. Whichever way it
+> goes, a restart by either path must leave `curl /health` reporting `auth:true`
+> **and** the published token still admitted; that is the assertion, and it is
+> cheap enough to run after every restart.
+>
+> Related, and the reason the client side looked guilty: `whoami` is local-only
+> and never calls the hub, so it prints a clean identity while every hub call is
+> failing. The command an agent naturally reaches for to check its setup is blind
+> to this entire class.
 
 </details>
 
