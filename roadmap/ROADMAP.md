@@ -39,6 +39,8 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
+- **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
+  - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
@@ -61,8 +63,6 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
-- **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message  
-  deferred: Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
 
 ## 🔒 Claimed — someone is on these
 
@@ -867,9 +867,8 @@ graph TD
 ### `selective-wake-for-the-listener`
 
 - **title:** Wake the listener on what matters, and on the time it promised, not on every message
-- **status:** deferred
+- **status:** ready
 - **arc:** setup-and-first-run
-- **deferred:** Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
 - **related to** (not a dependency — both are startable):
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **refs:**
@@ -879,9 +878,27 @@ graph TD
 
 <details><summary>evidence</summary>
 
-> **Inferred from a design conversation, not reported by anyone** — the same
-> standing as `publish-hub-container-image`, and it deserves the same discount
-> until the manual run above produces evidence.
+> **Inferred from a design conversation, then gated on a manual run that has
+> now happened.** Filed with the same standing as `publish-hub-container-image`
+> — nobody reported it — but no longer on inference alone.
+>
+> **The wake is observed, 2026-09-01.** Two cloud sessions, one room. Agent A
+> armed the listener and ended its turn; the board carried
+> `listener/<A>` with the TTL sagging and springing back for ten minutes
+> (pass 24) while A produced no output. Agent B sent a direct message at
+> 03:00:12Z; A woke, **called `inbox` itself to take delivery rather than
+> acting on the peeked payload**, and posted the requested reply at 03:00:23Z.
+>
+> Eleven seconds, end to end, including a session re-invocation. Two things
+> that could have failed did not: a runner does re-invoke a session when a
+> background process exits, and the skill's step 2 — peek, then drain — was
+> followed by an agent reading it for the first time. What remains unobserved
+> is re-arming (step 3): A was not still waiting, so it had no reason to.
+>
+> A third finding, unrelated to this item: A first reached for
+> `switchboard send`, which does not exist. Nothing in the docs or the skill
+> advertises that verb — it is the one an agent guesses — and the CLI offers
+> `say`/`dm`/`whisper` with no suggestion on an unknown subcommand.
 >
 > **What exists today.** The listener wakes on *any* message. That is the right
 > default for a session that armed it because it was waiting on one specific
@@ -948,6 +965,25 @@ graph TD
 > implementation: one function taking a decrypted message and returning wake or
 > skip, with type and keyword as the shipped implementations. A semantic filter
 > drops into that slot later, for whoever has a room noisy enough to need it.
+>
+> **Two findings from watching the first run in the viewer, both about the
+> heartbeat rather than the filter, and both cheap enough to fold in here.**
+>
+> The viewer renders `listener/<id>` like any other board key, because it is
+> one — the hub and the viewer know nothing about listeners, which is the
+> generic primitive working as intended. But "expires in 1m27s" means
+> housekeeping on almost every key and *the answering machine is off and
+> nothing will revive it* on this one, and a human cannot tell those apart from
+> the rendering. The fix belongs in the value, not the viewer: the listener
+> owns what it writes, so the heartbeat should carry a short `means` string
+> saying what its own absence signifies. The hub stays dumb and the meaning
+> travels with the data.
+>
+> And the key is worth reading by *peers*, not only by humans. Presence answers
+> "was this agent alive recently"; a live `listener/` key answers "will it
+> notice a DM within seconds", which is a different question and the one
+> `docs/adaptive-timing.md` currently answers by prediction. A peer deciding
+> whether to expect a fast reply could read the fact instead of forecasting it.
 >
 > **How you will know it worked.** The pytest layer this item also owes —
 > driving the installed script against the in-process hub from
