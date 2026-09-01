@@ -340,17 +340,8 @@ than this repo's own room, which is what cross-repo work needs. (`init` also
 installs `.switchboard/wake-on-message.sh`, a shim onto the same command with
 this repo's hub and room already filled in.)
 
-Using one is four steps. The third is the one that gets forgotten, and the
-zeroth is the one that fails silently:
+Using one is three steps, and the third is the one that gets forgotten:
 
-0. **Start it with your runner's own background mechanism** — the one that
-   tracks a task and re-invokes you when it exits. Not `&`, not `nohup`, not a
-   detached process you launch inside a shell command: those park correctly,
-   heartbeat correctly, appear on the roster correctly, and wake nobody,
-   because the runner never knew the process existed. Nothing on the hub can
-   tell you this happened. The roster, the heartbeat and the deadline all look
-   exactly as they do when it is working, and the first evidence is a message
-   that was delivered to a session which never came back.
 1. **Arm it before you end the turn**, not after you notice you are waiting,
    and give it an end: `switchboard listen --until forecast:p50` parks until
    the time your own timing model predicts you would next have looked anyway,

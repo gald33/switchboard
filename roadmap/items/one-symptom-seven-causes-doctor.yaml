@@ -82,6 +82,19 @@ evidence: |
   Cleanup on the way out: delete the probe key, and give the probe message a
   short TTL so a doctored room does not fill with diagnostics.
 
+  **The limit, found by walking into it while filing this item.** A listener
+  started as a detached process — `&`, `nohup`, anything the runner is not
+  tracking — parks correctly, heartbeats correctly, publishes its deadline and
+  appears on the roster, and can wake nobody, because the session's runner
+  never knew the process existed. Every check `doctor` can make would pass.
+
+  That is a ninth cause with the same symptom, and it is outside this project
+  entirely: the fault is in the wire between the process and the session, which
+  no hub can observe. So `doctor` must not claim to certify the wake. It can
+  prove the room works; the guidance has to carry the rest, which is why the
+  skill now leads with "start it with your runner's own background mechanism"
+  as step zero.
+
   **How you will know it worked.** Reproduce each row of the table — a wrong
   token, an unregistered agent, a mismatched key, an unsubscribed one, a pinned
   vs derived id — and `doctor` names the right one each time, exiting non-zero.

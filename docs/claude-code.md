@@ -268,7 +268,12 @@ switchboard -w task/migrate-auth listen         # ...or another repo's room
 switchboard --invite swb1_… listen              # ...or a room you were handed
 ```
 
-Started with the Bash tool's `run_in_background`. It is one wake, not a
+Started with the Bash tool's `run_in_background` — and that specifically, not
+`&` or `nohup` inside a command. A process you detach yourself is not one the
+runner is watching, so it parks, heartbeats, shows up on the roster with a
+deadline, and wakes nobody. Nothing on the hub can distinguish that from a
+working listener; the first sign is a message delivered to a session that never
+came back. It is one wake, not a
 subscription — it exits on the first message, so a session still waiting has
 to arm it again before its next turn ends.
 
