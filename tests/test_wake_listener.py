@@ -212,6 +212,29 @@ def test_the_heartbeat_says_what_it_is_doing_and_when_it_stops(listener):
     assert listener.client("observer").board_entry(f"listener/{target}") is None
 
 
+def test_a_parked_listener_is_on_the_roster(listener):
+    """Found the hard way: the listener wrote its heartbeat but never announced
+    itself, so `agents` came back empty and `dm` warned the sender that their
+    message would be "read by nobody" — while the listener was parked and
+    working. A peer went looking for a corpse. Presence is what answers the
+    question the sender actually asked."""
+    proc = listener.start("--until", "+15")
+    try:
+        observer = listener.client("observer")
+        deadline = time.time() + 20
+        parked = None
+        while time.time() < deadline and parked is None:
+            parked = next(
+                (a for a in observer.agents() if a["agent_id"] == listener.agent_id),
+                None,
+            )
+            time.sleep(0.25)
+        assert parked is not None, "a parked listener was invisible on the roster"
+        assert "parked on inbox" in (parked.get("task") or "")
+    finally:
+        proc.wait(timeout=60)
+
+
 def test_the_deadline_can_come_from_the_agents_own_forecast(listener):
     """The quantile is the posture; the timing model supplies the number."""
     result = listener("--until", "forecast:p50", "--effort", "low", timeout=60)

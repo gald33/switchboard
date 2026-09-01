@@ -232,6 +232,18 @@ while :; do
     fi
   fi
 
+  # Announce presence as well as the board key. A parked agent is the most
+  # reachable an agent ever is, and without this the roster says it does not
+  # exist: `agents` comes back empty and `dm` warns the sender their message
+  # will be "read by nobody", which sent a peer looking for a corpse while the
+  # listener was working perfectly. `--back-in` is the deadline, so an empty
+  # roster can be told from one that is merely between turns. Announcing does
+  # not touch the read cursor — `checkin` would drain the very message this
+  # exists to hand over, which is why this is `announce` and not that.
+  sb -q announce --task "parked on inbox${DEADLINE:+ until $UNTIL_ISO}" \
+    --ttl "$TTL" ${DEADLINE:+--back-in "$((DEADLINE - $(date +%s)))"} >/dev/null 2>&1 \
+    || echo "wake-on-message: presence announce failed (pass $PASS)" >&2
+
   # The heartbeat says what this listener is doing *and* when it stops. A peer
   # reading it learns both halves of the question it actually has: will this
   # agent notice me, and if not now, when.
