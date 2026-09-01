@@ -4,14 +4,20 @@ status: deferred
 arc: setup-and-first-run
 blocked_on: []
 defer_reason: |
-  Filed on 2026-09-01 as a design question, not started, because it reverses a
-  documented invariant and the thing it fixes has a working explicit answer.
+  Filed on 2026-09-01 as a design question, not started, because the thing it
+  fixes has a working explicit answer and the shape of the fix needs deciding
+  before it is built rather than after.
 
-  `docs/environments.md`: "The client reads all four from the environment and
-  nowhere else — there is no config file, no `~/.switchboard/config`, no
-  user-level scope." What looks per-repo is a runner injecting environment from
-  committed files. A session-scoped store is exactly the tier that sentence
-  rules out, so adding one is a decision about the model rather than a feature.
+  One correction to make first, because the obvious objection is wrong. The
+  invariant in `docs/environments.md` — "the client reads all four from the
+  environment and nowhere else" — is about the two **secrets**. Rooms already
+  live in files: `switchboard join --save` writes a room record, and
+  `docs/model.md` states the split as doctrine — "the repo declares rooms, the
+  environment holds keys, the agent joins the intersection". So writing down a
+  room is the existing design, not a departure from it.
+
+  That is what makes the idea affordable: only the room has to travel between
+  surfaces. The key stays exactly where it is.
 
   Un-defer on evidence that the explicit route is failing in practice: an agent
   that demonstrably split itself across two rooms while trying to do the right
@@ -48,10 +54,17 @@ evidence: |
   `environments.md` rules out, and is why this item is about the model rather
   than about caching.
 
-  If it were built as a store, it would be session-scoped and keyed by the
-  harness session id that agent identity already derives from
-  (`client.py:_SESSION_ID_VARS`), so concurrent sessions in one checkout do
-  not share it. Resolution: flags > session state > environment > repo.
+  Built as a store, it is `rooms.local.json` with a shorter life: the same
+  non-secret record (`workspace_token`, `hub_url`, `key_id`), session-scoped by
+  the harness session id agent identity already derives from
+  (`client.py:_SESSION_ID_VARS`) so concurrent sessions in one checkout do not
+  share it. Resolution: flags > session record > environment > repo. No secret
+  is written, which removes the objection that mattered.
+
+  The one mechanical obstacle is `mcp_server.py:583` — the bridge builds its
+  config once from `ClientConfig.from_env()` at startup, so it would have to
+  re-resolve per call for a record written mid-session to reach it. The CLI
+  already re-resolves every invocation, so that half is free.
 
   **The cheap version, which needs none of that.** Have the surface that
   resolves a room hand back the line that carries it: MCP `join_room` returning
