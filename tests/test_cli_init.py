@@ -25,6 +25,7 @@ from switchboard.cli import (
     _LOCAL_SETTINGS_REL,
     _SESSION_START_CMD_HISTORY,
     _STOP_CMD_HISTORY,
+    _WAKE_REL,
     MANAGED_HUB_URL,
     _hook_env_prefix,
     _session_start_cmd,
@@ -33,6 +34,7 @@ from switchboard.cli import (
     _skill_source,
     _stop_cmd,
     _stop_script,
+    _wake_script,
     main,
 )
 
@@ -668,6 +670,33 @@ def test_skill_source_reads_the_packaged_file():
         REPO_ROOT / "src" / "switchboard" / "skill" / "switchboard-coordinate" / "SKILL.md"
     ).read_text()
     assert _skill_source() == on_disk
+
+
+def test_init_installs_the_wake_listener(monkeypatch, capsys, tmp_path):
+    """The listener ships with `init` for the same reason the hooks do: an
+    agent told to arm it by CLAUDE.md and the skill needs the file to be
+    there, in every clone, without anyone copying it out of the docs."""
+    run_init(monkeypatch, capsys, tmp_path)
+    path = tmp_path / _WAKE_REL
+    assert path.exists(), "init did not install the listener"
+    assert os.access(path, os.X_OK)
+    body = path.read_text()
+    # The wrapper is the point: a background shell shares none of .mcp.json's
+    # env, and a listener on the wrong hub or workspace waits quietly forever.
+    assert "export SWITCHBOARD_URL=" in body
+    assert "export SWITCHBOARD_WORKSPACE=" in body
+    # And the two properties that make it worth shipping rather than improvising.
+    assert "--peek" in body, "a draining listener eats the message it woke you for"
+    assert "board set" in body, "no heartbeat means a dead listener reads as a quiet room"
+
+
+def test_wake_script_reads_the_packaged_body():
+    """One copy of the shell, for the same reason there is one copy of the
+    skill: a literal in cli.py would drift from the file people read."""
+    on_disk = (
+        REPO_ROOT / "src" / "switchboard" / "scripts" / "wake-on-message.sh"
+    ).read_text()
+    assert on_disk in _wake_script("https://hub.example.com", "ws")
 
 
 # --- workspace keys ---------------------------------------------------------

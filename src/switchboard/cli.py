@@ -50,7 +50,7 @@ from .config import (
     rooms_warning,
 )
 from .crypto import CryptoError, generate_key
-from .guidance import SKILL_NAME, skill_history, skill_text
+from .guidance import SKILL_NAME, WAKE_SCRIPT_NAME, skill_history, skill_text, wake_script_body
 from .spec import (
     OUTCOMES,
     PROVENANCES,
@@ -2666,7 +2666,8 @@ def _hook_env_prefix(url: str, workspace: str) -> str:
 
 #: Switchboard's own directory in a repo. What goes in here is ours: we wrote
 #: it, we recognize it, and we may replace it. Nothing else in the repo is.
-_HOOKS_DIR = ".switchboard/hooks"
+_SWITCHBOARD_DIR = ".switchboard"
+_HOOKS_DIR = f"{_SWITCHBOARD_DIR}/hooks"
 
 #: The body of each lifecycle hook, as a shell script *we own*.
 #:
@@ -2794,6 +2795,21 @@ def _stop_script(url: str, workspace: str, bootstrap: bool = True) -> str:
     return _hook_script(_STOP_BODY, url, workspace, bootstrap)
 
 
+#: Where the listener lands: beside `hooks/`, not in it. See `_init_hook_scripts`.
+_WAKE_REL = f"{_SWITCHBOARD_DIR}/{WAKE_SCRIPT_NAME}"
+
+
+def _wake_script(url: str, workspace: str, bootstrap: bool = True) -> str:
+    """The wake-on-message listener, wrapped the same way a hook is.
+
+    It needs the wrapper for the same reason the hooks do and slightly more
+    urgently: it runs as a plain background shell, so `.mcp.json`'s env never
+    reaches it, and a listener pointed at the wrong hub or the wrong workspace
+    does not fail — it waits, quietly, forever.
+    """
+    return _hook_script(wake_script_body(), url, workspace, bootstrap)
+
+
 def _hook_shim(name: str) -> str:
     """What goes in the agent's config: one line, identical in every repo and
     every revision, so recognizing it later is an exact match rather than a
@@ -2904,6 +2920,14 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   check-in instead of leaving the wait unbounded — `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
+- **If the thing you are waiting for is a message**, arm the listener before
+  the turn ends: run `sh .switchboard/wake-on-message.sh` as a background
+  process. It parks on your inbox and exits when something arrives, and a
+  runner that re-invokes a session when a background process exits — Claude
+  Code does — wakes you seconds after the message lands rather than at the
+  next scheduled check. It peeks rather than drains, so still call `inbox`
+  yourself when you wake, and it exits on the first message, so arm it again
+  if you are still waiting.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -3111,6 +3135,61 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   it for collaborators — you never estimate seconds. Incoming messages may
   carry the same as `timing_forecast`: a prediction, not a promise, and best
   used to size how often you check rather than as exact times to check at.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
+
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
+- **Optionally, when a message precedes a stretch of heads-down work**, pass
+  `execution_class` (a short label like "coding") and `effort`
+  (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
+  that pair into an estimate of when you will next read messages and attaches
+  it for collaborators — you never estimate seconds. Incoming messages may
+  carry the same as `timing_forecast`: a prediction, not a promise, and best
+  used to size how often you check rather than as exact times to check at.
+- **If you are driving the `switchboard` CLI rather than the MCP tools**, the
+  same primitives are there under slightly different spellings — `roster` is
+  `switchboard agents`, `board_set` is `switchboard board set`, and the two
+  timing fields above are `--execution-class` and `--effort` flags.
+  `.claude/skills/switchboard-coordinate/SKILL.md` has the full mapping and
+  the two things only the MCP surface offers.
 - **When something you learn changes what another agent should do**, `say` it
   on a channel, or `dm` the specific agent. Examples worth sending: an
   interface you just changed, a test you discovered is flaky, a migration
@@ -3363,13 +3442,18 @@ def _init_hook_scripts(
     several tools wrote a shared file.
     """
     steps: list[str] = []
+    # Keyed by the path each one lands at, because not everything switchboard
+    # owns here is a hook. The listener is invoked by the agent rather than by
+    # the runner's lifecycle, so it sits beside `hooks/` instead of inside it —
+    # same authorship, same upgrade rules, different caller.
     scripts = {
-        "session-start": _session_start_script(url, workspace, bootstrap),
-        "stop": _stop_script(url, workspace, bootstrap),
+        f"{_HOOKS_DIR}/session-start.sh": _session_start_script(url, workspace, bootstrap),
+        f"{_HOOKS_DIR}/stop.sh": _stop_script(url, workspace, bootstrap),
+        _WAKE_REL: _wake_script(url, workspace, bootstrap),
     }
-    for name, current in scripts.items():
-        path = directory / _HOOKS_DIR / f"{name}.sh"
-        label = f"{_HOOKS_DIR}/{name}.sh"
+    for label, current in scripts.items():
+        name = label.rsplit("/", 1)[-1].removesuffix(".sh")
+        path = directory / label
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(current)
@@ -3378,7 +3462,7 @@ def _init_hook_scripts(
             path.chmod(0o755)
             steps.append(f"wrote {label}")
             continue
-        history = [t(url, workspace) for t in _HOOK_SCRIPT_HISTORY[name]]
+        history = [t(url, workspace) for t in _HOOK_SCRIPT_HISTORY.get(name, [])]
         status = _revision_status(path.read_text(), current, history)
         if status == "current":
             steps.append(f"left {label} alone: already up to date")

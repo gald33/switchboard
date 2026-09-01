@@ -42,6 +42,7 @@ Claim before starting: `roadmap claim <key>`
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
+  - ↔ related: **`selective-wake-for-the-listener`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
   - ↔ related: **`write-parity-across-surfaces`** — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
 - **`write-parity-across-surfaces`** — The three surfaces do not offer the same writes, and MCP is the thin one
   - ↔ related: **`joining-agent-sees-empty-inbox`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
@@ -60,6 +61,8 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
+- **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message  
+  deferred: Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
 
 ## 🔒 Claimed — someone is on these
 
@@ -87,6 +90,7 @@ graph TD
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
+  selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
   standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
@@ -103,6 +107,7 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
+  selective_wake_for_the_listener -.- unread_dms_not_shown_outside_mcp
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
 ```
 
@@ -859,6 +864,102 @@ graph TD
 
 </details>
 
+### `selective-wake-for-the-listener`
+
+- **title:** Wake the listener on what matters, and on the time it promised, not on every message
+- **status:** deferred
+- **arc:** setup-and-first-run
+- **deferred:** Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
+- **related to** (not a dependency — both are startable):
+  - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
+- **refs:**
+  - `docs/claude-code.md`
+  - `docs/adaptive-timing.md`
+  - `src/switchboard/scripts/wake-on-message.sh`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported by anyone** — the same
+> standing as `publish-hub-container-image`, and it deserves the same discount
+> until the manual run above produces evidence.
+>
+> **What exists today.** The listener wakes on *any* message. That is the right
+> default for a session that armed it because it was waiting on one specific
+> reply, and the wrong one for anything else: a busy channel wakes the agent
+> repeatedly, each wake is a full re-invocation, and an agent that learns its
+> wakes are usually noise stops arming it.
+>
+> **Why the filter has to live in the listener.** The hub cannot do it. In an
+> encrypted room bodies are sealed and channel names are blinded, so relevance
+> is not a question the hub can answer (`docs/encryption.md`). The listener
+> holds the key and has already decrypted the message in order to print it, so
+> matching happens on plaintext that exists anyway, at no extra round trip.
+>
+> **Three filters, in ascending cost:**
+>
+> 1. `--type` — `type` is already a free-form field on every message defaulting
+>    to `"note"` (`client.py:1373`, `POST /messages` in `docs/api.md`). Waking
+>    on a sender-declared type is structured, needs no new field, and puts the
+>    judgment with the party that has the most information.
+> 2. `--match` — grep the decrypted body. The list should mostly not be
+>    hand-written: the listener can ask the hub what this agent holds and wake
+>    on mentions of *that* — lease resources, agent id, branch. "Wake me if
+>    someone talks about the thing I claimed" is derived rather than
+>    configured, and it is the message an agent cannot afford to sleep through.
+> 3. A semantic filter — deliberately **not** proposed for implementation. See
+>    the argument below.
+>
+> **The ceiling is what makes filtering safe, and is the more valuable half.**
+> A filtered listener that never matches is indistinguishable from a dead one,
+> which is the exact failure the heartbeat exists to prevent — so selectivity
+> should not ship without a deadline to come back at. `docs/adaptive-timing.md`
+> already has the right timestamp: the agent's own declared next look. Park
+> until then, exit early on a match, and the exit means either "something
+> urgent happened" or "the time I promised has arrived".
+>
+> That turns a forecast from advisory into something honoured, which
+> `adaptive-timing.md` explicitly stops short of today ("This is not a
+> scheduler... a forecast is never a commitment"). Read that line before
+> building this: honouring one's *own* forecast is compatible with it, being
+> scheduled by someone else's is not, and the distinction is the whole design.
+>
+> Mechanically it is `SWITCHBOARD_LISTEN_PASSES` generalised from "N quiet
+> passes" to "until this time", in a loop that already exists.
+>
+> **Why not embeddings.** The idea is feasible and was considered: embed
+> incoming messages, wake on similarity to what the agent is working on. It is
+> declined on three grounds, not on cost.
+>
+> - It inverts this project's stated principle — "standardize the known
+>   coordination arithmetic; leave judgment to the model"
+>   (`docs/adaptive-timing.md`). A semantic filter puts judgment in the
+>   plumbing: a background shell that needs a model, an API key in every repo,
+>   and a threshold nobody can explain.
+> - Its failure mode is silent. A missed keyword is debuggable by reading the
+>   message; a missed similarity threshold is not falsifiable, and silent
+>   failure is what every other decision in this listener was made to avoid.
+> - It infers receiver-side what the sender could have declared. "Is this
+>   interesting to that agent?" is usually known to the sender, who already has
+>   three ways to say so: DM instead of channel, a `type`, a channel choice.
+>
+> Where it would earn its keep is a high-traffic broadcast channel whose sender
+> cannot know who cares — and even there, claim-derived keywords capture most
+> of it. So what this item should build is the **seam**, not the
+> implementation: one function taking a decrypted message and returning wake or
+> skip, with type and keyword as the shipped implementations. A semantic filter
+> drops into that slot later, for whoever has a room noisy enough to need it.
+>
+> **How you will know it worked.** The pytest layer this item also owes —
+> driving the installed script against the in-process hub from
+> `switchboard.testing` — should show: a non-matching message does not wake and
+> is *still unread afterwards* (the peek is what makes filtering safe rather
+> than lossy); a matching one wakes with the payload; a listener with a
+> deadline and no traffic exits at the deadline rather than hanging; and a
+> claim-derived keyword list wakes on a lease this agent holds and not on one
+> it does not.
+
+</details>
+
 ### `stale-resolver-references`
 
 - **title:** Delete the comments describing auth machinery that no longer exists
@@ -1014,6 +1115,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `selective-wake-for-the-listener` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
   - `write-parity-across-surfaces` — The mirror image, and cheap to do as one change: there MCP is the thin surface, here it is the only complete one.
 - **refs:**
   - `https://github.com/gald33/ai-lab/blob/main/games/switchboard-cli-unread-parity.md`

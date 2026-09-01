@@ -33,6 +33,24 @@ def skill_text() -> str:
     )
 
 
+#: The listener `init` installs next to the hooks, as a shell *body*: the hub
+#: URL, the workspace and the `sb` bootstrap are prepended by the writer in
+#: `cli.py`, exactly as they are for a hook. Packaged as a file rather than a
+#: string literal for the same reason the skill is — it is a hundred lines of
+#: shell, and a literal is a copy that can drift from the one people read.
+WAKE_SCRIPT_NAME = "wake-on-message.sh"
+
+
+def wake_script_body() -> str:
+    """The packaged wake-on-message body — the single source `init` installs
+    from, so the file in a repo and the file in this tree cannot disagree."""
+    return (
+        resources.files("switchboard")
+        .joinpath("scripts", WAKE_SCRIPT_NAME)
+        .read_text(encoding="utf-8")
+    )
+
+
 def skill_history() -> list[str]:
     """Every SKILL.md `init` has ever installed, oldest first, excluding the
     current one.
