@@ -985,6 +985,39 @@ graph TD
 > `docs/adaptive-timing.md` currently answers by prediction. A peer deciding
 > whether to expect a fast reply could read the fact instead of forecasting it.
 >
+> **Modes, and why there are fewer of them than there look to be.** The obvious
+> taxonomy — wake once, wake repeatedly, wake until a deadline — does not
+> survive contact with the mechanism.
+>
+> *Repetition cannot be a flag on the listener.* The exit **is** the wake: a
+> process that keeps listening wakes nobody, and a process that wakes you is
+> gone by definition. Only the woken session can start the next one, so
+> "re-arm until X" is an agent instruction, not an option this script can
+> offer. The one knob that genuinely is script-side is the deadline — when to
+> give up and come back empty — which is the ceiling above.
+>
+> *A supervisor process cannot manufacture wakes either.* The runner re-invokes
+> on the exit of the process **it** launched; a child spawned by a long-lived
+> supervisor is not a tracked task and its death is invisible. The number of
+> available wakes is bounded by the number of times the agent arms something,
+> however many processes run underneath.
+>
+> What a supervisor *can* do is survive them: two tracked processes, one
+> long-lived that parks, filters and counts down, plus a disposable waker it
+> signals when something matters. That buys **state**, not liveness — and there
+> is no state worth keeping today. Parking is stateless, re-arming is one call,
+> and because the listener peeks, a message landing between exit and re-arm is
+> still unread and comes back on the next park. The gap costs seconds, not
+> messages. Revisit this shape when the supervisor would hold something
+> expensive: a claim-derived filter, a deadline, a cache.
+>
+> *Agent types are already distinguished, and the distinction is prior to any
+> mode.* `SKILL.md` separates turn-based sessions from always-on daemons. A
+> daemon does not need this mechanism at all — it can block on `inbox` directly
+> and still be there to observe the answer. The listener exists precisely
+> because sessions are turn-based, so the question is not which mode an agent
+> runs the listener in but whether it needs one.
+>
 > **How you will know it worked.** The pytest layer this item also owes —
 > driving the installed script against the in-process hub from
 > `switchboard.testing` — should show: a non-matching message does not wake and
