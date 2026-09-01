@@ -1,0 +1,47 @@
+id: provisioned-token-is-stale-and-nothing-says-so
+title: Environments ship a SWITCHBOARD_TOKEN the hub rejects, and the command you would check it with cannot see the fault
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: every-silent-failure-looks-like-a-quiet-room
+  note: 'Causes 1 and 2 of that item, filed separately because this one has an owner
+    outside this repo — whatever provisions the environment — and a Lucille-side half
+    in scripts/cloud_switchboard_setup.sh.'
+- key: connect-failure-message
+  note: 'The same distinction one layer down: there, a connection that never worked
+    looks like a room with nothing in it. Here the connection works and the credential
+    does not.'
+evidence: |
+  **Not a filed issue.** Measured 2026-08-31/09-01 on two independent machines,
+  one local and one cloud, by two different agents who hit it separately and only
+  discovered it was shared when they compared notes.
+
+  Both shells carried a **17-character `SWITCHBOARD_TOKEN` that the hub rejects**
+  (`sha256[:12] = 4ca6a169b8c9`), against the 43-character value the hub actually
+  runs with. Every hub call returned `invalid or missing bearer token` until
+  `--token` was passed explicitly. Two machines, two provisioning paths, one
+  wrong value — so this is environmental provisioning, not one bad sandbox.
+
+  **The part that makes it expensive is that `whoami` cannot see it.** `whoami`
+  is local-only: it derives identity from repo, branch and session and never
+  calls the hub. So it prints a clean, confident, entirely correct-looking
+  identity block while every actual hub call is failing. The command an agent
+  naturally reaches for to check its setup is exactly the one blind to this
+  fault, and both agents drew wrong conclusions from a clean `whoami` — one of
+  them for hours, while telling its operator the hub was fine.
+
+  **How you know it worked.** Either `whoami` performs one cheap authenticated
+  round-trip and reports the result beside the derived identity, or it states
+  plainly that it has checked nothing about reachability. A diagnostic that
+  cannot fail is not a diagnostic. If the round-trip is unwanted on the hot path,
+  the alternative is that the failure message on the *first* rejected call names
+  the environment variable it used and the length of the value it found — enough
+  for a reader to recognise a stale provisioned token without already suspecting
+  one.
+
+  **Lucille-side half, for whoever picks this up:** the same bootstrap that
+  provisions the token also pinned the client at `v0.3.0` in
+  `scripts/cloud_switchboard_setup.sh`, a tag predating the room model the hub
+  already spoke. That pin is being removed in favour of an unpinned PyPI install.
+  The token half is not covered by that change and still needs an owner.

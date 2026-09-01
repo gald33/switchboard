@@ -77,7 +77,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 14 item(s), 10 startable
+`setup-and-first-run` · 16 item(s), 12 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -103,10 +103,12 @@ wrong says so.
 | `init-writes-rooms-file` | ready | next |
 | `a-lobby-derived-from-the-key` | ready | — |
 | `clients-that-cannot-post` | ready | — |
+| `every-silent-failure-looks-like-a-quiet-room` | ready | — |
 | `identity-rebinds-on-branch-change` | ready | — |
 | `joining-agent-sees-empty-inbox` | ready | — |
 | `one-resolved-context-across-surfaces` | deferred | — |
 | `presence-ttl-is-not-one-size` | ready | — |
+| `provisioned-token-is-stale-and-nothing-says-so` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
 | `selective-wake-for-the-listener` | ready | — |
 | `timing-cold-start-in-ephemeral-environments` | deferred | — |
