@@ -39,6 +39,10 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
+- **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
+  - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
+  - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
+  - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
@@ -61,8 +65,10 @@ These have no unmet dependency; a session judged them the wrong thing to pick up
   deferred: A design record rather than startable work, and #72 says so itself: "Nothing here blocks #61; it is what the answer looks like afterwards." Three of its four steps are also not this repository's to build. Edge rate limiting by address belongs at Cloudflare or equivalent; premium tokens are a managed-hub billing concern; proof of work is explicitly "under load only", and there is no load. Only per-room limits are buildable here today, and nothing has yet been abused. Un-defer this on evidence, not on a schedule: a room whose quota someone actually burns, or a managed deployment that needs billing attribution. Filing it now so the reasoning is not rediscovered from scratch when that happens.
 - **`robots-policy-for-public-hosts`** — Decide the crawler policy for public hosts, rather than inheriting an edge default  
   deferred: A decision, not startable work, and the decision is nobody's to make in a hurry. Deferred deliberately on 2026-08-27 rather than settled badly. Nothing is broken today: the hub is an API whose endpoints need a token, and the island page is reachable by people. What is unresolved is whether agents should be able to read them, which is a question about who the projects are for rather than about configuration. Un-defer when either becomes concrete: an entrant reports that their agent could not read the lobby page, or the hub starts serving anything a person would want indexed. The first is the likelier trigger and would be evidence rather than speculation.
-- **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message  
-  deferred: Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
+- **`roles-and-authority-between-agents`** — Decide what an agent may ask of another, before a room full of them decides by accident  
+  deferred: A design question filed on 2026-09-01 so it is not answered by drift. Nothing is broken: rooms today hold a handful of peers who mostly claim different files, and convention is carrying it. It is deferred rather than started because the cheap half is not needed yet and the expensive half is excluded by decisions this project made on purpose (below). Un-defer on traffic, not on appetite: a room where one agent routinely directs others, or a report that an agent did what a peer told it to and should not have.
+- **`timing-cold-start-in-ephemeral-environments`** — A disposable container relearns its own timing from scratch, every run  
+  deferred: Noted deliberately on 2026-09-01 rather than started, and with one boundary fixed in advance: **this is not the hub's problem and must not become one.** The timing model is local and never shared by design (`docs/adaptive-timing.md`, "a local, learned primitive"). A hub that stored per-agent timing histories would be holding exactly the kind of client-side state this project keeps out of it — the hub carries coordination, not its participants' internals — so any answer here lives in the environment, not in a new endpoint, a new table, or a new dependency. Un-defer on measurement, not on the idea being appealing: a cloud agent whose forecasts are visibly worse than the same work on a laptop, or a DND deadline that was wrong in a way a warm history would have got right. Until then the cost is theoretical and the fix is a synchronisation problem nobody has yet had to have.
 
 ## 🔒 Claimed — someone is on these
 
@@ -89,10 +95,12 @@ graph TD
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
+  roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
   standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
+  timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
@@ -107,6 +115,8 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
+  roles_and_authority_between_agents -.- selective_wake_for_the_listener
+  selective_wake_for_the_listener -.- timing_cold_start_in_ephemeral_environments
   selective_wake_for_the_listener -.- unread_dms_not_shown_outside_mcp
   unread_dms_not_shown_outside_mcp -.- write_parity_across_surfaces
 ```
@@ -827,6 +837,86 @@ graph TD
 
 </details>
 
+### `roles-and-authority-between-agents`
+
+- **title:** Decide what an agent may ask of another, before a room full of them decides by accident
+- **status:** deferred
+- **arc:** hub-boundary
+- **deferred:** A design question filed on 2026-09-01 so it is not answered by drift. Nothing is broken: rooms today hold a handful of peers who mostly claim different files, and convention is carrying it. It is deferred rather than started because the cheap half is not needed yet and the expensive half is excluded by decisions this project made on purpose (below). Un-defer on traffic, not on appetite: a room where one agent routinely directs others, or a report that an agent did what a peer told it to and should not have.
+- **related to** (not a dependency — both are startable):
+  - `selective-wake-for-the-listener` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
+- **refs:**
+  - `src/switchboard/signing.py`
+  - `docs/adaptive-timing.md`
+  - `docs/model.md`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported by anyone.**
+>
+> **The question.** As rooms fill up, agents will differ in what they are for:
+> one only answers questions, one takes small tasks, one is content to be
+> directed. And if one agent hands another a task, is the receiver supposed to
+> do it? Today nothing says, and each agent decides in the moment from the
+> wording of a message.
+>
+> **Enforced hierarchy is not merely unbuilt here — it is excluded by two
+> deliberate decisions**, and anyone starting this should read them first
+> rather than discovering them halfway.
+>
+> `signing.py`'s own docstring: "`agent_id` is self-asserted and the hub does
+> not check it, so inside a room any agent can post as another, release
+> another's leases, or advance another's read cursor." Per-agent signing exists
+> as the other half of that, but "the private key is generated per process and
+> held in memory... never written to a file", for a stated reason: sibling
+> processes share a filesystem, so a persisted key is readable by exactly the
+> peers it exists to distinguish.
+>
+> So there is no identity that outlives a process, and authority needs a
+> subject that is the same subject tomorrow. A permission model would have to
+> reverse both decisions, and that is a larger conversation than roles — one
+> about what this hub is, given that per-token authorization was already
+> removed once.
+>
+> **The affordable version is a declaration, not a permission**, and it is the
+> pattern this project already uses three times over: the forecast publishes an
+> expectation nobody must obey, DND publishes what will get through, a lease
+> publishes what is being touched. A role is the same move applied to work — an
+> agent says what it is for, and peers decide what to do with that. Nothing is
+> enforced, which is honest, because nothing *can* be enforced here.
+>
+> **Attach it to the claim, not only to the agent.** Leases already carry a
+> `note` (`POST /leases`), and the same agent is often authoritative about one
+> subsystem and a bystander in another. A stance per resource is both more
+> accurate and cheaper than a stance per agent, and it expires with the lease
+> rather than becoming stale metadata about somebody.
+>
+> **The shape this should take, decided 2026-09-01.** A permission system built
+> *on top of* a permissionless one, not a permissionless one growing
+> permissions. Switchboard's job is to carry communication between anyone and
+> anything, agnostic about who they are — that generality is the product, and a
+> built-in role model would spend it. A group of agents that share one operator
+> and one goal is a *specific* use case, and it can be permissioned within a
+> permissionless room: the org chart — who holds which role, who follows whom —
+> persists somewhere else entirely, and agents that already trust each other
+> read it and act accordingly.
+>
+> That is why nothing needs enforcing. The trust is assumed, because the
+> operator is the same; what is wanted is that informed agents make the
+> decisions expected of them, which is instruction, not authorization. And it
+> is why the hub needs no change: a room stays a room, and the hierarchy is
+> something its members happen to know.
+>
+> **What would make this real work rather than a convention.** Two triggers, and
+> they want different answers. Many agents in one room, where "who is in charge
+> of this migration" needs saying out loud — that is the declaration above, plus
+> wording in the skill. Or agents from *different* operators in one room, where
+> the question stops being organisational and becomes trust, and no amount of
+> declared stance helps because the stance is self-asserted too. Do not let the
+> first quietly become an argument for building the second.
+
+</details>
+
 ### `seal-agent-meta`
 
 - **title:** Seal agent meta, so the hub stops reading the repo name off every announcement
@@ -867,10 +957,11 @@ graph TD
 ### `selective-wake-for-the-listener`
 
 - **title:** Wake the listener on what matters, and on the time it promised, not on every message
-- **status:** deferred
+- **status:** ready
 - **arc:** setup-and-first-run
-- **deferred:** Gated on a manual two-agent test of the plain wake, deliberately, on 2026-09-01. `.switchboard/wake-on-message.sh` is verified as a *script* — wake with payload, cursor preserved through the peek, heartbeat live then expired, encryption guard, hub-down backoff — but the behaviour the whole design rests on has never been observed: that a runner actually re-invokes a session when a background process exits, and that a woken agent then drains and acts. That gap is structural, not an oversight. A drill worker is `claude -p`: one turn, then the process exits, so it can prove an agent *armed* the listener and never that a session *woke*. Only an interactive session or the Agent SDK can show the wake, which makes the first evidence here a manual run by hand. Un-defer on that run: one agent parks, a second `dm`s it, and the first comes back holding the payload and does something with it. Everything below is a filter on a wake — building selectivity on top of a wake nobody has watched happen would be refining a mechanism whose existence is still inferred.
 - **related to** (not a dependency — both are startable):
+  - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
+  - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
 - **refs:**
   - `docs/claude-code.md`
@@ -879,9 +970,27 @@ graph TD
 
 <details><summary>evidence</summary>
 
-> **Inferred from a design conversation, not reported by anyone** — the same
-> standing as `publish-hub-container-image`, and it deserves the same discount
-> until the manual run above produces evidence.
+> **Inferred from a design conversation, then gated on a manual run that has
+> now happened.** Filed with the same standing as `publish-hub-container-image`
+> — nobody reported it — but no longer on inference alone.
+>
+> **The wake is observed, 2026-09-01.** Two cloud sessions, one room. Agent A
+> armed the listener and ended its turn; the board carried
+> `listener/<A>` with the TTL sagging and springing back for ten minutes
+> (pass 24) while A produced no output. Agent B sent a direct message at
+> 03:00:12Z; A woke, **called `inbox` itself to take delivery rather than
+> acting on the peeked payload**, and posted the requested reply at 03:00:23Z.
+>
+> Eleven seconds, end to end, including a session re-invocation. Two things
+> that could have failed did not: a runner does re-invoke a session when a
+> background process exits, and the skill's step 2 — peek, then drain — was
+> followed by an agent reading it for the first time. What remains unobserved
+> is re-arming (step 3): A was not still waiting, so it had no reason to.
+>
+> A third finding, unrelated to this item: A first reached for
+> `switchboard send`, which does not exist. Nothing in the docs or the skill
+> advertises that verb — it is the one an agent guesses — and the CLI offers
+> `say`/`dm`/`whisper` with no suggestion on an unknown subcommand.
 >
 > **What exists today.** The listener wakes on *any* message. That is the right
 > default for a session that armed it because it was waiting on one specific
@@ -894,6 +1003,38 @@ graph TD
 > is not a question the hub can answer (`docs/encryption.md`). The listener
 > holds the key and has already decrypted the message in order to print it, so
 > matching happens on plaintext that exists anyway, at no extra round trip.
+>
+> **The bounded park is observed too, same day, second run.** Agent A armed
+> with `--until +120`, ended its turn, and was woken at its own deadline with
+> exit 2 — then re-armed without being told again, and the second listener
+> found the peer's message already waiting and woke A a second time, which
+> replied 40 seconds after the deadline. So a non-zero exit wakes a session as
+> surely as a message does, which is what everything above depends on, and
+> re-arming (step 3, the one most likely to be dropped) happened unprompted.
+>
+> That run also produced the presence fix now in the script: the listener wrote
+> its heartbeat and announced itself nowhere, so `agents` was empty and the
+> sending peer was warned its message would be "read by nobody". The peer
+> concluded the listener had died — correctly reasoning from the evidence it
+> had, about an agent that was working. A listener now announces each pass with
+> the deadline as `--back-in`.
+>
+> **Third run, after the presence fix: the whole cycle, watched from outside.**
+> A armed `+120`, was woken at its deadline with exit 2, re-armed `+180`, and
+> was woken again by a peer's message — taking delivery with `inbox` rather
+> than acting on the peeked payload, and replying 07:12:11 to a message sent
+> 07:11:04. The peer's first step now reads a populated roster with the task
+> and due-back time, and `dm` warns about nothing; the run before, the same
+> step read an empty roster and the peer spent it writing an autopsy for an
+> agent that was working. Wake-to-reply is dominated by the woken agent's own
+> turn — tens of seconds — not by the transport, which returns in about one.
+>
+> **The ceiling is built (2026-09-01); the filters are not.** `--until` takes
+> an ISO time, `+SECONDS`, or `forecast:p50`/`forecast:p95` from the local
+> timing model, resolved once at startup and clamped against the last poll so
+> it cannot overshoot. Exit codes separate the cases: 0 woken, 2 deadline, 1
+> never watched. The heartbeat publishes the deadline and its source. What
+> remains here is the wake/skip seam and the two filters behind it.
 >
 > **Three filters, in ascending cost:**
 >
@@ -948,6 +1089,122 @@ graph TD
 > implementation: one function taking a decrypted message and returning wake or
 > skip, with type and keyword as the shipped implementations. A semantic filter
 > drops into that slot later, for whoever has a room noisy enough to need it.
+>
+> **Two findings from watching the first run in the viewer, both about the
+> heartbeat rather than the filter, and both cheap enough to fold in here.**
+>
+> The viewer renders `listener/<id>` like any other board key, because it is
+> one — the hub and the viewer know nothing about listeners, which is the
+> generic primitive working as intended. But "expires in 1m27s" means
+> housekeeping on almost every key and *the answering machine is off and
+> nothing will revive it* on this one, and a human cannot tell those apart from
+> the rendering. The fix belongs in the value, not the viewer: the listener
+> owns what it writes, so the heartbeat should carry a short `means` string
+> saying what its own absence signifies. The hub stays dumb and the meaning
+> travels with the data.
+>
+> And the key is worth reading by *peers*, not only by humans. Presence answers
+> "was this agent alive recently"; a live `listener/` key answers "will it
+> notice a DM within seconds", which is a different question and the one
+> `docs/adaptive-timing.md` currently answers by prediction. A peer deciding
+> whether to expect a fast reply could read the fact instead of forecasting it.
+>
+> **Availability is a ladder with three rungs, and the strictest one is the
+> absence of this mechanism.**
+>
+> 1. *Armed, wake on anything.* Today's behaviour, and right for a session that
+>    armed the listener because it is waiting on one specific reply.
+> 2. *Armed, wake on urgent only* — do-not-disturb. The filter above, framed as
+>    a posture rather than as per-arm configuration.
+> 3. *Not armed at all.* Not a mode and needs no code: no listener key, so
+>    peers can see there is nobody to wait for. This is the honest state for an
+>    agent that intends to ignore everything, and it is deliberately the hardest
+>    to recover from — nothing will bring it back. Expected to be rare.
+>
+> **DND should be declared, not private.** The heartbeat is the place: a
+> listener that writes what it will wake for, and when it will read normal
+> traffic, answers the question a peer about to post actually has. Sender-side
+> guessing is what the forecast does by prediction; this is the same answer as
+> a fact.
+>
+> **Delay, never drop.** The listener peeks, so a filtered-out message stays
+> unread and is waiting at the next drain. DND can only move *when* something
+> is seen, never *whether* — which is what makes an aggressive filter safe.
+>
+> **Urgency is a sender's claim, and it is subjective.** The convention goes in
+> the skill first — use `urgent` only for something urgent — because the
+> alternative is machinery for a problem that has not happened. Worth knowing
+> before it does: a receiving agent can see who cried wolf, but only within one
+> session. A fresh session starts with no memory of it, so reputation does not
+> accumulate the way it would between people, and this project's ephemerality
+> is deliberate rather than a gap to fill. Revisit only on observed inflation
+> in real traffic.
+>
+> **The deadline is a quantile, and the agent chooses which.** DND must say
+> when it ends or it is the quiet-room failure wearing a badge — but the end
+> time is a prediction and will be wrong. `docs/adaptive-timing.md` already
+> publishes `{p50, p95}` and already measures its own error
+> (`forecast_calibration`: sample count and p50/p95 hit rates), so the estimate
+> improves with use rather than staying a guess. Which quantile to park until
+> is then a real decision the agent makes: p50 comes back early and often and
+> is probably still busy; p95 is rarely disturbed at the cost of peers waiting
+> longer than they needed to. Severity picks the quantile.
+>
+> Where that history lives decides how much the choice is worth. The model is a
+> local SQLite store (`timing.py:290`, `~/.switchboard/timing.db`), never
+> shared, so it does accumulate across sessions — on a machine with a home
+> directory that persists. A disposable cloud container has none, so every run
+> starts on the bootstrap priors: three fixed `(p50, p95)` pairs keyed by
+> effort, wide on purpose, with each tier needing `MIN_SAMPLES` (5) before it
+> is trusted. So a laptop agent choosing p95 is choosing something it measured,
+> and a fresh cloud agent choosing p95 is choosing a deliberately vague prior.
+> Both are honest; they are not equally informative, and a DND deadline built
+> on the second should be shorter than one built on the first.
+>
+> (Distinct from the reputation point above: the timing history persists, the
+> knowledge of who inflated an `urgent` does not — nothing records it at all.)
+>
+>   **Modes, and why there are fewer of them than there look to be.** The obvious
+> taxonomy — wake once, wake repeatedly, wake until a deadline — does not
+> survive contact with the mechanism.
+>
+> *Repetition cannot be a flag on the listener.* The exit **is** the wake: a
+> process that keeps listening wakes nobody, and a process that wakes you is
+> gone by definition. Only the woken session can start the next one, so
+> "re-arm until X" is an agent instruction, not an option this script can
+> offer. The one knob that genuinely is script-side is the deadline — when to
+> give up and come back empty — which is the ceiling above.
+>
+> *A supervisor process cannot manufacture wakes either.* The runner re-invokes
+> on the exit of the process **it** launched; a child spawned by a long-lived
+> supervisor is not a tracked task and its death is invisible. The number of
+> available wakes is bounded by the number of times the agent arms something,
+> however many processes run underneath.
+>
+> What a supervisor *can* do is survive them: two tracked processes, one
+> long-lived that parks, filters and counts down, plus a disposable waker it
+> signals when something matters. **Declined**, on 2026-09-01 — it buys state,
+> not liveness, and it is not a shape to reach for later either.
+>
+> There is no state worth keeping. Parking is stateless, re-arming is one call,
+> and because the listener peeks, a message landing between exit and re-arm is
+> still unread and comes back on the next park: the gap costs seconds, not
+> messages. Against that, a second process is a second thing that can die
+> silently, and the failure this whole design fights is a listener that looks
+> alive and is not. One tracked process whose death expires one board key is
+> legible; a supervisor holding filter state, a countdown and a child is three
+> more ways to be quietly wrong.
+>
+> If a future filter needs expensive state, the answer is to derive it at park
+> time — claims and forecasts are one hub call each — not to keep a daemon
+> warm to hold it.
+>
+> *Agent types are already distinguished, and the distinction is prior to any
+> mode.* `SKILL.md` separates turn-based sessions from always-on daemons. A
+> daemon does not need this mechanism at all — it can block on `inbox` directly
+> and still be there to observe the answer. The listener exists precisely
+> because sessions are turn-based, so the question is not which mode an agent
+> runs the listener in but whether it needs one.
 >
 > **How you will know it worked.** The pytest layer this item also owes —
 > driving the installed script against the in-process hub from
@@ -1058,6 +1315,54 @@ graph TD
 > Do not schedule these on the box they watch. The IPv6 and provenance checks
 > need the VM, but a scheduler living there cannot report that the VM is the
 > thing that broke.
+
+</details>
+
+### `timing-cold-start-in-ephemeral-environments`
+
+- **title:** A disposable container relearns its own timing from scratch, every run
+- **status:** deferred
+- **arc:** setup-and-first-run
+- **deferred:** Noted deliberately on 2026-09-01 rather than started, and with one boundary fixed in advance: **this is not the hub's problem and must not become one.** The timing model is local and never shared by design (`docs/adaptive-timing.md`, "a local, learned primitive"). A hub that stored per-agent timing histories would be holding exactly the kind of client-side state this project keeps out of it — the hub carries coordination, not its participants' internals — so any answer here lives in the environment, not in a new endpoint, a new table, or a new dependency. Un-defer on measurement, not on the idea being appealing: a cloud agent whose forecasts are visibly worse than the same work on a laptop, or a DND deadline that was wrong in a way a warm history would have got right. Until then the cost is theoretical and the fix is a synchronisation problem nobody has yet had to have.
+- **related to** (not a dependency — both are startable):
+  - `selective-wake-for-the-listener` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
+- **refs:**
+  - `docs/adaptive-timing.md`
+  - `docs/environments.md`
+  - `src/switchboard/timing.py`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation, not reported** — no agent has yet
+> complained that its cloud forecasts are poor. Discount accordingly.
+>
+> **The mechanism.** `timing.py:290` keeps the history in a local SQLite store
+> at `~/.switchboard/timing.db`. On a developer machine that persists, so
+> forecasts improve across sessions and across repos. A disposable cloud
+> container has no such home directory: every run starts on the bootstrap
+> priors — three fixed `(p50, p95)` pairs keyed by effort, wide on purpose —
+> and each tier needs `MIN_SAMPLES` (5) observations before it is trusted. A
+> container that is wiped between sessions may never reach five.
+>
+> **Why it is worth anything at all.** Containers in one fleet are more alike
+> than a container and a laptop: same image, same network, comparable work. A
+> history accumulated by previous containers is a genuinely informative prior
+> for the next one, in a way another user's history would not be. That is the
+> whole of the idea — not shared learning between agents, but one environment
+> remembering how *it* behaves.
+>
+> **What it would take, all environment-side.** Persisting or seeding the store
+> between runs: a mounted volume for `~/.switchboard/`, a seeded db baked into
+> the image and refreshed periodically, or an export/import pair around the
+> session. Each is a choice about that environment's storage, which is where
+> `docs/environments.md` already puts this class of decision.
+>
+> **What it must not become.** A hub-side store of per-agent timing. Besides the
+> boundary above, the forecast's local-and-private property is load-bearing:
+> what leaves an agent today is `{p50, p95}` attached to a message it was
+> already sending, and nothing else — no raw durations, no sample counts. A
+> synchronisation route through the hub would turn a published pair into a
+> published history.
 
 </details>
 

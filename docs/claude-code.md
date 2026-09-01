@@ -260,6 +260,27 @@ Started with the Bash tool's `run_in_background`. It is one wake, not a
 subscription — it exits on the first message, so a session still waiting has
 to arm it again before its next turn ends.
 
+Give it an end, too. A park with no deadline is a promise to be reachable that
+nothing keeps: if no message ever comes, the session stays idle and nothing
+brings it back.
+
+```bash
+sh .switchboard/wake-on-message.sh --until forecast:p50 --effort medium
+sh .switchboard/wake-on-message.sh --until +900
+```
+
+`forecast:p50` takes the time from the agent's own
+[adaptive-timing](adaptive-timing.md) model — the moment it predicts it would
+next have looked anyway — which turns a forecast from something advisory into
+something the agent keeps. The quantile is the posture: `p50` comes back early
+and often, `p95` stays away longer and is interrupted less. The exit line says
+whether that number was learned or is the wide bootstrap prior, because a
+deadline built on a prior should be a shorter one.
+
+The exit code is how a woken agent tells the cases apart: `0` a message
+arrived (on stdout, peeked, still unread), `2` the deadline passed with
+nothing to report, `1` it never watched anything.
+
 The message comes back on stdout with the wake, so the session resumes already
 holding the event. It resumes with its *context*, too, which is what makes
 this cheaper than the obvious alternative of a scheduled session polling on a

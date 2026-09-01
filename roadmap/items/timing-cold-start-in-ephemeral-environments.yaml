@@ -1,0 +1,61 @@
+id: timing-cold-start-in-ephemeral-environments
+title: A disposable container relearns its own timing from scratch, every run
+status: deferred
+arc: setup-and-first-run
+blocked_on: []
+defer_reason: |
+  Noted deliberately on 2026-09-01 rather than started, and with one boundary
+  fixed in advance: **this is not the hub's problem and must not become one.**
+
+  The timing model is local and never shared by design (`docs/adaptive-timing.md`,
+  "a local, learned primitive"). A hub that stored per-agent timing histories
+  would be holding exactly the kind of client-side state this project keeps out
+  of it — the hub carries coordination, not its participants' internals — so any
+  answer here lives in the environment, not in a new endpoint, a new table, or a
+  new dependency.
+
+  Un-defer on measurement, not on the idea being appealing: a cloud agent whose
+  forecasts are visibly worse than the same work on a laptop, or a DND deadline
+  that was wrong in a way a warm history would have got right. Until then the
+  cost is theoretical and the fix is a synchronisation problem nobody has yet
+  had to have.
+related_to:
+- key: selective-wake-for-the-listener
+  note: 'Where this was found, and what would consume it: that item lets an agent
+    park until a chosen quantile of its own forecast, which is a real measurement on
+    a machine that accumulates history and a wide prior in a container that does not.'
+refs:
+- 'docs/adaptive-timing.md'
+- 'docs/environments.md'
+- 'src/switchboard/timing.py'
+evidence: |
+  **Inferred from a design conversation, not reported** — no agent has yet
+  complained that its cloud forecasts are poor. Discount accordingly.
+
+  **The mechanism.** `timing.py:290` keeps the history in a local SQLite store
+  at `~/.switchboard/timing.db`. On a developer machine that persists, so
+  forecasts improve across sessions and across repos. A disposable cloud
+  container has no such home directory: every run starts on the bootstrap
+  priors — three fixed `(p50, p95)` pairs keyed by effort, wide on purpose —
+  and each tier needs `MIN_SAMPLES` (5) observations before it is trusted. A
+  container that is wiped between sessions may never reach five.
+
+  **Why it is worth anything at all.** Containers in one fleet are more alike
+  than a container and a laptop: same image, same network, comparable work. A
+  history accumulated by previous containers is a genuinely informative prior
+  for the next one, in a way another user's history would not be. That is the
+  whole of the idea — not shared learning between agents, but one environment
+  remembering how *it* behaves.
+
+  **What it would take, all environment-side.** Persisting or seeding the store
+  between runs: a mounted volume for `~/.switchboard/`, a seeded db baked into
+  the image and refreshed periodically, or an export/import pair around the
+  session. Each is a choice about that environment's storage, which is where
+  `docs/environments.md` already puts this class of decision.
+
+  **What it must not become.** A hub-side store of per-agent timing. Besides the
+  boundary above, the forecast's local-and-private property is load-bearing:
+  what leaves an agent today is `{p50, p95}` attached to a message it was
+  already sending, and nothing else — no raw durations, no sample counts. A
+  synchronisation route through the hub would turn a published pair into a
+  published history.

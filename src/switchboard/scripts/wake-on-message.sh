@@ -39,20 +39,69 @@
 # One wake, not a subscription: it exits on the first message, so a session
 # that is still waiting has to arm it again before its next turn ends.
 #
+# The deadline is the other half of that. Parking with no end is a promise to
+# be reachable that nothing keeps: the session is idle, and if no message ever
+# comes, nothing brings it back. `--until` sets when to give up and return
+# empty, so arming is a bounded wait rather than an open one — and the exit
+# says which happened, so the agent knows whether it was woken or simply
+# reached the time it named.
+#
+# `--until forecast:p50` (or `:p95`) takes that time from the agent's own
+# adaptive-timing model rather than a guess. The quantile is the posture: p50
+# comes back early and often, p95 stays away longer and is disturbed less. On
+# a machine with history that is a measurement; in a fresh container it is the
+# bootstrap prior, deliberately wide — `source` in the exit line says which,
+# and a deadline built on a prior should be a shorter one.
+#
 # Usage:
 #   sh .switchboard/wake-on-message.sh              # this agent's own inbox
 #   sh .switchboard/wake-on-message.sh -c deploys   # ...or named channels
+#   sh .switchboard/wake-on-message.sh --until forecast:p50 --effort medium
+#   sh .switchboard/wake-on-message.sh --until 2026-09-01T06:30:00Z
+#
+# Exit codes, which are how a woken agent tells the cases apart:
+#   0  a message arrived (it is on stdout, peeked, still unread)
+#   1  misconfigured or the hub stayed unreachable — nothing was watched
+#   2  the deadline passed, or the pass limit did, with nothing to report
+#
+# Options:
+#   --until VALUE                deadline: an ISO-8601 time, +SECONDS, or
+#                                forecast:p50 / forecast:p95
+#   --effort low|medium|high     passed to the forecast, with...
+#   --execution-class LABEL      ...the kind of work ahead
 #
 # Environment:
 #   SWITCHBOARD_LISTEN_TTL       heartbeat TTL, seconds (default 90)
 #   SWITCHBOARD_LISTEN_MAX_FAILS consecutive hub errors tolerated (default 5)
 #   SWITCHBOARD_LISTEN_PASSES    stop after N quiet passes (default 0 = forever)
+#   SWITCHBOARD_LISTEN_UNTIL     same as --until
 
 set -u
 
 TTL="${SWITCHBOARD_LISTEN_TTL:-90}"
 MAX_FAILS="${SWITCHBOARD_LISTEN_MAX_FAILS:-5}"
 MAX_PASSES="${SWITCHBOARD_LISTEN_PASSES:-0}"
+UNTIL="${SWITCHBOARD_LISTEN_UNTIL:-}"
+EFFORT=""
+EXECUTION_CLASS=""
+
+# Our own flags are consumed here and must come first; the first argument we
+# do not recognise ends the loop and everything from there is handed to
+# `inbox` untouched, which is what makes `-c <channel>` work without this
+# script having to know about channels. Stopping at the first unknown argument
+# rather than sieving the whole list keeps "$@" intact, so a channel name with
+# a space in it survives.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --until) UNTIL="${2:-}"; shift 2 ;;
+    --until=*) UNTIL="${1#--until=}"; shift ;;
+    --effort) EFFORT="${2:-}"; shift 2 ;;
+    --effort=*) EFFORT="${1#--effort=}"; shift ;;
+    --execution-class) EXECUTION_CLASS="${2:-}"; shift 2 ;;
+    --execution-class=*) EXECUTION_CLASS="${1#--execution-class=}"; shift ;;
+    *) break ;;
+  esac
+done
 
 # `whoami` answers from local configuration and never dials the hub, so it
 # would happily describe an identity on a hub that is down. Ask `health` too: a
@@ -85,6 +134,75 @@ if [ "$WHO_ENCRYPTED" != "True" ] && [ -f .claude/settings.local.json ] \
   exit 1
 fi
 
+# Resolved once, not per pass: a forecast is "when will I next look, counting
+# from now", so re-asking each time would push the deadline away every 25
+# seconds and the listener would never reach it.
+DEADLINE=""
+DEADLINE_SOURCE=""
+if [ -n "$UNTIL" ]; then
+  case "$UNTIL" in
+    forecast:*)
+      QUANTILE="${UNTIL#forecast:}"
+      FORECAST="$(sb --json timing \
+        ${EFFORT:+--effort "$EFFORT"} \
+        ${EXECUTION_CLASS:+--execution-class "$EXECUTION_CLASS"} 2>/dev/null)" || FORECAST=""
+      if [ -z "$FORECAST" ]; then
+        echo "wake-on-message: could not read the local timing model for --until $UNTIL" >&2
+        exit 1
+      fi
+      # Captured, checked, *then* evaluated. `eval "$(...)" || exit` cannot
+      # work here: eval of an empty string succeeds, so a rejected quantile
+      # printed its complaint and the listener parked with no deadline at all
+      # — silently unbounded, which is the one outcome this flag exists to
+      # prevent.
+      FORECAST_VARS="$(
+        printf '%s' "$FORECAST" | python3 -c '
+import json, shlex, sys
+q = sys.argv[1]
+if q not in ("p50", "p95"):
+    sys.exit("wake-on-message: --until forecast:%s — only p50 and p95 are published" % q)
+f = json.load(sys.stdin).get("forecast") or {}
+if not f.get(q):
+    sys.exit("wake-on-message: the timing model published no %s" % q)
+# Seconds from now rather than the absolute time: the forecast was computed
+# against the model'"'"'s clock, and a listener that trusted the timestamp would
+# inherit any skew between it and ours.
+print("DEADLINE=%d" % (int(__import__("time").time()) + int(f["%s_in_seconds" % q])))
+print("DEADLINE_SOURCE=" + shlex.quote("%s %s, %s sample(s)" % (
+    q, f.get("source", "?"), f.get("samples", "?"))))
+' "$QUANTILE"
+      )" || exit 1
+      eval "$FORECAST_VARS"
+      ;;
+    +*)
+      DEADLINE=$(( $(date +%s) + ${UNTIL#+} ))
+      DEADLINE_SOURCE="+${UNTIL#+}s"
+      ;;
+    *)
+      DEADLINE="$(python3 -c '
+import datetime, sys
+raw = sys.argv[1].replace("Z", "+00:00")
+try:
+    t = datetime.datetime.fromisoformat(raw)
+except ValueError:
+    sys.exit("wake-on-message: --until %s is not an ISO-8601 time, +SECONDS, or forecast:p50/p95" % sys.argv[1])
+if t.tzinfo is None:
+    t = t.astimezone()
+print(int(t.timestamp()))
+' "$UNTIL")" || exit 1
+      DEADLINE_SOURCE="given"
+      ;;
+  esac
+fi
+
+if [ -n "$DEADLINE" ]; then
+  UNTIL_ISO="$(python3 -c 'import datetime,sys;print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).isoformat())' "$DEADLINE")"
+  if [ "$DEADLINE" -le "$(date +%s)" ]; then
+    echo "wake-on-message: deadline $UNTIL_ISO ($DEADLINE_SOURCE) is already past" >&2
+    exit 2
+  fi
+fi
+
 HEARTBEAT="listener/$WHO_AGENT_ID"
 PASS=0
 FAILS=0
@@ -96,17 +214,45 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "wake-on-message: parked as $WHO_AGENT_ID on $WHO_WORKSPACE (heartbeat $HEARTBEAT)" >&2
+echo "wake-on-message: parked as $WHO_AGENT_ID on $WHO_WORKSPACE (heartbeat $HEARTBEAT)${DEADLINE:+ until $UNTIL_ISO [$DEADLINE_SOURCE]}" >&2
 
 while :; do
   PASS=$((PASS + 1))
 
+  # Never poll past the deadline. Without this the last long-poll could
+  # overshoot it by up to 25 seconds, which is the whole margin on a short
+  # DND and turns a time the agent named into one it merely approximated.
+  WAIT=25
+  if [ -n "$DEADLINE" ]; then
+    LEFT=$((DEADLINE - $(date +%s)))
+    [ "$LEFT" -lt "$WAIT" ] && WAIT="$LEFT"
+    if [ "$WAIT" -le 0 ]; then
+      echo "wake-on-message: reached $UNTIL_ISO [$DEADLINE_SOURCE] with nothing to report" >&2
+      exit 2
+    fi
+  fi
+
+  # Announce presence as well as the board key. A parked agent is the most
+  # reachable an agent ever is, and without this the roster says it does not
+  # exist: `agents` comes back empty and `dm` warns the sender their message
+  # will be "read by nobody", which sent a peer looking for a corpse while the
+  # listener was working perfectly. `--back-in` is the deadline, so an empty
+  # roster can be told from one that is merely between turns. Announcing does
+  # not touch the read cursor — `checkin` would drain the very message this
+  # exists to hand over, which is why this is `announce` and not that.
+  sb -q announce --task "parked on inbox${DEADLINE:+ until $UNTIL_ISO}" \
+    --ttl "$TTL" ${DEADLINE:+--back-in "$((DEADLINE - $(date +%s)))"} >/dev/null 2>&1 \
+    || echo "wake-on-message: presence announce failed (pass $PASS)" >&2
+
+  # The heartbeat says what this listener is doing *and* when it stops. A peer
+  # reading it learns both halves of the question it actually has: will this
+  # agent notice me, and if not now, when.
   sb -q board set "$HEARTBEAT" \
-    "{\"pass\": $PASS, \"pid\": $$, \"waiting_on\": \"inbox\"}" \
+    "{\"pass\": $PASS, \"pid\": $$, \"waiting_on\": \"inbox\"${DEADLINE:+, \"until\": \"$UNTIL_ISO\", \"until_source\": \"$DEADLINE_SOURCE\"}, \"means\": \"this agent is parked and reachable; if this key is gone, nobody is listening and nothing will revive it\"}" \
     --json-body --ttl "$TTL" >/dev/null 2>&1 \
     || echo "wake-on-message: heartbeat write failed (pass $PASS)" >&2
 
-  if MESSAGES="$(sb --json inbox --peek --wait 25 "$@" 2>/dev/null)"; then
+  if MESSAGES="$(sb --json inbox --peek --wait "$WAIT" "$@" 2>/dev/null)"; then
     FAILS=0
     if printf '%s' "$MESSAGES" | python3 -c \
          'import json,sys; sys.exit(0 if json.load(sys.stdin)["messages"] else 1)'; then
