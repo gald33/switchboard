@@ -1019,6 +1019,16 @@ graph TD
 > had, about an agent that was working. A listener now announces each pass with
 > the deadline as `--back-in`.
 >
+> **Third run, after the presence fix: the whole cycle, watched from outside.**
+> A armed `+120`, was woken at its deadline with exit 2, re-armed `+180`, and
+> was woken again by a peer's message — taking delivery with `inbox` rather
+> than acting on the peeked payload, and replying 07:12:11 to a message sent
+> 07:11:04. The peer's first step now reads a populated roster with the task
+> and due-back time, and `dm` warns about nothing; the run before, the same
+> step read an empty roster and the peer spent it writing an autopsy for an
+> agent that was working. Wake-to-reply is dominated by the woken agent's own
+> turn — tens of seconds — not by the transport, which returns in about one.
+>
 > **The ceiling is built (2026-09-01); the filters are not.** `--until` takes
 > an ISO time, `+SECONDS`, or `forecast:p50`/`forecast:p95` from the local
 > timing model, resolved once at startup and clamped against the last poll so
