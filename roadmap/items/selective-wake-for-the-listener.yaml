@@ -48,6 +48,13 @@ evidence: |
   holds the key and has already decrypted the message in order to print it, so
   matching happens on plaintext that exists anyway, at no extra round trip.
 
+  **The ceiling is built (2026-09-01); the filters are not.** `--until` takes
+  an ISO time, `+SECONDS`, or `forecast:p50`/`forecast:p95` from the local
+  timing model, resolved once at startup and clamped against the last poll so
+  it cannot overshoot. Exit codes separate the cases: 0 woken, 2 deadline, 1
+  never watched. The heartbeat publishes the deadline and its source. What
+  remains here is the wake/skip seam and the two filters behind it.
+
   **Three filters, in ascending cost:**
 
   1. `--type` — `type` is already a free-form field on every message defaulting
