@@ -11,6 +11,9 @@ per test.
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pytest
 
 _SWITCHBOARD_ENV = (
@@ -66,3 +69,47 @@ def clean_switchboard_env(monkeypatch):
     # inherit neither, but be explicit: a test that blocks on input that never
     # arrives hangs the suite rather than failing it.
     monkeypatch.delenv("CI", raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_signing_socket_dir():
+    """Give this pytest process its own directory for signing sockets.
+
+    Same failure as the environment variables above, one layer down: ambient
+    machine state leaking into every test. `Client.__init__` calls
+    `signing.attach(agent_id)`, which adopts **whatever socket already exists**
+    at `signing.socket_path(agent_id)` — a path derived from the agent id
+    alone, under one per-user temp dir. Nothing in it distinguishes one process
+    from another, and that is deliberate for real agents: the socket is how the
+    hooks, the CLI and the model sign as one agent rather than three strangers.
+
+    It is wrong for tests. Every suite invents agents called `alice` and `bob`,
+    so two pytest processes on one machine compute the *same* socket path, and
+    a client in one silently attaches to the signer in the other — inheriting a
+    foreign identity. What that looks like is a whisper that cannot be opened:
+    `unreadable`, in whichever whisper test happens to race, which is why it
+    presented as two different tests failing rather than one.
+
+    It cost a day to find precisely because the conditions hide it: never in
+    CI, where a runner has one suite; never in a sequential rerun, which is the
+    first thing anyone tries; only on a developer's machine running two suites
+    at once — or one running an MCP server for an agent a test also names.
+
+    Session-scoped and `os.environ` rather than `monkeypatch`, which is
+    function-scoped and cannot hold an environment variable for a whole
+    session. Kept short (the system temp dir, not `tmp_path_factory`) because a
+    unix socket path is capped near 104 bytes and a long prefix would make
+    `SigningServer.start()` fail with `OSError` — degrading tests to "no socket
+    available", which is a different code path and would quietly stop testing
+    this one.
+    """
+    base = tempfile.mkdtemp(prefix="swb-")  # short: the socket path is capped
+    previous = os.environ.get("XDG_RUNTIME_DIR")
+    os.environ["XDG_RUNTIME_DIR"] = base
+    try:
+        yield base
+    finally:
+        if previous is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = previous
