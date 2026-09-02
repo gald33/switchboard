@@ -1,8 +1,9 @@
 id: hooks-warning-false-positive
 title: Stop warning about uncommitted hooks in repos that commit none of their wiring
-status: ready
+status: done
 arc: setup-and-first-run
 priority: later
+claim: null
 blocked_on: []
 refs:
 - 'https://github.com/gald33/switchboard/issues/89'
@@ -31,3 +32,14 @@ evidence: |
 
   `later` because it is a false positive rather than a broken behaviour, and the
   fix is small and self-contained whenever someone is next in that code.
+resolution: |
+  Done 2026-09-02. `init` now warns only when the hook scripts are gitignored
+  **and** `.claude/settings.json` is not — the case where a committed shim
+  would point a clone at scripts that are not there. A repo that ignores its
+  whole wiring commits no shim, so nothing dangles and nothing is said. The
+  decision lives in `_hooks_dangle_when_cloned`; `_hooks_are_gitignored` keeps
+  its meaning and the `git check-ignore` probe became `_is_gitignored` so both
+  paths use one implementation. Verified against this repository (silent now)
+  and one that commits its wiring (still silent), with the original
+  ignored-scripts-behind-a-committed-shim case still warning. Closed by
+  62bb503.

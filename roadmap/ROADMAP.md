@@ -68,7 +68,6 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
-- `later` **`hooks-warning-false-positive`** — Stop warning about uncommitted hooks in repos that commit none of their wiring
 - `later` **`publish-hub-container-image`** — Publish the hub image, so running a hub is not a clone and a build
 
 ## ⏸ Deferred — startable, deliberately not now
@@ -622,7 +621,7 @@ graph TD
 ### `hooks-warning-false-positive`
 
 - **title:** Stop warning about uncommitted hooks in repos that commit none of their wiring
-- **status:** ready
+- **status:** done
 - **arc:** setup-and-first-run
 - **priority:** later
 - **refs:**
