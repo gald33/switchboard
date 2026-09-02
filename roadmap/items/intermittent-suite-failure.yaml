@@ -1,5 +1,5 @@
 id: intermittent-suite-failure
-title: Name the test that fails once in a while, or stop calling it a flake
+title: Two whisper tests fail under parallel load, and only under load
 status: ready
 priority: next
 blocked_on: []
@@ -45,8 +45,25 @@ evidence: |
   attempts — which is itself the reason a casual rerun will keep saying
   "green" and keep being useless as evidence.
 
-  So the next attempt is load, not repetition: two suites in parallel, which is
-  what the machine was doing when it first fired.
+  So the next attempt was load, not repetition — and it worked. Two suites in
+  parallel, three rounds, reproduced it **twice**:
+
+  * round 2 — `tests/test_whisper.py::test_the_ask_alias_still_sends_and_a_0_11_0_typed_message_still_opens`
+  * round 3 — `tests/test_whisper.py::test_whisper_round_trips_in_a_plaintext_workspace`
+
+  **Different tests, same file, and that is the finding.** A single flaky test
+  would have repeated; two different ones in `test_whisper.py` point at
+  something shared rather than at either test — the most likely candidate
+  being the exchange-key path both exercise. `whisper` seals to a key cached
+  from a roster read (`Client._peer_exchange_keys`, populated by `agents()`),
+  and `_peer_exchange_key_for` raises `UnknownPeerExchangeKey` when the peer
+  is not in that cache. A peer that has aged off the roster before `agents()`
+  runs is exactly the shape of failure load would expose and an idle machine
+  would not.
+
+  That last step is inference from the failing tests' shape, not from a
+  traceback — the two reproductions were captured with the summary line only.
+  A run capturing `--tb=long` under the same conditions is what settles it.
 
   How it will be known to have worked: the test is **named**, from a run
   captured with `-rf` per-test output rather than a summary, and then either

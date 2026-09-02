@@ -146,4 +146,4 @@ Fixing either one alone leaves the other entirely intact.
 
 Startable and legitimate — an item does not need an arc. Listed so the narrative layer's coverage gap is visible rather than implied.
 
-- `intermittent-suite-failure` — Name the test that fails once in a while, or stop calling it a flake
+- `intermittent-suite-failure` — Two whisper tests fail under parallel load, and only under load

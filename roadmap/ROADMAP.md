@@ -19,7 +19,7 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
-- `next` **`intermittent-suite-failure`** — Name the test that fails once in a while, or stop calling it a flake
+- `next` **`intermittent-suite-failure`** — Two whisper tests fail under parallel load, and only under load
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -110,7 +110,7 @@ graph TD
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
-  intermittent_suite_failure["Name the test that fails once in a while, or stop calling it a flake"]
+  intermittent_suite_failure["Two whisper tests fail under parallel load, and only under load"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
@@ -867,7 +867,7 @@ graph TD
 
 ### `intermittent-suite-failure`
 
-- **title:** Name the test that fails once in a while, or stop calling it a flake
+- **title:** Two whisper tests fail under parallel load, and only under load
 - **status:** ready
 - **priority:** next
 - **refs:**
@@ -914,8 +914,25 @@ graph TD
 > attempts — which is itself the reason a casual rerun will keep saying
 > "green" and keep being useless as evidence.
 >
-> So the next attempt is load, not repetition: two suites in parallel, which is
-> what the machine was doing when it first fired.
+> So the next attempt was load, not repetition — and it worked. Two suites in
+> parallel, three rounds, reproduced it **twice**:
+>
+> * round 2 — `tests/test_whisper.py::test_the_ask_alias_still_sends_and_a_0_11_0_typed_message_still_opens`
+> * round 3 — `tests/test_whisper.py::test_whisper_round_trips_in_a_plaintext_workspace`
+>
+> **Different tests, same file, and that is the finding.** A single flaky test
+> would have repeated; two different ones in `test_whisper.py` point at
+> something shared rather than at either test — the most likely candidate
+> being the exchange-key path both exercise. `whisper` seals to a key cached
+> from a roster read (`Client._peer_exchange_keys`, populated by `agents()`),
+> and `_peer_exchange_key_for` raises `UnknownPeerExchangeKey` when the peer
+> is not in that cache. A peer that has aged off the roster before `agents()`
+> runs is exactly the shape of failure load would expose and an idle machine
+> would not.
+>
+> That last step is inference from the failing tests' shape, not from a
+> traceback — the two reproductions were captured with the summary line only.
+> A run capturing `--tb=long` under the same conditions is what settles it.
 >
 > How it will be known to have worked: the test is **named**, from a run
 > captured with `-rf` per-test output rather than a summary, and then either
