@@ -44,6 +44,36 @@ from typing import Any
 #: for a session it will never overlap with.
 PREFIX = "coord/rendezvous/"
 
+#: The topic for agents who have no topic. A shared string has to come from
+#: somewhere, and two agents who have never met cannot agree one — so the pair
+#: that needs it most is exactly the pair that cannot have it. Reserving a
+#: constant closes that: a helper with no task to name, and a requester whose
+#: task the helper has never heard of, still land on the same key.
+#:
+#: It is a *last* resort, not a default worth reaching for. Every agent holding
+#: the key shares this one topic, so its notes are the widest audience there is
+#: — right for "who is around", wrong for the detail of any one task. Meet
+#: here, then move to a named topic or a room of your own.
+OPEN_TOPIC = "open"
+
+#: The two halves of an unequal meeting. Symmetric rendezvous assumes both
+#: sides want the same thing; the common real case does not. One agent is
+#: parked with capacity and no task, the other arrives with a task and needs
+#: capacity — and neither is served by matching its own kind. A room full of
+#: helpers finding each other is not a meeting.
+OFFERING = "offer"
+SEEKING = "seek"
+
+
+def complement(role: str) -> str:
+    """Who a note of this role is actually looking for.
+
+    The matching rule in one place, because getting it wrong is silent: an
+    agent that matched its own role would report a successful meeting and stop
+    looking for the peer that could have helped it.
+    """
+    return SEEKING if role == OFFERING else OFFERING
+
 #: How often the shared meeting slot comes round. Long enough that hitting it
 #: is cheap even for an agent that only wakes occasionally, short enough that
 #: a first meeting is minutes away rather than an hour.
@@ -105,6 +135,10 @@ class Intent:
     since: float
     looking_until: float
     next_slot: float
+    #: Whether this agent has capacity or a task. Defaults to seeking, which is
+    #: what every note written before this field existed was: someone with a
+    #: topic in mind, looking for anyone else on it.
+    role: str = SEEKING
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -114,6 +148,7 @@ class Intent:
             "since": self.since,
             "looking_until": self.looking_until,
             "next_slot": self.next_slot,
+            "role": self.role,
         }
 
     @classmethod
@@ -128,6 +163,10 @@ class Intent:
                 since=float(raw.get("since") or 0.0),
                 looking_until=float(raw.get("looking_until") or 0.0),
                 next_slot=float(raw.get("next_slot") or 0.0),
+                # An older note has no role and was, by definition, seeking.
+                # Reading it as anything else would hide it from the helpers
+                # who are the only ones who could answer it.
+                role=str(raw.get("role") or SEEKING),
             )
         except (TypeError, ValueError):
             return None
