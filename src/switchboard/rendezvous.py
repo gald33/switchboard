@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,16 +66,6 @@ OPEN_TOPIC = "open"
 OFFERING = "offer"
 SEEKING = "seek"
 
-
-def complement(role: str) -> str:
-    """Who a note of this role is actually looking for.
-
-    The matching rule in one place, because getting it wrong is silent: an
-    agent that matched its own role would report a successful meeting and stop
-    looking for the peer that could have helped it.
-    """
-    return SEEKING if role == OFFERING else OFFERING
-
 #: How often the shared meeting slot comes round. Long enough that hitting it
 #: is cheap even for an agent that only wakes occasionally, short enough that
 #: a first meeting is minutes away rather than an hour.
@@ -90,6 +82,17 @@ DEFAULT_LOOK_SECONDS = 60.0
 #: number of calls. The early ones catch a peer who is already here; the late
 #: ones catch one who is arriving.
 BACKOFF = (0.0, 5.0, 15.0, 40.0, 90.0, 180.0)
+
+
+def complement(role: str) -> str:
+    """Who a note of this role is actually looking for.
+
+    The matching rule in one place, because getting it wrong is silent: an
+    agent that matched its own role would report a successful meeting and stop
+    looking for the peer that could have helped it.
+    """
+    return SEEKING if role == OFFERING else OFFERING
+
 
 
 def slot_phase(workspace_token: str, topic: str) -> float:
@@ -195,3 +198,25 @@ def schedule(look_seconds: float) -> list[float]:
         out.append(gap)
         spent += gap
     return out or [0.0]
+
+
+def hub_now(agent: dict[str, Any]) -> float:
+    """The hub's clock, from a register response.
+
+    Deliberately not `time.time()`. The whole point of a derived slot is that
+    two machines compute the same one, and two machines are exactly what has
+    skewed clocks — anchoring on local time would rebuild the miss this is
+    meant to remove, one layer down and much harder to see.
+
+    Lives here rather than in one caller because both surfaces need it, and a
+    second copy of this rule is a second answer that can drift from the first:
+    a CLI agent and an MCP agent computing slots off different clocks is the
+    same miss again, wearing the name of the thing that prevents it.
+    """
+    stamp = agent.get("last_seen_at")
+    if isinstance(stamp, str):
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return time.time()

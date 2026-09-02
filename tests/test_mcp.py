@@ -1124,3 +1124,104 @@ def test_a_message_that_opened_fine_is_not_warned_about():
     from switchboard.cli import _unopenable_note
 
     assert _unopenable_note({"body": "not settled: over budget"}, peek=False) is None
+
+
+# --- rendezvous, and the lobby it usually happens in -------------------------
+#
+# Both existed only on the CLI, which put first contact out of reach of an
+# agent whose only surface is this one — and a helper and a requester are as
+# likely to be one of each as two of a kind.
+
+
+def test_rendezvous_is_offered_at_all(hub):
+    assert "rendezvous" in {t["name"] for t in TOOLS}
+
+
+def test_a_helper_and_a_requester_meet_with_no_topic_agreed(hub):
+    helper = make_bridge(hub, "helper")
+    out, err = call(helper, "rendezvous", offer="pypi releases")
+    assert not err
+    assert out["topic"] == "open"
+    assert out["role"] == "offer"
+    assert out["met"] is False
+
+    requester = make_bridge(hub, "requester")
+    out, err = call(requester, "rendezvous", want="need a package published")
+    assert not err
+    assert out["met"] is True
+    assert [n["want"] for n in out["notes"]] == ["pypi releases"]
+    assert "dm" in out["next"]
+
+
+def test_offers_do_not_match_other_offers(hub):
+    """The false positive that would make the reserved topic useless: a room of
+    idle helpers all reporting a meeting, none of them having met a requester."""
+    call(make_bridge(hub, "helper-a"), "rendezvous", offer="anything")
+    out, _ = call(make_bridge(hub, "helper-b"), "rendezvous", offer="anything")
+    assert out["notes"] == []
+    assert out["met"] is False
+
+
+def test_a_named_topic_stays_symmetric(hub):
+    """Roles are a reserved-topic device. Two agents who agreed a topic are
+    usually both seeking, and must still find each other."""
+    call(make_bridge(hub, "alice"), "rendezvous", topic="design-review", want="a reviewer")
+    out, _ = call(make_bridge(hub, "bob"), "rendezvous", topic="design-review", want="also one")
+    assert [n["want"] for n in out["notes"]] == ["a reviewer"]
+
+
+def test_an_empty_result_does_not_read_as_failure(hub):
+    """An agent told 'nobody is here' stops, which is how both sides quit at
+    once. The note outlives presence by a day precisely so it need not."""
+    out, _ = call(make_bridge(hub, "solo"), "rendezvous", want="help")
+    assert out["met"] is False
+    assert "Come back at the slot" in out["next"]
+    assert out["next_slot_in"] > 0
+
+
+def test_the_cli_and_the_mcp_bridge_derive_the_same_slot(hub):
+    """The two surfaces must land on the same minute or the feature is a lie:
+    a CLI agent and an MCP agent are exactly the pair most likely to be
+    meeting, and each would sit alone believing it had kept the appointment.
+
+    Checked against the derivation driven by the HUB's clock, which is the
+    part a bridge could plausibly get wrong by reaching for time.time().
+    """
+    from switchboard import rendezvous
+
+    bridge = make_bridge(hub, "mcp-side")
+    out, _ = call(bridge, "rendezvous", want="x")
+
+    agent = bridge.client.register(name="probe", kind="local", branch="b", meta={})
+    now = rendezvous.hub_now(agent)
+    expected = rendezvous.next_slot(WS, "open", now) - now
+
+    # Independently computed from the same hub clock and workspace; a bridge
+    # that used local time or the wrong workspace lands on a different minute.
+    assert abs(out["next_slot_in"] - expected) < 5.0
+
+
+def test_the_lobby_needs_a_key_and_says_so(hub):
+    """Without a key there is no lobby to compute, rather than a room we would
+    join in the clear and find empty. The refusal is the useful answer."""
+    bridge = make_bridge(hub, "keyless")
+    bridge.config.key = None
+    out, err = call(bridge, "roster", room="lobby")
+    assert err
+    assert "needs a workspace key" in json.dumps(out)
+
+
+def test_the_lobby_is_a_different_room_from_your_own(hub):
+    """The whole point: a repo's room is not where cross-repo agents meet."""
+    from switchboard import rooms
+
+    bridge = make_bridge(hub, "someone")
+    bridge.config.key = "k" * 43
+    assert rooms.lobby(bridge.config.key).workspace != bridge.config.workspace
+
+
+def test_the_room_parameter_documents_the_lobby(hub):
+    """An agent that cannot discover the handle cannot use it, and this is the
+    only place a peer in another repo is reachable from."""
+    tool = next(t for t in TOOLS if t["name"] == "roster")
+    assert "lobby" in tool["inputSchema"]["properties"]["room"]["description"]

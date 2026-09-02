@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,7 @@ from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
 from .invite import Invite, InviteError
+from . import rendezvous, rooms
 from .signing import RemoteSigningIdentity, SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
@@ -112,11 +114,21 @@ _BOOL = {"type": "boolean"}
 #: room-scoped — the dispatcher already handles it.
 _ROOMLESS = {"help", "whoami", "keygen", "join_room"}
 
+#: The one room handle that is not a join_room result. Derived from the key
+#: rather than handed over, so every holder of the key names the same room
+#: without agreeing anything — which is what makes it reachable from a repo
+#: whose agents have never met yours.
+LOBBY_ROOM = "lobby"
+
 _ROOM_PARAM = {
     "type": "string",
     "description": (
         "A room handle from join_room, to act in a room you were invited to "
-        "rather than your own. Omit for your default room."
+        "rather than your own. Omit for your default room. The literal 'lobby' "
+        "is always valid without joining anything: the room every holder of "
+        "your key already shares, and the only way to reach agents working a "
+        "DIFFERENT repo — theirs is a separate room and they are not on your "
+        "roster. Meet there, then take the work to a room of its own."
     ),
 }
 
@@ -539,6 +551,40 @@ TOOLS: list[dict[str, Any]] = [
         }, ["invite"]),
     },
     {
+        "name": "rendezvous",
+        "description": (
+            "Find an agent you have never exchanged a message with. Every other timing "
+            "signal here is built FROM contact — a forecast comes from your history with "
+            "a peer and rides on a message — so none of it helps before the first "
+            "exchange, and first contact is where agents most reliably miss each other: "
+            "one looks for five minutes and leaves, the other arrives at minute six, and "
+            "both were right that the room was empty.\n\n"
+            "This announces you, reads the notes other agents left, writes your own, and "
+            "returns 'next_slot_in' — a shared minute both sides derive from the "
+            "workspace and the hub's clock without having agreed anything. Come back "
+            "then; your peer will be looking too.\n\n"
+            "Pass 'topic' when you and your peer already agreed a string. When you have "
+            "not — you are parked with capacity and no task to name, or you have arrived "
+            "with a task and no idea who is out there — OMIT it and say which side you "
+            "are on with 'offer' or 'want'. On that reserved topic offers match seekers "
+            "and never other offers, so a room of idle helpers does not report itself as "
+            "a meeting. Reach it across repos with room='lobby'.\n\n"
+            "The note is an introduction, not a conversation: once a peer comes back in "
+            "'notes', DM the agent_id there and take the work to a room of its own."
+        ),
+        "inputSchema": _schema({
+            "topic": {**_STR, "description": (
+                "what the meeting is about; both sides must use the same string. Omit "
+                "for the reserved 'open' topic, which needs no agreement."
+            )},
+            "want": {**_STR, "description": "one line on what you need, for whoever finds your note"},
+            "offer": {**_STR, "description": (
+                "one line on what you can do, if you have capacity rather than a task. "
+                "Matches seekers only."
+            )},
+        }),
+    },
+    {
         "name": "keygen",
         "description": (
             "Mint a fresh (key, workspace) pair for a private side-conversation with "
@@ -596,6 +642,123 @@ class Bridge:
             joined.close()
         self.client.close()
         self.timing.close()
+
+    def rendezvous(
+        self, topic: str | None = None, want: str | None = None,
+        offer: str | None = None,
+    ) -> dict[str, Any]:
+        """First contact, for the surface that had no way to make it.
+
+        The CLI has had this since the feature existed; MCP did not, which put
+        the whole of it out of reach of an agent whose only surface is this
+        one. That matters most for exactly the meeting it was built for: a
+        helper and a requester are as likely to be one of each as two of a
+        kind.
+
+        One pass rather than the CLI's escalating backoff. A tool call is not
+        the place to hold a socket open for a minute, and the note plus the
+        shared slot are what cover the rest — which is the same reason the
+        CLI's own look is bounded.
+        """
+        unread_dms = self._touch()
+        topic = topic or rendezvous.OPEN_TOPIC
+        role = rendezvous.OFFERING if offer else rendezvous.SEEKING
+        blurb = offer or want or ""
+
+        agent = self.client.register(
+            name=self.identity.name, kind=self.identity.kind,
+            branch=self.identity.branch, meta=self.identity.meta,
+            channels=list(self._subscriptions), ttl=self._presence_ttl,
+            task=f"available: {blurb}" if role == rendezvous.OFFERING
+                 else f"rendezvous: {topic}",
+        )
+        self._registered = True
+        # The hub's clock, never this machine's: two agents with skewed clocks
+        # would compute the same phase against different nows and never
+        # overlap, which is the miss this exists to remove.
+        now = rendezvous.hub_now(agent)
+        workspace = getattr(self.client.config, "workspace", self.config.workspace)
+        slot = rendezvous.next_slot(workspace, topic, now)
+
+        # Roles are a reserved-topic device. On a topic both sides agreed,
+        # they have already established they are about the same thing and are
+        # usually both seeking — filtering there would hide each from the
+        # other, which is the meeting the topic was agreed to arrange.
+        want_role = (
+            rendezvous.complement(role) if topic == rendezvous.OPEN_TOPIC else None
+        )
+        key = rendezvous.key_for(topic)
+        peers = []
+        for entry in self.client.board_list(prefix=key):
+            if entry.get("unreadable"):
+                continue
+            note = rendezvous.Intent.from_json(entry.get("value"))
+            if not note or note.agent_id == self.client.agent_id:
+                continue
+            if not note.still_looking(now) or (
+                want_role is not None and note.role != want_role
+            ):
+                continue
+            peers.append(note)
+        peers.sort(key=lambda n: n.since)
+
+        mine = rendezvous.Intent(
+            agent_id=self.client.agent_id, topic=topic, want=blurb, since=now,
+            looking_until=now + rendezvous.SLOT_SECONDS * 6, next_slot=slot,
+            role=role,
+        )
+        self.client.board_set(key + "/" + self.client.agent_id, mine.as_json())
+
+        out = {
+            "topic": topic,
+            "role": role,
+            "note": key + "/" + self.client.agent_id,
+            "notes": [n.as_json() for n in peers],
+            "next_slot_in": round(slot - now, 1),
+            "met": bool(peers),
+            "unread_dms": unread_dms,
+        }
+        if peers:
+            out["next"] = (
+                f"That is a peer, not a thread — dm {peers[0].agent_id} with what "
+                f"you actually need, and take the work off this topic."
+            )
+        else:
+            # Must not read as failure. An agent told "nobody is here" stops,
+            # which is how both sides quit at once — and the note outlives
+            # presence by a day precisely so it does not have to.
+            out["next"] = (
+                "Nobody yet, which is not the same as nobody coming: your note "
+                "outlives your presence by a day. Come back at the slot."
+            )
+        return out
+
+    def _lobby(self) -> Client:
+        """The room every holder of this key already shares, built on demand.
+
+        Derived from the key rather than joined with an invite, so there is no
+        handle to hand out and nothing to agree: `room="lobby"` is the same
+        room for every agent holding the key, in any repo. Cached because a
+        second client to the same room would register twice and show the agent
+        to itself.
+        """
+        cached = self._rooms.get(LOBBY_ROOM)
+        if cached is not None:
+            return cached
+        key = self.config.key
+        if not key:
+            # The lobby is derived FROM the key: without one there is no room
+            # to compute, rather than a room we would join in the clear and
+            # find empty. Saying that is the whole value.
+            raise ValueError(
+                "room='lobby' needs a workspace key, because the lobby is derived "
+                "from it — there is no lobby to compute without one. Set "
+                "SWITCHBOARD_KEY in this server's environment."
+            )
+        config = replace(self.config, workspace=rooms.lobby(key).workspace)
+        client = Client(config, agent_id=self.identity.agent_id)
+        self._rooms[LOBBY_ROOM] = client
+        return client
 
     def join_room(self, invite: str) -> dict[str, Any]:
         """Take an invite and hold the room open for the rest of this session."""
@@ -1299,7 +1462,7 @@ class Bridge:
         # get right, and a tool added next year is routable without anybody
         # remembering to add a parameter to it — the same reason the hub
         # enforces authorization in one dependency rather than 18 handlers.
-        joined = self._rooms.get(room)
+        joined = self._lobby() if room == LOBBY_ROOM else self._rooms.get(room)
         if joined is None:
             raise ValueError(
                 f"not in room {room!r} — call join_room with the invite first. "

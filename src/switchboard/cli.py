@@ -1163,23 +1163,6 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _hub_now(agent: dict[str, Any]) -> float:
-    """The hub's clock, from a register response.
-
-    Deliberately not `time.time()`. The whole point of a derived slot is that
-    two machines compute the same one, and two machines are exactly what has
-    skewed clocks — anchoring on local time would rebuild the miss this is
-    meant to remove, one layer down and much harder to see.
-    """
-    stamp = agent.get("last_seen_at")
-    if isinstance(stamp, str):
-        try:
-            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            pass
-    return time.time()
-
-
 def cmd_rendezvous(args: argparse.Namespace) -> int:
     """Find a peer you have never met, and leave something behind if you do not.
 
@@ -1211,7 +1194,7 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             channels=args.channel or [], meta=identity.meta,
             back_in=args.back_in,
         )
-        now = _hub_now(agent)
+        now = rendezvous.hub_now(agent)
         slot = rendezvous.next_slot(config.workspace, topic, now)
 
         found: list[dict[str, Any]] = []
@@ -1374,7 +1357,7 @@ def cmd_arrive(args: argparse.Namespace) -> int:
             task=intent, channels=args.channel or [], meta=identity.meta,
             back_in=args.back_in,
         )
-        now = _hub_now(agent)
+        now = rendezvous.hub_now(agent)
 
         roster = [a for a in hub.agents() if a.get("agent_id") != hub.agent_id]
         strangers = hub.key_mismatches(hub.agents())
