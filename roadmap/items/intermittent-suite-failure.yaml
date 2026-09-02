@@ -1,0 +1,45 @@
+id: intermittent-suite-failure
+title: Name the test that fails once in a while, or stop calling it a flake
+status: ready
+priority: next
+blocked_on: []
+refs:
+- 'https://github.com/gald33/switchboard/issues/204'
+evidence: |
+  Two full local runs on 2026-09-02 reported exactly one failure each — `1
+  failed, 1278 passed` during #201, and `1 failed, 1282 passed` before the
+  1.7.0 release. Both reruns were clean, and **the failing test's name was
+  never captured**, because only the summary line survived in each case.
+
+  Deliberately no `arc`: the four arcs on this board are about what the
+  software does, and this is about whether its own tests can be believed.
+  Forcing it under one of them would misfile it.
+
+  What is already ruled out:
+
+  * **Ordering.** No `pytest-randomly` is installed, so collection order is
+    deterministic and identical between the failing and passing runs.
+  * **CI.** Twelve full CI runs the same day — 3.10 through 3.13 across #201,
+    #202 and #203 — were green. It has never been seen on a hosted runner, so
+    it is reproducible only where nobody is recording.
+
+  The one lead: the first occurrence took **469s against a ~215s norm**, with a
+  second suite running beside it. That points at something wall-clock
+  sensitive — a TTL, a heartbeat deadline, a `wait=` bound, an expiry compared
+  against `time.time()` rather than an injected clock — where a margin that
+  normally holds gets missed under load. A hypothesis, not a finding.
+
+  Why it earns a slot rather than a shrug: an intermittent failure nobody can
+  name is indistinguishable from a real regression the next time it fires, so
+  it costs a full investigation on every sighting — and it trains whoever sees
+  it to rerun and move on, which is exactly the habit that lets a
+  flake-shaped bug through. This repo's tests are largely a catalogue of cases
+  where "looks like a quiet room" was really a failure; this is that shape
+  aimed at the suite itself.
+
+  How it will be known to have worked: the test is **named**, from a run
+  captured with `-rf` per-test output rather than a summary, and then either
+  fixed or shown to be a genuine bug. Until it is named, "flake" is a guess.
+
+  `next` rather than `later`: the cost is paid by whoever next sees a red suite
+  before a release, and 1.7.0 shipped with this open.

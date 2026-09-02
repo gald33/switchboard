@@ -141,3 +141,9 @@ Fixing either one alone leaves the other entirely intact.
 |---|---|---|
 | `ttl-clamped-silently` | ready | next |
 | `board-ttl-ceiling` | ready | later |
+
+## Items with no arc
+
+Startable and legitimate — an item does not need an arc. Listed so the narrative layer's coverage gap is visible rather than implied.
+
+- `intermittent-suite-failure` — Name the test that fails once in a while, or stop calling it a flake

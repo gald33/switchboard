@@ -19,6 +19,7 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
+- `next` **`intermittent-suite-failure`** — Name the test that fails once in a while, or stop calling it a flake
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -109,6 +110,7 @@ graph TD
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
+  intermittent_suite_failure["Name the test that fails once in a while, or stop calling it a flake"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
@@ -860,6 +862,56 @@ graph TD
 > in #86: existing repos keep the `.mcp.json` path, only new ones get rooms, and
 > the client prefers a rooms file when present — which is already how
 > `ClientConfig` resolves, so the migration is a no-op by construction.
+
+</details>
+
+### `intermittent-suite-failure`
+
+- **title:** Name the test that fails once in a while, or stop calling it a flake
+- **status:** ready
+- **priority:** next
+- **refs:**
+  - `https://github.com/gald33/switchboard/issues/204`
+
+<details><summary>evidence</summary>
+
+> Two full local runs on 2026-09-02 reported exactly one failure each — `1
+> failed, 1278 passed` during #201, and `1 failed, 1282 passed` before the
+> 1.7.0 release. Both reruns were clean, and **the failing test's name was
+> never captured**, because only the summary line survived in each case.
+>
+> Deliberately no `arc`: the four arcs on this board are about what the
+> software does, and this is about whether its own tests can be believed.
+> Forcing it under one of them would misfile it.
+>
+> What is already ruled out:
+>
+> * **Ordering.** No `pytest-randomly` is installed, so collection order is
+>   deterministic and identical between the failing and passing runs.
+> * **CI.** Twelve full CI runs the same day — 3.10 through 3.13 across #201,
+>   #202 and #203 — were green. It has never been seen on a hosted runner, so
+>   it is reproducible only where nobody is recording.
+>
+> The one lead: the first occurrence took **469s against a ~215s norm**, with a
+> second suite running beside it. That points at something wall-clock
+> sensitive — a TTL, a heartbeat deadline, a `wait=` bound, an expiry compared
+> against `time.time()` rather than an injected clock — where a margin that
+> normally holds gets missed under load. A hypothesis, not a finding.
+>
+> Why it earns a slot rather than a shrug: an intermittent failure nobody can
+> name is indistinguishable from a real regression the next time it fires, so
+> it costs a full investigation on every sighting — and it trains whoever sees
+> it to rerun and move on, which is exactly the habit that lets a
+> flake-shaped bug through. This repo's tests are largely a catalogue of cases
+> where "looks like a quiet room" was really a failure; this is that shape
+> aimed at the suite itself.
+>
+> How it will be known to have worked: the test is **named**, from a run
+> captured with `-rf` per-test output rather than a summary, and then either
+> fixed or shown to be a genuine bug. Until it is named, "flake" is a guess.
+>
+> `next` rather than `later`: the cost is paid by whoever next sees a red suite
+> before a release, and 1.7.0 shipped with this open.
 
 </details>
 
