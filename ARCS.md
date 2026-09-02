@@ -146,4 +146,4 @@ Fixing either one alone leaves the other entirely intact.
 
 Startable and legitimate — an item does not need an arc. Listed so the narrative layer's coverage gap is visible rather than implied.
 
-- `intermittent-suite-failure` — Two whisper tests fail under parallel load, and only under load
+- `intermittent-suite-failure` — Two pytest processes shared one signing socket, so a whisper opened with the wrong key

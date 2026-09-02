@@ -266,3 +266,40 @@ def test_learning_senders_never_raises_when_the_roster_cannot_be_read(key):
             raise RuntimeError("hub unreachable")
 
     cli._learn_senders(Broken())      # must not raise
+
+
+# --- the suite must not borrow another process's signer ----------------------
+
+
+def test_the_signing_socket_is_private_to_this_pytest_process():
+    """`socket_path` is derived from the agent id alone, so two suites on one
+    machine would otherwise compute the same path — and `Client.__init__`
+    attaches to whatever socket is already there, inheriting a foreign
+    identity. The whisper tests above are what breaks when that happens, and
+    they break intermittently, in whichever one races.
+
+    Guarded here rather than left to the fixture, because the failure it
+    prevents is invisible: nothing errors, a whisper simply comes back
+    `unreadable` on a machine that happens to be busy.
+    """
+    import os
+
+    from switchboard.signing import socket_path
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    assert runtime, "conftest must give this process its own runtime dir"
+    assert "swb-" in runtime, f"not an isolated dir: {runtime}"
+    assert str(socket_path("alice")).startswith(runtime)
+
+
+def test_that_socket_path_still_fits_in_a_unix_socket():
+    """The isolation above lengthens the path, and a unix socket address is
+    capped near 104 bytes. Overshoot and `SigningServer.start()` fails with
+    `OSError`, returns False, and every test silently exercises the
+    no-socket path instead — which would disable the guard above rather than
+    fail it."""
+    from switchboard.signing import socket_path
+
+    # A realistic worst case: agent ids are derived and long.
+    longest = socket_path("a" * 96)
+    assert len(str(longest)) < 104, f"{len(str(longest))} bytes: {longest}"
