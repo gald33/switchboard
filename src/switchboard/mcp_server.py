@@ -702,6 +702,13 @@ class Bridge:
             peers.append(note)
         peers.sort(key=lambda n: n.since)
 
+        # Whether each peer can actually be woken, rather than merely intends
+        # to look: a note is a plan, a live `listener/<id>` is a process saying
+        # so now and expiring on its own when it stops.
+        parked = rendezvous.reachable_now(
+            self.client.board_list(prefix=rendezvous.LISTENER_PREFIX)
+        ) if peers else set()
+
         mine = rendezvous.Intent(
             agent_id=self.client.agent_id, topic=topic, want=blurb, since=now,
             looking_until=now + rendezvous.SLOT_SECONDS * 6, next_slot=slot,
@@ -713,15 +720,23 @@ class Bridge:
             "topic": topic,
             "role": role,
             "note": key + "/" + self.client.agent_id,
-            "notes": [n.as_json() for n in peers],
+            "notes": [
+                {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
+            ],
             "next_slot_in": round(slot - now, 1),
             "met": bool(peers),
             "unread_dms": unread_dms,
         }
         if peers:
+            first = peers[0]
+            woken = first.agent_id in parked
             out["next"] = (
-                f"That is a peer, not a thread — dm {peers[0].agent_id} with what "
-                f"you actually need, and take the work off this topic."
+                f"That is a peer, not a thread — dm {first.agent_id} with what "
+                f"you actually need, and take the work off this topic. "
+                + ("A listener is parked for it, so the dm wakes it within seconds."
+                   if woken else
+                   "No listener is parked for it, so the dm is correct but silent "
+                   "until its next turn — do not wait on a reply this turn.")
             )
         else:
             # Must not read as failure. An agent told "nobody is here" stops,

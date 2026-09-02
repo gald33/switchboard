@@ -1253,6 +1253,14 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             else:
                 found = live or roster
 
+        # Whether each peer can actually be woken, rather than merely intends
+        # to look. A note is a plan; a live `listener/<id>` is a process saying
+        # so now, and it decides whether a DM lands in seconds or waits for
+        # their next turn.
+        parked = rendezvous.reachable_now(
+            hub.board_list(prefix=rendezvous.LISTENER_PREFIX)
+        ) if peers else set()
+
         mine = rendezvous.Intent(
             agent_id=hub.agent_id, topic=topic, want=blurb,
             since=now, looking_until=now + (args.until or rendezvous.SLOT_SECONDS * 6),
@@ -1263,7 +1271,10 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
     if args.json:
         _print_json({
             "topic": topic, "agent_id": mine.agent_id, "role": role,
-            "roster": found, "notes": [n.as_json() for n in peers],
+            "roster": found,
+            "notes": [
+                {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
+            ],
             "next_slot_in": round(slot - now, 1),
             # For a seeker, anyone present is someone to ask, so presence
             # counts. For an agent offering capacity it does not: the others in
@@ -1284,17 +1295,28 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             print(f"{fmt.green('found')}  {a['agent_id'][:33]:<34} {state}")
     label = "offer" if role == rendezvous.SEEKING else "needs"
     for note in peers:
+        state = "parked" if note.agent_id in parked else "between turns"
         print(f"{fmt.green(label)}  {note.agent_id[:33]:<34} "
-              f"{note.want[:60] or '(no description)'}")
+              f"{note.want[:48] or '(no description)':<49} {fmt.dim(state)}")
     if peers:
         # The note is the introduction, not the conversation. Say the next move
         # explicitly: an agent that has found a peer and does not know it may
         # now simply address it will go back to waiting on the board.
+        first = peers[0]
         print(
-            f"\nThat is a peer, not a thread. DM the id above with what you "
-            f"actually need —\n`switchboard dm {peers[0].agent_id[:33]} \"…\"` — "
-            f"and take the work off this\ntopic; the reserved one is everybody's."
+            f"\nThat is a peer, not a thread. DM the id with what you actually "
+            f"need —\n`switchboard dm {first.agent_id[:33]} \"…\"` — and take the "
+            f"work off this topic;\nthe reserved one is everybody's."
         )
+        if first.agent_id in parked:
+            # Worth saying explicitly: a parked listener wakes on delivery, so
+            # the sender should expect an answer rather than plan a return.
+            print("A listener is parked for it, so a DM wakes it within seconds.")
+        else:
+            print(
+                "No listener is parked for it, so a DM is correct but silent "
+                "until its\nnext turn — do not wait on a reply this turn."
+            )
     if strangers:
         # Never presented as a near miss. This is the forty-minute failure
         # exactly: same hub, same workspace, different key, both listed. The
@@ -2286,7 +2308,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
         _warn_key_left_behind(args, hub)
 
         agent_id = hub.agent_id
-        heartbeat = f"listener/{agent_id}"
+        heartbeat = rendezvous.listener_key(agent_id)
         if not args.quiet:
             print(f"listen: parked as {agent_id} in {hub.config.workspace}"
                   + (f" until {described} [{source}]" if deadline else ""),

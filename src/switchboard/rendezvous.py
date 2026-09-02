@@ -123,6 +123,36 @@ def key_for(topic: str) -> str:
     return f"{PREFIX}{topic}"
 
 
+#: Where `listen` records that it is parked. TTL'd, so the key existing *is*
+#: the liveness claim — it cannot outlive the process that keeps writing it.
+LISTENER_PREFIX = "listener/"
+
+
+def listener_key(agent_id: str) -> str:
+    return f"{LISTENER_PREFIX}{agent_id}"
+
+
+def reachable_now(board_keys: Any) -> set[str]:
+    """Which agents have a listener parked, from a `listener/` prefix listing.
+
+    The distinction this draws is the one a note cannot: `looking_until` says
+    when its author *intends* to look, which is a plan, and a plan written by a
+    turn-based session that has since ended is indistinguishable from one still
+    being kept. A live `listener/<id>` is different in kind — it is a process
+    saying so now, and it expires on its own the moment that process stops.
+
+    So it decides which advice is honest. Parked, and a DM wakes them within
+    seconds. Not parked, and a DM is correct but silent until their next turn,
+    which is what the shared slot is for.
+    """
+    out = set()
+    for entry in board_keys or ():
+        key = entry.get("key") if isinstance(entry, dict) else str(entry)
+        if key and key.startswith(LISTENER_PREFIX):
+            out.add(key[len(LISTENER_PREFIX):])
+    return out
+
+
 @dataclass
 class Intent:
     """One agent's standing statement that it is looking for someone.

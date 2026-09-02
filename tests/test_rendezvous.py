@@ -371,3 +371,70 @@ def test_the_human_output_says_the_next_move_is_a_dm(cli_hub, capsys, monkeypatc
     out = capsys.readouterr().out
     assert "switchboard dm " in out
     assert "releases" in out
+
+
+# --- can this peer actually be woken? ---------------------------------------
+#
+# `looking_until` is a plan, and a plan written by a turn-based session that
+# has since ended looks exactly like one still being kept. A live
+# `listener/<id>` is a different kind of claim: a process saying so now, which
+# expires on its own the moment that process stops.
+
+
+def test_a_peer_with_a_listener_parked_is_reported_reachable(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    out = _run(["--offer", "releases", "--wait", "0"], capsys)
+    helper_id = out["agent_id"]
+    # What `listen` writes while parked, with the TTL that makes it a claim
+    # about now rather than about intent.
+    main(["--url", BASE_URL, "-w", WS, "board", "set",
+          rendezvous.listener_key(helper_id), '{"waiting_on": "inbox"}',
+          "--json-body", "--ttl", "90"])
+    capsys.readouterr()
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "a release", "--wait", "0"], capsys)
+    assert [n["reachable"] for n in out["notes"]] == [True]
+
+
+def test_a_peer_with_no_listener_is_not_claimed_to_be_reachable(
+    cli_hub, capsys, monkeypatch
+):
+    """The failure that matters: telling a requester to expect a reply from an
+    agent that ended its turn hours ago."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "a release", "--wait", "0"], capsys)
+    assert [n["reachable"] for n in out["notes"]] == [False]
+
+
+def test_the_advice_says_whether_to_expect_a_reply_this_turn(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--want", "x", "--wait", "0"])
+    text = capsys.readouterr().out
+    assert "No listener is parked" in text
+    assert "do not wait on a reply this turn" in text
+
+
+def test_the_listener_key_has_one_spelling(cli_hub):
+    """`listen` writes it and `rendezvous` reads it. Two spellings would make
+    every peer look unreachable, silently and forever."""
+    import inspect
+
+    from switchboard import cli as cli_module
+
+    source = inspect.getsource(cli_module.cmd_listen)
+    assert "rendezvous.listener_key(" in source
+    assert 'f"listener/{' not in source

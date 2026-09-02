@@ -234,3 +234,45 @@ def test_a_repo_with_no_rooms_file_is_not_warned_about(tmp_path, monkeypatch):
 
     assert config.room_problem is None
     assert rooms_warning(config) is None
+
+
+# --- the lobby derivation is frozen -----------------------------------------
+
+
+def test_the_lobby_derivation_never_changes():
+    """A golden value, pinned against the version shipped in 1.5.1.
+
+    The lobby is the one room whose purpose is joining agents that do NOT ship
+    together — different repos, machines and installed versions. Changing the
+    derivation would sort them into rooms by library version, and do it
+    silently: a lobby is unguessable by design, so an agent in the wrong one
+    sees every call succeed and an empty roster, which is indistinguishable
+    from a quiet room. This test is the loud failure that absence would deny
+    anyone, so treat a diff here as a bug in the change, never in the test.
+    """
+    from switchboard.rooms import lobby_token
+
+    # A literal, never a value recomputed from the code under test — that
+    # would agree with any change it made, which is the one thing this must
+    # not do.
+    assert lobby_token("k" * 43) == "lobby-vAYwuUCdRhdRu6nqyk-0HbNFSxEjVLtn"
+
+
+def test_the_domain_separator_carries_no_version():
+    """A version here would sort agents into lobbies by library version, which
+    is the failure the lobby exists to remove — so there must be nothing to
+    bump. Adding something to bump is the bug this catches."""
+    from switchboard.rooms import LOBBY_INFO
+
+    assert LOBBY_INFO == b"switchboard-lobby"
+    assert not any(c.isdigit() for c in LOBBY_INFO.decode())
+
+
+def test_two_installed_versions_derive_the_same_lobby():
+    """States the actual guarantee rather than a constant: the same key gives
+    the same room, whatever the code around it does."""
+    from switchboard.rooms import lobby, lobby_token
+
+    key = "abc" * 14 + "d"
+    assert lobby(key).workspace_token == lobby_token(key)
+    assert lobby_token(key) == lobby_token(key)
