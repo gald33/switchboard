@@ -3971,9 +3971,14 @@ def _hooks_are_gitignored(directory: Path) -> bool:
     rather than reading `.gitignore` so a global exclude — the kind Claude
     Code writes — counts too.
     """
+    return _is_gitignored(directory, f"{_HOOKS_DIR}/session-start.sh")
+
+
+def _is_gitignored(directory: Path, relpath: str) -> bool:
+    """Whether git would refuse to commit `relpath` under `directory`."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(directory), "check-ignore", "-q", f"{_HOOKS_DIR}/session-start.sh"],
+            ["git", "-C", str(directory), "check-ignore", "-q", relpath],
             capture_output=True,
             timeout=5,
         )
@@ -3981,6 +3986,23 @@ def _hooks_are_gitignored(directory: Path) -> bool:
         return False
     # 0 = ignored, 1 = not ignored, 128 = not a git repo (nothing to warn about)
     return result.returncode == 0
+
+
+def _hooks_dangle_when_cloned(directory: Path) -> bool:
+    """The condition actually worth a warning: ignored scripts behind a
+    *committed* shim, so a clone registers hooks that point at nothing.
+
+    Ignored scripts alone are not it. A repo that keeps its entire wiring out
+    of git — `.mcp.json`, `.switchboard/`, `.claude/settings.json` — commits no
+    shim, so nothing dangles; the clone simply has no hooks, which is what its
+    owner chose. This repository is such a repo, and the warning used to fire
+    on every `init` run here (#89). A warning that fires on a correct
+    configuration trains the reader to skip it, and this one is the only thing
+    standing between an adopter and hooks that silently point at nothing.
+    """
+    if not _hooks_are_gitignored(directory):
+        return False
+    return not _is_gitignored(directory, ".claude/settings.json")
 
 
 def _init_hook_scripts(
@@ -4029,7 +4051,7 @@ def _init_hook_scripts(
                 f"left {label} alone: it doesn't match a known switchboard "
                 "revision (looks hand-edited) — pass --force to overwrite anyway"
             )
-    if _hooks_are_gitignored(directory):
+    if _hooks_dangle_when_cloned(directory):
         steps.append(
             f"note: {_HOOKS_DIR}/ is gitignored, but the hooks that call it are "
             "committed. A clone would get hooks pointing at scripts that are not "

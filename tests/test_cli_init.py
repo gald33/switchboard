@@ -1296,6 +1296,17 @@ def test_warns_when_the_hook_scripts_would_not_be_committed(monkeypatch, capsys,
     assert ".switchboard/hooks/ is gitignored" in out
 
 
+def test_no_warning_when_the_whole_wiring_is_gitignored(monkeypatch, capsys, tmp_path):
+    # A repo that keeps ALL its switchboard wiring out of git — this repository
+    # does — commits no shim, so nothing dangles on clone. The warning used to
+    # fire here on every run, training readers to skip the one warning that
+    # actually matters (#89). Warn only when the shim is committed too.
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    (tmp_path / ".gitignore").write_text(".switchboard/\n.claude/settings.json\n")
+    _, out = run_init(monkeypatch, capsys, tmp_path)
+    assert "is gitignored" not in out
+
+
 def test_no_warning_when_the_scripts_are_committable(monkeypatch, capsys, tmp_path):
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
     _, out = run_init(monkeypatch, capsys, tmp_path)
