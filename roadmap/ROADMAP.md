@@ -906,6 +906,17 @@ graph TD
 > where "looks like a quiet room" was really a failure; this is that shape
 > aimed at the suite itself.
 >
+> Six further full runs, sequential and unloaded, were all clean (204-248s
+> each). That is a **negative result, not a reassurance**: every one of them
+> ran without the parallel load present at the first sighting, so the only
+> hypothesis on the table is the one those runs could not test. It does bound
+> the rate — whatever this is, it does not fire on an idle machine in six
+> attempts — which is itself the reason a casual rerun will keep saying
+> "green" and keep being useless as evidence.
+>
+> So the next attempt is load, not repetition: two suites in parallel, which is
+> what the machine was doing when it first fired.
+>
 > How it will be known to have worked: the test is **named**, from a run
 > captured with `-rf` per-test output rather than a summary, and then either
 > fixed or shown to be a genuine bug. Until it is named, "flake" is a guess.
