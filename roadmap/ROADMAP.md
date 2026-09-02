@@ -19,7 +19,6 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
-- `next` **`intermittent-suite-failure`** — Two pytest processes shared one signing socket, so a whisper opened with the wrong key
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -868,7 +867,7 @@ graph TD
 ### `intermittent-suite-failure`
 
 - **title:** Two pytest processes shared one signing socket, so a whisper opened with the wrong key
-- **status:** ready
+- **status:** done
 - **priority:** next
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/204`
