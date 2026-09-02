@@ -1,6 +1,6 @@
 id: intermittent-suite-failure
-title: Two whisper tests fail under parallel load, and only under load
-status: ready
+title: Two pytest processes shared one signing socket, so a whisper opened with the wrong key
+status: done
 priority: next
 blocked_on: []
 refs:
@@ -61,9 +61,37 @@ evidence: |
   runs is exactly the shape of failure load would expose and an idle machine
   would not.
 
-  That last step is inference from the failing tests' shape, not from a
-  traceback — the two reproductions were captured with the summary line only.
-  A run capturing `--tb=long` under the same conditions is what settles it.
+  **Root cause.** `signing.socket_path(agent_id)` derives the signing socket
+  from the agent id **alone**, under one per-user temp dir, and
+  `Client.__init__` calls `signing.attach(agent_id)`, which adopts whatever
+  socket is already at that path. Every suite invents agents called `alice` and
+  `bob`, so two pytest processes on one machine compute the *same* path and a
+  client in one silently inherits the signing identity of the other. A whisper
+  sealed to the wrong exchange key comes back `unreadable`, in whichever
+  whisper test happens to race — which is why it presented as two different
+  tests rather than one.
+
+  Shown deterministically rather than statistically: one process serving
+  `alice`, another calling `attach("alice")`, adopts the first's exchange key.
+  With a per-process runtime dir it does not.
+
+  **Fixed in tests, not in the product.** The shared socket is deliberate for
+  real agents — it is how the hooks, the CLI and the model sign as one agent
+  rather than three strangers. It is only wrong for a test suite, so an autouse
+  session fixture gives each pytest process its own `XDG_RUNTIME_DIR`, closing
+  the same class of ambient-state leak `conftest.py` already closes for
+  environment variables.
+
+  Verified against the conditions that produced it: eight full suites, four
+  rounds of two in parallel, all clean, where the same shape reproduced twice
+  in three rounds before.
+
+  One trap worth recording for whoever touches the path again: a unix socket
+  address is capped near 104 bytes, and the first version of the isolation
+  produced 106. That does not fail loudly — `SigningServer.start()` catches
+  `OSError`, returns False, and every test quietly exercises the no-socket path
+  instead, which would disable the guard rather than trip it. There is now a
+  test asserting a worst-case 96-character agent id still fits.
 
   How it will be known to have worked: the test is **named**, from a run
   captured with `-rf` per-test output rather than a summary, and then either

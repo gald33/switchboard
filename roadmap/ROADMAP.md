@@ -19,7 +19,6 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
-- `next` **`intermittent-suite-failure`** — Two whisper tests fail under parallel load, and only under load
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -110,7 +109,7 @@ graph TD
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
-  intermittent_suite_failure["Two whisper tests fail under parallel load, and only under load"]
+  intermittent_suite_failure["Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
@@ -867,8 +866,8 @@ graph TD
 
 ### `intermittent-suite-failure`
 
-- **title:** Two whisper tests fail under parallel load, and only under load
-- **status:** ready
+- **title:** Two pytest processes shared one signing socket, so a whisper opened with the wrong key
+- **status:** done
 - **priority:** next
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/204`
@@ -930,9 +929,37 @@ graph TD
 > runs is exactly the shape of failure load would expose and an idle machine
 > would not.
 >
-> That last step is inference from the failing tests' shape, not from a
-> traceback — the two reproductions were captured with the summary line only.
-> A run capturing `--tb=long` under the same conditions is what settles it.
+> **Root cause.** `signing.socket_path(agent_id)` derives the signing socket
+> from the agent id **alone**, under one per-user temp dir, and
+> `Client.__init__` calls `signing.attach(agent_id)`, which adopts whatever
+> socket is already at that path. Every suite invents agents called `alice` and
+> `bob`, so two pytest processes on one machine compute the *same* path and a
+> client in one silently inherits the signing identity of the other. A whisper
+> sealed to the wrong exchange key comes back `unreadable`, in whichever
+> whisper test happens to race — which is why it presented as two different
+> tests rather than one.
+>
+> Shown deterministically rather than statistically: one process serving
+> `alice`, another calling `attach("alice")`, adopts the first's exchange key.
+> With a per-process runtime dir it does not.
+>
+> **Fixed in tests, not in the product.** The shared socket is deliberate for
+> real agents — it is how the hooks, the CLI and the model sign as one agent
+> rather than three strangers. It is only wrong for a test suite, so an autouse
+> session fixture gives each pytest process its own `XDG_RUNTIME_DIR`, closing
+> the same class of ambient-state leak `conftest.py` already closes for
+> environment variables.
+>
+> Verified against the conditions that produced it: eight full suites, four
+> rounds of two in parallel, all clean, where the same shape reproduced twice
+> in three rounds before.
+>
+> One trap worth recording for whoever touches the path again: a unix socket
+> address is capped near 104 bytes, and the first version of the isolation
+> produced 106. That does not fail loudly — `SigningServer.start()` catches
+> `OSError`, returns False, and every test quietly exercises the no-socket path
+> instead, which would disable the guard rather than trip it. There is now a
+> test asserting a worst-case 96-character agent id still fits.
 >
 > How it will be known to have worked: the test is **named**, from a run
 > captured with `-rf` per-test output rather than a summary, and then either
