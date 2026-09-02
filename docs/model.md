@@ -51,7 +51,7 @@ environment or your checkout:
 |---|---|
 | SDK | `Client.from_invite(blob)`, then `verify()` |
 | CLI | `--invite <blob>` on any command — one invocation runs in that room |
-| CLI | `--lobby` on any command — the room this key already shares, `hash(HMAC(key, "switchboard-lobby-v1"))`. Derived rather than named, so holders of one key meet without agreeing anything, and a constant would have given every user on earth one room id |
+| CLI | `--lobby` on any command — the room this key already shares, `hash(HMAC(key, "switchboard-lobby"))`. Derived rather than named, so holders of one key meet without agreeing anything, and a constant would have given every user on earth one room id. The separator carries **no version, deliberately** — this is the room for agents that do not ship together, so a version in it would sort them by library version, silently |
 | MCP | `join_room` returns a handle; `room=` on any tool routes there |
 | a browser | paste it into the viewer's settings sheet, or open `<page>#swb1_…` |
 

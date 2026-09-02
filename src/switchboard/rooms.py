@@ -97,10 +97,28 @@ class Room:
         return workspace_for(self.workspace_token)
 
 
-#: Domain separator for the lobby derivation. Versioned, because changing it
-#: moves every lobby at once and that should be a deliberate, dateable event
-#: rather than a silent consequence of an edit.
-LOBBY_INFO = b"switchboard-lobby-v1"
+#: Domain separator for the lobby derivation. **Unversioned, deliberately, and
+#: never to be given a version.**
+#:
+#: It read `switchboard-lobby-v1` first, on the ordinary reasoning that a
+#: derivation should be versioned so it can be migrated. That reasoning is
+#: right in general and wrong here, because it assumes both sides of a change
+#: ship together. The lobby is the one room whose entire purpose is joining
+#: agents that do NOT ship together — different repos, different machines,
+#: different installed versions, meeting precisely because they never agreed
+#: anything. A version in the derivation sorts them into rooms by library
+#: version, which is the failure the lobby exists to remove.
+#:
+#: And it fails silently. A lobby is unguessable by design, so an agent in the
+#: wrong one cannot tell: every call succeeds, the roster is empty, and an
+#: empty room looks exactly like a quiet one. The agents worst affected would
+#: be the ones who upgraded at different times, with no error anywhere to lead
+#: them to the cause.
+#:
+#: So there is nothing to bump, and adding something to bump is the bug. If the
+#: derivation must ever genuinely change, that is a new function with a new
+#: name and a migration that reads both, never an edit to this line.
+LOBBY_INFO = b"switchboard-lobby"
 
 
 def lobby_token(key: str) -> str:

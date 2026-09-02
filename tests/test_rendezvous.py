@@ -268,3 +268,173 @@ def test_a_real_peer_is_still_found_alongside_a_stranger(cli_hub, capsys, monkey
     assert out["met"] is True
     assert len(out["roster"]) == 1
     assert len(out["key_mismatches"]) == 1
+
+
+# --- Meeting with no topic agreed -------------------------------------------
+#
+# The pair that needs a shared topic most is the pair that cannot have one: an
+# agent parked with capacity has no task to name, and the agent who arrives
+# with a task cannot guess the name the helper would have picked. These cover
+# the reserved topic that closes that gap, and the asymmetry that keeps it
+# useful once more than two agents hold the key.
+
+
+def test_a_helper_and_a_requester_meet_without_agreeing_anything(
+    cli_hub, capsys, monkeypatch
+):
+    """The use case in full: she has a task, he has capacity, neither said a
+    topic, and they still land on the same board key."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "pypi releases, cloudflare dns", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)  # the helper's presence has long since lapsed
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "need a package published", "--wait", "0"], capsys)
+
+    assert out["met"] is True
+    assert out["topic"] == rendezvous.OPEN_TOPIC
+    # Ids are blinded in an encrypted room, so the note's text is what
+    # identifies it — which is also all a requester actually needs.
+    assert [n["want"] for n in out["notes"]] == ["pypi releases, cloudflare dns"]
+    assert [n["role"] for n in out["notes"]] == [rendezvous.OFFERING]
+
+
+def test_helpers_do_not_find_each_other_and_call_it_a_meeting(
+    cli_hub, capsys, monkeypatch
+):
+    """A room of idle helpers is a crowd, not a peer. Matching your own role
+    would report success and stop the search that could still serve somebody."""
+    for name in ("helper-a", "helper-b"):
+        monkeypatch.setenv("SWITCHBOARD_AGENT_ID", name)
+        _run(["--offer", "anything", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-c")
+    out = _run(["--offer", "anything", "--wait", "0"], capsys)
+    assert out["notes"] == []
+    assert out["met"] is False, "capacity meeting capacity is not a meeting"
+
+
+def test_a_requester_is_not_matched_with_another_requester(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "asker-a")
+    _run(["--want", "help with a migration", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "asker-b")
+    out = _run(["--want", "help with a release", "--wait", "0"], capsys)
+    assert out["notes"] == []
+
+
+def test_a_named_topic_stays_symmetric(cli_hub, capsys, monkeypatch):
+    """The regression guard. Roles are a reserved-topic device; on a topic both
+    sides agreed, two seekers are the ordinary case and must still meet."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+    _run(["design-review", "--want", "a reviewer", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "bob")
+    out = _run(["design-review", "--want", "also a reviewer", "--wait", "0"], capsys)
+    assert [n["want"] for n in out["notes"]] == ["a reviewer"]
+
+
+def test_the_open_topic_does_not_share_a_slot_with_a_named_one(cli_hub):
+    """Same guard as any other pair of topics: the reserved one is not special
+    enough to escape the phase derivation, or every idle agent on the hub would
+    wake on the same minute."""
+    named = rendezvous.slot_phase("w", "design-review")
+    assert rendezvous.slot_phase("w", rendezvous.OPEN_TOPIC) != named
+
+
+def test_a_note_written_before_roles_existed_reads_as_seeking(cli_hub):
+    """Old notes on the board have no role. Reading them as anything but
+    seeking would hide them from the helpers who can answer them."""
+    note = rendezvous.Intent.from_json({
+        "agent_id": "old", "topic": "open", "want": "help",
+        "since": 0.0, "looking_until": 9e9, "next_slot": 0.0,
+    })
+    assert note is not None
+    assert note.role == rendezvous.SEEKING
+
+
+def test_the_human_output_says_the_next_move_is_a_dm(cli_hub, capsys, monkeypatch):
+    """Finding the note is an introduction, not a conversation. An agent that
+    does not know it may now simply address the peer goes back to waiting."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--want", "x", "--wait", "0"])
+    out = capsys.readouterr().out
+    assert "switchboard dm " in out
+    assert "releases" in out
+
+
+# --- can this peer actually be woken? ---------------------------------------
+#
+# `looking_until` is a plan, and a plan written by a turn-based session that
+# has since ended looks exactly like one still being kept. A live
+# `listener/<id>` is a different kind of claim: a process saying so now, which
+# expires on its own the moment that process stops.
+
+
+def test_a_peer_with_a_listener_parked_is_reported_reachable(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    out = _run(["--offer", "releases", "--wait", "0"], capsys)
+    helper_id = out["agent_id"]
+    # What `listen` writes while parked, with the TTL that makes it a claim
+    # about now rather than about intent.
+    main(["--url", BASE_URL, "-w", WS, "board", "set",
+          rendezvous.listener_key(helper_id), '{"waiting_on": "inbox"}',
+          "--json-body", "--ttl", "90"])
+    capsys.readouterr()
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "a release", "--wait", "0"], capsys)
+    assert [n["reachable"] for n in out["notes"]] == [True]
+
+
+def test_a_peer_with_no_listener_is_not_claimed_to_be_reachable(
+    cli_hub, capsys, monkeypatch
+):
+    """The failure that matters: telling a requester to expect a reply from an
+    agent that ended its turn hours ago."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "a release", "--wait", "0"], capsys)
+    assert [n["reachable"] for n in out["notes"]] == [False]
+
+
+def test_the_advice_says_whether_to_expect_a_reply_this_turn(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--want", "x", "--wait", "0"])
+    text = capsys.readouterr().out
+    assert "No listener is parked" in text
+    assert "do not wait on a reply this turn" in text
+
+
+def test_the_listener_key_has_one_spelling(cli_hub):
+    """`listen` writes it and `rendezvous` reads it. Two spellings would make
+    every peer look unreachable, silently and forever."""
+    import inspect
+
+    from switchboard import cli as cli_module
+
+    source = inspect.getsource(cli_module.cmd_listen)
+    assert "rendezvous.listener_key(" in source
+    assert 'f"listener/{' not in source

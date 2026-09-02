@@ -111,3 +111,35 @@ def test_a_checkouts_own_key_is_enough(tmp_path, monkeypatch):
 
     assert config.workspace == rooms.lobby(KEY).workspace
     assert config.key == KEY, "and it seals with what it computed the room from"
+
+
+def test_the_hub_learns_nothing_from_a_rendezvous():
+    """Pins the privacy claim so it cannot regress quietly.
+
+    A rendezvous note names a topic, a role and a free-text want, and it is
+    written to a shared blackboard — the obvious place for that to leak. The
+    hub must hold it as a blinded key over a sealed value, learning that
+    *something* was written in a room whose id it cannot connect to a key.
+    """
+    import json
+
+    from switchboard import rendezvous
+    from switchboard.crypto import generate_key
+    from switchboard.testing import hub as make_hub
+
+    key = generate_key()
+    with make_hub(workspace="ws-probe", key=key) as handle:
+        client = handle.client("alice", agent_id="alice")
+        client.register(name="alice", kind="local", branch="feat/secret", meta={})
+        note = rendezvous.Intent("alice", "design-review", "SECRET-WANT-STRING",
+                                 0.0, 9e9, 0.0, rendezvous.OFFERING)
+        client.board_set("coord/rendezvous/design-review/alice", note.as_json())
+
+        with handle.app.state.store._tx() as conn:
+            rows = conn.execute("SELECT key, value, updated_by FROM board").fetchall()
+        assert len(rows) == 1, "the probe must not pass by finding nothing"
+        stored = json.dumps([[str(x) for x in r] for r in rows])
+
+    for secret in ("SECRET-WANT-STRING", "coord/rendezvous", "design-review",
+                   "offer", "alice"):
+        assert secret not in stored, f"hub can read {secret!r}"

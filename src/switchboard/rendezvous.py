@@ -37,12 +37,34 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 #: Where intent lives. Under `coord/` with everything else a session leaves
 #: for a session it will never overlap with.
 PREFIX = "coord/rendezvous/"
+
+#: The topic for agents who have no topic. A shared string has to come from
+#: somewhere, and two agents who have never met cannot agree one — so the pair
+#: that needs it most is exactly the pair that cannot have it. Reserving a
+#: constant closes that: a helper with no task to name, and a requester whose
+#: task the helper has never heard of, still land on the same key.
+#:
+#: It is a *last* resort, not a default worth reaching for. Every agent holding
+#: the key shares this one topic, so its notes are the widest audience there is
+#: — right for "who is around", wrong for the detail of any one task. Meet
+#: here, then move to a named topic or a room of your own.
+OPEN_TOPIC = "open"
+
+#: The two halves of an unequal meeting. Symmetric rendezvous assumes both
+#: sides want the same thing; the common real case does not. One agent is
+#: parked with capacity and no task, the other arrives with a task and needs
+#: capacity — and neither is served by matching its own kind. A room full of
+#: helpers finding each other is not a meeting.
+OFFERING = "offer"
+SEEKING = "seek"
 
 #: How often the shared meeting slot comes round. Long enough that hitting it
 #: is cheap even for an agent that only wakes occasionally, short enough that
@@ -60,6 +82,17 @@ DEFAULT_LOOK_SECONDS = 60.0
 #: number of calls. The early ones catch a peer who is already here; the late
 #: ones catch one who is arriving.
 BACKOFF = (0.0, 5.0, 15.0, 40.0, 90.0, 180.0)
+
+
+def complement(role: str) -> str:
+    """Who a note of this role is actually looking for.
+
+    The matching rule in one place, because getting it wrong is silent: an
+    agent that matched its own role would report a successful meeting and stop
+    looking for the peer that could have helped it.
+    """
+    return SEEKING if role == OFFERING else OFFERING
+
 
 
 def slot_phase(workspace_token: str, topic: str) -> float:
@@ -90,6 +123,36 @@ def key_for(topic: str) -> str:
     return f"{PREFIX}{topic}"
 
 
+#: Where `listen` records that it is parked. TTL'd, so the key existing *is*
+#: the liveness claim — it cannot outlive the process that keeps writing it.
+LISTENER_PREFIX = "listener/"
+
+
+def listener_key(agent_id: str) -> str:
+    return f"{LISTENER_PREFIX}{agent_id}"
+
+
+def reachable_now(board_keys: Any) -> set[str]:
+    """Which agents have a listener parked, from a `listener/` prefix listing.
+
+    The distinction this draws is the one a note cannot: `looking_until` says
+    when its author *intends* to look, which is a plan, and a plan written by a
+    turn-based session that has since ended is indistinguishable from one still
+    being kept. A live `listener/<id>` is different in kind — it is a process
+    saying so now, and it expires on its own the moment that process stops.
+
+    So it decides which advice is honest. Parked, and a DM wakes them within
+    seconds. Not parked, and a DM is correct but silent until their next turn,
+    which is what the shared slot is for.
+    """
+    out = set()
+    for entry in board_keys or ():
+        key = entry.get("key") if isinstance(entry, dict) else str(entry)
+        if key and key.startswith(LISTENER_PREFIX):
+            out.add(key[len(LISTENER_PREFIX):])
+    return out
+
+
 @dataclass
 class Intent:
     """One agent's standing statement that it is looking for someone.
@@ -105,6 +168,10 @@ class Intent:
     since: float
     looking_until: float
     next_slot: float
+    #: Whether this agent has capacity or a task. Defaults to seeking, which is
+    #: what every note written before this field existed was: someone with a
+    #: topic in mind, looking for anyone else on it.
+    role: str = SEEKING
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -114,6 +181,7 @@ class Intent:
             "since": self.since,
             "looking_until": self.looking_until,
             "next_slot": self.next_slot,
+            "role": self.role,
         }
 
     @classmethod
@@ -128,6 +196,10 @@ class Intent:
                 since=float(raw.get("since") or 0.0),
                 looking_until=float(raw.get("looking_until") or 0.0),
                 next_slot=float(raw.get("next_slot") or 0.0),
+                # An older note has no role and was, by definition, seeking.
+                # Reading it as anything else would hide it from the helpers
+                # who are the only ones who could answer it.
+                role=str(raw.get("role") or SEEKING),
             )
         except (TypeError, ValueError):
             return None
@@ -156,3 +228,25 @@ def schedule(look_seconds: float) -> list[float]:
         out.append(gap)
         spent += gap
     return out or [0.0]
+
+
+def hub_now(agent: dict[str, Any]) -> float:
+    """The hub's clock, from a register response.
+
+    Deliberately not `time.time()`. The whole point of a derived slot is that
+    two machines compute the same one, and two machines are exactly what has
+    skewed clocks — anchoring on local time would rebuild the miss this is
+    meant to remove, one layer down and much harder to see.
+
+    Lives here rather than in one caller because both surfaces need it, and a
+    second copy of this rule is a second answer that can drift from the first:
+    a CLI agent and an MCP agent computing slots off different clocks is the
+    same miss again, wearing the name of the thing that prevents it.
+    """
+    stamp = agent.get("last_seen_at")
+    if isinstance(stamp, str):
+        try:
+            return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return time.time()
