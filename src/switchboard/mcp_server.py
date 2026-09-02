@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
+from . import __version__, rendezvous, rooms
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -41,7 +41,6 @@ from .guidance import skill_text
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
 from .invite import Invite, InviteError
-from . import rendezvous, rooms
 from .signing import RemoteSigningIdentity, SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
@@ -577,7 +576,9 @@ TOOLS: list[dict[str, Any]] = [
                 "what the meeting is about; both sides must use the same string. Omit "
                 "for the reserved 'open' topic, which needs no agreement."
             )},
-            "want": {**_STR, "description": "one line on what you need, for whoever finds your note"},
+            "want": {**_STR, "description": (
+                "one line on what you need, for whoever finds your note"
+            )},
             "offer": {**_STR, "description": (
                 "one line on what you can do, if you have capacity rather than a task. "
                 "Matches seekers only."
