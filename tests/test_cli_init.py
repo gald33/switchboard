@@ -1905,3 +1905,71 @@ def test_the_next_step_does_not_point_at_a_command_that_cannot_help(
     fake_hub(monkeypatch, reachable=True)
     _, out = run_init(monkeypatch, capsys, tmp_path, "--url", "https://hub.example.com")
     assert "registers one against a hub" not in out
+
+
+# --- a worktree that would land in a different room -------------------------
+#
+# A worktree is a separate checkout that deliberately shares the main
+# checkout's room: `_git_common_dir` follows the pointer so both derive one
+# remote. That holds while both sides *derive*, and stops the moment one of
+# them pins a workspace the derivation no longer produces — a legacy value, a
+# `-w` passed once. The two checkouts then sit one directory apart in rooms
+# that cannot see each other, and nothing said so.
+
+
+def _fake_worktree(tmp_path, pinned: str | None):
+    """A main checkout with a pinned .mcp.json, plus a linked worktree of it.
+
+    Built by hand rather than with `git worktree add` so the test needs no git
+    binary: what the code reads is the `.git` file's `gitdir:` pointer and the
+    common dir it names, which is exactly what git writes.
+    """
+    main_co = tmp_path / "main"
+    (main_co / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (main_co / ".git" / "config").write_text(
+        '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n'
+    )
+    if pinned is not None:
+        (main_co / ".mcp.json").write_text(json.dumps({"mcpServers": {"switchboard": {
+            "env": {"SWITCHBOARD_WORKSPACE": pinned}}}}))
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {main_co / '.git' / 'worktrees' / 'wt'}\n")
+    (main_co / ".git" / "worktrees" / "wt" / "commondir").write_text("../..\n")
+    return main_co, wt
+
+
+def test_a_worktree_is_warned_when_its_room_would_differ(monkeypatch, capsys, tmp_path):
+    _, wt = _fake_worktree(tmp_path, pinned="w_LegacyPinnedValue")
+    code, out = run_init(monkeypatch, capsys, wt, "--local")
+    assert code == 0
+    assert "WARNING" in out
+    assert "w_LegacyPinnedValue" in out
+    # The remedy, not just the diagnosis — an agent told only that something is
+    # wrong does the same thing as one told nothing.
+    assert "-w w_LegacyPinnedValue" in out
+
+
+def test_no_warning_when_the_worktree_agrees(monkeypatch, capsys, tmp_path):
+    """The derived case, which is the normal one: both sides compute
+    `acme/widgets` from the shared remote and belong in one room."""
+    _, wt = _fake_worktree(tmp_path, pinned="acme/widgets")
+    _, out = run_init(monkeypatch, capsys, wt, "--local")
+    assert "WARNING" not in out
+
+
+def test_no_warning_when_the_main_checkout_pins_nothing(monkeypatch, capsys, tmp_path):
+    _, wt = _fake_worktree(tmp_path, pinned=None)
+    _, out = run_init(monkeypatch, capsys, wt, "--local")
+    assert "WARNING" not in out
+
+
+def test_a_plain_checkout_has_no_sibling_to_disagree_with(monkeypatch, capsys, tmp_path):
+    """From the main checkout there is nothing to compare against, and
+    comparing a file with itself would warn on every ordinary repo."""
+    from switchboard.config import main_checkout
+
+    main_co, _ = _fake_worktree(tmp_path, pinned="w_LegacyPinnedValue")
+    assert main_checkout(main_co) is None
+    _, out = run_init(monkeypatch, capsys, main_co, "--local")
+    assert "WARNING" not in out

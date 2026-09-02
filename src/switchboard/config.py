@@ -313,6 +313,27 @@ def _git_common_dir(checkout: Path) -> Path | None:
     return gitdir
 
 
+def main_checkout(directory: Path | str | None = None) -> Path | None:
+    """The checkout this worktree was created from, or None if this is it.
+
+    A linked worktree's `.git` is a file naming
+    `<main>/.git/worktrees/<name>`, so the main checkout is the grandparent of
+    that gitdir — two levels above the common `.git`. Returned only for a
+    *linked* worktree: from the main checkout itself there is no sibling to
+    compare against, and answering with the same path would make every caller
+    compare a file with itself.
+    """
+    root = Path(_checkout_root(str(Path(directory or os.getcwd()).resolve())))
+    dot = root / ".git"
+    if not dot.is_file():
+        return None
+    common = _git_common_dir(root)
+    if common is None:
+        return None
+    parent = common.parent
+    return parent if parent.resolve() != root.resolve() else None
+
+
 def git_remote_workspace(directory: Path | str | None = None) -> str | None:
     """`org/repo` from the checkout's origin remote, or None if there isn't one.
 

@@ -50,6 +50,7 @@ from .config import (
     isolation_warning,
     local_setting,
     machine_suffix,
+    main_checkout,
     mcp_env,
     rooms_warning,
 )
@@ -4505,6 +4506,30 @@ def cmd_init(args: argparse.Namespace) -> int:
     # it can tell whether the name it derived is one other clones will derive
     # too, which is what separates "this is fine" from "nobody else will ever
     # land here".
+    # A worktree is a separate checkout that deliberately lands in the SAME
+    # room as the checkout it came from — `_git_common_dir` follows the
+    # pointer precisely so every worktree derives one remote. That holds while
+    # both sides derive. It stops holding the moment one of them *pins* a
+    # workspace that the derivation no longer produces: a legacy value, a `-w`
+    # someone passed once. Then the two checkouts sit one directory apart,
+    # each correct by its own lights, in rooms that cannot see each other.
+    #
+    # This file's own rule for that case is `git_remote_workspace`: "a repo
+    # where the two answers differ is a repo whose agents cannot find each
+    # other, and nothing would have said so." Nothing said so here either,
+    # until now — the comparison is one file read away and worth making.
+    origin = main_checkout(directory)
+    if origin is not None:
+        pinned = mcp_env(origin, "SWITCHBOARD_WORKSPACE")
+        if pinned and pinned != workspace:
+            steps.append(
+                f"WARNING: this is a worktree of {str(origin)!r}, which pins workspace "
+                f"{pinned!r} — but the value derived here is {workspace!r}. Agents in the "
+                f"two checkouts would land in DIFFERENT rooms and neither would be told: "
+                f"every call succeeds, and an empty roster looks exactly like a quiet one. "
+                f"To share the room, re-run with `-w {pinned}`"
+            )
+
     if key and not minted and not explicit_workspace and not registered:
         if _git_remote_workspace(directory):
             steps.append(
