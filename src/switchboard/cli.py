@@ -2352,7 +2352,7 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     # — a test, a wrapper — gets the default rather than a crash.
     if getattr(args, "no_lobby", False) or role == "lobby":
         return posts
-    key = primary.config.key or _saved_key(Path(".").resolve())
+    key = getattr(primary.config, "key", None) or _saved_key(Path(".").resolve())
     if not key:
         # The lobby is derived from the key, so without one there is no lobby
         # to compute — not a room we would park in unencrypted.
