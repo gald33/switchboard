@@ -189,7 +189,21 @@ def generate_key() -> str:
     losing it means losing the workspace's history — which, given everything
     expires within a day, costs less here than almost anywhere else.
     """
-    return _b64e(secrets.token_bytes(32))
+    return _shell_safe(lambda: _b64e(secrets.token_bytes(32)))
+
+
+def _shell_safe(mint: Any) -> str:
+    """A minted secret that no argument parser will mistake for a flag.
+
+    base64url can start with `-`, and `switchboard --key -abc…` then fails
+    with "expected one argument" — seen once in the suite and once is enough.
+    Rejecting a leading hyphen costs nothing measurable in entropy and removes
+    a failure that names the wrong cause.
+    """
+    while True:
+        value = mint()
+        if not value.startswith("-"):
+            return value
 
 
 @dataclass

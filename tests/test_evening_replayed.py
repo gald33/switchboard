@@ -166,10 +166,10 @@ def test_the_evening_replayed(agents, live_hub):
         "the key is in the book only as the invite it arrived as"
 
     # --- tonight: A is in its room, has left a note, and is parked ------------
-    noted = a.run("-w", ISLAND, "--key", a.key, "rendezvous", "review",
+    noted = a.run("-w", ISLAND, "--key=" + a.key, "rendezvous", "review",
                   "--want", "need switchboard#208 reviewed", "--wait", "0", "--here")
     assert noted.returncode == 0, noted.stderr
-    a_listener = a.start("-w", ISLAND, "--key", a.key, "listen", "--until", "+90",
+    a_listener = a.start("-w", ISLAND, "--key=" + a.key, "listen", "--until", "+90",
                          "--no-lobby")
     a_id = a.id_in(ISLAND, a.key)
     observer = Client(ClientConfig(url=live_hub, workspace=ISLAND, token=HUB_TOKEN,
@@ -181,7 +181,7 @@ def test_the_evening_replayed(agents, live_hub):
     # --- B, in its own repo room with its own key, looks for A ---------------
     # No lobby in common: B's key is not A's. This is the search that failed
     # for an hour on the night; now it is one command.
-    found = b.run("-w", REPO_B, "--key", b.key, "--json", "find", "review")
+    found = b.run("-w", REPO_B, "--key=" + b.key, "--json", "find", "review")
     assert found.returncode == 0, found.stderr
     report = json.loads(found.stdout)
     assert report["found"]
@@ -200,12 +200,12 @@ def test_the_evening_replayed(agents, live_hub):
     assert b_id_there == b.id_in(ISLAND, a.key)
 
     # --- B parks for the reply, naming the room; A answers where it was asked --
-    b_listener = b.start("-w", REPO_B, "--key", b.key, "listen", "--in", "island-rehearsal",
+    b_listener = b.start("-w", REPO_B, "--key=" + b.key, "listen", "--in", "island-rehearsal",
                          "--until", "+90", "--no-lobby")
     _wait_for(lambda: any(e["key"] == f"listener/{b_id_there}"
                           for e in observer.board_list(prefix="listener/")),
               "B's listener heartbeat in the island room")
-    reply = a.run("-w", ISLAND, "--key", a.key, "dm", b_id_there, "thanks, holding for the go")
+    reply = a.run("-w", ISLAND, "--key=" + a.key, "dm", b_id_there, "thanks, holding for the go")
     assert reply.returncode == 0, reply.stderr
     wake = _wake(b_listener)
     assert wake["role"] == "island-rehearsal" and wake["room"] == ISLAND
@@ -217,12 +217,12 @@ def test_without_the_book_the_evening_repeats(agents, live_hub):
     """The control: the same two agents with B's book disabled cannot find each
     other, which is what happened. Kept so the fix stays a fix."""
     a, b = agents
-    a.run("-w", ISLAND, "--key", a.key, "rendezvous", "review",
+    a.run("-w", ISLAND, "--key=" + a.key, "rendezvous", "review",
           "--want", "need a review", "--wait", "0", "--here")
     b.env["SWITCHBOARD_KNOWN_ROOMS"] = ""
-    found = b.run("-w", REPO_B, "--key", b.key, "--json", "find", "review")
+    found = b.run("-w", REPO_B, "--key=" + b.key, "--json", "find", "review")
     assert found.returncode != 0
-    swept = b.run("-w", REPO_B, "--key", b.key, "--json", "rendezvous", "review",
+    swept = b.run("-w", REPO_B, "--key=" + b.key, "--json", "rendezvous", "review",
                   "--want", "the same review", "--wait", "0")
     assert swept.returncode == 0, swept.stderr
     out = json.loads(swept.stdout)

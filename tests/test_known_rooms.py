@@ -256,3 +256,23 @@ def test_any_command_in_an_inited_checkout_records_the_repo_room(cli_hub, capsys
     # The fixture exports the key, so that is how it was acquired.
     assert room.key == {"from": "env", "var": "SWITCHBOARD_KEY"}
     assert cli_hub.workspace_key not in Path(knownrooms.Book().path).read_text()
+
+
+def test_find_puts_the_reachable_hit_first_and_drops_nobody(cli_hub, capsys):
+    """Several hits: the one a DM would wake comes first, whatever room it is
+    in and however old that room is; the rest are still listed."""
+    idle = _peer_in_other(cli_hub, "peer-idle")
+    parked = _peer_in_other(cli_hub, "peer-parked")
+    parked.board_set(rendezvous.listener_key(parked.agent_id), {"pass": 1}, ttl=60)
+    assert main(["join", cli_hub.other_invite, "--no-verify"]) == 0
+    capsys.readouterr()
+    assert main(["--json", "find", "peer"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [h["name"] for h in out["hits"]] == ["peer-parked", "peer-idle"]
+    assert out["hits"][0]["state"] == "parked" and out["hits"][1]["state"] == "here"
+    assert main(["find", "peer"]) == 0
+    text = capsys.readouterr().out
+    assert text.index("peer-parked") < text.index("peer-idle")
+    assert f"dm {parked.agent_id}" in text
+    idle.close()
+    parked.close()
