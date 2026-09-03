@@ -721,7 +721,7 @@ def test_new_key_writes_key_and_opaque_workspace(monkeypatch, capsys, tmp_path):
     assert key in out
     mcp = json.loads((tmp_path / ".mcp.json").read_text())
     workspace = mcp["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_WORKSPACE"]
-    assert workspace.startswith("w_")
+    assert workspace.startswith("ws_")
     # the workspace is the one thing the hub sees in the clear, so a fresh key
     # comes with a name that says nothing about the repo
     assert tmp_path.name not in workspace
@@ -945,10 +945,15 @@ def test_force_repoints_mcp_json_at_the_new_workspace(monkeypatch, capsys, tmp_p
     _write_mcp(tmp_path, "acme/billing")
     code, out = run_init(monkeypatch, capsys, tmp_path, "--new-key", "--force")
     assert code == 0
-    assert _mcp_ws(tmp_path).startswith("w_")
+    assert _mcp_ws(tmp_path).startswith("ws_")
     assert "repointed .mcp.json" in out
     minted = _local_settings(tmp_path)["env"]["SWITCHBOARD_KEY"]
-    assert f"--key {minted} -w {_mcp_ws(tmp_path)}" in out
+    # Repointed at a write-protected room, so the handover carries the write
+    # key that names it rather than -w — and the two must agree.
+    from switchboard.writekey import RoomWriteKey
+    write_key = _local_settings(tmp_path)["env"]["SWITCHBOARD_WRITE_KEY"]
+    assert f"--key {minted} --write-key {write_key}" in out
+    assert RoomWriteKey.from_seed(write_key).workspace == _mcp_ws(tmp_path)
 
 
 def test_explicit_workspace_conflicting_with_mcp_json_is_reported(monkeypatch, capsys, tmp_path):
@@ -1041,7 +1046,7 @@ def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
     code = main(["init", "--new-key"])
     assert code == 0
     assert "acme/billing" in err.getvalue()
-    assert _mcp_ws(tmp_path).startswith("w_")
+    assert _mcp_ws(tmp_path).startswith("ws_")
 
 
 def test_interactive_defaults_to_keeping_the_registered_workspace(monkeypatch, capsys, tmp_path):
@@ -1475,7 +1480,7 @@ def test_init_explains_which_half_travels_with_the_repo(monkeypatch, capsys, tmp
     # on the same machine — and -w is not mentioned, since naming a flag only
     # to say "do not pass it" is noise in a six-line summary
     assert "switchboard init --key <key>" in out
-    assert "-w" not in out.split("Two halves")[1]
+    assert not re.search(r"\s-w\s", out.split("Two halves")[1])
     assert "whoami --env" in out
 
 
@@ -1572,9 +1577,12 @@ def test_env_prints_only_the_secrets(monkeypatch, capsys, tmp_path):
     assert main(["whoami", "--env"]) == 0
     lines = capsys.readouterr().out.strip().splitlines()
     got = dict(ln.split("=", 1) for ln in lines)
-    assert set(got) == {"SWITCHBOARD_KEY", "SWITCHBOARD_TOKEN"}
+    # The write key is a secret the other environment needs too: without it,
+    # that environment can read the room --new-key minted and nothing else.
+    assert set(got) == {"SWITCHBOARD_KEY", "SWITCHBOARD_WRITE_KEY", "SWITCHBOARD_TOKEN"}
     assert got["SWITCHBOARD_KEY"] == settings["SWITCHBOARD_KEY"]
-    assert all(re.fullmatch(r"SWITCHBOARD_[A-Z]+=\S+", ln) for ln in lines), lines
+    assert got["SWITCHBOARD_WRITE_KEY"] == settings["SWITCHBOARD_WRITE_KEY"]
+    assert all(re.fullmatch(r"SWITCHBOARD_[A-Z_]+=\S+", ln) for ln in lines), lines
 
 
 def test_no_repo_adds_what_nothing_else_would_supply(monkeypatch, capsys, tmp_path):
@@ -1587,7 +1595,8 @@ def test_no_repo_adds_what_nothing_else_would_supply(monkeypatch, capsys, tmp_pa
     assert main(["whoami", "--env", "--no-repo"]) == 0
     got = dict(ln.split("=", 1) for ln in capsys.readouterr().out.strip().splitlines())
     assert set(got) == {
-        "SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY", "SWITCHBOARD_TOKEN",
+        "SWITCHBOARD_URL", "SWITCHBOARD_WORKSPACE", "SWITCHBOARD_KEY",
+        "SWITCHBOARD_WRITE_KEY", "SWITCHBOARD_TOKEN",
     }
     assert got["SWITCHBOARD_WORKSPACE"] == _mcp_ws(tmp_path)
 
@@ -1680,12 +1689,16 @@ def test_the_sealed_note_no_longer_gives_setup_instructions(monkeypatch, capsys,
 
 
 def test_the_teammate_line_still_pins_the_workspace(monkeypatch, capsys, tmp_path):
-    # The one case where -w is right: a teammate must land in *your* room, so
-    # theirs has to match. That is the opposite of your own second repo.
+    # A teammate must land in *your* room, so theirs has to match. A room
+    # minted by --new-key is named by its write key, so handing that over pins
+    # the workspace more tightly than -w ever did: the two cannot disagree.
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     _, out = run_init(monkeypatch, capsys, tmp_path, "--new-key")
     line = [ln for ln in out.splitlines() if "Give teammates" in ln][0]
-    assert f"-w {_mcp_ws(tmp_path)}" in line
+    write_key = _local_settings(tmp_path)["env"]["SWITCHBOARD_WRITE_KEY"]
+    assert f"--write-key {write_key}" in line
+    from switchboard.writekey import RoomWriteKey
+    assert RoomWriteKey.from_seed(write_key).workspace == _mcp_ws(tmp_path)
 
 
 # --- encryption is the default -----------------------------------------------
@@ -1722,7 +1735,7 @@ def test_a_minted_default_keeps_the_derived_workspace(monkeypatch, capsys, tmp_p
     fake_hub(monkeypatch, self_issued=True, reachable=False, register=[])
     main(["init", "--new-key"])
     capsys.readouterr()
-    assert _mcp_ws(other).startswith("w_")
+    assert _mcp_ws(other).startswith("ws_")
 
 
 def test_rerunning_init_does_not_mint_a_second_key(monkeypatch, capsys, tmp_path):

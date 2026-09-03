@@ -162,6 +162,11 @@ _CUSTOM_SCOPE = {
     "properties": {
         "workspace": {**_STR, "description": "the agreed-upon private workspace name"},
         "key": {**_STR, "description": "the agreed-upon private key (omit for no encryption)"},
+        "write_key": {**_STR, "description": (
+            "the room's write key, from the same 'keygen' result. A minted room is "
+            "write-protected: the hub refuses every write from anyone without this, so "
+            "hand it to every peer who should be able to say anything there"
+        )},
     },
     "required": ["workspace"],
     "additionalProperties": False,
@@ -588,14 +593,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "keygen",
         "description": (
-            "Mint a fresh (key, workspace) pair for a private side-conversation with "
-            "specific other agents — a confidentiality boundary you set up yourself, not "
-            "a hub permission. Purely local: nothing is sent to the hub. Tell the pair "
-            "directly to exactly the peers you want included (a prompt, a dm, however you "
-            "already trust them), then have each of you pass it as 'custom_scope' on say / "
-            "dm / inbox / claim / release. Always mint a fresh workspace here rather than "
-            "reusing your default one — reusing it makes 'roster' wrongly warn everyone "
-            "else in that workspace about a key mismatch."
+            "Mint a fresh (key, write_key, workspace) triple for a private side-"
+            "conversation with specific other agents. The key is a confidentiality "
+            "boundary you set up yourself; the write key is the one thing the hub "
+            "enforces — the workspace is derived from it, and the hub refuses writes to "
+            "that room from anyone who cannot sign with it. Purely local: nothing is sent "
+            "to the hub. Tell all three directly to exactly the peers you want included "
+            "(a prompt, a dm, however you already trust them), then have each of you pass "
+            "them as 'custom_scope' on say / dm / inbox / claim / release. Give a peer the "
+            "key but not the write key and they can read the room and nothing else. "
+            "Always mint a fresh workspace here rather than reusing your default one — "
+            "reusing it makes 'roster' wrongly warn everyone else in that workspace about "
+            "a key mismatch."
         ),
         "inputSchema": _schema({}),
     },
@@ -1295,13 +1304,19 @@ class Bridge:
         return out
 
     def keygen(self) -> dict[str, Any]:
-        """Mint a fresh (key, workspace) pair for a private side-conversation.
+        """Mint a fresh (key, write_key, workspace) triple for a side room.
 
-        Purely local — no hub call, no registration needed first.
+        Purely local — no hub call, no registration needed first. The
+        workspace is derived from the write key's public half, which is what
+        lets the hub refuse writes from anyone who does not hold the seed.
         """
+        from .writekey import RoomWriteKey, generate_write_key
+
         key = generate_key()
-        workspace = "w_" + generate_key()[:16]
-        return {"key": key, "workspace": workspace}
+        write_key = generate_write_key()
+        writer = RoomWriteKey.from_seed(write_key)
+        return {"key": key, "write_key": write_key, "workspace": writer.workspace,
+                "workspace_token": writer.workspace_token}
 
     def history(self, channel: str, limit: float = 30) -> dict[str, Any]:
         unread_dms = self._touch()

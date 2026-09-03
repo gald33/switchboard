@@ -34,6 +34,7 @@ from .client import (
     Client,
     Identity,
     LeaseHeld,
+    ReadOnlyRoom,
     SwitchboardError,
     detect_identity,
     identity_drift_warning,
@@ -79,6 +80,7 @@ from .timing import (
     unwrap_forecast,
     wrap_forecast,
 )
+from .writekey import RoomWriteKey, WriteKeyError, generate_write_key
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -372,6 +374,8 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
         config.workspace = args.workspace
     if getattr(args, "key", None):
         config.key = args.key
+    if getattr(args, "write_key", None):
+        config.write_key = args.write_key
     config = _apply_invite(config, args)
     return _apply_lobby(config, args)
 
@@ -460,6 +464,7 @@ def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfi
         # A named key it did not carry is looked up rather than guessed at, and
         # its absence is refused — see `Invite.resolve_key`.
         key=room.resolve_key(config.key),
+        write_key=room.resolve_write_key(config.write_key),
     )
 
 
@@ -777,7 +782,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str) -> int:
+def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str,
+                   write_key: str) -> int:
     """Hand a freshly minted room over as one string.
 
     A side channel and an invited room stopped being two ideas once an invite
@@ -794,7 +800,7 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str) -> 
     before anything is registered.
     """
     workspace = rooms.workspace_for(workspace_token)
-    config = replace(_make_config(args), workspace=workspace, key=key)
+    config = replace(_make_config(args), workspace=workspace, key=key, write_key=write_key)
     fmt = Fmt(_use_color(sys.stdout))
     probe, unproven = f"coord/join-probe/{secrets.token_urlsafe(8)}", ""
     try:
@@ -803,15 +809,19 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str) -> 
     except (SwitchboardError, OSError, CryptoError) as exc:
         probe, unproven = "", str(exc)
 
+    # The write key rides along: a side room's peers are there to *talk*,
+    # and a minted room admits nobody's writes without it. `invite --link`
+    # is the read-only handover; this one is for the peers being let in.
     blob = invite.Invite(
         url=config.url, workspace_token=workspace_token, token=config.token,
-        key=key, note=args.note or "", probe=probe,
+        key=key, write_key=None if args.link else write_key,
+        note=args.note or "", probe=probe,
     )
     handover, caveat = _handover(blob, args)
     if args.json:
         _print_json({
             "invite": blob.encode(), "describes": blob.redacted(),
-            "key": key, "workspace": workspace,
+            "key": key, "write_key": write_key, "workspace": workspace,
             "workspace_token": workspace_token,
             "verifiable": bool(probe),
             **({"link": handover} if args.link else {}),
@@ -843,41 +853,49 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str) -> 
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
-    """Print a fresh workspace key, and an opaque workspace name to go with it.
+    """Print a fresh room: its key, its write key, and the workspace they name.
 
     The workspace name is the one thing a hub sees in the clear — it is the
     shard and routing key, so it cannot be encrypted. But nothing requires it
     to be *meaningful*, and "acme/billing" tells an operator more than any
-    other single string they hold. Emitting an opaque one here is the cheapest
-    privacy win available, and it costs nothing to take.
+    other single string they hold. An opaque one is the cheapest privacy win
+    available; one *derived from a write key* is that and a permission at
+    once, because a room named by a public key admits no write the matching
+    private key did not sign (`writekey.py`). Hand out the key alone and the
+    holder can read the room and nothing else.
     """
     key = generate_key()
+    write_key = generate_write_key()
     # A token, with the identifier derived from it — not an identifier invented
-    # directly. Both are opaque and the same shape on the wire, so this costs
-    # nothing, and it is the difference between a room that can be written into
-    # a rooms file afterwards and one that can only ever be retyped: the file
-    # records rooms by token, because `hash(token)` does not run backwards.
-    workspace_token = generate_key()
-    workspace = rooms.workspace_for(workspace_token)
+    # directly. The token here is the write key's public half, so the room can
+    # be written into a rooms file afterwards (the file records rooms by
+    # token, because `hash(token)` does not run backwards) with nothing
+    # secret in the record.
+    writer = RoomWriteKey.from_seed(write_key)
+    workspace_token, workspace = writer.workspace_token, writer.workspace
 
     if getattr(args, "as_invite", False):
-        return _keygen_invite(args, key, workspace_token)
+        return _keygen_invite(args, key, workspace_token, write_key)
 
     if args.json:
-        _print_json({"key": key, "workspace": workspace})
+        _print_json({"key": key, "write_key": write_key, "workspace": workspace,
+                     "workspace_token": workspace_token})
         return EXIT_OK
-    print(key)
+    # Three values that only work together, in the shape an env file wants —
+    # the same block `whoami --env` prints. A bare key on stdout was the old
+    # output, and it would now be a room nobody can write.
+    print(_env_block(None, workspace, key, None, all_four=True, write_key=write_key))
     if sys.stdout.isatty():
         print(
-            "\nShare this with the agents in the workspace and nobody else:\n"
-            f"  export SWITCHBOARD_KEY={key}\n"
-            "\nThe hub never receives it, so it cannot read this workspace — and\n"
-            "cannot help you recover it either. Everything expires within a day,\n"
-            "so losing it costs less here than almost anywhere else.\n"
+            "\nShare all three with the agents that will work in this room, and\n"
+            "the key alone with anyone who should only read it — the hub refuses\n"
+            "every write that is not signed with the write key.\n"
+            "\nThe hub never receives either secret, so it cannot read this room —\n"
+            "and cannot help you recover them either. Everything expires within\n"
+            "a day, so losing them costs less here than almost anywhere else.\n"
             "\nThe workspace name is NOT encrypted — it is how the hub routes.\n"
-            "Use an opaque one and it stops being the most descriptive thing\n"
-            "the hub holds. Keep the readable name in your own notes:\n"
-            f"  export SWITCHBOARD_WORKSPACE={workspace}",
+            "It is derived from the write key, so it is opaque and needs no\n"
+            "separate secret to remember. Keep the readable name in your own notes.",
             file=sys.stderr,
         )
     return EXIT_OK
@@ -894,7 +912,8 @@ def _saved_key(directory: Path) -> str | None:
 
 
 def _env_block(
-    url: str, workspace: str, key: str | None, token: str | None, *, all_four: bool
+    url: str | None, workspace: str, key: str | None, token: str | None, *,
+    all_four: bool, write_key: str | None = None,
 ) -> str:
     """What a second environment has to be told, ready to paste.
 
@@ -911,7 +930,8 @@ def _env_block(
     Omits what this machine does not know rather than emitting a blank, which
     would override a correct value already set at the far end.
     """
-    pairs = [("SWITCHBOARD_KEY", key), ("SWITCHBOARD_TOKEN", token)]
+    pairs = [("SWITCHBOARD_KEY", key), ("SWITCHBOARD_WRITE_KEY", write_key),
+             ("SWITCHBOARD_TOKEN", token)]
     if all_four:
         pairs = [("SWITCHBOARD_URL", url), ("SWITCHBOARD_WORKSPACE", workspace)] + pairs
     return "\n".join(f"{name}={value}" for name, value in pairs if value)
@@ -1484,6 +1504,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     hub = _make_client(args)
     encrypted = hub.encrypted
     key = args.key or config.key or _saved_key(directory)
+    write_key = (args.write_key or config.write_key
+                 or _saved_setting(directory, "SWITCHBOARD_WRITE_KEY"))
     # `config.workspace` falls back to the literal "default", so it can never
     # be None and would mask the repo's real workspace. Read the environment
     # directly to tell "explicitly set" from "defaulted", and prefer what
@@ -1525,13 +1547,14 @@ def cmd_whoami(args: argparse.Namespace) -> int:
             )
             return EXIT_ERROR
         if args.json:
-            _print_json({"key": key, "workspace": workspace})
+            _print_json({"key": key, "write_key": write_key, "workspace": workspace})
             return EXIT_OK
         if args.env:
             # Exactly what a second environment needs, in the shape its own
             # config file wants — assembling these by hand from four places is
             # where a wrong workspace or a stale token creeps in.
-            block = _env_block(url, workspace, key, token, all_four=args.no_repo)
+            block = _env_block(url, workspace, key, token, all_four=args.no_repo,
+                               write_key=write_key)
             print(block)
             if _can_prompt(
                 no_input=getattr(args, "no_input", False), quiet=args.quiet,
@@ -1560,9 +1583,15 @@ def cmd_whoami(args: argparse.Namespace) -> int:
             no_input=getattr(args, 'no_input', False), quiet=args.quiet,
             as_json=args.json,
         ):
+            handover = (f"switchboard init --key {key} --write-key {write_key}"
+                        if write_key and rooms.is_write_protected(workspace)
+                        else f"switchboard init --key {key} -w {workspace}")
             print(
-                f"\nGive teammates:  switchboard init --key {key} -w {workspace}\n"
-                "For another machine of your own, `--env` prints a block you can "
+                f"\nGive teammates:  {handover}\n"
+                + ("This room is write-protected: the key alone lets someone read "
+                   "it, the write key is what lets them work in it.\n"
+                   if rooms.is_write_protected(workspace) else "")
+                + "For another machine of your own, `--env` prints a block you can "
                 "paste straight into its environment.",
                 file=sys.stderr,
             )
@@ -2843,9 +2872,15 @@ def cmd_invite(args: argparse.Namespace) -> int:
     """
     config = _make_config(args)
     key = args.key or config.key or _saved_key(Path(".").resolve())
+    write_key = (args.write_key or config.write_key
+                 or _saved_setting(Path(".").resolve(), "SWITCHBOARD_WRITE_KEY"))
     token = args.token or config.token or _saved_setting(
         Path(".").resolve(), "SWITCHBOARD_TOKEN"
     )
+    # A link is for a browser, and a browser is a viewer: it gets the key and
+    # not the write key, so what it can do is decided by the hub rather than
+    # by the page. `--read-only` asks for the same on the bare string.
+    read_only = bool(args.read_only or args.link or args.no_key)
     # Seal a value the joiner can try to open. This is the only thing that
     # distinguishes "reached the same hub" from "in the same room": a joiner's
     # own round trip is self-consistent under any key, including the wrong one.
@@ -2862,6 +2897,7 @@ def cmd_invite(args: argparse.Namespace) -> int:
         url=config.url, workspace=config.workspace,
         token=None if args.no_token else token,
         key=None if args.no_key else key,
+        write_key=None if read_only else write_key,
         key_id=declared.key_id if declared else "",
         # Non-secret, and what lets the far side write this room down rather
         # than only visit it: a rooms file records rooms by token, because the
@@ -2882,11 +2918,20 @@ def cmd_invite(args: argparse.Namespace) -> int:
         print(f"\n{caveat}", file=sys.stderr)
     if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
         fmt = Fmt(_use_color(sys.stdout))
+        if rooms.is_write_protected(config.workspace) and not blob.write_key:
+            grants = (" It carries the key but not the write key, so its\nholder can "
+                      "read this room and nothing else — the hub enforces that,\n"
+                      "whatever they run. Still a credential: hand it over the way "
+                      "you would a password.\n\n")
+        else:
+            grants = (" It carries the token and the workspace key"
+                      + (" and the write key" if blob.write_key else "")
+                      + ", so it\ngrants everything you have. Hand it over the way "
+                        "you would a password.\n\n")
         print(
             f"\n{blob.redacted()}\n\n"
             + fmt.yellow("This is a credential.")
-            + " It carries the token and the workspace key, so it\ngrants "
-              "everything you have. Hand it over the way you would a password.\n\n"
+            + grants
             + ("The other side opens it in a browser." if args.link else
                "The other side runs:  switchboard join <the string above>\n"
                "  ...or, for one command in that room and no local change:\n"
@@ -2938,7 +2983,9 @@ def cmd_join(args: argparse.Namespace) -> int:
             f"{rooms.ROOMS_LOCAL_FILE}:\n"
             + json.dumps({"rooms": [room.room_record(args.save or "invited")]},
                          indent=2)
-            + (f"\n\nand set {rooms.env_var_for(room.key_id)} to the key above."
+            + (f"\n\nand set {rooms.env_var_for(room.key_id)} to the key above"
+               + (f", and {rooms.write_key_env_var_for(room.key_id)} to the write key."
+                  if room.write_key else ".")
                if room.key_id else "")
         )
 
@@ -4181,6 +4228,11 @@ _LOCAL_SECRETS = {
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
+    "SWITCHBOARD_WRITE_KEY": (
+        "write key",
+        "Replacing it silently would make every write this agent sends refused, "
+        "since the room is named by the old one",
+    ),
 }
 
 
@@ -4309,16 +4361,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     given = getattr(args, "init_key", None) or args.key
-    if args.new_key and given:
+    given_write = getattr(args, "init_write_key", None) or args.write_key
+    if args.new_key and (given or given_write):
         print(
-            "error: --new-key and --key are mutually exclusive — mint a key or adopt "
-            "one, not both.",
+            "error: --new-key and --key/--write-key are mutually exclusive — mint a "
+            "room or adopt one, not both.",
             file=sys.stderr,
         )
         return EXIT_ERROR
-    if args.no_key and (given or args.new_key):
+    if args.no_key and (given or given_write or args.new_key):
         print(
-            "error: --no-key cannot be combined with --key or --new-key.",
+            "error: --no-key cannot be combined with --key, --write-key or --new-key.",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -4329,6 +4382,32 @@ def cmd_init(args: argparse.Namespace) -> int:
     workspace = arg_workspace or os.environ.get("SWITCHBOARD_WORKSPACE") or _default_workspace(
         directory
     )
+    # A write key names its room, so adopting one settles the workspace the
+    # way `-w` would — and the two must not disagree, because they cannot
+    # both be right and the failure is every write refused with a message
+    # that cannot say why.
+    write_key = (
+        given_write or os.environ.get("SWITCHBOARD_WRITE_KEY")
+        or _saved_setting(directory, "SWITCHBOARD_WRITE_KEY")
+    )
+    if args.no_key or args.new_key:
+        write_key = None
+    if write_key:
+        try:
+            named = RoomWriteKey.from_seed(write_key).workspace
+        except WriteKeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        if explicit_workspace and workspace != named:
+            print(
+                f"error: the write key names room {named}, but you asked for "
+                f"{workspace}. One is derived from the other, so they cannot both be "
+                "right — drop -w and let the key choose, or check which room the "
+                "key was minted for.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        workspace, explicit_workspace = named, True
 
     # Encryption is the default posture, so a repo that has no key gets one.
     # The alternative — plaintext unless someone knew to ask — meant the
@@ -4340,6 +4419,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # would be doing it constantly.
     key = given or os.environ.get("SWITCHBOARD_KEY") or _saved_key(directory)
     minted: str | None = None
+    minted_write: str | None = None
     if args.no_key:
         key = None
     elif args.new_key or not key:
@@ -4350,8 +4430,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         # `org/repo` is what makes a laptop, a clone and CI agree for free,
         # and silently replacing it with an opaque string would trade that
         # away for a privacy win nobody asked for at that moment.
+        #
+        # The opaque name is now derived from a freshly minted write key, so
+        # the room is write-protected as well as unreadable: the hub refuses
+        # writes from anyone holding the key alone (`writekey.py`). Only when
+        # nobody named a workspace — a room somebody named by hand cannot be
+        # protected, because protection *is* the derivation.
         if args.new_key and not explicit_workspace:
-            workspace = "w_" + generate_key()[:16]
+            minted_write = write_key = generate_write_key()
+            workspace = RoomWriteKey.from_seed(write_key).workspace
     if args.local:
         url = "http://127.0.0.1:8787"
     else:
@@ -4461,6 +4548,38 @@ def cmd_init(args: argparse.Namespace) -> int:
     if key:
         key_steps, key_ok = _init_key(directory, key, force=args.force)
         steps.extend(key_steps)
+    write_key_on_disk = False
+    if write_key and key_ok and workspace != RoomWriteKey.from_seed(write_key).workspace:
+        # `.mcp.json` won the reconciliation above and routes elsewhere. A
+        # write key for a room this repo does not talk to is not a secret
+        # worth keeping: every agent would refuse to start with it, naming
+        # both rooms.
+        if minted_write:
+            # Minted a moment ago for a room this repo is not going to be in,
+            # so there is nothing to lose by dropping it — the registered
+            # room is an ordinary one, and stays writable by anyone with the
+            # key, exactly as it was.
+            steps.append(
+                f"kept workspace {workspace!r}, which is not write-protected, so no "
+                "write key was minted — `--force` repoints .mcp.json at a fresh "
+                "protected room instead"
+            )
+            write_key = minted_write = None
+        else:
+            steps.append(
+                f"left the write key out: it names room "
+                f"{RoomWriteKey.from_seed(write_key).workspace}, and this repo "
+                f"routes to {workspace!r} — pass --force to repoint .mcp.json at "
+                "the room the key names"
+            )
+            key_ok = False
+    if write_key and key_ok:
+        write_steps, write_ok = _init_local_setting(
+            directory, "SWITCHBOARD_WRITE_KEY", write_key, force=args.force
+        )
+        steps.extend(write_steps)
+        key_ok = key_ok and write_ok
+        write_key_on_disk = write_ok
 
     # Last, and only against a remote hub: a token that cannot act in this
     # workspace makes everything above correct and useless. `--local` has its
@@ -4635,9 +4754,22 @@ def cmd_init(args: argparse.Namespace) -> int:
             # the *file*, which is a back-it-up problem, not a memorize-it one.
             print(fmt.bold("Your new key:"))
             print(f"  {minted}")
-            print(
-                f"  Give teammates: switchboard init --key {minted} -w {workspace}"
-            )
+            if minted_write:
+                print(fmt.bold("Your new write key:"))
+                print(f"  {minted_write}")
+                print(
+                    f"  Give teammates: switchboard init --key {minted} "
+                    f"--write-key {minted_write}"
+                )
+                print(
+                    "  The workspace is derived from the write key, so nobody has to "
+                    "be told it. Give someone the key alone and they can read this "
+                    "room and nothing else — the hub refuses their writes."
+                )
+            else:
+                print(
+                    f"  Give teammates: switchboard init --key {minted} -w {workspace}"
+                )
             # Where it is saved is the explainer's line now. What survives here
             # is the part nothing else says: the hub cannot get it back for you.
             print(
@@ -4646,11 +4778,13 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "this workspace or recover the key if you lose the file."
             )
         if not local_hub:
-            _print_scope_explainer(fmt, minted if key_ok else None, token_on_disk)
+            _print_scope_explainer(fmt, minted if key_ok else None, token_on_disk,
+                                   write_key_on_disk)
     return EXIT_OK if key_ok else EXIT_ERROR
 
 
-def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) -> None:
+def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool,
+                           write_key_on_disk: bool = False) -> None:
     """Say which part of this setup a clone brings and which it does not.
 
     The split is committed versus secret, not repo versus machine. Both halves
@@ -4663,7 +4797,8 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     whole model and was long enough that skimming past it was the likely
     outcome, which is the same as not printing it.
     """
-    secrets = "key + token" if token_on_disk else "key"
+    secrets = "key" + (" + write key" if write_key_on_disk else "")
+    secrets += " + token" if token_on_disk else ""
     print()
     print(fmt.bold("Two halves"))
     print(f"  {fmt.cyan('committed')}  .mcp.json, .switchboard/hooks — hub URL and "
@@ -4674,8 +4809,12 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     # Per repo, so a second one needs the key handed to it even here. Exporting
     # it once is the alternative, and worth naming: `init` reads the
     # environment, so people who set it up that way never touch --key again.
-    print("  another repo      switchboard init --key <key>   (or export "
-          "SWITCHBOARD_KEY first)")
+    if write_key_on_disk:
+        print("  another repo      switchboard init --key <key> --write-key <write key>"
+              "   (or export both first)")
+    else:
+        print("  another repo      switchboard init --key <key>   (or export "
+              "SWITCHBOARD_KEY first)")
     # The package first: without it `switchboard-mcp` is not on PATH and the
     # MCP server never starts, so the secrets have nothing to reach the hub
     # with. Two steps because it is genuinely two, and leaving one out is how
@@ -4711,8 +4850,10 @@ def _print_scope_explainer(fmt: Fmt, minted: str | None, token_on_disk: bool) ->
     print("  a cloud env       two boxes, neither of them here:\n"
           "                      setup script  pip install --ignore-installed "
           "cryptography agent-switchboard\n"
-          "                      env vars      SWITCHBOARD_KEY, SWITCHBOARD_TOKEN "
-          "(from `whoami --env`)")
+          "                      env vars      SWITCHBOARD_KEY, "
+          # Worded to fit one terminal line with the write key named too.
+          + ("SWITCHBOARD_TOKEN, write key (`whoami --env`)" if write_key_on_disk
+             else "SWITCHBOARD_TOKEN (from `whoami --env`)"))
 
 
 # --- parser -----------------------------------------------------------------
@@ -4851,6 +4992,13 @@ def build_parser() -> argparse.ArgumentParser:
              "Never sent to the hub; generate one with `switchboard keygen`.",
     )
     parser.add_argument(
+        "--write-key",
+        help="write key for a write-protected room (env: SWITCHBOARD_WRITE_KEY). "
+             "Its public half names the room; the hub refuses writes from anyone "
+             "who cannot sign with it. Minted alongside the key by `switchboard "
+             "keygen` and `init --new-key`.",
+    )
+    parser.add_argument(
         "--lobby", action="store_true",
         help="run this command in the room every holder of this key shares. "
              "Derived from the key rather than agreed by name, so two agents "
@@ -4920,6 +5068,13 @@ def build_parser() -> argparse.ArgumentParser:
              "will be sealed correctly and routed somewhere else.",
     )
     p.add_argument(
+        "--write-key", dest="init_write_key",
+        help="adopt a room's write key (env: SWITCHBOARD_WRITE_KEY) alongside "
+             "--key. Its public half names the room, so -w is not needed and must "
+             "agree if given. Without it, in a write-protected room, this repo's "
+             "agents can read and nothing else.",
+    )
+    p.add_argument(
         "--no-key", action="store_true",
         help="do not encrypt: skip minting a key. `init` mints one by "
              "default, so bodies, board values, lease notes and branch names are "
@@ -4928,11 +5083,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--new-key", action="store_true",
-        help="mint a fresh key *and* replace the derived workspace with an opaque "
-             "name, so the hub cannot read the workspace or guess what it is. `init` "
-             "already mints a key when the repo has none; this additionally hides the "
-             "name, and replaces a key the repo already had. Mutually exclusive "
-             "with --key.",
+        help="mint a fresh key and write key, and replace the derived workspace "
+             "with the opaque, write-protected name the write key derives — so the "
+             "hub cannot read the workspace or guess what it is, and refuses writes "
+             "from anyone holding the key alone. `init` already mints a key when the "
+             "repo has none; this additionally hides the name, protects the room, and "
+             "replaces a key the repo already had. Mutually exclusive with --key.",
     )
     p.add_argument(
         "--no-input", action="store_true",
@@ -5122,6 +5278,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
     p.add_argument("--no-key", action="store_true",
                    help="omit the key (the peer must already hold it)")
+    p.add_argument("--read-only", action="store_true",
+                   help="omit the write key, so the holder can read this room and "
+                        "nothing else. Enforced by the hub, not by good behaviour: "
+                        "every write without the write key is refused. --link "
+                        "implies it, since a browser is a viewer.")
     p.add_argument("--no-token", action="store_true", help="omit the hub token")
     p.add_argument("--link", metavar="PAGE", nargs="?", const=PUBLISHED_PAGE_URL,
                    help="emit a URL onto a viewer page instead of the bare "
@@ -5551,6 +5712,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CONFLICT
     except CryptoError as exc:
         print(f"encryption error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except WriteKeyError as exc:
+        print(f"write key error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ReadOnlyRoom as exc:
+        print(f"read-only: {exc}", file=sys.stderr)
+        print("  This room is write-protected. Reading needs only the key; writing "
+              "needs its write key —\n  export SWITCHBOARD_WRITE_KEY, pass "
+              "--write-key, or use an invite that carries it.", file=sys.stderr)
         return EXIT_ERROR
     except SwitchboardError as exc:
         print(f"error: {exc}", file=sys.stderr)

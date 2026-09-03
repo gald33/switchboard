@@ -465,7 +465,7 @@ def test_keygen_emits_a_key_and_an_opaque_workspace():
         assert cmd_keygen(args) == 0
     payload = json.loads(out.getvalue())
     assert len(payload["key"]) >= 40
-    assert payload["workspace"].startswith("w_")
+    assert payload["workspace"].startswith("ws_"), "minted rooms are write-protected"
     # It must not be derived from anything guessable, and must differ per call.
     second = io.StringIO()
     with contextlib.redirect_stdout(second):

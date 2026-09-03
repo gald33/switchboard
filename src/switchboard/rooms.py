@@ -49,15 +49,67 @@ ROOMS_LOCAL_FILE = ".switchboard/rooms.local.json"
 DEFAULT_KEY_ID = "default"
 
 
+#: A write-protected room's token is its Ed25519 public key under this marker,
+#: and its identifier carries this prefix so a hub can tell, from the name
+#: alone, that writes to it must be signed. See `writekey.py`.
+WRITE_TOKEN_PREFIX = "pk1_"
+WRITE_WORKSPACE_PREFIX = "ws_"
+#: Domain string and version byte hashed in with the public key. The version
+#: is inside the preimage rather than the prefix so a future scheme can
+#: coexist without a second wire prefix; the domain keeps a room identifier
+#: from colliding with any other fingerprint of the same key.
+_ROOM_ID_INFO = b"switchboard/room"
+ROOM_ID_VERSION = 1
+
+
 def workspace_for(workspace_token: str) -> str:
     """The wire identifier for a room, derived from its token.
 
     The hub routes on this and the client filters on it, so both parties must
     know it — which is exactly why it cannot be the secret-and-rotating value,
     and why it is safe for it to be derived rather than assigned.
+
+    Two kinds of token, one shape of answer. An ordinary token is a secret
+    somebody minted, and knowing it is what admits you. A write token
+    (`pk1_…`) is a *public key*: knowing it admits you to read, and only the
+    matching private key — which the token commits to, being a hash of the
+    public half — lets you write. The identifier is truncated to the same
+    length either way, and prefixed so a hub knows which rule to apply.
     """
-    digest = hashlib.sha256(workspace_token.encode("utf-8", "replace")).digest()
-    return "w_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:22]
+    if workspace_token.startswith(WRITE_TOKEN_PREFIX):
+        public = write_token_public_key(workspace_token)
+        digest = hashlib.sha256(
+            _ROOM_ID_INFO + b"\x00" + bytes([ROOM_ID_VERSION]) + public
+        ).digest()
+        prefix = WRITE_WORKSPACE_PREFIX
+    else:
+        digest = hashlib.sha256(workspace_token.encode("utf-8", "replace")).digest()
+        prefix = "w_"
+    return prefix + base64.urlsafe_b64encode(digest).decode().rstrip("=")[:22]
+
+
+def write_token(public_key: str) -> str:
+    """The workspace token of the room a write key names: its public half."""
+    return WRITE_TOKEN_PREFIX + public_key
+
+
+def write_token_public_key(workspace_token: str) -> bytes:
+    """The raw 32-byte public key inside a write token, or a `RoomsError`."""
+    text = workspace_token[len(WRITE_TOKEN_PREFIX):]
+    try:
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (ValueError, TypeError) as exc:
+        raise RoomsError(f"write token {workspace_token!r} is not valid base64url") from exc
+    if len(raw) != 32:
+        raise RoomsError(
+            f"write token {workspace_token!r} does not hold a 32-byte public key"
+        )
+    return raw
+
+
+def is_write_protected(workspace: str) -> bool:
+    """Whether writes to this room must carry a signature the hub can check."""
+    return workspace.startswith(WRITE_WORKSPACE_PREFIX)
 
 
 class RoomsError(Exception):
@@ -169,6 +221,25 @@ def key_for(key_id: str, env: dict[str, str] | None = None) -> str | None:
     """The key this environment holds for `key_id`, if any."""
     source = os.environ if env is None else env
     return source.get(env_var_for(key_id)) or None
+
+
+def write_key_env_var_for(key_id: str) -> str:
+    """`SWITCHBOARD_WRITE_KEY_<ID>` for a key id, on the same rule as `env_var_for`.
+
+    Named by the *same* id as the workspace key: a write key belongs to the
+    room the workspace key opens, so a record that names one names both, and
+    an environment that holds the key for `ops` holds the write key for `ops`
+    under the matching variable or not at all.
+    """
+    if key_id == DEFAULT_KEY_ID:
+        return "SWITCHBOARD_WRITE_KEY"
+    return "SWITCHBOARD_WRITE_KEY_" + re.sub(r"[^A-Z0-9]+", "_", key_id.upper()).strip("_")
+
+
+def write_key_for(key_id: str, env: dict[str, str] | None = None) -> str | None:
+    """The write key this environment holds for `key_id`, if any."""
+    source = os.environ if env is None else env
+    return source.get(write_key_env_var_for(key_id)) or None
 
 
 def _parse(path: Path, private: bool) -> list[Room]:

@@ -1,0 +1,60 @@
+id: read-only-rooms
+title: A room a viewer can read and nothing else, refused by the hub rather than by good behaviour
+status: done
+arc: hub-boundary
+blocked_on: []
+related_to:
+- key: clients-that-cannot-post
+  note: 'That one asks what a client that cannot POST gets. This one is the other
+    direction: a client that could POST and must not. The mechanism here — a
+    signature the hub verifies over sealed bytes, with a replay window — is the
+    "signed-envelope GET" that item sketches, so read this before building that.'
+- key: roles-and-authority-between-agents
+  note: 'That one deferred any permission model because authority needs a subject
+    that outlives a process and the hub was decided to hold no bindings. This one
+    is the narrowest permission that satisfies both: the subject is a key that names
+    the room, and the hub stores nothing. It does not reopen roles between writers.'
+- key: ci-workspace-is-public
+  note: 'Half of that item — anyone who can read the repo can post as CI — is closed
+    by minting the CI room write-protected: the identifier can stay committed, since
+    knowing it no longer lets anyone write into it. The other half, sealing what CI
+    announces, is unchanged.'
+refs:
+- 'docs/encryption.md'
+- 'docs/model.md'
+- 'src/switchboard/writekey.py'
+- 'tests/test_write_keys.py'
+evidence: |
+  **Inferred from a design conversation on 2026-09-03, not reported by anyone.**
+
+  A workspace key reads *and* writes: AES-GCM is symmetric, so anyone who can
+  open a message can seal one, and the hub cannot tell the two apart. Every
+  link `invite --link` printed was therefore a write capability sitting in a
+  browser, and the viewer (`docs/viewer.md`: "read-only in the strict sense: it
+  never posts, never registers") was read-only only by its own good behaviour.
+
+  The first design considered — a room signing key whose endorsement peers
+  check — makes a reader's writes *untrusted* but not *impossible*: the hub
+  would still accept its leases and cursor commits, because those are enforced
+  on blinded tokens by equality. The decision was that every write should be
+  refused, which makes this a permission, and a permission has to be the
+  hub's. What kept it from being the credential store that #73/#76 removed is
+  that the hub holds nothing for it: the room identifier is
+  `hash(domain, version, Ed25519 public key)`, a writer presents the key and a
+  signature over the request (sealed body included), and the hub checks the
+  key hashes to the room and the signature verifies. Stateless, and verified
+  with a key that cannot sign, so the operator gains nothing.
+
+  Done when: a client holding the identifier, the key and a writer's agent id
+  can read everything and change nothing — post, lease, board, register,
+  another agent's cursor — and a captured signature cannot be re-sent.
+  `tests/test_write_keys.py` asserts each of those against a real hub, plus
+  that a fresh hub which has never seen the room accepts its writer on the
+  first request (nothing registered). Rooms named by an ordinary token are
+  untouched; `keygen` and `init --new-key` mint protected rooms; `invite
+  --read-only` and every `invite --link` carry the key without the write key.
+
+  Deliberately not done: per-writer revocation (one write key per room, like
+  the workspace key), presence for readers (so no whispers to a viewer), and
+  making bare `init` protect the derived `org/repo` room — a name somebody
+  chose is not a hash of anything.

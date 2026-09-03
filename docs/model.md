@@ -15,8 +15,10 @@ registered, claimed or arbitrated. The **repo declares** which rooms it takes
 part in; the **environment holds keys**; an agent joins the intersection. What
 protects a room is that its identifier is unguessable and its contents are
 sealed with a key the hub never receives. The hub is a router with a front
-door. **Nothing in this system is ever registered** — agents announce, peers
-witness, and everything expires.
+door, and one permission it enforces without storing anything: a room whose
+identifier is the hash of a **write key**'s public half admits no write that
+key did not sign. **Nothing in this system is ever registered** — agents
+announce, peers witness, and everything expires.
 
 ## What each value is
 
@@ -24,6 +26,7 @@ witness, and everything expires.
 |---|---|---|---|
 | **workspace token** | names a room; `hash()` of it is the wire identifier | anyone in the room | committed `.switchboard/rooms.json`, or the gitignored overlay for a private room |
 | **key** | seals content; never transmitted. Scoped to whoever shares it — usually a person or a team, not one repo: one key opens every room whose `key_id` names it | anyone who may *read* the room | `SWITCHBOARD_KEY_<ID>` in the environment |
+| **write key** | proves a request may *change* a `ws_…` room; its public half is the room's token, so it names the room as well | anyone who may *write* the room — the key alone reads it | `SWITCHBOARD_WRITE_KEY_<ID>`, under the same id as the key |
 | **hub token** | gets you through the front door | everyone, or one operator's users | committed `.mcp.json` when public; the environment when it is a secret |
 | **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere |
 
@@ -104,6 +107,12 @@ describes a room nobody is in.
 There is no name to claim, nothing to bind, and no authority to arbitrate. This
 is why `key_bindings`, `/keys/register` and first-claim-wins are all gone.
 
+A write-protected room's token is a *public key* (`pk1_…`), and its identifier
+is `hash(domain, version, public key)` — `ws_…`. The same rule, with one more
+consequence: the identifier commits to a keypair, so possession of the private
+half can be checked against the name alone. That is what lets the hub enforce
+a write permission with nothing stored (rule 3).
+
 *Consequence:* a leaked workspace token exposes that room's metadata forever,
 because the identifier never rotates. Recovery is minting a new token and
 updating the repo — a commit, not a protocol operation.
@@ -116,7 +125,7 @@ they are unrepresentable now rather than merely fixed.
 *Consequence:* a room you hold no key for is a room you do not join, decided
 offline before any hub call — a loud local error rather than an empty inbox.
 
-**3. The hub has a front door, not authorization.**
+**3. The hub has a front door, and one permission.**
 One optional bearer token. Every admitted caller reaches every room whose
 identifier it knows. On the managed hub the token is a **published constant**
 that ships in `.mcp.json` beside the URL: nothing issues it, nobody types it,
@@ -126,6 +135,17 @@ one never goes in a committed file.
 
 *This is not a boundary.* Anyone who reads the repository has the public token.
 Do not build anything on top of it.
+
+The one thing narrower than the door is *writing a `ws_…` room*. A writer
+signs each request — method, path, query, timestamp, hash of the sealed body —
+and presents the room's public key; the hub checks that the key hashes to the
+room the request names and that the signature verifies. Unsigned callers get
+every read and a 403 on every write, and their `inbox` reads never commit a
+cursor. It is a permission, and it is the hub's because only the hub can
+refuse — but it is stateless, derived from the room's own name, and verified
+with a key that cannot sign, so the operator gains nothing by it. That is the
+difference between this and the credential store rule 1 removed. See
+[encryption.md](encryption.md#read-only-rooms-enforced-by-the-hub).
 
 **4. Encryption is the boundary, and it rotates.**
 The payload key is `KDF(key, workspace_token, epoch)` where

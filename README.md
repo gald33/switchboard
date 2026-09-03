@@ -380,6 +380,7 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [Testing](docs/testing.md) — `switchboard.testing`: a real hub in your test process, with a clock you can move
 - [HTTP API](docs/api.md) — every endpoint
 - [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
+- [Upgrading](docs/upgrading.md) — what each release changed that is not backwards compatible, and what to do about it
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
 
 ## Encrypt it, and the hub can't read it either
@@ -398,11 +399,19 @@ reaches the hub. The workspace name *does* — it is the routing key and cannot
 be encrypted — which is why `--new-key` pairs it with an opaque one rather
 than letting `acme/billing` become the most descriptive string the hub holds.
 
-`switchboard keygen` still prints a bare key and workspace name if you would
-rather distribute `SWITCHBOARD_KEY` through your own secret store — or
-`keygen --as-invite` to hand the whole room over as
-[one string](#handing-a-room-to-somebody-who-is-not-set-up) instead of two
-values each side has to set correctly and separately.
+`switchboard keygen` prints a room as three env lines — `SWITCHBOARD_WORKSPACE`,
+`SWITCHBOARD_KEY` and `SWITCHBOARD_WRITE_KEY` — if you would rather distribute
+them through your own secret store, or `keygen --as-invite` to hand the whole
+room over as [one string](#handing-a-room-to-somebody-who-is-not-set-up)
+instead of values each side has to set correctly and separately.
+
+The **write key** is the one thing the hub enforces. A room minted by `keygen`
+or `init --new-key` is named by that key's public half, and the hub refuses
+every write to it that the key did not sign — so handing someone the key alone
+(`invite --read-only`, or any `invite --link`) gives them a room they can read
+and nothing else, decided by the hub rather than by good behaviour. It stores
+nothing to do this: the check is a derivation from the room's own name. See
+[encryption.md](docs/encryption.md#read-only-rooms-enforced-by-the-hub).
 
 Message bodies, blackboard values, lease notes, branch names and task
 descriptions are sealed with AES-256-GCM before they leave the agent. Channel

@@ -14,6 +14,9 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_AGENT_ID     stable identity for this agent (client)
     SWITCHBOARD_KEY          workspace key for end-to-end encryption (client only —
                              a hub must never be given one, and has no use for it)
+    SWITCHBOARD_WRITE_KEY    write key for a write-protected room (client only). Its
+                             public half names the room, so with it set the
+                             workspace need not be — see writekey.py
 
 
 """
@@ -525,6 +528,12 @@ class ClientConfig:
     #: and identifiers blinded before anything leaves this process. It is never
     #: transmitted; the hub cannot read the workspace with or without it.
     key: str | None = None
+    #: Write key for a write-protected (`ws_…`) room. The seed of the Ed25519
+    #: keypair whose public half names the room; with it, every request this
+    #: client sends is signed so the hub accepts its writes. Without it, in
+    #: such a room, the client can read and nothing else. Never transmitted —
+    #: the hub sees the public half, which it could derive nothing from.
+    write_key: str | None = None
     #: Path to this agent's local timing-observations database (see timing.py).
     #: Purely local — never sent to the hub, never shared with other agents.
     timing_db: str = "~/.switchboard/timing.db"
@@ -574,6 +583,7 @@ class ClientConfig:
         url_source = "env" if url else None
         workspace = os.environ.get("SWITCHBOARD_WORKSPACE") or None
         key = os.environ.get("SWITCHBOARD_KEY") or None
+        write_key = os.environ.get("SWITCHBOARD_WRITE_KEY") or None
 
         where = Path.cwd() if directory is None else directory
         room, room_problem = _selected_room(where)
@@ -582,6 +592,15 @@ class ClientConfig:
                 url, url_source = room.hub_url, "rooms"
             workspace = workspace or room.workspace
             key = key or rooms.key_for(room.key_id)
+            write_key = write_key or rooms.write_key_for(room.key_id)
+        if workspace is None and write_key:
+            # A write key names its room — its public half is the room's
+            # token — so an environment holding one has nothing else to be
+            # told. This is what keeps "agree for free" true for a checkout-
+            # less environment: the secret it must hold anyway carries the
+            # identifier. A malformed key is left for the client to report,
+            # where the message can say what to do about it.
+            workspace = workspace_of_write_key(write_key)
 
         return cls(
             url=url or MANAGED_HUB_URL,
@@ -599,6 +618,7 @@ class ClientConfig:
             room_problem=None if workspace else room_problem,
             agent_id=os.environ.get("SWITCHBOARD_AGENT_ID") or None,
             key=key,
+            write_key=write_key,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
             peer_log=os.environ.get("SWITCHBOARD_PEER_DB", "~/.switchboard/peers.db"),
         )
@@ -662,8 +682,24 @@ class ClientConfig:
                     config.token, config.token_source = from_mcp_token, "mcp.json"
         if include_secrets:
             config.key = config.key or local_setting(where, "SWITCHBOARD_KEY")
+            config.write_key = config.write_key or local_setting(where, "SWITCHBOARD_WRITE_KEY")
             config.token = config.token or dotenv_setting(where, "SWITCHBOARD_TOKEN")
         return config
+
+
+def workspace_of_write_key(write_key: str) -> str | None:
+    """The room a write key names, or None when the key is unusable.
+
+    Imported lazily: `writekey` needs `cryptography`, and this module is
+    imported by everything, including the server, which must load without a
+    client's dependencies.
+    """
+    from . import writekey
+
+    try:
+        return writekey.RoomWriteKey.from_seed(write_key).workspace
+    except writekey.WriteKeyError:
+        return None
 
 
 #: Where `switchboard init` leaves the parts of a repo's configuration, and

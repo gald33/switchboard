@@ -15,7 +15,10 @@ Claim before starting: `roadmap claim <key>`
 - `now` **`ci-workspace-is-public`** — Stop publishing the one room identifier that was never meant to be guessable
   - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
+  - ↔ related: **`read-only-rooms`** — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
+- `next` **`connect-failure-message`** — Name the URL a failed connection actually tried, and where its token came from
+  - ↔ related: **`joining-agent-sees-empty-inbox`** — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
@@ -28,6 +31,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`selective-wake-for-the-listener`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
+  - ↔ related: **`read-only-rooms`** — That one asks what a client that cannot POST gets. This one is the other direction: a client that could POST and must not. The mechanism here — a signature the hub verifies over sealed bytes, with a replay window — is the "signed-envelope GET" that item sketches, so read this before building that.
   - ↔ related: **`robots-policy-for-public-hosts`** — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
 - **`every-silent-failure-looks-like-a-quiet-room`** — Seven distinct coordination failures all present as an empty room, so none of them can be searched for
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
@@ -68,6 +72,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- `later` **`hooks-warning-false-positive`** — Stop warning about uncommitted hooks in repos that commit none of their wiring
 - `later` **`publish-hub-container-image`** — Publish the hub image, so running a hub is not a clone and a build
 
 ## ⏸ Deferred — startable, deliberately not now
@@ -114,6 +119,7 @@ graph TD
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]
   publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
+  read_only_rooms["A room a viewer can read and nothing else, refused by the hub rather than by good behaviour"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
@@ -130,7 +136,9 @@ graph TD
   abuse_control_after_authorization -.- ci_workspace_is_public
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
+  ci_workspace_is_public -.- read_only_rooms
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
+  clients_that_cannot_post -.- read_only_rooms
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
@@ -142,6 +150,7 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
+  read_only_rooms -.- roles_and_authority_between_agents
   roles_and_authority_between_agents -.- selective_wake_for_the_listener
   selective_wake_for_the_listener -.- timing_cold_start_in_ephemeral_environments
   selective_wake_for_the_listener -.- unread_dms_not_shown_outside_mcp
@@ -305,6 +314,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `abuse-control-after-authorization` — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - `init-writes-rooms-file` — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
+  - `read-only-rooms` — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/82`
   - `.github/workflows/ci.yml`
@@ -345,6 +355,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
+  - `read-only-rooms` — That one asks what a client that cannot POST gets. This one is the other direction: a client that could POST and must not. The mechanism here — a signature the hub verifies over sealed bytes, with a replay window — is the "signed-envelope GET" that item sketches, so read this before building that.
   - `robots-policy-for-public-hosts` — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
 - **refs:**
   - `docs/encryption.md`
@@ -412,7 +423,7 @@ graph TD
 ### `connect-failure-message`
 
 - **title:** Name the URL a failed connection actually tried, and where its token came from
-- **status:** done
+- **status:** ready
 - **arc:** setup-and-first-run
 - **priority:** next
 - **related to** (not a dependency — both are startable):
@@ -621,7 +632,7 @@ graph TD
 ### `hooks-warning-false-positive`
 
 - **title:** Stop warning about uncommitted hooks in repos that commit none of their wiring
-- **status:** done
+- **status:** ready
 - **arc:** setup-and-first-run
 - **priority:** later
 - **refs:**
@@ -1308,6 +1319,59 @@ graph TD
 
 </details>
 
+### `read-only-rooms`
+
+- **title:** A room a viewer can read and nothing else, refused by the hub rather than by good behaviour
+- **status:** done
+- **arc:** hub-boundary
+- **related to** (not a dependency — both are startable):
+  - `ci-workspace-is-public` — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
+  - `clients-that-cannot-post` — That one asks what a client that cannot POST gets. This one is the other direction: a client that could POST and must not. The mechanism here — a signature the hub verifies over sealed bytes, with a replay window — is the "signed-envelope GET" that item sketches, so read this before building that.
+  - `roles-and-authority-between-agents` — That one deferred any permission model because authority needs a subject that outlives a process and the hub was decided to hold no bindings. This one is the narrowest permission that satisfies both: the subject is a key that names the room, and the hub stores nothing. It does not reopen roles between writers.
+- **refs:**
+  - `docs/encryption.md`
+  - `docs/model.md`
+  - `src/switchboard/writekey.py`
+  - `tests/test_write_keys.py`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation on 2026-09-03, not reported by anyone.**
+>
+> A workspace key reads *and* writes: AES-GCM is symmetric, so anyone who can
+> open a message can seal one, and the hub cannot tell the two apart. Every
+> link `invite --link` printed was therefore a write capability sitting in a
+> browser, and the viewer (`docs/viewer.md`: "read-only in the strict sense: it
+> never posts, never registers") was read-only only by its own good behaviour.
+>
+> The first design considered — a room signing key whose endorsement peers
+> check — makes a reader's writes *untrusted* but not *impossible*: the hub
+> would still accept its leases and cursor commits, because those are enforced
+> on blinded tokens by equality. The decision was that every write should be
+> refused, which makes this a permission, and a permission has to be the
+> hub's. What kept it from being the credential store that #73/#76 removed is
+> that the hub holds nothing for it: the room identifier is
+> `hash(domain, version, Ed25519 public key)`, a writer presents the key and a
+> signature over the request (sealed body included), and the hub checks the
+> key hashes to the room and the signature verifies. Stateless, and verified
+> with a key that cannot sign, so the operator gains nothing.
+>
+> Done when: a client holding the identifier, the key and a writer's agent id
+> can read everything and change nothing — post, lease, board, register,
+> another agent's cursor — and a captured signature cannot be re-sent.
+> `tests/test_write_keys.py` asserts each of those against a real hub, plus
+> that a fresh hub which has never seen the room accepts its writer on the
+> first request (nothing registered). Rooms named by an ordinary token are
+> untouched; `keygen` and `init --new-key` mint protected rooms; `invite
+> --read-only` and every `invite --link` carry the key without the write key.
+>
+> Deliberately not done: per-writer revocation (one write key per room, like
+> the workspace key), presence for readers (so no whispers to a viewer), and
+> making bare `init` protect the derived `org/repo` room — a name somebody
+> chose is not a hash of anything.
+
+</details>
+
 ### `robots-policy-for-public-hosts`
 
 - **title:** Decide the crawler policy for public hosts, rather than inheriting an edge default
@@ -1362,6 +1426,7 @@ graph TD
 - **arc:** hub-boundary
 - **deferred:** A design question filed on 2026-09-01 so it is not answered by drift. Nothing is broken: rooms today hold a handful of peers who mostly claim different files, and convention is carrying it. It is deferred rather than started because the cheap half is not needed yet and the expensive half is excluded by decisions this project made on purpose (below). Un-defer on traffic, not on appetite: a room where one agent routinely directs others, or a report that an agent did what a peer told it to and should not have.
 - **related to** (not a dependency — both are startable):
+  - `read-only-rooms` — That one deferred any permission model because authority needs a subject that outlives a process and the hub was decided to hold no bindings. This one is the narrowest permission that satisfies both: the subject is a key that names the room, and the hub stores nothing. It does not reopen roles between writers.
   - `selective-wake-for-the-listener` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
 - **refs:**
   - `src/switchboard/signing.py`

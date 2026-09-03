@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import httpx
 
-from . import peers, signing
+from . import peers, rooms, signing
 from .config import ClientConfig
 from .crypto import (
     CryptoError,
@@ -31,6 +31,7 @@ from .crypto import (
 )
 from .invite import PROBE_SENTINEL, Invite
 from .signing import SigningIdentity
+from .writekey import RoomWriteKey, WriteKeyError
 
 __all__ = [
     "SwitchboardError",
@@ -63,6 +64,17 @@ class LeaseHeld(SwitchboardError):
     @property
     def expires_in(self) -> float | None:
         return self.payload.get("expires_in")
+
+
+class ReadOnlyRoom(SwitchboardError):
+    """The hub refused a write: this room is write-protected and this client
+    holds no write key for it (or a stale signature was replayed).
+
+    Reading still works — that is the point of the room. To write, the
+    client needs the room's write key (`SWITCHBOARD_WRITE_KEY`, or
+    `write_key` on the config or the custom scope), which whoever minted the
+    room holds. See `writekey.py`.
+    """
 
 
 class UnknownPeerExchangeKey(SwitchboardError):
@@ -280,6 +292,8 @@ def _raise_for(response: httpx.Response) -> None:
     detail = payload.get("detail") or payload.get("error") or payload.get("detail")
     if payload.get("error") == "lease_conflict":
         raise LeaseHeld(str(detail), status=response.status_code, payload=payload)
+    if payload.get("error") == "read_only":
+        raise ReadOnlyRoom(str(detail), status=response.status_code, payload=payload)
     raise SwitchboardError(str(detail), status=response.status_code, payload=payload)
 
 
@@ -537,6 +551,12 @@ class _Base:
         config = replace(
             env, url=invite.url, url_source="invite", workspace=invite.workspace,
             token=invite.token or env.token, key=key,
+            # Carried by an invite meant for a peer who will work in the room;
+            # left out of one meant for a viewer, which is then read-only in
+            # fact rather than by good behaviour. Falls back to the
+            # environment like the key does, and is dropped by the client
+            # when it names some other room.
+            write_key=invite.resolve_write_key(env.write_key),
         )
         client = cls(config, agent_id=agent_id, key=key, **kwargs)
         client.invite = invite
@@ -616,6 +636,15 @@ class _Base:
 
         key = key if key is not None else self.config.key
         self.cipher = WorkspaceCipher.from_key(key, self.workspace) if key else None
+        #: Write keys by the workspace each one names, for `_sign`. The
+        #: ambient room's goes in here at construction; a `custom_scope` that
+        #: carries one adds its own. Looked up per request by the workspace
+        #: the request names, so no call site has to say which to use.
+        self._writers: dict[str, RoomWriteKey] = {}
+        #: The write key for this client's own room, or None: either the room
+        #: is not write-protected, and needs none, or it is and this client is
+        #: a reader. `can_write` is the question to ask.
+        self.writer = self._writer_for(self.workspace, self.config.write_key)
         #: What this agent calls itself. Never leaves the process when encrypting.
         self.local_agent_id = local
         #: What the hub knows this agent as. Blinding here rather than at each
@@ -673,6 +702,66 @@ class _Base:
         #: it is a convenience cache, not a trust store.
         self._peer_exchange_keys: dict[str, str] = {}
 
+    def _writer_for(self, workspace: str, seed: str | None) -> RoomWriteKey | None:
+        """Adopt a write key for one workspace, if it is that workspace's.
+
+        A write key names its room, so a key that names another one is not
+        "a different key" — it is a misconfiguration, and in a write-
+        protected room a loud one: every write would 403 with a message that
+        cannot say why. Refused here instead, where the two identifiers can
+        be printed side by side. In a room that is not write-protected the
+        key is simply irrelevant — a `SWITCHBOARD_WRITE_KEY` exported for one
+        room must not stop `-w other` from working — so it is dropped and
+        nothing is signed, which also keeps its public half off a hub that
+        has no use for it.
+        """
+        if not seed:
+            return None
+        writer = RoomWriteKey.from_seed(seed)
+        if writer.workspace != workspace:
+            if rooms.is_write_protected(workspace):
+                raise WriteKeyError(
+                    f"the write key names room {writer.workspace}, but this client is "
+                    f"in {workspace}. One is derived from the other, so they cannot "
+                    "both be right — check SWITCHBOARD_WRITE_KEY against the room "
+                    "you meant, or drop the workspace and let the key choose it."
+                )
+            return None
+        self._writers[workspace] = writer
+        return writer
+
+    @property
+    def can_write(self) -> bool:
+        """Whether the hub will accept this client's writes to its own room.
+
+        True in any room that is not write-protected, and in a write-
+        protected one exactly when a write key for it is held. A reader in a
+        `ws_…` room gets every read and a `ReadOnlyRoom` on every write.
+        """
+        return not rooms.is_write_protected(self.workspace) or self.writer is not None
+
+    def _sign(self, request: httpx.Request, kwargs: dict[str, Any]) -> None:
+        """Sign one outgoing request, when its room is one this client writes.
+
+        Over exactly what goes on the wire — method, path, query and body as
+        httpx built them — so the hub verifies the same bytes. Done after
+        sealing: the body hash is over ciphertext, which is what lets a hub
+        that cannot read the body still check who wrote it.
+        """
+        body = kwargs.get("json")
+        params = kwargs.get("params")
+        workspace = None
+        if isinstance(body, dict) and isinstance(body.get("workspace"), str):
+            workspace = body["workspace"]
+        elif isinstance(params, dict) and isinstance(params.get("workspace"), str):
+            workspace = params["workspace"]
+        writer = self._writers.get(workspace or "")
+        if writer is None:
+            return
+        request.headers.update(writer.sign_request(
+            request.method, request.url.path, request.url.query.decode(), request.content,
+        ))
+
     @property
     def encrypted(self) -> bool:
         """Whether this client seals what it sends and opens what it reads.
@@ -712,6 +801,11 @@ class _Base:
             raise TypeError("custom_scope requires a non-empty 'workspace'")
         key = custom_scope.get("key")
         cipher = WorkspaceCipher.from_key(key, ws) if key else None
+        # A side room minted by `keygen` is write-protected like any other
+        # new room, so the scope carries its write key too; `_sign` finds it
+        # by the workspace the request names.
+        if ws not in self._writers:
+            self._writer_for(ws, custom_scope.get("write_key"))
         agent_id = cipher.blind(self.local_agent_id, "agent") if cipher else self.local_agent_id
         return ws, cipher, agent_id
 
@@ -1319,7 +1413,9 @@ class Client(_Base):
         if cipher is _UNSET:
             cipher = self.cipher
         kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
-        response = self._http.request(method, path, **kwargs)
+        request = self._http.build_request(method, path, **kwargs)
+        self._sign(request, kwargs)
+        response = self._http.send(request)
         _raise_for(response)
         return self._note_unread(self._open_response(response.json(), cipher, tolerate))
 
@@ -1612,7 +1708,9 @@ class AsyncClient(_Base):
         if cipher is _UNSET:
             cipher = self.cipher
         kwargs = self._seal_request(path, kwargs, cipher, blind_params=blind_params)
-        response = await self._http.request(method, path, **kwargs)
+        request = self._http.build_request(method, path, **kwargs)
+        self._sign(request, kwargs)
+        response = await self._http.send(request)
         _raise_for(response)
         return self._note_unread(self._open_response(response.json(), cipher, tolerate))
 

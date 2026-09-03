@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import __version__
+from . import __version__, rooms, writekey
 from .auth import Perimeter
 from .config import (
     DEFAULT_AGENT_TTL,
@@ -307,24 +307,102 @@ def create_app(
     async def require_admission(
         authorization: str | None = Header(default=None)
     ) -> None:
-        """The whole of the hub's access check.
+        """The hub's front door.
 
-        There is no per-workspace authorization left to do. A room identifier
-        is `hash(workspace_token)` — derived, not owned — so there is nobody to
-        check ownership against, and the two things that actually protect a
-        room are knowing its identifier and holding its key. Neither is the
-        hub's to enforce.
+        There is no per-workspace *ownership* to check. A room identifier is
+        `hash(workspace_token)` — derived, not owned — so there is nobody to
+        check ownership against, and the two things that protect a room from
+        being read are knowing its identifier and holding its key. Neither is
+        the hub's to enforce.
 
-        What is left is a perimeter: with a token configured, present it; with
-        none, the hub is open. Every caller who gets through can reach every
-        room they can name, which is why the docstring in auth.py insists this
-        is not authorization.
+        What is left here is a perimeter: with a token configured, present it;
+        with none, the hub is open. Every caller who gets through can reach
+        every room they can name. The one thing narrower than that — whether a
+        caller may *write* a room — is `require_writer` below, and it is
+        enforced with nothing the hub stores.
         """
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization[len("Bearer "):]
         if not perimeter.admits(token):
             raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+    async def note_writer(request: Request) -> None:
+        """Whether this request carries a valid write signature for its room.
+
+        Checked on every guarded route, not only the mutating ones, because
+        one read has a side effect — `/inbox` commits a cursor — and has to
+        know. Recorded on the request rather than enforced here; what to do
+        about an unsigned request depends on the route.
+
+        Verified against the wall clock rather than the injected `clock`:
+        the window bounds *real-world* replay of a captured signature, and a
+        test that shifts the hub's notion of "now" to expire a lease has not
+        moved the machine the client signed on.
+        """
+        workspace = await _requested_workspace(request)
+        request.state.write_protected = bool(workspace) and rooms.is_write_protected(
+            workspace
+        )
+        if not request.state.write_protected:
+            request.state.writer, request.state.writer_reason = True, "open"
+            return
+        body = await request.body() if request.method in ("POST", "PUT", "PATCH") else b""
+        ok, reason = writekey.verify_request(
+            workspace, request.method, request.url.path, request.url.query, body,
+            request.headers,
+        )
+        request.state.writer, request.state.writer_reason = ok, reason
+
+    #: Signatures accepted for a mutating request, until they age out of the
+    #: window. The window makes a captured signature die on its own; this makes
+    #: it die *at once*, so a logged write cannot be re-sent inside it. Keyed
+    #: by the signature itself, which already commits to everything else.
+    accepted_writes: dict[str, float] = {}
+
+    def _remember_write(signature: str) -> bool:
+        """Record one accepted signature; False if it was already seen."""
+        now = time.time()
+        if len(accepted_writes) >= 4096:
+            for seen, until in list(accepted_writes.items()):
+                if until <= now:
+                    del accepted_writes[seen]
+        if signature in accepted_writes:
+            return False
+        accepted_writes[signature] = now + writekey.WINDOW
+        return True
+
+    async def require_writer(request: Request) -> None:
+        """Refuse a write to a write-protected room from anyone but a writer.
+
+        The permission this hub enforces, and the only one. Stateless: the
+        room's identifier commits to a public key, the request presents that
+        key and a signature, and the hub checks the two against each other —
+        no table of writers, nothing registered, nothing an operator could
+        use to write as somebody else. A reader holds the identifier and the
+        workspace key, and no keypair that hashes to the identifier, so it
+        cannot produce a request this accepts. See `writekey.py`.
+        """
+        if not request.state.write_protected:
+            return
+        if not request.state.writer:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "read_only",
+                    "detail": (
+                        f"this room is write-protected and the request is not a "
+                        f"writer's ({request.state.writer_reason}); reading it needs "
+                        "only the key, writing it needs the room's write key"
+                    ),
+                },
+            )
+        if not _remember_write(request.headers.get(writekey.SIG_HEADER, "")):
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "read_only",
+                        "detail": "this write signature has already been used"},
+            )
 
     async def sweeper() -> None:
         while True:
@@ -398,7 +476,18 @@ def create_app(
     app.state.store = store
     app.state.config = config
     app.state.notifier = notifier
-    guard = [Depends(require_admission)]
+    guard = [Depends(require_admission), Depends(note_writer)]
+    #: For the routes that change something: a reader is turned away here.
+    writes = [*guard, Depends(require_writer)]
+
+    @app.exception_handler(HTTPException)
+    async def _http_error(_, exc: HTTPException) -> JSONResponse:
+        # A structured `detail` ({"error": ..., "detail": ...}) is the shape
+        # every other error body here has, so a client can dispatch on
+        # `error`. FastAPI would otherwise wrap it a level deeper.
+        content = exc.detail if isinstance(exc.detail, dict) else {"detail": exc.detail}
+        return JSONResponse(status_code=exc.status_code, content=content,
+                            headers=getattr(exc, "headers", None))
 
     @app.exception_handler(LeaseConflict)
     async def _lease_conflict(_, exc: LeaseConflict) -> JSONResponse:
@@ -468,7 +557,7 @@ def create_app(
 
     # --- presence ----------------------------------------------------------
 
-    @app.post("/agents/register", dependencies=guard)
+    @app.post("/agents/register", dependencies=writes)
     def register(payload: RegisterIn) -> dict[str, Any]:
         now = now_fn()
         agent = store.register_agent(
@@ -488,7 +577,7 @@ def create_app(
         )
         return {"agent": dump_agent(agent, now)}
 
-    @app.post("/agents/heartbeat", dependencies=guard)
+    @app.post("/agents/heartbeat", dependencies=writes)
     def heartbeat(payload: HeartbeatIn) -> dict[str, Any]:
         now = now_fn()
         agent, leases = store.heartbeat(
@@ -538,7 +627,7 @@ def create_app(
             out["unread_dms"] = unread
         return out
 
-    @app.delete("/agents/{agent_id}", dependencies=guard)
+    @app.delete("/agents/{agent_id}", dependencies=writes)
     def deregister(agent_id: str, workspace: str = "default",
                    release_leases: bool = True) -> dict[str, Any]:
         removed = store.deregister_agent(
@@ -548,7 +637,7 @@ def create_app(
 
     # --- leases ------------------------------------------------------------
 
-    @app.post("/leases/acquire", dependencies=guard)
+    @app.post("/leases/acquire", dependencies=writes)
     def acquire(payload: LeaseIn) -> dict[str, Any]:
         now = now_fn()
         lease = store.acquire_lease(
@@ -562,7 +651,7 @@ def create_app(
         )
         return {"lease": dump_lease(lease, now), "acquired": True}
 
-    @app.post("/leases/renew", dependencies=guard)
+    @app.post("/leases/renew", dependencies=writes)
     def renew(payload: LeaseIn) -> dict[str, Any]:
         now = now_fn()
         lease = store.renew_lease(
@@ -574,7 +663,7 @@ def create_app(
         )
         return {"lease": dump_lease(lease, now)}
 
-    @app.post("/leases/release", dependencies=guard)
+    @app.post("/leases/release", dependencies=writes)
     def release(payload: ReleaseIn) -> dict[str, Any]:
         released = store.release_lease(
             workspace=payload.workspace,
@@ -600,7 +689,7 @@ def create_app(
 
     # async, not sync: the write goes to a worker thread, but waking the
     # waiters touches asyncio futures and must happen on the loop thread.
-    @app.post("/messages", dependencies=guard)
+    @app.post("/messages", dependencies=writes)
     async def post_message(payload: PostIn) -> dict[str, Any]:
         msg = await run_in_threadpool(
             store.post,
@@ -657,6 +746,7 @@ def create_app(
 
     @app.get("/inbox", dependencies=guard)
     async def inbox(
+        request: Request,
         workspace: str = "default",
         agent_id: str | None = None,
         channel: list[str] | None = Query(default=None),
@@ -677,6 +767,12 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail="provide agent_id and/or at least one channel"
             )
+        # The one read with a side effect. In a write-protected room a reader
+        # may look but not advance anybody's cursor — not a writer's, which
+        # would make messages vanish from the agent they were for, and not
+        # its own, since a reader has no roster entry for a cursor to belong
+        # to. So an unsigned read is a peek whatever it asked for.
+        commit = not peek and request.state.writer
 
         def drain() -> list[Message]:
             return store.read(
@@ -686,7 +782,7 @@ def create_app(
                 since=since,
                 limit=limit,
                 include_own=include_own,
-                commit_cursor=not peek,
+                commit_cursor=commit,
                 now=now_fn(),
             )
 
@@ -781,7 +877,7 @@ def create_app(
 
     # --- blackboard --------------------------------------------------------
 
-    @app.put("/board", dependencies=guard)
+    @app.put("/board", dependencies=writes)
     def board_set(payload: BoardIn) -> dict[str, Any]:
         now = now_fn()
         entry = store.board_set(
@@ -809,7 +905,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"no live board entry at {key!r}")
         return {"entry": dump_board(entry, now)}
 
-    @app.delete("/board/{key:path}", dependencies=guard)
+    @app.delete("/board/{key:path}", dependencies=writes)
     def board_delete(key: str, workspace: str = "default") -> dict[str, Any]:
         return {"deleted": store.board_delete(workspace=workspace, key=key)}
 

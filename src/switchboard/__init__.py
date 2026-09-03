@@ -20,6 +20,7 @@ from .client import (
     Client,
     Identity,
     LeaseHeld,
+    ReadOnlyRoom,
     RoomCheck,
     SwitchboardError,
     detect_identity,
@@ -44,6 +45,7 @@ from .store import (
     StoreError,
 )
 from .timing import unwrap_forecast, wrap_forecast
+from .writekey import RoomWriteKey, generate_write_key
 
 __version__ = "1.7.0"
 
@@ -61,6 +63,7 @@ __all__ = [
     "detect_identity",
     "SwitchboardError",
     "LeaseHeld",
+    "ReadOnlyRoom",
     # config
     "ClientConfig",
     "ServerConfig",
@@ -74,6 +77,9 @@ __all__ = [
     "generate_key",
     "CryptoError",
     "DecryptionError",
+    # write-protected rooms — the one permission the hub enforces, statelessly
+    "RoomWriteKey",
+    "generate_write_key",
     # adaptive timing — the envelope a forecast rides in, both directions.
     # Exporting only the reading half is what made it undiscoverable before.
     "wrap_forecast",

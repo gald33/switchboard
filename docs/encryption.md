@@ -498,6 +498,128 @@ category. Keys must be at least 32 bytes, and a key with almost no distinct
 bytes — the shape a forgotten `hex:0000…` placeholder takes — is refused
 outright.
 
+## Read-only rooms, enforced by the hub
+
+Everything above keeps the hub out of a decision. This is the one place it is
+let back in, on purpose, and the reason is the viewer link.
+
+A workspace key reads *and* writes. AES-GCM is symmetric, so anyone who can
+open a message can seal one, and the hub cannot tell the two apart — by
+design, since it cannot read either. That is the right shape between agents
+that trust each other and the wrong one the moment a room is shown to
+someone who should only look: a human with a viewer link, a dashboard, an
+auditing agent. Every link `invite --link` printed was a write capability
+sitting in a browser, and the viewer was read-only only by its own good
+behaviour.
+
+So a room can be **write-protected**, and it costs the hub no state at all.
+
+### How it works
+
+`switchboard keygen` and `init --new-key` mint a **write key** alongside the
+key: the seed of an Ed25519 keypair. Its public half *names the room* — the
+room's workspace token is that public key (`pk1_…`), and its wire identifier
+is a truncated hash of a domain string, a version byte and the key (`ws_…`).
+Both steps are one-way. You cannot get a private key from a public key, and
+you cannot get a public key from its hash, so the identifier is a commitment
+to a key that only whoever minted the room holds.
+
+A writer signs every request — method, path, query, a timestamp, and a hash of
+the body, which is the *sealed* body in an encrypted room — and presents the
+public key. The hub checks two things: that the key hashes to the room the
+request names, and that the signature verifies under it. Nothing is looked up.
+A reader holds the identifier and the workspace key, and no keypair that
+hashes to the identifier, so it cannot produce a request the hub accepts.
+
+| An unsigned caller in a `ws_…` room | |
+|---|---|
+| may | read everything: the roster, any channel's history, live leases, the board |
+| may not | post, whisper, take, renew or release a lease, write or delete a board entry |
+| may not | register presence or heartbeat — so it is not on the roster and gets no whispers |
+| may not | advance anybody's read cursor: an unsigned `inbox` call is a peek whatever it asks for |
+
+Every refusal is a 403 with `error: read_only`, which the client raises as
+`ReadOnlyRoom` and the CLI prints with what to set. Rooms whose identifier is
+an ordinary `w_…` hash, or a readable name, are exactly what they were: the
+hub applies the rule only where the name says to, and the name cannot be
+edited into saying otherwise.
+
+### Why this is a permission, and why it is still not a credential store
+
+It *is* a permission — the hub refuses, and only the hub can — which is a
+thing this project removed once already. The binding table that used to map
+tokens to workspaces is gone (`store.py` says why, in its schema), and this
+does not bring it back:
+
+- **The hub stores nothing.** A fresh hub that has never seen a room accepts
+  its writer on the first request, because the check is a derivation, not a
+  lookup. No table, no first-to-bind race, nothing to migrate.
+- **The operator cannot forge a write.** The hub holds the public half, which
+  verifies and cannot sign. A bearer write token would have been simpler and
+  weaker: it travels in every request, so whoever runs the hub could have
+  taken and released leases in your name.
+- **It is bound to the name.** The room identifier commits to the key, so a
+  viewer cannot strip the protection by naming the room differently — the
+  different name is a different room.
+
+What it costs is a replay window. A captured signature is good for five
+minutes either side of the hub's wall clock, and the hub remembers the ones
+it has accepted until they age out, so a logged write cannot be re-sent
+inside the window either. A machine whose clock is off by more than that is
+refused with a message saying so.
+
+### What the hub learns
+
+That the room is write-protected, and its public key — which the identifier
+already committed to, so this adds nothing. It can tell a signed request from
+an unsigned one, which is one bit per caller on top of the metadata listed
+under "What the hub can still infer". It does not learn the write key, and
+because every writer signs with the *same* key it cannot tell writers apart:
+attribution is still the per-process signature inside the ciphertext.
+
+### Handing it out
+
+Three values now travel together, and `keygen` prints them as the env block
+`whoami --env` also prints:
+
+```
+SWITCHBOARD_WORKSPACE=ws_…
+SWITCHBOARD_KEY=…
+SWITCHBOARD_WRITE_KEY=…
+```
+
+- **Teammates who work in the room** get all three — `switchboard init --key
+  <key> --write-key <write key>`, with no `-w` because the write key already
+  names the room, or `switchboard invite`, which carries the write key unless
+  told not to.
+- **Anyone who should only read** gets the key without the write key:
+  `switchboard invite --read-only`, or `invite --link`, which is always
+  read-only because a browser is a viewer. The viewer works exactly as before
+  and now cannot do anything else, whatever it runs.
+- A rooms file names a write key the way it names a key: the same `key_id`,
+  under `SWITCHBOARD_WRITE_KEY_<ID>`. An environment that holds the key for
+  `ops` and not its write key is a reader of `ops`, decided offline.
+- A write key names its room, so an environment holding one needs no
+  `SWITCHBOARD_WORKSPACE`: the client derives it. Set both and they must
+  agree, or the client refuses to start rather than sending writes that will
+  all be refused.
+
+`init` without `--new-key` still mints a key and keeps the derived
+`org/repo` workspace, which cannot be protected — protection *is* the
+derivation, and a name somebody chose is not a hash of anything. Protecting a
+repo's room means `init --new-key`, and every teammate then needs the write
+key as well as the key.
+
+### What it does not do
+
+- **One key per room.** Every writer holds the same seed, so revoking one
+  writer is minting a new room, exactly as it is for the workspace key.
+- **Readers have no presence.** They are not on the roster and publish no
+  exchange key, so nobody can `whisper` to one. An agent that wants a private
+  word with the human behind a viewer sends it on a channel that viewer reads.
+- **It does not hide that a write happened**, or by which blinded agent id —
+  the same metadata the hub always had.
+
 ## Ad hoc side channels
 
 Everything above sets up encryption for *the* workspace an agent is in — one
@@ -511,9 +633,11 @@ doesn't have, which is exactly what a *second*, smaller-scoped key already
 gets you.
 
 `Client.acquire`, `.release`, `.post`, `.send` and `.inbox` all accept a
-`custom_scope={"workspace": ..., "key": ...}` argument (the MCP tools expose
-the same thing as `custom_scope` on `claim`, `release`, `say`, `dm` and
-`inbox`). It overrides the workspace, key and blinded identity for that one
+`custom_scope={"workspace": ..., "key": ..., "write_key": ...}` argument (the
+MCP tools expose the same thing as `custom_scope` on `claim`, `release`,
+`say`, `dm` and `inbox`). A minted room is write-protected like any other, so
+the scope carries its write key too; a peer given the key alone can read the
+side room and nothing else. It overrides the workspace, key and blinded identity for that one
 call only — nothing else about the caller's session changes. Mint the pair
 with `switchboard keygen` (or the `keygen` MCP tool, which does the same
 thing without a hub call), and hand it directly to whichever peers should be
@@ -675,7 +799,8 @@ no key is set, and an assertion that no needle is shorter than 8 characters.
 To check it against your own hub:
 
 ```bash
-export SWITCHBOARD_KEY=$(switchboard keygen)
+switchboard keygen > room.env        # SWITCHBOARD_WORKSPACE, _KEY and _WRITE_KEY
+set -a; . ./room.env; set +a
 switchboard say deploys "something you would recognise"
 grep -a "something you would recognise" /path/to/switchboard.db*   # no match
 ```
