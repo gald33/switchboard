@@ -1,0 +1,46 @@
+id: stale-token-in-session-env
+title: A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: connect-failure-message
+  note: 'That one made the 401 say which tier the token came from. This is the case the
+    message cannot yet explain: it reports "a token from SWITCHBOARD_TOKEN in this shell"
+    and the shell was given it by the harness, from a source nothing on disk names.'
+refs:
+- 'docs/environments.md'
+- 'src/switchboard/cli.py'
+evidence: |
+  **Observed 2026-09-03, not reported by anyone.** Every `switchboard` CLI call
+  from a Claude Code desktop session in this repo — and, by the transcripts,
+  from sessions in at least three other worktrees of it — fails with `invalid
+  or missing bearer token` against the managed hub. The shell carries
+  `SWITCHBOARD_TOKEN=JqJt-N…`, which the hub does not accept; `.mcp.json`
+  carries the published `sb_public_lucille`, which it does. Unsetting the
+  variable fixes every command. The MCP bridge is unaffected, because Claude
+  Code hands it `.mcp.json`'s env directly.
+
+  Where it comes from is the open question. It is in the environment of the
+  `claude` process and of the app's `disclaimer` helper that spawns it, and
+  not in the environment of the `Claude.app` main process — so the app injects
+  it per session. It is in none of the places the settings hierarchy reads:
+  `.claude/settings.json` and `.claude/settings.local.json` in the repo and the
+  worktree (both carry only `SWITCHBOARD_KEY`), `~/.claude/settings*.json`,
+  `~/.claude.json`, the shell rc files, `launchctl getenv`, the managed
+  settings paths, and nothing under `~/Library/Application Support/Claude`
+  names the variable. The value first appears in a transcript from before the
+  managed hub had its published token, which suggests an early `init` against
+  a hub that registered tokens, kept by the app somewhere outside the files
+  it documents.
+
+  Two things would close this. Either the source is found and the variable
+  removed there, or the CLI stops trusting a shell token that the repo's
+  `.mcp.json` contradicts: when both are present and disagree, try the
+  environment's first and, on a 401, retry with the repo's before failing,
+  saying which one worked. The second is worth doing regardless, because a
+  shell inherits stale exports from many places and this failure names the
+  wrong fix ("export the hub's token") to someone who already did.
+
+  Done when a fresh session in this repo can run `switchboard agents` with
+  nothing unset by hand.
