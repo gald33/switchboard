@@ -13,12 +13,14 @@ import argparse
 import difflib
 import json
 import os
+import queue
 import re
 import secrets
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -1358,6 +1360,20 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         f"\nnext shared slot in {_dur(slot - now)}. Both sides derive it from the "
         f"workspace,\nso come back then and your peer will be looking too."
     )
+    if not found and not peers:
+        # The command that turns "come back then" into "be woken": a parked
+        # listener exits the moment a DM lands, and a runner that re-invokes a
+        # session when a background process exits makes that the wake. An
+        # agent that read only this output polled the slot by hand for an
+        # hour without ever learning the listener existed (issue #213), so it
+        # is said here, at the one moment it is needed, with the deadline
+        # already filled in.
+        print(
+            f"Or park until then and be woken by the reply itself:\n"
+            f"  switchboard listen --until +{int(slot - now) + 60}\n"
+            f"as a background process your runner tracks. Exit 0 is a message "
+            f"(then `inbox`), 2 is the slot with nothing."
+        )
     return EXIT_OK
 
 
@@ -2299,6 +2315,178 @@ def _listen_deadline(args: argparse.Namespace) -> tuple[float | None, str]:
     return when.timestamp(), "given"
 
 
+class _Post:
+    """One room a listener is parked in.
+
+    `role` is what the exit line and the wake payload call it — `room` for the
+    one this invocation resolved to, `lobby`, `invite` — and, deliberately, the
+    only thing a future priority rule has to look at. Everything else here is
+    the per-room state the polling loop keeps.
+    """
+
+    def __init__(self, role: str, hub: Client, channels: list[str] | None) -> None:
+        self.role = role
+        self.hub = hub
+        self.channels = channels
+        self.workspace = hub.config.workspace
+        self.agent_id = hub.agent_id
+        self.heartbeat = rendezvous.listener_key(hub.agent_id)
+        self.fails = 0
+        self.passes = 0
+
+    def __str__(self) -> str:
+        return f"{self.workspace} [{self.role}]"
+
+
+def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
+    """Where one listener parks.
+
+    The room this invocation resolves to — the repo's, `-w`, `--invite` — and,
+    unless told not to, the lobby every holder of this key already shares. The
+    default is to be findable: an agent that is parked is the most reachable it
+    ever is, and a peer on another repo with the same key has nowhere else to
+    look. `--no-lobby` is for the session that specifically does not want to be
+    found while it works; `--lobby` on its own parks in the lobby alone, since
+    then the lobby *is* the room named.
+
+    One process rather than two, and that is the point of doing it here: the
+    process is what decides which room's message is the wake when both have
+    one (`_choose_wake`), and a rule that lives in the process can change
+    without every agent that arms a listener learning a new habit.
+    """
+    primary = _make_client(args)
+    if getattr(args, "lobby", False):
+        role = "lobby"
+    elif getattr(args, "invite", None):
+        role = "invite"
+    else:
+        role = "room"
+    posts = [_Post(role, primary, args.channel or None)]
+    # `getattr`, like the flags above: a caller building the namespace by hand
+    # — a test, a wrapper — gets the default rather than a crash.
+    if getattr(args, "no_lobby", False) or role == "lobby":
+        return posts
+    key = getattr(primary.config, "key", None) or _saved_key(Path(".").resolve())
+    if not key:
+        # The lobby is derived from the key, so without one there is no lobby
+        # to compute — not a room we would park in unencrypted.
+        if not args.quiet:
+            print("listen: no workspace key here, so no lobby to park in — only "
+                  f"{primary.config.workspace}", file=sys.stderr)
+        return posts
+    lobby_workspace = rooms.lobby(key).workspace
+    if lobby_workspace == primary.config.workspace:
+        return posts
+    lobby = Client(
+        replace(primary.config, workspace=lobby_workspace, key=key, write_key=None),
+        agent_id=identity.agent_id,
+    )
+    posts.append(_Post("lobby", lobby, None))
+    return posts
+
+
+def _choose_wake(pending: list[tuple[_Post, list[dict[str, Any]]]],
+                 posts: list[_Post]) -> tuple[_Post, list[dict[str, Any]]]:
+    """Which room's message is the wake, when more than one has arrived.
+
+    The seam a priority rule goes into. Today it is the order the rooms were
+    parked in — the room this invocation resolved to before the lobby — and
+    only for messages that land in the same instant; otherwise whichever came
+    first is the wake, and the other is still there for the woken session's
+    own `inbox`. Kept in one function, taking every candidate, so that a rule
+    that reads the messages (a DM over a channel post, say) is a change here
+    and nowhere else.
+    """
+    return min(pending, key=lambda item: posts.index(item[0]))
+
+
+def _park(post: _Post, identity: Identity, deadline: float | None, described: str,
+          source: str, heartbeat_ttl: float, max_fails: int,
+          stop: threading.Event, events: "queue.Queue[tuple[str, _Post, Any]]") -> None:
+    """One room's loop: announce, heartbeat, peek, until something happens.
+
+    Reports to `events` and returns; the process decides what a report means.
+    Three kinds: a message (the wake), the deadline, or this room giving up
+    after too many consecutive hub errors — which is not the process giving
+    up, if another room is still being watched.
+    """
+    hub = post.hub
+    try:
+        while not stop.is_set():
+            post.passes += 1
+            wait = 25.0
+            if deadline:
+                left = deadline - time.time()
+                # Never poll past the deadline: an unclamped last wait
+                # overshoots by up to 25 seconds, which is the whole margin
+                # on a short do-not-disturb and turns a time the agent
+                # named into one it approximated.
+                wait = min(wait, left)
+                if wait <= 0:
+                    events.put(("deadline", post, None))
+                    return
+            try:
+                # Presence as well as the board key. A parked agent is the
+                # most reachable an agent ever is, and without this the
+                # roster says it does not exist: `agents` comes back empty
+                # and `dm` warns the sender their message will be read by
+                # nobody. `back_in` is the deadline, so an empty roster can
+                # be told from one that is merely between turns.
+                hub.register(
+                    name=identity.name, kind=identity.kind,
+                    branch=identity.branch,
+                    # Deliberately no task. Presence is this process's
+                    # business; what the agent is working on is the agent's,
+                    # and a listener that rewrites it every pass turns the
+                    # roster into a fight between two writers under one id.
+                    # `back_in` below already renders as "away 12m", which
+                    # is the fact a peer actually wants.
+                    # None, not []: without a `-c` this process has
+                    # nothing to say about subscriptions, and saying []
+                    # every pass was how it removed them.
+                    channels=post.channels,
+                    meta=identity.meta, ttl=heartbeat_ttl,
+                    back_in=(deadline - time.time()) if deadline else None,
+                )
+                hub.board_set(post.heartbeat, {
+                    "pass": post.passes, "pid": os.getpid(), "waiting_on": "inbox",
+                    "room": post.role,
+                    **({"until": described, "until_source": source} if deadline else {}),
+                    "means": _LISTEN_MEANS,
+                }, ttl=heartbeat_ttl)
+                # peek: this process shares a read cursor with the session
+                # it serves, so draining would consume the very message it
+                # woke that session to read. The woken session drains.
+                messages = hub.inbox(channels=post.channels, wait=wait, peek=True)
+            except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+                # httpx.HTTPError belongs here as much as the other two,
+                # and its absence killed a listener in production: one
+                # ReadTimeout on a 25-second long-poll escaped this handler
+                # entirely, reached `main`, and exited 1 — "it never watched
+                # anything" — without `--max-fails` getting a say. A
+                # transient timeout is the most ordinary thing that happens
+                # to a process whose whole job is holding a connection open.
+                post.fails += 1
+                print(f"listen: hub error in {post} ({post.fails}/{max_fails}): {exc}",
+                      file=sys.stderr)
+                if post.fails >= max_fails:
+                    events.put(("gone", post, None))
+                    return
+                time.sleep(min(post.fails * 2, 10))
+                continue
+            post.fails = 0
+            if messages:
+                events.put(("message", post, messages))
+                return
+    finally:
+        # Best effort, and only best effort: the TTL is what makes a dead
+        # listener visible. This makes a deliberate stop visible sooner.
+        try:
+            hub.board_delete(post.heartbeat)
+        except (SwitchboardError, OSError, httpx.HTTPError):
+            pass
+
+
 def cmd_listen(args: argparse.Namespace) -> int:
     """Park on the inbox until something arrives, then exit so the runner wakes
     this session.
@@ -2308,6 +2496,12 @@ def cmd_listen(args: argparse.Namespace) -> int:
     types something. Runners that re-invoke a session when a background process
     exits — Claude Code does — make process death an available wake signal, and
     this turns "a message arrived" into "a process exited".
+
+    One process, however many rooms: the room this invocation names and, by
+    default, the lobby (`_listen_posts`). Each room is polled on its own
+    thread and reports here; this loop is the one place that turns those
+    reports into an exit, which is what leaves room for a rule about which
+    message wins (`_choose_wake`) without touching the rooms themselves.
     """
     deadline, source = _listen_deadline(args)
     described = (
@@ -2319,116 +2513,101 @@ def cmd_listen(args: argparse.Namespace) -> int:
 
     identity = detect_identity(agent_id=args.agent_id)
     heartbeat_ttl = args.ttl or _LISTEN_TTL
-    fails = 0
-    passes = 0
+    posts = _listen_posts(args, identity)
+    primary = posts[0].hub
 
-    with _make_client(args) as hub:
-        # The room, before the wait. A listener on the wrong hub or in the
-        # wrong room does not fail — it waits, quietly, for as long as it is
-        # allowed to, which is the failure this whole design exists to avoid.
-        try:
-            hub.health()
-        except (SwitchboardError, OSError, httpx.HTTPError) as exc:
-            # Including httpx's own errors, so a slow moment at arming time
-            # produces this sentence rather than the generic handler's — and,
-            # more to the point, so it is reported by the thing that knows it
-            # was trying to park.
-            print(f"listen: cannot reach {hub.config.url} ({exc})", file=sys.stderr)
-            return EXIT_ERROR
-        _warn_key_left_behind(args, hub)
+    # The room, before the wait. A listener on the wrong hub or in the
+    # wrong room does not fail — it waits, quietly, for as long as it is
+    # allowed to, which is the failure this whole design exists to avoid.
+    try:
+        primary.health()
+    except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+        # Including httpx's own errors, so a slow moment at arming time
+        # produces this sentence rather than the generic handler's — and,
+        # more to the point, so it is reported by the thing that knows it
+        # was trying to park.
+        print(f"listen: cannot reach {primary.config.url} ({exc})", file=sys.stderr)
+        return EXIT_ERROR
+    _warn_key_left_behind(args, primary)
 
-        agent_id = hub.agent_id
-        heartbeat = rendezvous.listener_key(agent_id)
-        if not args.quiet:
-            print(f"listen: parked as {agent_id} in {hub.config.workspace}"
-                  + (f" until {described} [{source}]" if deadline else ""),
-                  file=sys.stderr)
-        try:
-            while True:
-                passes += 1
-                wait = 25.0
-                if deadline:
-                    left = deadline - time.time()
-                    # Never poll past the deadline: an unclamped last wait
-                    # overshoots by up to 25 seconds, which is the whole margin
-                    # on a short do-not-disturb and turns a time the agent
-                    # named into one it approximated.
-                    wait = min(wait, left)
-                    if wait <= 0:
-                        if not args.quiet:
-                            print(f"listen: reached {described} [{source}] with "
-                                  "nothing to report", file=sys.stderr)
-                        return EXIT_DEADLINE
-                try:
-                    # Presence as well as the board key. A parked agent is the
-                    # most reachable an agent ever is, and without this the
-                    # roster says it does not exist: `agents` comes back empty
-                    # and `dm` warns the sender their message will be read by
-                    # nobody. `back_in` is the deadline, so an empty roster can
-                    # be told from one that is merely between turns.
-                    hub.register(
-                        name=identity.name, kind=identity.kind,
-                        branch=identity.branch,
-                        # Deliberately no task. Presence is this process's
-                        # business; what the agent is working on is the agent's,
-                        # and a listener that rewrites it every pass turns the
-                        # roster into a fight between two writers under one id.
-                        # `back_in` below already renders as "away 12m", which
-                        # is the fact a peer actually wants.
-                        # None, not []: without a `-c` this process has
-                        # nothing to say about subscriptions, and saying []
-                        # every pass was how it removed them.
-                        channels=args.channel or None,
-                        meta=identity.meta, ttl=heartbeat_ttl,
-                        back_in=(deadline - time.time()) if deadline else None,
-                    )
-                    hub.board_set(heartbeat, {
-                        "pass": passes, "pid": os.getpid(), "waiting_on": "inbox",
-                        **({"until": described, "until_source": source} if deadline else {}),
-                        "means": _LISTEN_MEANS,
-                    }, ttl=heartbeat_ttl)
-                    # peek: this process shares a read cursor with the session
-                    # it serves, so draining would consume the very message it
-                    # woke that session to read. The woken session drains.
-                    messages = hub.inbox(
-                        channels=args.channel or None, wait=wait, peek=True)
-                except (SwitchboardError, OSError, httpx.HTTPError) as exc:
-                    # httpx.HTTPError belongs here as much as the other two,
-                    # and its absence killed a listener in production: one
-                    # ReadTimeout on a 25-second long-poll escaped this handler
-                    # entirely, reached `main`, and exited 1 — "it never watched
-                    # anything" — without `--max-fails` getting a say. A
-                    # transient timeout is the most ordinary thing that happens
-                    # to a process whose whole job is holding a connection open.
-                    fails += 1
-                    print(f"listen: hub error ({fails}/{args.max_fails}): {exc}",
-                          file=sys.stderr)
-                    if fails >= args.max_fails:
-                        # A non-zero exit is still a wake, and that is the
-                        # point: the session finds out its listener is gone
-                        # rather than mistaking a broken hub for a quiet room.
-                        print(f"listen: giving up after {fails} consecutive failures",
-                              file=sys.stderr)
-                        return EXIT_ERROR
-                    time.sleep(min(fails * 2, 10))
-                    continue
-                fails = 0
-                if messages:
-                    # To stdout, because the wake carries it: the session comes
-                    # back already holding the event instead of having to ask.
-                    _print_json({"messages": messages})
-                    if not args.quiet:
-                        print(f"listen: message arrived on pass {passes} — "
-                              "waking the session", file=sys.stderr)
-                    return EXIT_OK
-        finally:
-            # Best effort, and only best effort: the TTL is what makes a dead
-            # listener visible. This makes a deliberate stop visible sooner.
+    if not args.quiet:
+        where = " and ".join(f"as {post.agent_id} in {post}" for post in posts)
+        print(f"listen: parked {where}"
+              + (f" until {described} [{source}]" if deadline else ""),
+              file=sys.stderr)
+
+    events: "queue.Queue[tuple[str, _Post, Any]]" = queue.Queue()
+    stop = threading.Event()
+    threads = [
+        threading.Thread(
+            target=_park,
+            args=(post, identity, deadline, described, source, heartbeat_ttl,
+                  args.max_fails, stop, events),
+            daemon=True, name=f"listen:{post.role}",
+        )
+        for post in posts
+    ]
+    for thread in threads:
+        thread.start()
+    watching = list(posts)
+    try:
+        while True:
+            # A little past the deadline, so the room that reaches it reports
+            # first and the exit line can say which one; the clamp inside
+            # `_park` is what keeps a poll from running past it.
+            timeout = None if deadline is None else max(0.0, deadline - time.time()) + 2.0
             try:
-                hub.board_delete(heartbeat)
-            except (SwitchboardError, OSError):
+                kind, post, messages = events.get(timeout=timeout)
+            except queue.Empty:
+                kind, post, messages = "deadline", None, None
+            if kind == "message":
+                pending = [(post, messages)]
+                while True:
+                    try:
+                        other_kind, other_post, other_messages = events.get_nowait()
+                    except queue.Empty:
+                        break
+                    if other_kind == "message":
+                        pending.append((other_post, other_messages))
+                chosen, chosen_messages = _choose_wake(pending, posts)
+                # To stdout, because the wake carries it: the session comes
+                # back already holding the event instead of having to ask.
+                # `messages` first and unchanged, so a reader written for the
+                # single-room listener still finds what it expects.
+                _print_json({
+                    "messages": chosen_messages,
+                    "room": chosen.workspace, "role": chosen.role,
+                    "agent_id": chosen.agent_id,
+                })
+                if not args.quiet:
+                    print(f"listen: message arrived in {chosen} on pass "
+                          f"{chosen.passes} — waking the session", file=sys.stderr)
+                return EXIT_OK
+            if kind == "gone":
+                watching = [w for w in watching if w is not post]
+                if not watching:
+                    # A non-zero exit is still a wake, and that is the
+                    # point: the session finds out its listener is gone
+                    # rather than mistaking a broken hub for a quiet room.
+                    print(f"listen: giving up after {post.fails} consecutive failures",
+                          file=sys.stderr)
+                    return EXIT_ERROR
+                print(f"listen: no longer watching {post}; still parked in "
+                      + ", ".join(str(w) for w in watching), file=sys.stderr)
+                continue
+            if not args.quiet:
+                print(f"listen: reached {described} [{source}] with nothing to report",
+                      file=sys.stderr)
+            return EXIT_DEADLINE
+    finally:
+        stop.set()
+        for post in posts:
+            # The thread's own cleanup only runs once its poll returns, which
+            # may be after this process is gone; do it from here as well.
+            try:
+                post.hub.board_delete(post.heartbeat)
+            except (SwitchboardError, OSError, httpx.HTTPError):
                 pass
-
 
 def _warn_key_left_behind(args: argparse.Namespace, hub: Client) -> None:
     """Say so when this invocation will watch a room it cannot read.
@@ -5503,8 +5682,11 @@ def build_parser() -> argparse.ArgumentParser:
                     "background process by a runner that re-invokes a session "
                     "when one exits — that exit is the wake. It peeks rather "
                     "than drains, so the woken session still calls `inbox` to "
-                    "take delivery. Exit 0 a message arrived, 2 the deadline "
-                    "passed, 1 it never watched anything.",
+                    "take delivery. One process parks in this room and in the "
+                    "lobby every holder of your key shares, so you are findable "
+                    "from other repos while you wait (--no-lobby opts out). Exit "
+                    "0 a message arrived, 2 the deadline passed, 1 it never "
+                    "watched anything.",
     )
     p.add_argument("-c", "--channel", action="append",
                    help="wake on these channels instead of this agent's own inbox")
@@ -5524,6 +5706,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"heartbeat TTL in seconds (default {int(_LISTEN_TTL)})")
     p.add_argument("--max-fails", type=int, default=5,
                    help="consecutive hub errors tolerated before giving up")
+    p.add_argument("--no-lobby", action="store_true",
+                   help="park only in the room named. By default one listener also "
+                        "parks in the lobby every holder of this key shares, so a "
+                        "peer on another repo can find you — this is for a session "
+                        "that specifically does not want to be found while it works.")
     p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")

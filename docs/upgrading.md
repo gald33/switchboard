@@ -3,6 +3,14 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.0.0 → 2.0.1
+
+Server only. The hub's CORS allow-list now includes the two write-key
+headers, so a browser page can present a room's write key across origins.
+On 2.0.0 such a page signed correctly and was refused at the preflight,
+before the hub saw the request; the read-only viewer never hit it. Clients
+are unchanged; self-hosters upgrade the hub. The managed hub already runs it.
+
 ## 1.x → 2.0
 
 2.0 adds **write-protected rooms**: a room whose identifier is derived from a

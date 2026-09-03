@@ -24,9 +24,6 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
-- `next` **`known-rooms-address-book`** — An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects
-  - ↔ related: **`cross-key-rendezvous`** — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
-  - ↔ related: **`selective-wake-for-the-listener`** — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
@@ -69,6 +66,8 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
+- **`stale-token-in-session-env`** — A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names
+  - ↔ related: **`connect-failure-message`** — That one made the 401 say which tier the token came from. This is the case the message cannot yet explain: it reports "a token from SWITCHBOARD_TOKEN in this shell" and the shell was given it by the harness, from a source nothing on disk names.
 - **`standing-checks-that-nothing-runs`** — Three checks exist to catch silent decay, and nothing is scheduled to run any of them
   - ↔ related: **`hub-origin-reachable-bypassing-the-edge`** — That item needs one of these checks run once as its prerequisite; this one is about all three never running again afterwards. Read that one first for what the :8444 enumeration is for.
 - **`unread-dms-not-shown-outside-mcp`** — Only MCP tells an agent something is waiting; CLI and library never do
@@ -134,6 +133,7 @@ graph TD
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
+  stale_token_in_session_env["A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names"]
   standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
   timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
@@ -151,6 +151,7 @@ graph TD
   clients_that_cannot_post -.- read_only_rooms
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
+  connect_failure_message -.- stale_token_in_session_env
   cross_key_rendezvous -.- known_rooms_address_book
   cross_key_rendezvous -.- selective_wake_for_the_listener
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
@@ -442,6 +443,7 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - `stale-token-in-session-env` — That one made the 401 say which tier the token came from. This is the case the message cannot yet explain: it reports "a token from SWITCHBOARD_TOKEN in this shell" and the shell was given it by the harness, from a source nothing on disk names.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/88`
 
@@ -1157,7 +1159,7 @@ graph TD
 ### `known-rooms-address-book`
 
 - **title:** An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects
-- **status:** ready
+- **status:** done
 - **arc:** setup-and-first-run
 - **priority:** next
 - **related to** (not a dependency — both are startable):
@@ -2039,6 +2041,54 @@ graph TD
 > the schema so new hubs never create it, and no migration drops it, because
 > deleting data on deploy is the wrong default. Decide explicitly whether that
 > gets a cleanup path or a documented "it is inert, leave it".
+
+</details>
+
+### `stale-token-in-session-env`
+
+- **title:** A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `connect-failure-message` — That one made the 401 say which tier the token came from. This is the case the message cannot yet explain: it reports "a token from SWITCHBOARD_TOKEN in this shell" and the shell was given it by the harness, from a source nothing on disk names.
+- **refs:**
+  - `docs/environments.md`
+  - `src/switchboard/cli.py`
+
+<details><summary>evidence</summary>
+
+> **Observed 2026-09-03, not reported by anyone.** Every `switchboard` CLI call
+> from a Claude Code desktop session in this repo — and, by the transcripts,
+> from sessions in at least three other worktrees of it — fails with `invalid
+> or missing bearer token` against the managed hub. The shell carries
+> `SWITCHBOARD_TOKEN=JqJt-N…`, which the hub does not accept; `.mcp.json`
+> carries the published `sb_public_lucille`, which it does. Unsetting the
+> variable fixes every command. The MCP bridge is unaffected, because Claude
+> Code hands it `.mcp.json`'s env directly.
+>
+> Where it comes from is the open question. It is in the environment of the
+> `claude` process and of the app's `disclaimer` helper that spawns it, and
+> not in the environment of the `Claude.app` main process — so the app injects
+> it per session. It is in none of the places the settings hierarchy reads:
+> `.claude/settings.json` and `.claude/settings.local.json` in the repo and the
+> worktree (both carry only `SWITCHBOARD_KEY`), `~/.claude/settings*.json`,
+> `~/.claude.json`, the shell rc files, `launchctl getenv`, the managed
+> settings paths, and nothing under `~/Library/Application Support/Claude`
+> names the variable. The value first appears in a transcript from before the
+> managed hub had its published token, which suggests an early `init` against
+> a hub that registered tokens, kept by the app somewhere outside the files
+> it documents.
+>
+> Two things would close this. Either the source is found and the variable
+> removed there, or the CLI stops trusting a shell token that the repo's
+> `.mcp.json` contradicts: when both are present and disagree, try the
+> environment's first and, on a 401, retry with the repo's before failing,
+> saying which one worked. The second is worth doing regardless, because a
+> shell inherits stale exports from many places and this failure names the
+> wrong fix ("export the hub's token") to someone who already did.
+>
+> Done when a fresh session in this repo can run `switchboard agents` with
+> nothing unset by hand.
 
 </details>
 

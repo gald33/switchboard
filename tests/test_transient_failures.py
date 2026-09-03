@@ -83,7 +83,11 @@ def test_the_listener_counts_a_timeout_as_a_retry_not_a_death(monkeypatch, capsy
     monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
     args = argparse.Namespace(
         until=None, channel=None, ttl=1.0, max_fails=3, quiet=True,
-        agent_id="me", execution_class=None, effort=None, json=False)
+        agent_id="me", execution_class=None, effort=None, json=False,
+        # One room. This is about the primary's retry accounting, and a lobby
+        # derived from whatever key the developer's checkout holds would be a
+        # second, real client failing on its own schedule.
+        no_lobby=True)
 
     assert cli.cmd_listen(args) == cli.EXIT_ERROR
     assert len(attempts) == 3, "it should have spent its retries, not died on the first"

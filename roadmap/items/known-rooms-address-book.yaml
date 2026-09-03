@@ -1,6 +1,6 @@
 id: known-rooms-address-book
 title: An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects
-status: ready
+status: done
 arc: setup-and-first-run
 priority: next
 blocked_on: []

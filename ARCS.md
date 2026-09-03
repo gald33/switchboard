@@ -79,7 +79,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 17 item(s), 12 startable
+`setup-and-first-run` · 18 item(s), 12 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -104,7 +104,7 @@ wrong says so.
 | `connect-failure-message` | done | next |
 | `cross-key-rendezvous` | ready | next |
 | `init-writes-rooms-file` | ready | next |
-| `known-rooms-address-book` | ready | next |
+| `known-rooms-address-book` | done | next |
 | `a-lobby-derived-from-the-key` | ready | — |
 | `clients-that-cannot-post` | ready | — |
 | `every-silent-failure-looks-like-a-quiet-room` | ready | — |
@@ -114,6 +114,7 @@ wrong says so.
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
 | `selective-wake-for-the-listener` | ready | — |
+| `stale-token-in-session-env` | ready | — |
 | `timing-cold-start-in-ephemeral-environments` | deferred | — |
 | `unread-dms-not-shown-outside-mcp` | ready | — |
 | `write-parity-across-surfaces` | ready | — |
