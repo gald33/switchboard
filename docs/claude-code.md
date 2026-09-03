@@ -286,6 +286,18 @@ switchboard listen --until forecast:p50 --effort medium
 switchboard listen --until +900
 ```
 
+One process parks in two rooms: the one named, and the lobby every holder of
+this key shares. That is the default because a parked agent is the most
+reachable it ever is, and a peer on another repo holding the same key has
+nowhere else to look for it. The exit line names both, the wake payload says
+which room the message came from (`room` and `role`, beside `messages`), and a
+message in either is the wake. `--no-lobby` parks in the named room only, for a
+session that specifically does not want to be found while it works; without a
+key there is no lobby to derive, and the listener says so. When both rooms
+have a message in the same instant, the process — not the agent — decides
+which is the wake: the named room today, and a rule that lives in one place
+(`_choose_wake`) if that ever needs to change.
+
 `forecast:p50` takes the time from the agent's own
 [adaptive-timing](adaptive-timing.md) model — the moment it predicts it would
 next have looked anyway — which turns a forecast from something advisory into

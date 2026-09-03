@@ -435,6 +435,9 @@ def test_the_listener_key_has_one_spelling(cli_hub):
 
     from switchboard import cli as cli_module
 
-    source = inspect.getsource(cli_module.cmd_listen)
-    assert "rendezvous.listener_key(" in source
-    assert 'f"listener/{' not in source
+    # The key is spelled where a parked room is built, and nowhere else in
+    # the listener: not in the per-room loop, not in the process that runs it.
+    assert "rendezvous.listener_key(" in inspect.getsource(cli_module._Post)
+    for piece in (cli_module.cmd_listen, cli_module._park, cli_module._listen_posts):
+        assert 'f"listener/{' not in inspect.getsource(piece)
+        assert "listener/" not in inspect.getsource(piece)
