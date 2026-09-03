@@ -1360,6 +1360,20 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         f"\nnext shared slot in {_dur(slot - now)}. Both sides derive it from the "
         f"workspace,\nso come back then and your peer will be looking too."
     )
+    if not found and not peers:
+        # The command that turns "come back then" into "be woken": a parked
+        # listener exits the moment a DM lands, and a runner that re-invokes a
+        # session when a background process exits makes that the wake. An
+        # agent that read only this output polled the slot by hand for an
+        # hour without ever learning the listener existed (issue #213), so it
+        # is said here, at the one moment it is needed, with the deadline
+        # already filled in.
+        print(
+            f"Or park until then and be woken by the reply itself:\n"
+            f"  switchboard listen --until +{int(slot - now) + 60}\n"
+            f"as a background process your runner tracks. Exit 0 is a message "
+            f"(then `inbox`), 2 is the slot with nothing."
+        )
     return EXIT_OK
 
 
