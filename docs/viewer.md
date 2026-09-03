@@ -146,6 +146,13 @@ board — before you paste it anywhere, and the local viewer offers no share at
 all, because there the keys stay in the Python process and a link to
 `127.0.0.1` is not a room anybody else can open.
 
+What a link does *not* carry is the room's write key. `invite --link` leaves
+it out, and this page never learned a field it could pass on — so in a
+write-protected (`ws_…`) room the holder of a link can read and nothing else,
+and it is the hub that refuses, not the page. The viewer was always read-only
+by its own good behaviour; this is the version where it could not be
+otherwise. See [encryption.md](encryption.md#read-only-rooms-enforced-by-the-hub).
+
 Joining takes four facts that must each match a peer's, and **every one of
 them fails silently**: a different key, workspace or hub still connects, and
 you are simply alone somewhere that looks quiet. Four chances to differ become

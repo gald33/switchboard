@@ -95,6 +95,12 @@ class Invite:
     #: hub". The key name is plaintext here so the joiner can ask for it; the
     #: value under it is sealed, and unreadable to anyone on another key.
     probe: str = ""
+    #: The room's write key, for a peer who will *work* in it. Absent from an
+    #: invite meant for a viewer, which is what makes that viewer read-only
+    #: in fact: the hub refuses every write from anyone without it, whatever
+    #: the page or the person tries. A secret, like the key, and carried the
+    #: same way. Meaningless for a room whose identifier is not `ws_…`.
+    write_key: str | None = None
 
     def __post_init__(self) -> None:
         """Keep `workspace` and `workspace_token` from ever disagreeing.
@@ -134,6 +140,11 @@ class Invite:
             "ki": self.key_id,
             "wt": self.workspace_token,
         }
+        if self.write_key:
+            # Only when carried. An invite without one must encode to exactly
+            # the bytes the browser build produces for the same room, and that
+            # build has no write key to add — a viewer never holds one.
+            payload["wk"] = self.write_key
         raw = json.dumps(payload, separators=(",", ":")).encode()
         return PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -177,6 +188,7 @@ class Invite:
             # `__post_init__` checks this against `workspace` — a mismatch is
             # an altered string, not a preference to resolve.
             workspace_token=str(payload.get("wt") or ""),
+            write_key=str(payload.get("wk") or "") or None,
         )
 
     def resolve_key(self, fallback: str | None = None,
@@ -214,6 +226,22 @@ class Invite:
             )
         return found
 
+    def resolve_write_key(self, fallback: str | None = None,
+                          env: dict[str, str] | None = None) -> str | None:
+        """The write key to sign with, on the same rule as `resolve_key`.
+
+        Carried, it wins. Absent, the environment's — looked up by `key_id`
+        when the invite names one, since a write key is filed under the same
+        id as the key it accompanies. Unlike `resolve_key` this never
+        refuses: an invite without a write key is the *read-only* invite,
+        and a reader with nothing to sign with is exactly what it describes.
+        """
+        if self.write_key:
+            return self.write_key
+        if not self.key_id or self.key_id == rooms.DEFAULT_KEY_ID:
+            return fallback
+        return rooms.write_key_for(self.key_id, env) or fallback
+
     def env_block(self) -> str:
         """Exactly what to export, for an environment with no checkout."""
         lines = [f"export SWITCHBOARD_URL={self.url}",
@@ -222,6 +250,8 @@ class Invite:
             lines.append(f"export SWITCHBOARD_TOKEN={self.token}")
         if self.key:
             lines.append(f"export SWITCHBOARD_KEY={self.key}")
+        if self.write_key:
+            lines.append(f"export SWITCHBOARD_WRITE_KEY={self.write_key}")
         return "\n".join(lines)
 
     def link(self, page: str) -> str:
@@ -273,8 +303,11 @@ class Invite:
         carried = "set" if self.key else "none"
         if self.key_id:
             carried += f" (id {self.key_id})"
-        return (
+        text = (
             f"hub={self.url} workspace={self.workspace} "
             f"token={'set' if self.token else 'none'} "
             f"key={carried}"
         )
+        if rooms.is_write_protected(self.workspace):
+            text += f" write_key={'set' if self.write_key else 'none (read-only)'}"
+        return text

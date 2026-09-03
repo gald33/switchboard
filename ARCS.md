@@ -41,7 +41,7 @@ issue — read off a line in the README rather than reported by anyone.
 
 ### 🟠 What protects a room once the hub stops authorizing anyone
 
-`hub-boundary` · 8 item(s), 6 startable
+`hub-boundary` · 9 item(s), 6 startable
 
 `https://github.com/gald33/switchboard/issues/61` · `https://github.com/gald33/switchboard/issues/73` · `docs/model.md` · `docs/encryption.md`
 
@@ -73,6 +73,7 @@ under pressure.
 | `abuse-control-after-authorization` | deferred | — |
 | `hub-origin-reachable-bypassing-the-edge` | ready | — |
 | `provisioned-token-is-stale-and-nothing-says-so` | ready | — |
+| `read-only-rooms` | done | — |
 | `roles-and-authority-between-agents` | deferred | — |
 | `standing-checks-that-nothing-runs` | ready | — |
 

@@ -105,7 +105,8 @@ class Hub:
 
     def __init__(self, *, app: Any, store: Store, clock: Clock, http: Any,
                  config: ServerConfig, workspace: str, token: str | None,
-                 key: str | None, peer_log: str = "") -> None:
+                 key: str | None, peer_log: str = "",
+                 write_key: str | None = None) -> None:
         #: The FastAPI application, for anything that wants the app object.
         self.app = app
         #: The store behind it. Read it to assert on what was *recorded*, as
@@ -122,6 +123,12 @@ class Hub:
         #: The workspace encryption key, if this hub was built with one. Every
         #: client it hands out uses it by default, so they can read each other.
         self.key = key
+        #: The room's write key, if this hub was built with one. Then the
+        #: workspace is a write-protected ``ws_…`` room named by that key, every
+        #: client it hands out signs with it by default, and ``write_key=""``
+        #: on :meth:`client` makes a reader — present, reading, refused on
+        #: every write.
+        self.write_key = write_key
         #: Where clients of this hub keep their peer-key witness log. Empty by
         #: default so tests do not write to the real one in ``~/.switchboard``
         #: or inherit each other's witnessing; pass a tmp path to exercise it.
@@ -151,7 +158,7 @@ class Hub:
     # --- clients ------------------------------------------------------------
 
     def client_config(self, *, workspace: str | None = None, agent_id: str | None = None,
-                      key: str | None = None) -> ClientConfig:
+                      key: str | None = None, write_key: str | None = None) -> ClientConfig:
         """The config a client of this hub needs.
 
         Useful on its own for testing code that takes a ``ClientConfig`` and
@@ -164,6 +171,7 @@ class Hub:
             workspace=workspace or self.workspace,
             agent_id=agent_id,
             key=self.key if key is None else key,
+            write_key=(self.write_key if write_key is None else write_key) or None,
             # Off by default in tests. The peer-key log is per *machine* and
             # deliberately outlives a process, so a shared one would carry
             # witnessing between test cases and make a swap assertion depend on
@@ -173,6 +181,7 @@ class Hub:
 
     def client(self, name: str | None = None, *, agent_id: str | None = None,
                workspace: str | None = None, key: str | None = None,
+               write_key: str | None = None,
                register: bool = False, kind: str = "test",
                **register_kwargs: Any) -> Client:
         """A :class:`~switchboard.Client` wired to this hub.
@@ -190,9 +199,14 @@ class Hub:
         who cannot read the others, and ``""`` makes it an unencrypted client
         in an encrypted workspace — which is a real misconfiguration and worth
         testing, because nothing raises when it happens.
+
+        ``write_key`` overrides the hub's the same way, and ``""`` makes a
+        *reader*: a client with no write key in a write-protected room, which
+        the hub admits to every GET and refuses on every write.
         """
         name = name or f"agent-{uuid.uuid4().hex[:8]}"
-        config = self.client_config(workspace=workspace, agent_id=agent_id or name, key=key)
+        config = self.client_config(workspace=workspace, agent_id=agent_id or name, key=key,
+                                    write_key=write_key)
         client = Client(
             config,
             agent_id=agent_id or name,
@@ -205,7 +219,8 @@ class Hub:
         return client
 
     def async_client(self, name: str | None = None, *, agent_id: str | None = None,
-                     workspace: str | None = None, key: str | None = None) -> AsyncClient:
+                     workspace: str | None = None, key: str | None = None,
+                     write_key: str | None = None) -> AsyncClient:
         """An :class:`~switchboard.AsyncClient` wired to this hub.
 
         Not registered for you: registering is a coroutine, and a fixture that
@@ -214,7 +229,8 @@ class Hub:
         import httpx
 
         name = name or f"agent-{uuid.uuid4().hex[:8]}"
-        config = self.client_config(workspace=workspace, agent_id=agent_id or name, key=key)
+        config = self.client_config(workspace=workspace, agent_id=agent_id or name, key=key,
+                                    write_key=write_key)
         http = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app),
             base_url=self.url,
@@ -341,10 +357,11 @@ def _auth_headers(token: str | None) -> dict[str, str]:
 
 
 @contextlib.contextmanager
-def hub(*, workspace: str = "test-workspace", token: str | None = None,
+def hub(*, workspace: str | None = None, token: str | None = None,
         key: str | None = None, db: str | None = None, start: float = EPOCH,
         store: Store | None = None, server_config: ServerConfig | None = None,
-        peer_log: str = "", **config_kwargs: Any) -> Iterator[Hub]:
+        peer_log: str = "", write_key: str | None = None,
+        **config_kwargs: Any) -> Iterator[Hub]:
     """Run a hub for the duration of the block.
 
     ``db`` defaults to an in-memory database, which is both faster and safer
@@ -359,6 +376,12 @@ def hub(*, workspace: str = "test-workspace", token: str | None = None,
     ``token`` closes the perimeter. Clients get it automatically; use
     ``hub.raw(token=...)`` to make the request that should be refused.
 
+    ``write_key`` makes the workspace a write-protected room — the ``ws_…``
+    identifier the key names, unless ``workspace`` is also given, which is
+    only sensible when the two agree. Every client signs with it by default;
+    ``hub.client(write_key="")`` is the reader whose writes should be refused.
+    Without one, ``workspace`` defaults to ``"test-workspace"``.
+
     ``store`` takes an already-built store, for the tests that need to
     instrument one — counting reads, say, to prove a long poll is not
     secretly polling. Anything else left to the defaults.
@@ -370,6 +393,13 @@ def hub(*, workspace: str = "test-workspace", token: str | None = None,
 
     from .server import create_app
 
+    if workspace is None:
+        if write_key:
+            from .writekey import RoomWriteKey
+
+            workspace = RoomWriteKey.from_seed(write_key).workspace
+        else:
+            workspace = "test-workspace"
     config = server_config or ServerConfig(
         db_path=db or (store.path if store else ":memory:"),
         token=token, **config_kwargs,
@@ -386,6 +416,7 @@ def hub(*, workspace: str = "test-workspace", token: str | None = None,
         handle = Hub(
             app=app, store=store, clock=clock, http=http, config=config,
             workspace=workspace, token=token, key=key, peer_log=peer_log,
+            write_key=write_key,
         )
         try:
             yield handle

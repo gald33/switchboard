@@ -13,6 +13,7 @@ An agent needs four values. Where each one comes from is the whole subject:
 | `SWITCHBOARD_WORKSPACE` | `.mcp.json`, committed | no |
 | `SWITCHBOARD_TOKEN` | `.mcp.json`, committed, on the managed hub — the environment's own secret store on a hub with a real perimeter | only when it is a secret |
 | `SWITCHBOARD_KEY` | the environment's own secret store | yes |
+| `SWITCHBOARD_WRITE_KEY` | the environment's own secret store — only for agents that *write* a write-protected (`ws_…`) room; with it set, `SWITCHBOARD_WORKSPACE` may be left out, since the key names the room | yes |
 
 The client reads all four from the environment and nowhere else — there is no
 config file, no `~/.switchboard/config`, no user-level scope. What looks

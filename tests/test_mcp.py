@@ -551,7 +551,8 @@ def test_keygen_returns_a_key_and_an_opaque_workspace(hub):
     payload, is_error = call(a1, "keygen")
     assert is_error is False
     assert len(payload["key"]) > 20
-    assert payload["workspace"].startswith("w_")
+    assert payload["workspace"].startswith("ws_"), "minted rooms are write-protected"
+    assert payload["write_key"]
 
     second, _ = call(a1, "keygen")
     assert second["key"] != payload["key"]
@@ -568,7 +569,8 @@ def test_keygen_needs_no_prior_registration(hub):
 def test_custom_scope_say_and_inbox_reach_only_peers_who_know_it(hub):
     a1, a2, outsider = (make_bridge(hub, n) for n in ("a1", "a2", "outsider"))
     pair, _ = call(a1, "keygen")
-    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+    scope = {"workspace": pair["workspace"], "key": pair["key"],
+             "write_key": pair["write_key"]}
 
     call(a1, "say", channel="plan", message="side conversation", custom_scope=scope)
 
@@ -581,7 +583,8 @@ def test_custom_scope_say_and_inbox_reach_only_peers_who_know_it(hub):
 def test_custom_scope_claim_excludes_within_the_side_channel_only(hub):
     a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
     pair, _ = call(a1, "keygen")
-    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+    scope = {"workspace": pair["workspace"], "key": pair["key"],
+             "write_key": pair["write_key"]}
 
     assert call(a1, "claim", resource="shared", custom_scope=scope)[0]["acquired"] is True
     # The same resource string on the default scope is untouched.
@@ -597,7 +600,8 @@ def test_custom_scope_claim_excludes_within_the_side_channel_only(hub):
 def test_custom_scope_dm_after_discovering_a_peer_via_say(hub):
     a1, a2 = make_bridge(hub, "a1"), make_bridge(hub, "a2")
     pair, _ = call(a1, "keygen")
-    scope = {"workspace": pair["workspace"], "key": pair["key"]}
+    scope = {"workspace": pair["workspace"], "key": pair["key"],
+             "write_key": pair["write_key"]}
 
     call(a2, "say", channel="hello", message="a2 here", custom_scope=scope)
     inbox, _ = call(a1, "inbox", channels=["hello"], custom_scope=scope)
