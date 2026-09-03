@@ -1588,7 +1588,7 @@ def cmd_find(args: argparse.Namespace) -> int:
         print("no known rooms to search — `switchboard rooms --known`", file=sys.stderr)
         return EXIT_ERROR
     reports = knownrooms.sweep(
-        book, topic=args.topic or rendezvous.OPEN_TOPIC, agent_id=identity.agent_id,
+        book, topic=args.topic, agent_id=identity.agent_id,
         client_factory=Client, query=args.query,
     )
     hits = [r for r in reports if r["roster"] or r["notes"]]
@@ -5924,7 +5924,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "only; announces nothing.",
     )
     p.add_argument("query", help="a name, branch, task word or note fragment")
-    p.add_argument("--topic", help="rendezvous topic whose notes to search (default: open)")
+    p.add_argument("--topic", help="search only this rendezvous topic's notes "
+                                   "(default: every topic's)")
     p.set_defaults(func=cmd_find)
 
     p = sub.add_parser("agents", help="who else is awake")

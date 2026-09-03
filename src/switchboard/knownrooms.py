@@ -314,16 +314,18 @@ class Book:
         ]
 
 
-def sweep(book: Book, *, topic: str, agent_id: str, client_factory: Callable[..., Any],
+def sweep(book: Book, *, topic: str | None, agent_id: str, client_factory: Callable[..., Any],
           exclude: tuple[str, str] | None = None, query: str | None = None,
           now: float | None = None) -> list[dict[str, Any]]:
     """Look in every known room at once, without announcing anywhere.
 
     Read-only by design: the note an agent leaves belongs in the room it is
     actually in; a note in every room it has ever visited is litter. Each room
-    is reported on its own — roster, live notes on `topic`, who has a listener
-    parked — so the agent can DM into the right one. `query` narrows the
-    roster and notes to entries mentioning it, which is `find`. A room that
+    is reported on its own — roster, live notes on `topic` (or on every
+    topic, when none is given: a search for a person reads whatever they
+    wrote), who has a listener parked — so the agent can DM into the right
+    one. `query` narrows the roster and notes to entries mentioning it, which
+    is `find`. A room that
     cannot be reached, or whose key this environment no longer holds, is
     reported as such rather than skipped silently.
     """
@@ -359,7 +361,8 @@ def sweep(book: Book, *, topic: str, agent_id: str, client_factory: Callable[...
                     and mentions(a.get("name"), a.get("branch"), a.get("task"))
                 ]
                 notes = []
-                for entry in hub.board_list(prefix=rendezvous.key_for(topic)):
+                notes_under = rendezvous.key_for(topic) if topic else rendezvous.PREFIX
+                for entry in hub.board_list(prefix=notes_under):
                     if entry.get("unreadable"):
                         continue
                     note = rendezvous.Intent.from_json(entry.get("value"))
