@@ -131,11 +131,10 @@ the roster correctly, and wakes nobody. Then:
    nothing. `1`: it never watched anything.
 3. **Re-arm if you are still waiting.** It is one wake, not a subscription.
 
-One process parks in this repo's room **and** in your key's lobby **and** in
-every room you joined, were invited into or minted in the last hour, so a
-peer who can reach you anywhere reaches you; the wake says which room it
-came from (`room`, `role`). `--no-lobby` opts out of the lobby; `--in
-<label>` adds a known room, `--only <label>` parks there and nowhere else. `-w <room>` or `--invite <string>` parks it in another room. `init` also
+One process parks in this repo's room **and** in your key's lobby, so a
+peer from another repo can reach you; the wake says which room it came from
+(`room`, `role`). `--no-lobby` opts out for a session that does not want to
+be found. `-w <room>` or `--invite <string>` parks it in another room. `init` also
 installs `.switchboard/wake-on-message.sh`, the same command with this repo's
 hub and room filled in.
 
@@ -173,13 +172,6 @@ sealed value the inviter left, which is the only proof the hub, workspace
 and key all match. `WRONG ROOM` means ask for a fresh invite. Then announce
 yourself and read `coord/checking/<their-id>` — the roster being empty is the
 expected case, not a failure.
-
-**Looking for someone you have met somewhere?** `switchboard find <name or
-branch>` sweeps every room this machine knows — the tool keeps that list
-(`rooms --known`) from every `join`, `--invite` and `init`, as references,
-never keys — and says which room they are in and whether a listener is
-parked there; `switchboard --room <label> dm …` reaches them. `rendezvous`
-does the same sweep alongside its own room, so nothing extra is asked of you.
 
 **No invite? Use `rendezvous`, and park a listener until the slot.**
 
