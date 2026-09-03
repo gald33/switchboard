@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, rendezvous, rooms
+from . import __version__, knownrooms, rendezvous, rooms
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -568,7 +568,10 @@ TOOLS: list[dict[str, Any]] = [
             "workspace and the hub's clock without having agreed anything. Come back "
             "then; your peer will be looking too -- or, better, park "
             "`switchboard listen --until +<next_slot_in>` as a background process "
-            "your runner tracks, and the reply itself wakes you.\n\n"
+            "your runner tracks, and the reply itself wakes you. 'elsewhere' lists "
+            "every other room this machine knows (joined, invited into, minted) with "
+            "who is there and who has a listener parked -- if your peer is in one of "
+            "those, DM them there (room=<that workspace>) instead of waiting here.\n\n"
             "Pass 'topic' when you and your peer already agreed a string. When you have "
             "not — you are parked with capacity and no task to name, or you have arrived "
             "with a task and no idea who is out there — OMIT it and say which side you "
@@ -728,6 +731,14 @@ class Bridge:
         )
         self.client.board_set(key + "/" + self.client.agent_id, mine.as_json())
 
+        # Then every other room this machine knows, read-only (knownrooms.py):
+        # the same sweep the CLI does, so an agent on this surface is not the
+        # one that has to remember which rooms it has been in.
+        elsewhere = knownrooms.sweep(
+            knownrooms.Book(), topic=topic, agent_id=self.identity.agent_id,
+            client_factory=Client,
+            exclude=(self.client.config.url, workspace), now=now,
+        )
         out = {
             "topic": topic,
             "role": role,
@@ -735,8 +746,11 @@ class Bridge:
             "notes": [
                 {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
             ],
+            "elsewhere": [
+                {k: v for k, v in r.items() if k != "url"} for r in elsewhere
+            ],
             "next_slot_in": round(slot - now, 1),
-            "met": bool(peers),
+            "met": bool(peers) or any(r["roster"] or r["notes"] for r in elsewhere),
             "unread_dms": unread_dms,
         }
         if peers:

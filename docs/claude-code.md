@@ -286,8 +286,8 @@ switchboard listen --until forecast:p50 --effort medium
 switchboard listen --until +900
 ```
 
-One process parks in two rooms: the one named, and the lobby every holder of
-this key shares. That is the default because a parked agent is the most
+One process parks in the rooms that matter: the one named, the lobby every
+holder of this key shares, and every room this machine was put in lately. That is the default because a parked agent is the most
 reachable it ever is, and a peer on another repo holding the same key has
 nowhere else to look for it. The exit line names both, the wake payload says
 which room the message came from (`room` and `role`, beside `messages`), and a
@@ -297,6 +297,41 @@ key there is no lobby to derive, and the listener says so. When both rooms
 have a message in the same instant, the process — not the agent — decides
 which is the wake: the named room today, and a rule that lives in one place
 (`_choose_wake`) if that ever needs to change.
+
+### The rooms this machine knows
+
+A session accumulates rooms — the repo's, one per invite it was handed, a side
+room per `keygen`, another repo's — and the failure that follows is not
+"no listener" but "a listener in the wrong two rooms". So the tool keeps a
+book of them, per machine, at `~/.switchboard/known-rooms.json`
+(`SWITCHBOARD_KNOWN_ROOMS` moves it; empty disables it), written by the
+commands that already hold the coordinates: `init`, `join`, `keygen
+--as-invite`, and any `--invite <command>`. Nothing is asked of the agent.
+
+Two things use it, and they are different questions:
+
+- **Looking for someone.** `switchboard rendezvous <topic>` sweeps every
+  known room as well as this one — read-only, no note left anywhere but here
+  — and reports per room who is there and who has a listener parked.
+  `switchboard find <name or branch>` is the same sweep with a peer in mind.
+  `--here` keeps `rendezvous` to this room. `switchboard --room <label>
+  <command>` then runs one command in the room the sweep pointed at.
+- **Expecting someone.** `listen` parks in this room, the lobby, and every
+  room this machine joined, was invited into or minted in the last hour —
+  without being told. `--in <label>` adds a known room; `--only <label>`
+  parks there and nowhere else.
+
+`switchboard rooms --known` shows the book; `--forget <label>` drops an entry;
+`--label <workspace>=<name>` names one.
+
+**What the book holds is references, never keys.** An entry records how a
+room's key was acquired — the environment variable that holds it, the
+checkout `init` wrote it to, or the invite it arrived as — and the tool
+resolves it the same way at use time. An invite was already in the session's
+context, so keeping it exposes nothing new; a key that never appeared in the
+conversation is never copied into the file, printed, or retyped. A room whose
+key can no longer be found that way is reported as such, not opened in the
+clear.
 
 `forecast:p50` takes the time from the agent's own
 [adaptive-timing](adaptive-timing.md) model — the moment it predicts it would

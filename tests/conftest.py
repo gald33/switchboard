@@ -62,9 +62,14 @@ def no_outbound_http(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clean_switchboard_env(monkeypatch):
+def clean_switchboard_env(monkeypatch, tmp_path):
     for name in _SWITCHBOARD_ENV + _SESSION_ENV:
         monkeypatch.delenv(name, raising=False)
+    # The book of known rooms is per machine and written by ordinary commands
+    # (`init`, `join`, `--invite`), so without this every CLI test would leave
+    # its throwaway rooms in the developer's own ~/.switchboard. One file per
+    # test; subprocesses inherit it through the environment.
+    monkeypatch.setenv("SWITCHBOARD_KNOWN_ROOMS", str(tmp_path / "known-rooms.json"))
     # `init` only prompts when it detects a terminal, and never under CI. Tests
     # inherit neither, but be explicit: a test that blocks on input that never
     # arrives hangs the suite rather than failing it.

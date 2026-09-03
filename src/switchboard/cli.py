@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import __version__, drill, holds, invite, rendezvous, rooms
+from . import __version__, drill, holds, invite, knownrooms, rendezvous, rooms
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -379,6 +379,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     if getattr(args, "write_key", None):
         config.write_key = args.write_key
     config = _apply_invite(config, args)
+    config = _apply_known_room(config, args)
     return _apply_lobby(config, args)
 
 
@@ -413,6 +414,78 @@ def _apply_lobby(config: ClientConfig, args: argparse.Namespace) -> ClientConfig
     config.key = key
     config.workspace = rooms.lobby(key).workspace
     return config
+
+
+def _room_label(room: invite.Invite) -> str:
+    """A label for a room that arrived as an invite: the note's first clause,
+    which is what the sender called it, else the identifier."""
+    if room.note:
+        return room.note.split(":", 1)[0].split(" — ", 1)[0].strip()[:32] or room.workspace
+    return room.workspace
+
+
+def _remember_invited(room: invite.Invite, blob: str, *, learned: str,
+                      label: str | None = None) -> None:
+    """Record a room that arrived as an invite — as the invite.
+
+    The string was already in this session's context and terminal, so keeping
+    it exposes nothing that was not exposed (`knownrooms.py`). A key the
+    invite *names* but does not carry is kept as the variable's name, never
+    looked up and copied.
+    """
+    try:
+        if room.key:
+            key_ref = knownrooms.invite_reference(blob)
+        elif room.key_id:
+            key_ref = knownrooms.env_reference(rooms.env_var_for(room.key_id))
+        else:
+            key_ref = dict(knownrooms.NONE)
+        token_ref = (knownrooms.invite_reference(blob) if room.token
+                     else knownrooms.env_reference("SWITCHBOARD_TOKEN"))
+        knownrooms.Book().remember(knownrooms.KnownRoom(
+            label=label or _room_label(room), url=room.url.rstrip("/"),
+            workspace=room.workspace, key=key_ref, token=token_ref,
+            learned=learned, note=room.note,
+        ))
+    except Exception:  # noqa: BLE001 - the book fails soft, always
+        pass
+
+
+def _note_peers(hub: Client, agents: list[dict[str, Any]]) -> None:
+    """Remember who was on this room's roster, if the room is in the book."""
+    try:
+        knownrooms.Book().note_peers(hub.config.url, hub.config.workspace, agents)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _apply_known_room(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
+    """Fold `--room <label>` in: a room from the book, by the name this
+    machine gave it, resolved the way it was learned."""
+    label = getattr(args, "room", None)
+    if not label:
+        return config
+    if getattr(args, "invite", None) or getattr(args, "lobby", False):
+        raise SystemExit("--room names a known room; it cannot be combined with "
+                         "--invite or --lobby, which name others.")
+    book = knownrooms.Book()
+    room = book.by_label(label)
+    if room is None:
+        known = ", ".join(sorted(r.label for r in book.rooms())) or "none"
+        raise SystemExit(f"no known room called {label!r}; this machine knows: {known}"
+                         " (`switchboard rooms --known`)")
+    resolved = room.config()
+    if resolved is None:
+        raise SystemExit(
+            f"known room {label!r} is encrypted and its key cannot be found the way "
+            f"it was learned ({room.key.get('from')}); it is not stored, on purpose."
+        )
+    book.remember(room)
+    return replace(
+        config, url=resolved.url, url_source="known-room", workspace=resolved.workspace,
+        token=resolved.token or config.token, key=resolved.key,
+        write_key=resolved.write_key,
+    )
 
 
 def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
@@ -454,6 +527,7 @@ def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfi
             "one of them describes a room nobody is in. Drop the flag, or drop "
             "the invite."
         )
+    _remember_invited(room, blob, learned="invite")
     return replace(
         config, url=room.url.rstrip("/"), url_source="invite",
         workspace=room.workspace,
@@ -485,7 +559,37 @@ def _make_client(args: argparse.Namespace) -> Client:
     # second identity's cursor.
     _warn_identity_drift(args, identity)
     _warn_unresolved_room(args, config)
+    _remember_repo_room(args, config)
     return Client(config, agent_id=identity.agent_id)
+
+
+def _remember_repo_room(args: argparse.Namespace, config: ClientConfig) -> None:
+    """Put this checkout's own room in the book, by reference to the checkout.
+
+    `init` records it, but a repo set up before the book existed would never
+    be listed, so every command run inside an `init`-ed checkout, for the
+    room its `.mcp.json` routes to, records it too. The key is referenced as
+    the checkout when `init` wrote it there, else as the variable holding it —
+    never as its value (knownrooms.py).
+    """
+    if any(getattr(args, flag, None) for flag in ("invite", "lobby", "room", "workspace")):
+        return
+    try:
+        where = Path(".").resolve()
+        if mcp_env(where, "SWITCHBOARD_WORKSPACE") != config.workspace:
+            return
+        if _saved_key(where):
+            key_ref = knownrooms.repo_reference(where)
+        elif os.environ.get("SWITCHBOARD_KEY"):
+            key_ref = knownrooms.env_reference("SWITCHBOARD_KEY")
+        else:
+            key_ref = dict(knownrooms.NONE)
+        knownrooms.Book().remember(knownrooms.KnownRoom(
+            label=where.name, url=config.url, workspace=config.workspace,
+            key=key_ref, token=knownrooms.repo_reference(where), learned="init",
+        ))
+    except Exception:  # noqa: BLE001 - the book fails soft
+        pass
 
 
 #: Set once the rooms warning has been printed, so a command building two
@@ -819,6 +923,9 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str,
         key=key, write_key=None if args.link else write_key,
         note=args.note or "", probe=probe,
     )
+    _remember_invited(blob, blob.encode(), learned="keygen",
+                      label=(args.note or "").split(":", 1)[0].strip()[:32]
+                      or f"minted-{workspace[-8:]}")
     handover, caveat = _handover(blob, args)
     if args.json:
         _print_json({
@@ -956,6 +1063,53 @@ def _offer_clipboard(text: str, what: str, args: argparse.Namespace) -> None:
         print("no clipboard tool found — copy it from above", file=sys.stderr)
 
 
+def _rooms_book(args: argparse.Namespace) -> int:
+    """The other half of `rooms`: what this *machine* knows, not what the repo
+    declares — every room a command here has been in, as references."""
+    fmt = Fmt(_use_color(sys.stdout))
+    book = knownrooms.Book()
+    if not book.enabled:
+        print("the book of known rooms is disabled (SWITCHBOARD_KNOWN_ROOMS is empty)")
+        return EXIT_ERROR
+    if args.forget:
+        if book.forget(args.forget):
+            print(f"forgot {args.forget}")
+            return EXIT_OK
+        print(f"error: no known room called {args.forget!r}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.label:
+        workspace, _, name = args.label.partition("=")
+        if not name or not book.relabel(workspace, name):
+            print(f"error: --label takes WORKSPACE=NAME for a room in the book "
+                  f"(got {args.label!r})", file=sys.stderr)
+            return EXIT_ERROR
+        print(f"{workspace} is now {name}")
+        return EXIT_OK
+    known = book.rooms()
+    if args.json:
+        _print_json({"path": str(book.path), "rooms": [
+            {**r.as_json(), "key_available": r.config() is not None} for r in known
+        ]})
+        return EXIT_OK
+    if not known:
+        print(f"no known rooms yet ({book.path}). `init`, `join`, `keygen --as-invite` "
+              "and any `--invite` command add to it.")
+        return EXIT_OK
+    now = time.time()
+    print(fmt.bold(f"{'LABEL':<20} {'WORKSPACE':<26} {'LEARNED':<8} {'LAST':<8} KEY  PEERS SEEN"))
+    for r in sorted(known, key=lambda r: -r.last_used):
+        usable = r.config() is not None
+        key = ("plain" if not r.encrypted else
+               (fmt.green(r.key.get("from", "?")) if usable
+                else fmt.red(f"{r.key.get('from', '?')}: unavailable")))
+        peers = ", ".join(sorted(r.peers)[:4]) + (" …" if len(r.peers) > 4 else "")
+        print(f"{r.label[:19]:<20} {r.workspace[:25]:<26} {r.learned:<8} "
+              f"{_dur(now - r.last_used):<8} {key}  {fmt.dim(peers)}")
+    print(fmt.dim(f"\n{book.path} — references, not keys: each is resolved the way it "
+                  "was learned. `rooms --forget LABEL` drops one."))
+    return EXIT_OK
+
+
 def cmd_rooms(args: argparse.Namespace) -> int:
     """Show what this repo declares and what this environment can open.
 
@@ -964,6 +1118,8 @@ def cmd_rooms(args: argparse.Namespace) -> int:
     a malformed file must not break `--help`. This is where that failure is
     supposed to surface, in full, with the reason.
     """
+    if args.known or args.forget or args.label:
+        return _rooms_book(args)
     directory = Path(args.dir or ".").resolve()
     try:
         declared = rooms.load(directory)
@@ -1223,6 +1379,7 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         found: list[dict[str, Any]] = []
         strangers: list[dict[str, Any]] = []
         peers: list[rendezvous.Intent] = []
+        everyone: list[dict[str, Any]] = []
         # Only the reserved topic needs the roles kept apart. Two agents who
         # agreed a topic out of band have already established that they are
         # about the same thing, and are usually both seeking — filtering there
@@ -1290,10 +1447,20 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             next_slot=slot, role=role,
         )
         hub.board_set(key + "/" + hub.agent_id, mine.as_json())
+        _note_peers(hub, everyone)
+
+    # Then everywhere else this machine has been (knownrooms.py): read-only,
+    # one report per room, so the agent can DM into the right one. The note
+    # above stays in the room this invocation is actually in.
+    elsewhere = [] if args.here else knownrooms.sweep(
+        knownrooms.Book(), topic=topic, agent_id=identity.agent_id,
+        client_factory=Client, exclude=(config.url, config.workspace), now=now,
+    )
 
     if args.json:
         _print_json({
             "topic": topic, "agent_id": mine.agent_id, "role": role,
+            "elsewhere": elsewhere,
             "roster": found,
             "notes": [
                 {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
@@ -1352,6 +1519,7 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             f"whole problem: get an invite and\nrun `switchboard join <invite>`, "
             f"which fails loudly instead of quietly."
         )
+    _print_elsewhere(fmt, elsewhere)
     if not found and not peers:
         # The honest report, and the one that must not read as failure: an
         # agent told "nobody is here" stops, which is how both sides quit.
@@ -1374,6 +1542,80 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             f"as a background process your runner tracks. Exit 0 is a message "
             f"(then `inbox`), 2 is the slot with nothing."
         )
+    return EXIT_OK
+
+
+def _print_elsewhere(fmt: Fmt, elsewhere: list[dict[str, Any]]) -> None:
+    """One line per other known room: who is there, and how to reach them."""
+    if not elsewhere:
+        return
+    print(f"\n{fmt.bold('elsewhere')} — {len(elsewhere)} other room(s) this machine knows:")
+    for report in elsewhere:
+        label = report["label"][:22]
+        if report.get("problem"):
+            print(f"  {label:<23} {fmt.dim(report['problem'])}")
+            continue
+        roster, notes, parked = report["roster"], report["notes"], set(report["reachable"])
+        if not roster and not notes:
+            print(f"  {label:<23} {fmt.dim('nobody')}")
+            continue
+        who = []
+        for a in roster[:3]:
+            tag = "away" if a.get("away") else "here"
+            if a.get("agent_id") in parked:
+                tag += ", parked"
+            who.append(f"{(a.get('name') or a.get('agent_id', ''))[:20]} ({tag})")
+        for n in notes[:2]:
+            tag = "parked" if n.get("agent_id") in parked else "note"
+            who.append(f"{(n.get('want') or n.get('agent_id', ''))[:28]} ({tag})")
+        print(f"  {fmt.green(label):<23} {'; '.join(who)}")
+        first = (roster or notes)[0].get("agent_id", "")
+        hint = f'switchboard --room {report["label"]} dm {first[:33]} "…"'
+        print(f"  {'':<23} {fmt.dim(hint)}")
+
+
+def cmd_find(args: argparse.Namespace) -> int:
+    """Which room is somebody in, and can they be woken right now?
+
+    The question the book exists to answer without a listener in every room.
+    Sweeps every known room for a name, branch, task or note mentioning the
+    query, and says per match where it is and whether a listener is parked.
+    Read-only: it announces nothing and writes no note.
+    """
+    identity = detect_identity(agent_id=args.agent_id)
+    book = knownrooms.Book()
+    if not book.rooms():
+        print("no known rooms to search — `switchboard rooms --known`", file=sys.stderr)
+        return EXIT_ERROR
+    reports = knownrooms.sweep(
+        book, topic=args.topic or rendezvous.OPEN_TOPIC, agent_id=identity.agent_id,
+        client_factory=Client, query=args.query,
+    )
+    hits = [r for r in reports if r["roster"] or r["notes"]]
+    if args.json:
+        _print_json({"query": args.query, "rooms": reports, "found": bool(hits)})
+        return EXIT_OK if hits else EXIT_ERROR
+    fmt = Fmt(_use_color(sys.stdout))
+    for r in reports:
+        if r.get("problem"):
+            print(f"  {r['label'][:22]:<23} {fmt.dim(r['problem'])}")
+    if not hits:
+        print(f"nobody matching {args.query!r} in {len(reports)} known room(s)")
+        return EXIT_ERROR
+    for r in hits:
+        parked = set(r["reachable"])
+        for a in r["roster"]:
+            state = "away" if a.get("away") else "here"
+            state += ", " + ("parked" if a.get("agent_id") in parked else "not parked")
+            print(f"{fmt.green(r['label'][:22]):<23} {a.get('agent_id', '')[:33]:<34} "
+                  f"{(a.get('name') or '')[:18]:<19} {(a.get('branch') or '-')[:20]:<21} {state}")
+        for n in r["notes"]:
+            state = "parked" if n.get("agent_id") in parked else "note only"
+            print(f"{fmt.green(r['label'][:22]):<23} {n.get('agent_id', '')[:33]:<34} "
+                  f"{n.get('want', '')[:40]:<41} {state}")
+    first = hits[0]
+    target = (first["roster"] or first["notes"])[0].get("agent_id", "")
+    print(fmt.dim(f'\nswitchboard --room {first["label"]} dm {target[:33]} "…"'))
     return EXIT_OK
 
 
@@ -1746,6 +1988,7 @@ def cmd_agents(args: argparse.Namespace) -> int:
     with _make_client(args) as hub:
         agents = hub.agents()
         mismatched = hub.key_mismatches(agents)
+        _note_peers(hub, agents)
     if args.json:
         _print_json(agents)
         return EXIT_OK
@@ -2354,14 +2597,46 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     one (`_choose_wake`), and a rule that lives in the process can change
     without every agent that arms a listener learning a new habit.
     """
+    book = knownrooms.Book()
+    only = list(getattr(args, "only_rooms", None) or [])
+    if only:
+        # A deliberate choice replaces the whole default: the named rooms and
+        # nothing else, the lobby included.
+        posts = []
+        for label in only:
+            post = _known_post(book, label, identity)
+            if post is not None:
+                posts.append(post)
+        if not posts:
+            raise SystemExit("listen --only: none of the rooms named could be opened")
+        return posts
     primary = _make_client(args)
     if getattr(args, "lobby", False):
         role = "lobby"
     elif getattr(args, "invite", None):
         role = "invite"
+    elif getattr(args, "room", None):
+        role = str(args.room)
     else:
         role = "room"
     posts = [_Post(role, primary, args.channel or None)]
+
+    def add(post: _Post | None) -> None:
+        if post is None:
+            return
+        if any((p.hub.config.url, p.workspace) == (post.hub.config.url, post.workspace)
+               for p in posts):
+            return
+        posts.append(post)
+
+    # Rooms this session was put in lately — joined, invited into, minted —
+    # and any it names. The book, not the agent, is what remembers them: on
+    # 2026-09-03 a session sat parked in two rooms while its peer waited in a
+    # third it had been invited to an hour earlier (knownrooms.py).
+    for label in getattr(args, "in_rooms", None) or []:
+        add(_known_post(book, label, identity))
+    for room in book.recent():
+        add(_known_post(book, room.label, identity, quiet=True))
     # `getattr`, like the flags above: a caller building the namespace by hand
     # — a test, a wrapper — gets the default rather than a crash.
     if getattr(args, "no_lobby", False) or role == "lobby":
@@ -2383,6 +2658,24 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     )
     posts.append(_Post("lobby", lobby, None))
     return posts
+
+
+def _known_post(book: knownrooms.Book, label: str, identity: Identity,
+                *, quiet: bool = False) -> _Post | None:
+    """A parked room from the book, by label, or None with a line saying why."""
+    room = book.by_label(label)
+    if room is None:
+        print(f"listen: no known room called {label!r} (`switchboard rooms --known`)",
+              file=sys.stderr)
+        return None
+    config = room.config()
+    if config is None:
+        if not quiet:
+            print(f"listen: not parking in {room.label}: its key cannot be found the "
+                  f"way it was learned ({room.key.get('from')})", file=sys.stderr)
+        return None
+    book.remember(room)
+    return _Post(room.label, Client(config, agent_id=identity.agent_id), None)
 
 
 def _choose_wake(pending: list[tuple[_Post, list[dict[str, Any]]]],
@@ -3169,6 +3462,7 @@ def cmd_join(args: argparse.Namespace) -> int:
         )
 
     if args.no_verify:
+        _remember_invited(room, blob, learned="join", label=args.save)
         if args.json:
             _print_json({
                 "url": room.url, "workspace": room.workspace,
@@ -3200,6 +3494,10 @@ def cmd_join(args: argparse.Namespace) -> int:
         )
         return EXIT_ERROR
 
+    # Reached the hub: worth remembering whatever the verdict, since a room
+    # whose proof aged out is still a room, and one on the wrong key is one
+    # the agent will be handed a fresh invite for under the same label.
+    _remember_invited(room, blob, learned="join", label=args.save)
     if args.json:
         _print_json({
             "url": room.url, "workspace": room.workspace,
@@ -4771,6 +5069,18 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         steps.extend(token_steps)
         token_on_disk = bool(token) and token != before
+    # This repo's room goes in the book of known rooms as a reference to the
+    # checkout: the tool reads the key back from the file it just wrote, the
+    # way the MCP bridge does, and the agent never retypes it (knownrooms.py).
+    try:
+        knownrooms.Book().remember(knownrooms.KnownRoom(
+            label=directory.name, url=url, workspace=workspace,
+            key=(knownrooms.repo_reference(directory) if key and key_ok
+                 else dict(knownrooms.NONE)),
+            token=knownrooms.repo_reference(directory), learned="init",
+        ))
+    except Exception:  # noqa: BLE001 - never let the book fail init
+        pass
 
     local_hub_note = (
         "this hub is only reachable from this machine — a cloud session or CI runner "
@@ -5178,6 +5488,13 @@ def build_parser() -> argparse.ArgumentParser:
              "keygen` and `init --new-key`.",
     )
     parser.add_argument(
+        "--room", metavar="LABEL",
+        help="run this command in a room this machine knows, by the label "
+             "`switchboard rooms --known` shows. Resolved the way the room was "
+             "learned — the invite it arrived as, the checkout `init` set up, the "
+             "variable that holds its key — never from a key typed here.",
+    )
+    parser.add_argument(
         "--lobby", action="store_true",
         help="run this command in the room every holder of this key shares. "
              "Derived from the key rather than agreed by name, so two agents "
@@ -5320,6 +5637,11 @@ def build_parser() -> argparse.ArgumentParser:
                     "do not resolve to exactly one room, says why.",
     )
     p.add_argument("--dir", help="target repo directory (default: current directory)")
+    p.add_argument("--known", action="store_true",
+                   help="instead: every room this machine has been in — as references, "
+                        "resolved the way each was learned — with who was seen there")
+    p.add_argument("--forget", metavar="LABEL", help="drop one room from the book")
+    p.add_argument("--label", metavar="WORKSPACE=NAME", help="name a known room")
     p.set_defaults(func=cmd_rooms)
 
     p = sub.add_parser(
@@ -5588,7 +5910,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--task", help="what this agent is working on")
     p.add_argument("-c", "--channel", action="append", help="subscribe (repeatable)")
+    p.add_argument("--here", action="store_true",
+                   help="look in this room only. By default every room this machine "
+                        "knows is swept too, read-only, and reported per room.")
     p.set_defaults(func=cmd_rendezvous)
+
+    p = sub.add_parser(
+        "find",
+        help="which known room is somebody in, and can they be woken now",
+        description="Sweep every room this machine knows for an agent whose name, "
+                    "branch, task or rendezvous note mentions the query, and say per "
+                    "match where it is and whether a listener is parked for it. Reads "
+                    "only; announces nothing.",
+    )
+    p.add_argument("query", help="a name, branch, task word or note fragment")
+    p.add_argument("--topic", help="rendezvous topic whose notes to search (default: open)")
+    p.set_defaults(func=cmd_find)
 
     p = sub.add_parser("agents", help="who else is awake")
     p.set_defaults(func=cmd_agents)
@@ -5711,6 +6048,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "parks in the lobby every holder of this key shares, so a "
                         "peer on another repo can find you — this is for a session "
                         "that specifically does not want to be found while it works.")
+    p.add_argument("--in", dest="in_rooms", action="append", metavar="LABEL",
+                   help="also park in a known room, by label (repeatable). Rooms this "
+                        "session joined, was invited into or minted in the last hour "
+                        "are parked in without asking.")
+    p.add_argument("--only", dest="only_rooms", action="append", metavar="LABEL",
+                   help="park in these known rooms and nowhere else — not this room, "
+                        "not the lobby (repeatable)")
     p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")

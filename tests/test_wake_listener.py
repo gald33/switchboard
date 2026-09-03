@@ -459,3 +459,78 @@ def test_without_a_key_there_is_no_lobby_and_it_says_so(listener):
 
 def listener_base(live_hub, workspace):
     return ["switchboard", "--url", live_hub, "-w", workspace, "listen"]
+
+
+# --- rooms you were put in lately ----------------------------------------------
+#
+# The book of known rooms (knownrooms.py). A session that was handed an invite
+# an hour ago is parked in that room without naming it, and `--only` parks in
+# a named room and nowhere else.
+
+
+def _book_with(listener, live_hub, label, workspace, learned="join"):
+    from switchboard import knownrooms
+    from switchboard.invite import Invite
+
+    blob = Invite(url=live_hub, workspace=workspace, token=HUB_TOKEN,
+                  note=f"{label}: for the test").encode()
+    book = knownrooms.Book(listener.env["SWITCHBOARD_KNOWN_ROOMS"])
+    book.remember(knownrooms.KnownRoom(
+        label=label, url=live_hub, workspace=workspace,
+        token=knownrooms.invite_reference(blob), learned=learned,
+    ))
+
+
+def test_a_recently_joined_room_is_parked_in_unasked(listener, live_hub, tmp_path):
+    elsewhere = f"{listener.workspace}-joined"
+    _book_with(listener, live_hub, "joined-room", elsewhere)
+    proc = subprocess.Popen(
+        [*listener_base(live_hub, listener.workspace), "--until", "+40"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=listener.env, cwd=tmp_path,
+    )
+    try:
+        peer = Client(ClientConfig(url=live_hub, workspace=elsewhere, token=HUB_TOKEN),
+                      agent_id="peer-over-there")
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if any(a["agent_id"] == listener.agent_id for a in peer.agents()):
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("the listener never parked in the room it had joined")
+        peer.send(listener.agent_id, "you were here an hour ago")
+        out, err = proc.communicate(timeout=60)
+    finally:
+        proc.kill()
+        peer.close()
+    assert proc.returncode == 0, err
+    wake = json.loads(out)
+    assert wake["role"] == "joined-room" and wake["room"] == elsewhere
+    assert wake["messages"][0]["body"] == "you were here an hour ago"
+
+
+def test_a_room_from_another_repos_init_is_not_parked_in(listener, live_hub, tmp_path):
+    elsewhere = f"{listener.workspace}-otherrepo"
+    _book_with(listener, live_hub, "other-repo", elsewhere, learned="init")
+    result = subprocess.run(
+        [*listener_base(live_hub, listener.workspace), "--until", "+4"],
+        capture_output=True, text=True, timeout=60, env=listener.env, cwd=tmp_path,
+    )
+    assert result.returncode == 2, result.stderr
+    assert elsewhere not in result.stderr
+
+
+def test_only_parks_in_the_named_room_and_nowhere_else(listener, live_hub, tmp_path):
+    elsewhere = f"{listener.workspace}-only"
+    _book_with(listener, live_hub, "only-room", elsewhere)
+    here = listener.client("peer-here")
+    here.send(listener.agent_id, "should wake nobody")
+    result = subprocess.run(
+        [*listener_base(live_hub, listener.workspace), "--only", "only-room",
+         "--until", "+6"],
+        capture_output=True, text=True, timeout=60, env=listener.env, cwd=tmp_path,
+    )
+    here.close()
+    assert result.returncode == 2, result.stderr
+    assert elsewhere in result.stderr and listener.workspace + " [" not in result.stderr
