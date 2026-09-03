@@ -47,7 +47,7 @@ from .store import (
 from .timing import unwrap_forecast, wrap_forecast
 from .writekey import RoomWriteKey, generate_write_key
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 __all__ = [
     "Invite",
