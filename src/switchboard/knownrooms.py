@@ -371,7 +371,9 @@ def sweep(book: Book, *, topic: str | None, agent_id: str, client_factory: Calla
                         notes.append(note)
                 parked = rendezvous.reachable_now(
                     hub.board_list(prefix=rendezvous.LISTENER_PREFIX))
-                book.note_peers(room.url, room.workspace, everyone, now=now)
+                book.note_peers(room.url, room.workspace,
+                                [a for a in everyone if a.get("agent_id") != hub.agent_id],
+                                now=now)
         except Exception as exc:  # noqa: BLE001 - one room must not end the sweep
             report["problem"] = f"unreachable ({exc.__class__.__name__}: {exc})"
             out.append(report)

@@ -454,7 +454,10 @@ def _remember_invited(room: invite.Invite, blob: str, *, learned: str,
 def _note_peers(hub: Client, agents: list[dict[str, Any]]) -> None:
     """Remember who was on this room's roster, if the room is in the book."""
     try:
-        knownrooms.Book().note_peers(hub.config.url, hub.config.workspace, agents)
+        knownrooms.Book().note_peers(
+            hub.config.url, hub.config.workspace,
+            [a for a in agents if a.get("agent_id") != hub.agent_id],
+        )
     except Exception:  # noqa: BLE001
         pass
 
