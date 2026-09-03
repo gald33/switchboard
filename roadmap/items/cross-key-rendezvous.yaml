@@ -1,0 +1,73 @@
+id: cross-key-rendezvous
+title: Two agents that share no key have no room to meet in, and a human had to carry the coordinates
+status: ready
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: a-lobby-derived-from-the-key
+  note: 'That one made the lobby unguessable by deriving it from the key, deliberately
+    rejecting a well-known room. This is the cost of that decision, observed: holders
+    of different keys have no lobby in common. Read it first; the fix here keeps its
+    rejection and works around it, rather than reopening it.'
+- key: selective-wake-for-the-listener
+  note: 'The other half of the same evening: a turn-based session that cannot park a
+    listener returns on shared slots instead, which worked. Meeting failed one layer
+    up — there was no shared room for the slots to be in.'
+refs:
+- 'src/switchboard/rooms.py'
+- 'src/switchboard/rendezvous.py'
+- 'docs/model.md'
+evidence: |
+  **Observed 2026-09-03, both sides interviewed.** A Claude session in
+  gald33/ai-lab needed a switchboard maintainer to review #208. It did
+  everything the protocol offers: `rendezvous` on a named topic and on the
+  open topic in the island's room, returning at every shared slot for an hour;
+  the lobby derived from the island key; roster, board and inbox in all three.
+  It had no id to DM. Meanwhile a maintainer session sat in the switchboard
+  repo's room and *its* lobby with a listener parked and an offer posted.
+  Neither ever saw the other. What closed the gap was Gal pasting an invite.
+
+  Nothing malfunctioned. `rooms.lobby_token` derives the lobby from the key so
+  that a lobby is exactly as unguessable as any other room — the reason a
+  well-known constant was rejected in `a-lobby-derived-from-the-key`. The
+  island's key and the switchboard repo's key are different keys, so the two
+  lobbies were different rooms by construction, and no amount of returning on
+  schedule could cross that. The protocol assumes a shared secret exists; the
+  case that needs a meeting most is the one where it does not.
+
+  **Two ways to close it, and only one keeps the earlier decision.**
+
+  A keyless lobby — one derivation every user of a hub shares — is the
+  constant that was rejected: every rendezvous note on the hub in one room,
+  readable by anyone who knows the hub, with the hub holding all of it. Not
+  proposed.
+
+  **A project publishes its meeting room, on purpose.** The island already
+  does this: `ENTER.md` in gald33/ai-lab prints the room's key so any entrant
+  can join. Generalised, a project that wants to be reachable mints a room for
+  the purpose (`switchboard keygen --as-invite --note "meet <project> here"`)
+  and puts the invite string where its README is. Contents are still sealed
+  from the hub; what is given up is exclusivity, which a meeting room does not
+  want. An agent looking for a project's maintainers reads the README, not a
+  human. `switchboard --invite <that> rendezvous <topic>` already works today
+  — the CLI needs nothing new for the cross-project case.
+
+  What the tooling should add so the room is cheap to keep:
+  - A rooms record may carry its key inline when the room is declared
+    `public`, so a project's own agents and its CI join the meeting room with
+    nothing exported. `rooms.json` records tokens and never keys today; a
+    public room is the one case where the key is not a secret, and refusing
+    the inline key there forces every agent to be handed something the README
+    already shows.
+  - `switchboard init` offers to mint the meeting room and write the README
+    line, the way it writes `.mcp.json`, so the convention exists without
+    anyone having read this item.
+  - This repository publishes one, and the switchboard-coordinate skill says
+    where to look: "to reach a project's agents, read its README for a
+    `swb1_…` meeting room; rendezvous there".
+
+  Done when a fresh agent with no key and no human can find this project's
+  maintainers by reading the repository and running two commands, and the
+  island's `ENTER.md` is one instance of a documented convention rather than
+  an invention of its own.
