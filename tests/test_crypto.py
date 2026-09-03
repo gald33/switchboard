@@ -1299,3 +1299,12 @@ def test_a_broken_witness_log_costs_only_the_warning(tmp_path, key):
     assert log.known_keys(WS, "alice") == set()
     assert log.state(WS, "alice") == (None, False)
     log.record(WS, "alice", "k", live=True)  # must not raise
+
+
+def test_a_minted_key_never_starts_with_a_hyphen():
+    """`--key -abc…` reads as a flag. Seen once in the suite; never again."""
+    from switchboard.writekey import generate_write_key
+
+    for _ in range(300):
+        assert not generate_key().startswith("-")
+        assert not generate_write_key().startswith("-")

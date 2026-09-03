@@ -1577,6 +1577,47 @@ def _print_elsewhere(fmt: Fmt, elsewhere: list[dict[str, Any]]) -> None:
         print(f"  {'':<23} {fmt.dim(hint)}")
 
 
+def _rank_hits(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every match across every room, best place to write first.
+
+    Ordered by whether a message would reach them, not by which room it is:
+    a listener parked (a DM wakes them in seconds), then present, then away
+    with a return time, then a note and nothing else. Within a tier the most
+    recently seen wins. Nothing is dropped — two different agents can share a
+    name, and the order must never quietly pick one.
+    """
+    tiers = {"parked": 0, "here": 1, "away": 2, "note": 3}
+    hits: list[dict[str, Any]] = []
+    for r in reports:
+        parked = set(r.get("reachable") or [])
+        for a in r.get("roster") or []:
+            state = ("parked" if a.get("agent_id") in parked
+                     else "away" if a.get("away") else "here")
+            hits.append({
+                "room": r["label"], "workspace": r["workspace"], "agent_id": a.get("agent_id"),
+                "name": a.get("name"), "branch": a.get("branch"), "state": state,
+                "seen": str(a.get("last_seen_at") or ""), "want": "",
+            })
+        seen_ids = {h["agent_id"] for h in hits if h["room"] == r["label"]}
+        for n in r.get("notes") or []:
+            if n.get("agent_id") in seen_ids:
+                continue
+            state = "parked" if n.get("agent_id") in parked else "note"
+            hits.append({
+                "room": r["label"], "workspace": r["workspace"], "agent_id": n.get("agent_id"),
+                "name": None, "branch": None, "state": state,
+                "seen": "", "want": n.get("want") or "",
+            })
+    return sorted(hits, key=lambda h: (tiers[h["state"]], h["seen"] and -_epoch(h["seen"])))
+
+
+def _epoch(stamp: str) -> float:
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def cmd_find(args: argparse.Namespace) -> int:
     """Which room is somebody in, and can they be woken right now?
 
@@ -1594,9 +1635,9 @@ def cmd_find(args: argparse.Namespace) -> int:
         book, topic=args.topic, agent_id=identity.agent_id,
         client_factory=Client, query=args.query,
     )
-    hits = [r for r in reports if r["roster"] or r["notes"]]
+    hits = _rank_hits(reports)
     if args.json:
-        _print_json({"query": args.query, "rooms": reports, "found": bool(hits)})
+        _print_json({"query": args.query, "hits": hits, "rooms": reports, "found": bool(hits)})
         return EXIT_OK if hits else EXIT_ERROR
     fmt = Fmt(_use_color(sys.stdout))
     for r in reports:
@@ -1605,22 +1646,16 @@ def cmd_find(args: argparse.Namespace) -> int:
     if not hits:
         print(f"nobody matching {args.query!r} in {len(reports)} known room(s)")
         return EXIT_ERROR
-    for r in hits:
-        parked = set(r["reachable"])
-        for a in r["roster"]:
-            state = "away" if a.get("away") else "here"
-            state += ", " + ("parked" if a.get("agent_id") in parked else "not parked")
-            print(f"{fmt.green(r['label'][:22]):<23} {a.get('agent_id', '')[:33]:<34} "
-                  f"{(a.get('name') or '')[:18]:<19} {(a.get('branch') or '-')[:20]:<21} {state}")
-        for n in r["notes"]:
-            state = "parked" if n.get("agent_id") in parked else "note only"
-            print(f"{fmt.green(r['label'][:22]):<23} {n.get('agent_id', '')[:33]:<34} "
-                  f"{n.get('want', '')[:40]:<41} {state}")
-    first = hits[0]
-    target = (first["roster"] or first["notes"])[0].get("agent_id", "")
-    print(fmt.dim(f'\nswitchboard --room {first["label"]} dm {target[:33]} "…"'))
+    for h in hits:
+        who = (h["name"] or "")[:18] if h["name"] else (h["want"] or "")[:18]
+        print(f"{fmt.green(h['room'][:22]):<23} {(h['agent_id'] or '')[:33]:<34} "
+              f"{who:<19} {(h['branch'] or '-')[:20]:<21} "
+              f"{fmt.green(h['state']) if h['state'] == 'parked' else h['state']}")
+    top = hits[0]
+    print(fmt.dim(f'\nswitchboard --room {top["room"]} dm {(top["agent_id"] or "")[:33]} "…"'
+                  + ("" if top["state"] == "parked"
+                     else "   (nobody parked: they read it on their next turn)")))
     return EXIT_OK
-
 
 #: Where an arriving agent writes what it came to do. Under `coord/` so the
 #: convention's own first move — read that prefix — finds it.

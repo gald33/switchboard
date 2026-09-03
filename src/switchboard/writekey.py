@@ -105,7 +105,9 @@ def generate_write_key() -> str:
     shared with every agent that may write the room and nobody else. The hub
     never receives it — it receives the public half, which names the room.
     """
-    return _b64e(secrets.token_bytes(32))
+    from .crypto import _shell_safe
+
+    return _shell_safe(lambda: _b64e(secrets.token_bytes(32)))
 
 
 @dataclass(frozen=True)
