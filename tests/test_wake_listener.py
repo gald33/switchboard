@@ -71,7 +71,16 @@ def live_hub(tmp_path_factory):
         yield url
     finally:
         proc.terminate()
-        proc.wait(timeout=10)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # A wake in one room leaves the other room's long-poll in flight
+            # at the hub for up to 25 seconds — the hub does not notice a
+            # client that vanished mid-wait — and graceful shutdown waits for
+            # it. Ordinary in production (a deploy stops the container
+            # regardless); here it is only the fixture's clock.
+            proc.kill()
+            proc.wait(timeout=10)
 
 
 @pytest.fixture
@@ -345,3 +354,108 @@ def test_the_deadline_can_come_from_the_agents_own_forecast(listener):
     # a deadline built on a bootstrap default should be a shorter one.
     assert "p50" in result.stderr
     assert "bootstrap" in result.stderr or "sample(s)" in result.stderr
+
+
+# --- one process, two rooms ----------------------------------------------------
+#
+# Observed on 2026-09-03: a maintainer session parked one listener in its
+# repo's room and another in the lobby, two processes for one question — "did
+# anyone want me?" — and the answer to which room a wake came from was left to
+# whichever process exited first. One listener parks in both, and the process
+# is where the rule about which message wins lives, so it can change without
+# every agent that arms a listener learning a new habit.
+
+
+def _with_key(listener, key):
+    """The listener's environment with a workspace key, which the fixture
+    strips: the lobby is derived from the key, so these need one."""
+    return {**listener.env, "SWITCHBOARD_KEY": key}
+
+
+def test_it_parks_in_the_lobby_too(listener, live_hub, tmp_path):
+    """The default is to be findable. A peer that holds the same key and is
+    in some other repo has one place to look — the lobby — and a DM there
+    wakes a listener armed from this repo's room."""
+    from switchboard import rooms
+    from switchboard.crypto import generate_key
+
+    key = generate_key()
+    lobby = rooms.lobby(key).workspace
+    proc = subprocess.Popen(
+        [*listener_base(live_hub, listener.workspace), "--until", "+40"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=_with_key(listener, key), cwd=tmp_path,
+    )
+    try:
+        # The listener's id in the lobby is its local id blinded under the
+        # lobby's cipher — the same derivation a peer's `agents` shows.
+        me_there = Client(
+            ClientConfig(url=live_hub, workspace=lobby, token=HUB_TOKEN, key=key),
+            agent_id=listener.agent_id,
+        )
+        observer = Client(
+            ClientConfig(url=live_hub, workspace=lobby, token=HUB_TOKEN, key=key),
+            agent_id="peer-in-the-lobby",
+        )
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if any(a["agent_id"] == me_there.agent_id for a in observer.agents()):
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("the listener never showed up in the lobby")
+        observer.send(me_there.agent_id, "found you from another repo")
+        out, err = proc.communicate(timeout=60)
+    finally:
+        proc.kill()
+        me_there.close()
+        observer.close()
+
+    assert proc.returncode == 0, err
+    wake = json.loads(out)
+    assert wake["messages"][0]["body"] == "found you from another repo"
+    assert wake["room"] == lobby and wake["role"] == "lobby"
+    # And the exit line named both rooms, so the woken session knows where it
+    # was reachable and where the message came from.
+    assert listener.workspace in err and lobby in err and "[lobby]" in err
+
+
+def test_no_lobby_parks_in_one_room(listener, live_hub, tmp_path):
+    """The opt-out, for a session that does not want to be found. A DM in the
+    lobby then wakes nobody, and the deadline is what brings it back."""
+    from switchboard import rooms
+    from switchboard.crypto import generate_key
+
+    key = generate_key()
+    lobby = rooms.lobby(key).workspace
+    me_there = Client(
+        ClientConfig(url=live_hub, workspace=lobby, token=HUB_TOKEN, key=key),
+        agent_id=listener.agent_id,
+    )
+    peer = Client(
+        ClientConfig(url=live_hub, workspace=lobby, token=HUB_TOKEN, key=key),
+        agent_id="peer-in-the-lobby",
+    )
+    peer.send(me_there.agent_id, "nobody should hear this")
+    result = subprocess.run(
+        [*listener_base(live_hub, listener.workspace), "--no-lobby", "--until", "+6"],
+        capture_output=True, text=True, timeout=60,
+        env=_with_key(listener, key), cwd=tmp_path,
+    )
+    me_there.close()
+    peer.close()
+    assert result.returncode == 2, result.stderr
+    assert lobby not in result.stderr
+
+
+def test_without_a_key_there_is_no_lobby_and_it_says_so(listener):
+    """A lobby is derived from the key. No key, no lobby — and the listener
+    says which one room it is in rather than silently parking in one."""
+    result = listener("--until", "+4")
+    assert result.returncode == 2, result.stderr
+    assert "no lobby" in result.stderr
+    assert listener.workspace in result.stderr
+
+
+def listener_base(live_hub, workspace):
+    return ["switchboard", "--url", live_hub, "-w", workspace, "listen"]

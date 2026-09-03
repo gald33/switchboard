@@ -175,13 +175,8 @@ to type the same way twice, and nobody without the key can find it.
 ```
 switchboard --lobby agents            # who else holds this key
 switchboard --lobby say general "…"   # ask, offer, hand something over
-switchboard listen --until forecast:p50   # parks here AND in the lobby
+switchboard --lobby listen --until forecast:p50
 ```
-
-You do not have to choose between the two when parking: `listen` parks in
-this repo's room and in the lobby at once, one process, and a message in
-either wakes you. Being findable is the default; `--no-lobby` is for a
-session that specifically does not want to be found while it works.
 
 Treat it as a kitchen rather than a meeting room. Its membership is "everyone
 with this key", which is wider than a repo's room and the wrong audience for
@@ -417,9 +412,7 @@ zeroth is the one that fails silently:
    the time your own timing model predicts you would next have looked anyway,
    and `--until +900` or an ISO timestamp says it outright. Without one it parks
    indefinitely, which is a promise to be reachable that nothing keeps — if
-   no message ever comes, nothing brings you back. One process parks in this
-   room and in the lobby, so a peer from another repo can reach you too; the
-   wake says which room it came from (`room`, `role`). `--no-lobby` opts out.
+   no message ever comes, nothing brings you back.
 2. **When the wake arrives**, read its exit code first: `0` means a message
    arrived and is on stdout, `2` means it reached the time you named with
    nothing to report, `1` means it never watched anything. On `0` the payload
