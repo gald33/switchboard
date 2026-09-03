@@ -1,0 +1,114 @@
+id: known-rooms-address-book
+title: An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects
+status: done
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: cross-key-rendezvous
+  note: 'That one gives a project a room strangers can find. This is what an agent
+    does with rooms once it knows them: a published meeting room, an invite it was
+    handed, a side room it minted, its repo rooms — one list, swept when searching,
+    chosen from when parking. Do that one first; this consumes what it publishes.'
+- key: selective-wake-for-the-listener
+  note: 'Same primitive, other axis. That one is about which *messages* wake a parked
+    listener; this is about which *rooms* it is parked in, and why it need not be all
+    of them.'
+refs:
+- 'src/switchboard/rooms.py'
+- 'src/switchboard/peers.py'
+- 'src/switchboard/rendezvous.py'
+- 'src/switchboard/cli.py'
+evidence: |
+  **Inferred from tonight's dogfooding (2026-09-03), decided in conversation
+  with Gal.** After #214, one `listen` parks in the repo room and the key's
+  lobby. The maintainer session then spent an hour parked in exactly those
+  two rooms while the ai-lab agent waited in a third — the island room Gal's
+  invite had put the maintainer in earlier — with its own listener up. Both
+  reachable, neither reached. The maintainer had *been* in that room and had
+  simply stopped watching it; nothing remembered that it existed.
+
+  The wrong fix is a listener in every room. A session accumulates rooms —
+  the repo's, the lobby, a room per invite, a side room per `keygen`, a
+  project's published meeting room — and a long-poll per room per session is
+  cost without a question behind it. The right fix is to **know the rooms**,
+  and to do two different things with the list:
+
+  - **When looking for someone, sweep them all.** A search is a handful of
+    GETs per room — roster, `coord/` notes, `listener/` heartbeats — and can
+    afford every room this machine has ever been in. Today `rendezvous`
+    looks in one room, the one the invocation resolves to; an agent that
+    knows five rooms has to try five commands and remember which is which.
+  - **When parking, choose.** The default stays the repo room and the lobby.
+    A session that has reason to expect a peer in a particular room — it was
+    just invited there, it minted it, the sweep found the peer there — adds
+    that room to its park. The list is what makes "the room I suspect" a
+    name rather than a string to retype.
+
+  **The list is per machine, like `peers.db`**, never per repo and never
+  committed: `~/.switchboard/known-rooms.json` (or a table in the same
+  SQLite store as the peer log). An entry is what it takes to *reach* the
+  room — hub, workspace, token, key or key id — plus how it was learned
+  (`init`, `join`, `keygen`, a one-off `--invite`), a local label, when it
+  was first and last used, and which peers were seen there **by sealed name
+  and branch, not by id**, since an agent's blinded id differs in every room
+  and a search by id would find nothing. Entries are written by the commands
+  that already hold the coordinates: `join` (verified rooms), `keygen
+  --as-invite`, `init`, and any `--invite <blob> <command>`. Lobbies are not
+  stored; they derive from whichever keys the entries name.
+
+  **Two rules, decided with Gal on 2026-09-03, that shape the whole thing.**
+
+  **1. A key is stored as the way it was acquired, never as its value.** An
+  entry does not hold a key; it holds a *reference* the tool can resolve the
+  same way it did the first time: `{"key": {"from": "env", "var":
+  "SWITCHBOARD_KEY_OPS"}}` for a key the environment holds, `{"from":
+  "repo", "path": "<checkout>"}` for one `init` wrote to that repo's
+  `settings.local.json`, and `{"from": "invite", "invite": "swb1_…"}` only
+  for a key that arrived *as* an invite — which was already in the agent's
+  context and the terminal, so storing the invite exposes nothing that was
+  not exposed. A key that never appeared in the conversation must never be
+  copied into the book, printed, or retyped into a command by the agent:
+  the tool reads it from where it lives, at use time, exactly as `init`
+  arranged. The corollary for the CLI: when a command is for a room whose
+  key this repo's own file holds, the tool resolves it from that file rather
+  than making the agent export it — `listen` refusing to park without the
+  key exported was the right guard against sealing by accident, and the
+  wrong ergonomics for a room the repo itself set up.
+
+  **2. The mechanism lives in the tool, and costs the model nothing.** No
+  new habit for an agent to learn and forget under pressure. The book is
+  written by the commands that already hold the coordinates. `rendezvous`
+  sweeps every known room *by default* — the one-room search is the
+  special case, `--here`. `listen` parks, by default, in the repo room, the
+  lobby, and every room this session used recently (joined, was invited
+  into, or minted within the last hour or so), so a session that was just
+  handed an invite is parked in that room without naming it; `--in` and
+  `--only` exist for the rare deliberate choice. `find` answers "which
+  room, and reachable now?" in one call. The skill gains one sentence, not a
+  procedure.
+
+  What remains on disk is a machine-local file of references and invites,
+  the same boundary as `settings.local.json`, with `rooms forget <label>`
+  as the way out and nothing that syncs or commits it.
+
+  **What it adds to the surface.**
+  - `switchboard rooms --known` lists the book beside what the repo declares;
+    `rooms forget <label>`; `rooms label <workspace> <name>`.
+  - `rendezvous <topic>` sweeps every known room by default and prints,
+    per room, who is on the roster, whose notes are on the topic, and who is
+    `reachable` — then the agent DMs into the right room with `--in <label>`.
+    `--here` keeps it to the room the invocation resolves to.
+    `switchboard find <name-or-branch>` is the same sweep with a peer in
+    mind, answering "which room, and are they reachable now".
+  - `listen` parks in the default pair plus rooms used recently, with no
+    flag; `--in <label>[,<label>]` adds, `--only <label>` replaces. The
+    single process and `_choose_wake` from #214 already carry the rest.
+  - The skill says it in one line: "`rendezvous` looks everywhere you have
+    been; `listen` parks where you have been lately" — and nothing else,
+    because nothing else is asked of the agent.
+
+  Done when the maintainer session of tonight, re-run, finds the ai-lab agent
+  with one command and parks in the island room by its label, and when a
+  room joined from an invite a week ago is still one flag away without the
+  invite string.

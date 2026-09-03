@@ -17,6 +17,10 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
   - ↔ related: **`read-only-rooms`** — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
+- `next` **`cross-key-rendezvous`** — Two agents that share no key have no room to meet in, and a human had to carry the coordinates
+  - ↔ related: **`a-lobby-derived-from-the-key`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
+  - ↔ related: **`known-rooms-address-book`** — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - ↔ related: **`selective-wake-for-the-listener`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
@@ -24,6 +28,7 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - **`a-lobby-derived-from-the-key`** — Give every key a lobby, so agents that share one can find each other without naming a room
+  - ↔ related: **`cross-key-rendezvous`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - ↔ related: **`init-writes-rooms-file`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`one-resolved-context-across-surfaces`** — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
   - ↔ related: **`selective-wake-for-the-listener`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
@@ -55,7 +60,9 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
   - ↔ related: **`a-lobby-derived-from-the-key`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - ↔ related: **`cross-key-rendezvous`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
+  - ↔ related: **`known-rooms-address-book`** — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
@@ -107,6 +114,7 @@ graph TD
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
   connect_failure_message["Name the URL a failed connection actually tried, and where its token came from"]
+  cross_key_rendezvous["Two agents that share no key have no room to meet in, and a human had to carry the coordinates"]
   every_silent_failure_looks_like_a_quiet_room["Seven distinct coordination failures all present as an empty room, so none of them can be searched for"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
@@ -114,6 +122,7 @@ graph TD
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   intermittent_suite_failure["Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
+  known_rooms_address_book["An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects"]
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
   provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]
@@ -130,6 +139,7 @@ graph TD
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
+  a_lobby_derived_from_the_key -.- cross_key_rendezvous
   a_lobby_derived_from_the_key -.- init_writes_rooms_file
   a_lobby_derived_from_the_key -.- one_resolved_context_across_surfaces
   a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
@@ -142,6 +152,8 @@ graph TD
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
   connect_failure_message -.- stale_token_in_session_env
+  cross_key_rendezvous -.- known_rooms_address_book
+  cross_key_rendezvous -.- selective_wake_for_the_listener
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
@@ -150,6 +162,7 @@ graph TD
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
+  known_rooms_address_book -.- selective_wake_for_the_listener
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   read_only_rooms -.- roles_and_authority_between_agents
   roles_and_authority_between_agents -.- selective_wake_for_the_listener
@@ -166,6 +179,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `cross-key-rendezvous` — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - `init-writes-rooms-file` — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - `one-resolved-context-across-surfaces` — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
   - `selective-wake-for-the-listener` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
@@ -459,6 +473,78 @@ graph TD
 > fallback to loopback is a failure mode this project already treats as serious
 > elsewhere: `docs/environments.md` documents "the three ways an agent ends up
 > alone", and a cloud session inheriting a loopback URL is one of them.
+
+</details>
+
+### `cross-key-rendezvous`
+
+- **title:** Two agents that share no key have no room to meet in, and a human had to carry the coordinates
+- **status:** ready
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `a-lobby-derived-from-the-key` — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
+  - `known-rooms-address-book` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - `selective-wake-for-the-listener` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
+- **refs:**
+  - `src/switchboard/rooms.py`
+  - `src/switchboard/rendezvous.py`
+  - `docs/model.md`
+
+<details><summary>evidence</summary>
+
+> **Observed 2026-09-03, both sides interviewed.** A Claude session in
+> gald33/ai-lab needed a switchboard maintainer to review #208. It did
+> everything the protocol offers: `rendezvous` on a named topic and on the
+> open topic in the island's room, returning at every shared slot for an hour;
+> the lobby derived from the island key; roster, board and inbox in all three.
+> It had no id to DM. Meanwhile a maintainer session sat in the switchboard
+> repo's room and *its* lobby with a listener parked and an offer posted.
+> Neither ever saw the other. What closed the gap was Gal pasting an invite.
+>
+> Nothing malfunctioned. `rooms.lobby_token` derives the lobby from the key so
+> that a lobby is exactly as unguessable as any other room — the reason a
+> well-known constant was rejected in `a-lobby-derived-from-the-key`. The
+> island's key and the switchboard repo's key are different keys, so the two
+> lobbies were different rooms by construction, and no amount of returning on
+> schedule could cross that. The protocol assumes a shared secret exists; the
+> case that needs a meeting most is the one where it does not.
+>
+> **Two ways to close it, and only one keeps the earlier decision.**
+>
+> A keyless lobby — one derivation every user of a hub shares — is the
+> constant that was rejected: every rendezvous note on the hub in one room,
+> readable by anyone who knows the hub, with the hub holding all of it. Not
+> proposed.
+>
+> **A project publishes its meeting room, on purpose.** The island already
+> does this: `ENTER.md` in gald33/ai-lab prints the room's key so any entrant
+> can join. Generalised, a project that wants to be reachable mints a room for
+> the purpose (`switchboard keygen --as-invite --note "meet <project> here"`)
+> and puts the invite string where its README is. Contents are still sealed
+> from the hub; what is given up is exclusivity, which a meeting room does not
+> want. An agent looking for a project's maintainers reads the README, not a
+> human. `switchboard --invite <that> rendezvous <topic>` already works today
+> — the CLI needs nothing new for the cross-project case.
+>
+> What the tooling should add so the room is cheap to keep:
+> - A rooms record may carry its key inline when the room is declared
+>   `public`, so a project's own agents and its CI join the meeting room with
+>   nothing exported. `rooms.json` records tokens and never keys today; a
+>   public room is the one case where the key is not a secret, and refusing
+>   the inline key there forces every agent to be handed something the README
+>   already shows.
+> - `switchboard init` offers to mint the meeting room and write the README
+>   line, the way it writes `.mcp.json`, so the convention exists without
+>   anyone having read this item.
+> - This repository publishes one, and the switchboard-coordinate skill says
+>   where to look: "to reach a project's agents, read its README for a
+>   `swb1_…` meeting room; rendezvous there".
+>
+> Done when a fresh agent with no key and no human can find this project's
+> maintainers by reading the repository and running two commands, and the
+> island's `ENTER.md` is one instance of a documented convention rather than
+> an invention of its own.
 
 </details>
 
@@ -1070,6 +1156,118 @@ graph TD
 
 </details>
 
+### `known-rooms-address-book`
+
+- **title:** An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects
+- **status:** done
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `cross-key-rendezvous` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - `selective-wake-for-the-listener` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
+- **refs:**
+  - `src/switchboard/rooms.py`
+  - `src/switchboard/peers.py`
+  - `src/switchboard/rendezvous.py`
+  - `src/switchboard/cli.py`
+
+<details><summary>evidence</summary>
+
+> **Inferred from tonight's dogfooding (2026-09-03), decided in conversation
+> with Gal.** After #214, one `listen` parks in the repo room and the key's
+> lobby. The maintainer session then spent an hour parked in exactly those
+> two rooms while the ai-lab agent waited in a third — the island room Gal's
+> invite had put the maintainer in earlier — with its own listener up. Both
+> reachable, neither reached. The maintainer had *been* in that room and had
+> simply stopped watching it; nothing remembered that it existed.
+>
+> The wrong fix is a listener in every room. A session accumulates rooms —
+> the repo's, the lobby, a room per invite, a side room per `keygen`, a
+> project's published meeting room — and a long-poll per room per session is
+> cost without a question behind it. The right fix is to **know the rooms**,
+> and to do two different things with the list:
+>
+> - **When looking for someone, sweep them all.** A search is a handful of
+>   GETs per room — roster, `coord/` notes, `listener/` heartbeats — and can
+>   afford every room this machine has ever been in. Today `rendezvous`
+>   looks in one room, the one the invocation resolves to; an agent that
+>   knows five rooms has to try five commands and remember which is which.
+> - **When parking, choose.** The default stays the repo room and the lobby.
+>   A session that has reason to expect a peer in a particular room — it was
+>   just invited there, it minted it, the sweep found the peer there — adds
+>   that room to its park. The list is what makes "the room I suspect" a
+>   name rather than a string to retype.
+>
+> **The list is per machine, like `peers.db`**, never per repo and never
+> committed: `~/.switchboard/known-rooms.json` (or a table in the same
+> SQLite store as the peer log). An entry is what it takes to *reach* the
+> room — hub, workspace, token, key or key id — plus how it was learned
+> (`init`, `join`, `keygen`, a one-off `--invite`), a local label, when it
+> was first and last used, and which peers were seen there **by sealed name
+> and branch, not by id**, since an agent's blinded id differs in every room
+> and a search by id would find nothing. Entries are written by the commands
+> that already hold the coordinates: `join` (verified rooms), `keygen
+> --as-invite`, `init`, and any `--invite <blob> <command>`. Lobbies are not
+> stored; they derive from whichever keys the entries name.
+>
+> **Two rules, decided with Gal on 2026-09-03, that shape the whole thing.**
+>
+> **1. A key is stored as the way it was acquired, never as its value.** An
+> entry does not hold a key; it holds a *reference* the tool can resolve the
+> same way it did the first time: `{"key": {"from": "env", "var":
+> "SWITCHBOARD_KEY_OPS"}}` for a key the environment holds, `{"from":
+> "repo", "path": "<checkout>"}` for one `init` wrote to that repo's
+> `settings.local.json`, and `{"from": "invite", "invite": "swb1_…"}` only
+> for a key that arrived *as* an invite — which was already in the agent's
+> context and the terminal, so storing the invite exposes nothing that was
+> not exposed. A key that never appeared in the conversation must never be
+> copied into the book, printed, or retyped into a command by the agent:
+> the tool reads it from where it lives, at use time, exactly as `init`
+> arranged. The corollary for the CLI: when a command is for a room whose
+> key this repo's own file holds, the tool resolves it from that file rather
+> than making the agent export it — `listen` refusing to park without the
+> key exported was the right guard against sealing by accident, and the
+> wrong ergonomics for a room the repo itself set up.
+>
+> **2. The mechanism lives in the tool, and costs the model nothing.** No
+> new habit for an agent to learn and forget under pressure. The book is
+> written by the commands that already hold the coordinates. `rendezvous`
+> sweeps every known room *by default* — the one-room search is the
+> special case, `--here`. `listen` parks, by default, in the repo room, the
+> lobby, and every room this session used recently (joined, was invited
+> into, or minted within the last hour or so), so a session that was just
+> handed an invite is parked in that room without naming it; `--in` and
+> `--only` exist for the rare deliberate choice. `find` answers "which
+> room, and reachable now?" in one call. The skill gains one sentence, not a
+> procedure.
+>
+> What remains on disk is a machine-local file of references and invites,
+> the same boundary as `settings.local.json`, with `rooms forget <label>`
+> as the way out and nothing that syncs or commits it.
+>
+> **What it adds to the surface.**
+> - `switchboard rooms --known` lists the book beside what the repo declares;
+>   `rooms forget <label>`; `rooms label <workspace> <name>`.
+> - `rendezvous <topic>` sweeps every known room by default and prints,
+>   per room, who is on the roster, whose notes are on the topic, and who is
+>   `reachable` — then the agent DMs into the right room with `--in <label>`.
+>   `--here` keeps it to the room the invocation resolves to.
+>   `switchboard find <name-or-branch>` is the same sweep with a peer in
+>   mind, answering "which room, and are they reachable now".
+> - `listen` parks in the default pair plus rooms used recently, with no
+>   flag; `--in <label>[,<label>]` adds, `--only <label>` replaces. The
+>   single process and `_choose_wake` from #214 already carry the rest.
+> - The skill says it in one line: "`rendezvous` looks everywhere you have
+>   been; `listen` parks where you have been lately" — and nothing else,
+>   because nothing else is asked of the agent.
+>
+> Done when the maintainer session of tonight, re-run, finds the ai-lab agent
+> with one command and parks in the island room by its label, and when a
+> room joined from an invite a week ago is still one flag away without the
+> invite string.
+
+</details>
+
 ### `one-resolved-context-across-surfaces`
 
 - **title:** Decide whether a session may change its room once, for every surface at once
@@ -1546,7 +1744,9 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - `cross-key-rendezvous` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - `every-silent-failure-looks-like-a-quiet-room` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
+  - `known-rooms-address-book` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
   - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
