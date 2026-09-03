@@ -444,7 +444,15 @@ def create_app(
             allow_origins=list(config.cors_origins),
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type"],
+            # The two write-key headers as well, or a page cannot write a
+            # write-protected room at all: a browser preflights any request
+            # carrying a header outside this list, and a refused preflight
+            # never sends the request. The viewer never needed them -- it is
+            # read-only -- which is how 2.0.0 shipped write keys a page could
+            # sign with and no page could present. Found by a page that
+            # signed correctly and was refused before the hub saw it.
+            allow_headers=["Authorization", "Content-Type",
+                           writekey.KEY_HEADER, writekey.SIG_HEADER],
             max_age=600,
         )
 
