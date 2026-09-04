@@ -589,3 +589,21 @@ def test_the_unverified_override_installs_but_still_checks_the_bytes(room, tmp_p
     bad = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w", unverified=True)
     assert bad["installed"] == []
     assert "not the one the pointer announced" in bad["missing"][0]["reason"]
+
+
+def test_a_lean_capsule_announces_what_it_left_behind(room, tmp_path):
+    """The count rides on the envelope, so a receiver reading the board can
+    tell a stripped capsule from a session that never had subagents."""
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+
+    sent = handoff.handoff(sender, to=receiver.agent_id, session_id=SID,
+                           config_dir=str(src_cfg), subagents=False)
+    assert sent["omitted_subagent_files"] == 1   # this fixture has one sidecar
+    assert sent["files"] == 1
+
+    [got] = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")["installed"]
+    assert got["installed"] is True
+    # The conversation is all there; only the subagents' own work stayed home.
+    assert Path(got["transcript"]).is_file()
+    assert not (Path(got["project_dir"]) / SID).exists()

@@ -104,6 +104,16 @@ the rest: the whole key, who wrote it and when, and a value that keeps its own
 line breaks instead of being folded to fit. The sidebar itself now widens with
 the screen rather than staying 340px on every one.
 
+An opened entry also offers **save**, which writes the value out as a file
+named after its key. The page is already holding the plaintext — it fetched
+the entry and opened it with the room key, which is the whole reason a sealed
+value is legible here — so this asks the hub for nothing and needs no CLI. It
+is how a person with a browser and no checkout collects a
+[session capsule](claude-code.md#7-hand-a-whole-session-to-another-environment)
+and feeds it to `switchboard session import` somewhere else. A value this page
+could not open offers no button: a file of envelope bytes would look like the
+value and is not.
+
 Each of the three side panels says how much is inside it and folds away, and
 what you fold stays folded. On a window too narrow for two columns they stop
 being a stack under the conversation — where, the talking being long and never

@@ -155,6 +155,7 @@ def package_current(
     harness: str = claude_session.HARNESS,
     config_dir: str | None = None,
     cwd: str | None = None,
+    subagents: bool = True,
 ) -> dict[str, Any]:
     """The capsule for this process's own session, or for ``session_id``.
 
@@ -170,7 +171,7 @@ def package_current(
             f"{module.SESSION_ID_VAR} is set"
         )
     try:
-        return module.package(sid, config_dir=config_dir, cwd=cwd)
+        return module.package(sid, config_dir=config_dir, cwd=cwd, subagents=subagents)
     except module.CapsuleError as exc:
         raise HandoffError(str(exc)) from exc
 
@@ -295,6 +296,7 @@ def publish(
         "expires_in": entry.get("expires_in"),
         "bytes": summary["bytes"],
         "files": summary["files"],
+        "omitted_subagent_files": capsule.get("omitted_subagent_files", 0),
         "to": to,
         "held_leases": [r for r in held if r not in released],
         "released_leases": released,
@@ -313,6 +315,7 @@ def publish(
             "harness": summary["harness"],
             "bytes": summary["bytes"],
             "files": summary["files"],
+            "omitted_subagent_files": capsule.get("omitted_subagent_files", 0),
             "sha256": sha256,
             "digest": manifest_digest(capsule),
             "expires_at": entry.get("expires_at"),
@@ -339,9 +342,11 @@ def handoff(
     allow_plaintext: bool = False,
     config_dir: str | None = None,
     cwd: str | None = None,
+    subagents: bool = True,
 ) -> dict[str, Any]:
     """Export this session and publish it, in one step."""
-    capsule = package_current(session_id, config_dir=config_dir, cwd=cwd)
+    capsule = package_current(session_id, config_dir=config_dir, cwd=cwd,
+                              subagents=subagents)
     return publish(hub, capsule, to=to, ttl=ttl, release_leases=release_leases,
                    allow_plaintext=allow_plaintext)
 

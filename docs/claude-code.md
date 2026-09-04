@@ -466,6 +466,35 @@ are the two halves with no hub between them: a capsule file, created `0600`
 because it is as private as the transcript it carries, that you move however
 you like.
 
+### What travels, and what a reader can take out
+
+The subagent transcripts in the `<id>/` sidecar travel by default, and that
+is the trade worth naming because it is not the obvious one. They are most
+of a capsule's bytes — three quarters of it is normal — and none of its
+resume: `claude --resume` reads the main transcript alone, so the sidecar
+costs the receiver no context at cold start. What it buys is retrievability.
+A subagent's transcript is finished work, often millions of tokens of it,
+that the receiving session can go and read *if it needs to* rather than
+re-derive at model prices. Bytes on a board with a ten-minute TTL are the
+cheap side of that trade, so the default is on.
+
+`--no-subagents` (`no_subagents` on `session_handoff`) drops them, for a slow
+link or a receiver that only needs the conversation continued. The capsule
+records that it did, as `omitted_subagent_files`, because a session that
+never spawned a subagent and one whose subagents were left behind both
+arrive as a single file, and a receiver deciding whether to ask again needs
+to tell those apart.
+
+A capsule can also be collected with no Switchboard on the machine at all.
+The [viewer](../extras/viewer/) already holds the plaintext — it fetched the
+board entry and opened it with the room key, which is why a sealed value is
+legible there — so a board entry it could open offers a **save** button that
+writes the value out as a file. Feed that file to `switchboard session
+import FILE` wherever the tooling *is* installed. It asks the hub for
+nothing extra, and it is the one path to a handoff for a human with a
+browser and no checkout. Where the page could not open a value it offers
+nothing: a file of envelope bytes would look like the value and is not.
+
 ### What is trusted, and what is not
 
 A transcript is instructions. Whoever resumes it runs a conversation

@@ -513,12 +513,57 @@ function drawDetail(s) {
       <span>${who(entry.updated_by)}</span>
       <span>${stamp(entry.updated_at)}</span>
       <span>expires in ${countdown(entry.expires_in, s.generated_at)}</span>
+      ${readable(entry) ? `<button class="save" type="button"
+        data-save="${esc(entry.key)}">save</button>` : ""}
     </div>
     ${bodyHtml(entry.value)}`;
   if (pane.dataset.html !== html) {
     pane.innerHTML = html;
     pane.dataset.html = html;
   }
+}
+
+/** Whether this page holds the entry's plaintext at all.
+ *
+ *  A value that could not be opened arrives as `null` — the builder drops the
+ *  envelope rather than let ciphertext render as content — and that is the
+ *  condition to check, not `sealed`, which only says whether the *key* stayed
+ *  a blinded token. Without a room key nothing is unblinded, so `sealed` is
+ *  false for every entry in a room this page cannot read: exactly the rooms
+ *  where offering to save one would write out a file that is not the value.
+ */
+function readable(entry) {
+  return Boolean(entry) && entry.value !== null && entry.value !== undefined;
+}
+
+/** Hand the reader the value they are already looking at, as a file.
+ *
+ *  The page has the plaintext: it fetched the entry and opened it with the
+ *  room key, which is the whole reason a sealed value is legible here at all.
+ *  Writing it out asks the hub for nothing and needs no checkout, no CLI and
+ *  no agent — which is the point. A session capsule saved from here goes
+ *  straight into `switchboard session import`, so a human with a browser can
+ *  collect a handoff that no tooling on their machine could.
+ *
+ *  Named after the key so the file says what it is, and `.json` when the
+ *  value is structured, because everything worth saving from a board is.
+ */
+function saveEntry(key) {
+  const entry = (last?.board || []).find((e) => e.key === key);
+  if (!readable(entry)) return;
+  const structured = typeof entry.value !== "string";
+  const text = structured ? JSON.stringify(entry.value, null, 2) : entry.value;
+  const name = `${key.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "")
+                 || "board-entry"}${structured ? ".json" : ".txt"}`;
+  const url = URL.createObjectURL(
+    new Blob([text], { type: structured ? "application/json" : "text/plain" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  // Same turn would race the click on some browsers; the next one is safe and
+  // still prompt enough that nothing accumulates.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function render(s, { onRoom, onClose } = {}) {
@@ -782,6 +827,11 @@ export function render(s, { onRoom, onClose } = {}) {
         // only enter is a trap.
         sender = sender === speaker.dataset.from ? null : speaker.dataset.from;
         scopeChanged();
+        return;
+      }
+      const save = e.target.closest("[data-save]");
+      if (save) {
+        saveEntry(save.dataset.save);
         return;
       }
       const entry = e.target.closest("[data-board]");

@@ -428,3 +428,33 @@ def test_a_capsule_cannot_inflate_past_what_it_declares(source, tmp_path):
     entry["bytes"] = cs.MAX_FILE_BYTES + 1
     with pytest.raises(cs.CapsuleError, match="unusable size"):
         cs.install(capsule, config_dir=tmp_path / "dest", cwd="/w")
+
+
+def test_subagents_travel_by_default_and_can_be_left_behind(source, tmp_path):
+    """The sidecars are most of the bytes and none of the resume, so the
+    default carries them and the opt-out records that it did not."""
+    cfg, _ = source
+    full = cs.package(SID, config_dir=cfg)
+    lean = cs.package(SID, config_dir=cfg, subagents=False)
+
+    assert len(full["files"]) == 3 and "omitted_subagent_files" not in full
+    assert [f["relative_destination"] for f in lean["files"]] == [f"{SID}.jsonl"]
+    assert lean["omitted_subagent_files"] == 2
+
+    # Either one resumes: the main transcript is the whole of what --resume reads.
+    for capsule, label in ((full, "full"), (lean, "lean")):
+        dest = tmp_path / f"dest-{label}"
+        result = cs.install(capsule, config_dir=dest, cwd=f"/w-{label}")
+        assert Path(result["transcript"]).read_bytes() == (
+            cfg / "projects" / cs.project_key("/Users/gal/code/switchboard") / f"{SID}.jsonl"
+        ).read_bytes()
+
+
+def test_a_session_with_no_subagents_says_nothing_about_omitting_them(source, tmp_path):
+    """A lone session and a stripped one both arrive with one file; only the
+    stripped one claims to have left anything behind."""
+    cfg, _ = source
+    _make_session(cfg, "/solo", sidecar=False)
+    solo = cs.package(SID, config_dir=cfg, cwd="/solo")
+    assert len(solo["files"]) == 1
+    assert "omitted_subagent_files" not in solo

@@ -3159,7 +3159,8 @@ def cmd_session(args: argparse.Namespace) -> int:
 
 
 def _session_export(args: argparse.Namespace) -> int:
-    capsule = handoff.package_current(args.session_id, cwd=args.cwd)
+    capsule = handoff.package_current(args.session_id, cwd=args.cwd,
+                                      subagents=not args.no_subagents)
     summary = claude_session.summary(capsule)
     if args.output == "-":
         if claude_session.current_session_id() and not args.quiet:
@@ -3201,6 +3202,7 @@ def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
         result = handoff.handoff(
             hub, to=to, session_id=args.session_id, ttl=args.ttl,
             release_leases=args.release_leases, allow_plaintext=args.allow_plaintext,
+            subagents=not args.no_subagents,
         )
         unread = hub.unread_dms
     if args.json:
@@ -3211,6 +3213,10 @@ def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
         where = f"to {args.to}" if to else "as a checkpoint"
         print(f"handed off {sid} {where}: {result['bytes']} bytes at {result['key']}, "
               f"expires in {_dur(result['expires_in'])}")
+        if result.get("omitted_subagent_files"):
+            n = result["omitted_subagent_files"]
+            print(f"  without {n} subagent file{'s' if n != 1 else ''}: the conversation "
+                  f"resumes, the subagents' own work does not travel")
         if result["held_leases"]:
             n = len(result["held_leases"])
             print(f"  still holding {n} lease{'s' if n != 1 else ''}; the receiver is told "
@@ -5667,6 +5673,16 @@ def _accept_global_flags_after_subcommand(parser: argparse.ArgumentParser) -> No
 #: CLI that spells them differently.
 #:
 #: The point is not to accept these — a guessed verb should not silently post
+#: Why dropping the subagent transcripts is a trade and not a saving: they
+#: are most of a capsule's bytes and none of its resume, so the only thing
+#: the receiver loses is work already finished.
+_NO_SUBAGENTS_HELP = (
+    "leave the subagent transcripts out. They are most of the bytes and none "
+    "of the resume — `claude --resume` reads the main transcript alone, so "
+    "they cost the receiver no context and carry every subagent's finished "
+    "work. Drop them for a slow link; the capsule records that it did"
+)
+
 #: to a channel named after an agent — but to answer the question the typo
 #: asked, in the sentence where the mistake is discovered.
 _MISTAKEN_VERBS = {
@@ -6415,6 +6431,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-o", "--output", help="capsule path (created 0600); - for stdout")
     s.add_argument("--session-id", help="default: this session (CLAUDE_CODE_SESSION_ID)")
     s.add_argument("--cwd", help="the session's working directory, if the id is ambiguous")
+    s.add_argument("--no-subagents", action="store_true", help=_NO_SUBAGENTS_HELP)
     s = ssub.add_parser("import", help="install a capsule file for `claude --resume`")
     s.add_argument("capsule_file", metavar="capsule")
     s.add_argument("--cwd", help="resume from this directory (default: where this session "
@@ -6438,6 +6455,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "the receiver which")
         s.add_argument("--allow-plaintext", action="store_true",
                        help="publish even in an unencrypted room")
+        s.add_argument("--no-subagents", action="store_true", help=_NO_SUBAGENTS_HELP)
     s = ssub.add_parser("receive", help="collect sessions handed to you, or one by id")
     s.add_argument("session_id", nargs="?", metavar="session-id",
                    help="collect this capsule on your own say-so (no pointer needed)")
