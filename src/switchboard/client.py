@@ -206,12 +206,30 @@ def detect_identity(
         if agent_id is not None:
             id_source = "SWITCHBOARD_AGENT_ID"
     if agent_id is None:
-        slug = (branch or "detached").replace("/", "-")
+        # Deliberately *not* the branch. It was in here when the id was
+        # `kind-branch-host` and the branch was the only thing telling two
+        # sessions apart; `session_suffix` took that job (see its docstring)
+        # and left the branch behind as decoration. Decoration with teeth: an
+        # id is what the signer socket is keyed on, what the roster stores a
+        # pubkey against, what holds a lease and what owns a read cursor —
+        # so it has to survive the session, and a branch changes several
+        # times an hour in exactly the work agents do. Checking out a branch
+        # would mint a second identity: a new roster row, an inbox that
+        # rereads what the first already took, leases that no longer exclude
+        # the ones still held under the old id, and a signature a peer
+        # verifies against a row nobody is refreshing any more.
+        #
+        # Nothing reads the branch back out of an id. `_resolve_recipient`
+        # matches the roster's own `branch` field, which is registered on
+        # every announce and therefore says where the agent is *now* rather
+        # than where it started — a better answer than the id ever gave.
+        # Legibility lives in `name` (`repo:branch`) for the same reason.
+        #
         # Truncate the descriptive part, never the suffix: it is what makes
-        # the id unique, and a long branch name must not be able to trim it
-        # off and silently reintroduce the collision.
+        # the id unique, and a long hostname must not be able to trim it off
+        # and silently reintroduce the collision.
         suffix = session_suffix()
-        head = f"{kind}-{slug}-{host}"[: 96 - len(suffix) - 1]
+        head = f"{kind}-{host}"[: 96 - len(suffix) - 1]
         agent_id = f"{head}-{suffix}"
 
     if name is None:
@@ -229,35 +247,37 @@ def detect_identity(
                     id_source=id_source, in_repo=repo is not None)
 
 
-def identity_drift_warning(identity: Identity) -> str | None:
-    """Text warning that this agent's id was derived outside a git checkout.
+def rootless_warning(identity: Identity) -> str | None:
+    """Text warning that this command ran outside a git checkout.
 
-    An unpinned id is built from repo + branch + session, so the directory a
-    command runs in is part of who you are. Run one command from the checkout
-    and the next from a temp directory and you have published under two
-    identities — two roster rows, two inboxes, two sets of leases that do not
-    exclude each other — while believing you are one agent. Nothing raises,
-    because both ids are perfectly valid; they are just not each other.
+    A repo decides which room its agents are in: the workspace is derived
+    from the remote. Outside a checkout there is no remote to read, so one is
+    derived from the directory instead — a `default-…` room that differs from
+    the repo's, and differs again from the next directory. Nothing raises.
+    You register, you are admitted, and a roster containing only yourself
+    looks exactly like being first to arrive.
 
     This is not hypothetical. It bit both agents in this project's own
     cross-session dogfooding: one wrote its handoff from a scratch directory
-    and its status from the repo root, and told a peer to reply to an id that
-    was not the one signing the message.
+    and its status from the repo root, and told a peer to reply somewhere the
+    peer was not.
 
-    Silent when the id is pinned, because then the directory does not matter —
-    which is also the fix. Silent inside a checkout, because that is the case
-    the derivation is designed for.
+    The agent *id* used to drift here too, because the branch was baked into
+    it and a directory with no branch derived a different one. It no longer
+    does (see `detect_identity`), so pinning `SWITCHBOARD_AGENT_ID` — which
+    is what this warning used to advise — would leave the real problem in
+    place: the same agent, correctly identified, in the wrong room.
     """
     if identity.id_source != "derived" or identity.in_repo:
         return None
     return (
-        f"warning: agent id {identity.agent_id} was derived outside a git "
-        "checkout, so it is not the id this session gets from its repo root.\n"
-        "Anything said under it lands in a second identity: a separate roster "
-        "row, a separate inbox, and leases that do not exclude the ones your "
-        "other id holds.\n"
-        "Set SWITCHBOARD_AGENT_ID (or pass --agent-id) to pin one id across "
-        "every directory this session runs in."
+        "warning: this ran outside a git checkout, so the workspace was "
+        "derived from the directory rather than from the repo's remote.\n"
+        "That is a different room from the one this repo's agents are in: a "
+        "roster that lists only you, an inbox nobody writes to, and leases "
+        "that exclude nobody.\n"
+        "Run from the checkout, or set SWITCHBOARD_WORKSPACE to the room you "
+        "mean."
     )
 
 

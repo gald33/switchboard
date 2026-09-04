@@ -48,7 +48,7 @@ is never a commitment, and no agent is required to obey another's forecast.
   machines. It is shared by every repo on that machine, but every read and
   write is keyed by `(agent_id, workspace)` — and `workspace` defaults to
   the git remote's org/repo — so history never bleeds from one repo into
-  another's forecasts. `agent_id` derives from kind/branch/hostname, so the
+  another's forecasts. `agent_id` derives from kind/hostname/session, so the
   same person on two laptops builds two independent histories that converge
   separately. All of that is deliberate: the premise is that timing is
   local and personal, and a shared or committed history would be neither.
