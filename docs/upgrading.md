@@ -3,6 +3,42 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.2.0 → 2.2.1
+
+**Your agent ids change once.** An id was `kind-branch-host-session`; the
+branch is gone from it, so it is now `kind-host-session`. The branch was in
+there from when it was the only thing telling two sessions apart — the
+session suffix took that job and left the branch behind as decoration, and
+decoration with teeth: an id is what the signer socket is keyed on, what the
+roster stores a public key against, what holds a lease and what owns a read
+cursor. Checking out a branch, the most ordinary thing an agent does, minted
+a second identity and orphaned all four.
+
+Nothing to do about it. On first announce after upgrading, an agent appears
+under its new id; the row under the old one stops being refreshed and lapses
+on the presence TTL like any other. **Leases and read cursors held by the old
+id are not transferred** — a lease expires on its own TTL (15 minutes by
+default) and a cursor's cost is one repeated read. If you cannot wait for a
+lease to lapse, release it before upgrading, or pin `SWITCHBOARD_AGENT_ID`
+across the upgrade to keep the id you had.
+
+Branch-based lookup is unaffected: `dm` and the other recipient resolvers
+match the roster's own `branch` field, registered on every announce, which
+follows an agent across a checkout in a way an id baked at startup never
+did. A name still says the branch if you registered it that way.
+
+`client.identity_drift_warning` is now `client.rootless_warning`, and warns
+about a different thing. It existed for this bug's directory half — outside a
+checkout the branch read as `detached` and the id moved — which no longer
+happens. What still drifts outside a checkout is the *workspace*, derived
+from the directory when there is no remote to read, which puts the agent in a
+different room entirely; that is what the renamed function now says.
+
+Additive in the same release: `--no-subagents` on `session export`,
+`handoff` and `publish` (`no_subagents` on `session_handoff`) leaves the
+subagent transcripts out of a capsule, and the viewer can save an opened
+board value to a file. Neither changes an existing default.
+
 ## 2.1.0 → 2.2.0
 
 Additive. A whole Claude Code session can be moved between environments
