@@ -287,6 +287,7 @@ def test_resume_command_shapes(monkeypatch, tmp_path):
 
 def test_spawn_reports_a_missing_claude_as_data_not_an_error(monkeypatch, tmp_path):
     monkeypatch.setattr(cs.shutil, "which", lambda name: None)
+    _make_session(tmp_path / "c", str(tmp_path), sidecar=False)
     result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=tmp_path / "c")
     assert result["started"] is False
     assert "PATH" in result["reason"]
@@ -304,17 +305,83 @@ def test_spawn_runs_claude_with_a_clean_environment(monkeypatch, tmp_path):
         f"printf '%s\\n' \"$@\" > {log}\n"
         "printf 'SID=%s CFG=%s CWD=%s\\n' "
         f"\"$CLAUDE_CODE_SESSION_ID\" \"$CLAUDE_CONFIG_DIR\" \"$PWD\" >> {log}\n"
-        "echo backgrounded\n"
+        f"echo 'backgrounded · {SID[:8]}'\n"
     )
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
     workdir = tmp_path / "work"
     workdir.mkdir()
+    _make_session(tmp_path / "c", str(workdir), sidecar=False)
     result = cs.spawn_resume(SID, cwd=str(workdir), config_dir=tmp_path / "c")
     assert result["started"] is True
-    assert result["output"] == "backgrounded"
+    assert result["output"] == f"backgrounded · {SID[:8]}"
     assert result["attach"] == f"claude attach {SID[:8]}"
     seen = log.read_text().splitlines()
     assert seen[:3] == ["--bg", "--resume", SID]
     assert seen[3] == f"SID= CFG={tmp_path / 'c'} CWD={workdir}"
+
+
+# --- refusals that protect what is already here ----------------------------------
+
+def test_install_refuses_to_overwrite_a_session_that_is_live_here(source, tmp_path, monkeypatch):
+    cfg, _ = source
+    capsule = cs.package(SID, config_dir=cfg)
+    dest = tmp_path / "dest-claude"
+    (dest / "sessions").mkdir(parents=True)
+    (dest / "sessions" / "4242.json").write_text(json.dumps({"pid": 4242, "sessionId": SID}))
+    with pytest.raises(cs.CapsuleError, match="running on this machine"):
+        cs.install(capsule, config_dir=dest, cwd="/w")
+    (dest / "sessions" / "4242.json").unlink()
+    monkeypatch.setenv(cs.SESSION_ID_VAR, SID)
+    with pytest.raises(cs.CapsuleError, match="running on this machine"):
+        cs.install(capsule, config_dir=dest, cwd="/w")
+    assert cs.install(capsule, config_dir=dest, cwd="/w", force=True)["written"]
+
+
+def test_install_refuses_to_roll_a_longer_transcript_back(source, tmp_path):
+    cfg, transcript = source
+    dest = tmp_path / "dest-claude"
+    older = cs.package(SID, config_dir=cfg)
+    with transcript.open("a") as fh:
+        fh.write(_record(type="assistant") + "\n")
+    newer = cs.package(SID, config_dir=cfg)
+    cs.install(newer, config_dir=dest, cwd="/w")
+    with pytest.raises(cs.CapsuleError, match="ahead"):
+        cs.install(older, config_dir=dest, cwd="/w")
+    assert cs.install(older, config_dir=dest, cwd="/w", force=True)["backed_up"]
+
+
+def test_capsule_files_are_private_and_round_trip(source, tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "umask", lambda mask: 0)  # keep the test honest under any umask
+    cfg, _ = source
+    capsule = cs.package(SID, config_dir=cfg)
+    path = cs.write_capsule(capsule, tmp_path / "capsule.json")
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert cs.read_capsule(path)["files"] == capsule["files"]
+    (tmp_path / "junk.json").write_text("not json")
+    with pytest.raises(cs.CapsuleError, match="not a capsule"):
+        cs.read_capsule(tmp_path / "junk.json")
+
+
+def test_spawn_does_not_trust_claudes_exit_code(monkeypatch, tmp_path):
+    """`claude --bg --resume <unknown id>` exits 0 and starts an empty session;
+    the output is what says whether anything was resumed."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    script = fake_bin / "claude"
+    script.write_text("#!/bin/sh\necho 'backgrounded · 3c1f7c2e (idle — send a prompt to start)'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+    cfg = tmp_path / "c"
+    # Nothing installed: refused before claude is even run.
+    result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
+    assert result["started"] is False and "no transcript" in result["reason"]
+    # Installed, but claude reports an idle session: also not a success.
+    _make_session(cfg, str(tmp_path), sidecar=False)
+    result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
+    assert result["started"] is False and "empty session" in result["reason"]
+    script.write_text("#!/bin/sh\necho 'backgrounded · 3c1f7c2e'\n")
+    result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
+    assert result["started"] is True and result["attach"] == "claude attach 3c1f7c2e"
+

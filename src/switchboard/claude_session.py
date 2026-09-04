@@ -143,6 +143,38 @@ def find_transcripts(cfg: Path, session_id: str) -> list[Path]:
     return sorted(p for p in projects.glob(f"*/{session_id}.jsonl") if p.is_file())
 
 
+def live_session_ids(cfg: Path) -> set[str]:
+    """Sessions a running Claude Code process on this machine has open.
+
+    Claude Code registers each live process at ``<config-dir>/sessions/<pid>.json``
+    with its ``sessionId``. Best effort: an unreadable or stale file is
+    ignored, and a process that died without cleaning up is reported as live
+    — the cost of that is a refusal that ``force`` overrides.
+    """
+    live: set[str] = set()
+    sessions = cfg / "sessions"
+    if not sessions.is_dir():
+        return live
+    for path in sessions.glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        sid = record.get("sessionId") if isinstance(record, dict) else None
+        if isinstance(sid, str) and _UUID.match(sid.lower()):
+            live.add(sid.lower())
+    return live
+
+
+def record_count(path: Path) -> int:
+    """How many lines a transcript has — its length, as Claude Code appends it."""
+    count = 0
+    with path.open("rb") as fh:
+        for _ in fh:
+            count += 1
+    return count
+
+
 def transcript_metadata(path: Path) -> dict[str, Any]:
     """Read cwd, CLI version and branch off native records without interpreting them.
 
@@ -278,6 +310,44 @@ def capsule_size(capsule: dict[str, Any]) -> int:
     return sum(int(f.get("bytes") or 0) for f in capsule.get("files", []))
 
 
+def _write_private(path: Path, data: bytes) -> None:
+    """Create or replace ``path`` owner-read/write from the first byte.
+
+    ``write_bytes`` honours the umask, and 0o022 is the common one, so a
+    transcript would be world-readable for the moment before a chmod. Claude
+    Code writes its own files 0o600; the export must not be the step that
+    loosens that.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)  # the file may have existed with a wider mode
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
+def _record_count_of(entry: dict[str, Any]) -> int:
+    return decode_entry(entry).count(b"\n")
+
+
+def write_capsule(capsule: dict[str, Any], path: str | os.PathLike[str]) -> Path:
+    """Save a capsule to a file as private as the transcript it carries."""
+    target = Path(path)
+    _write_private(target, json.dumps(capsule, separators=(",", ":")).encode())
+    return target
+
+
+def read_capsule(path: str | os.PathLike[str]) -> dict[str, Any]:
+    try:
+        with open(path, "rb") as fh:
+            capsule = json.load(fh)
+    except ValueError as exc:
+        raise CapsuleError(f"{path} is not a capsule: {exc}") from exc
+    return validate(capsule)
+
+
 # ------------------------------------------------------------- validate ---
 
 def validate(capsule: Any) -> dict[str, Any]:
@@ -383,6 +453,11 @@ def install(
         resume_cwd = capsule.get("original_working_directory")
     dest_dir = cfg / "projects" / dest_key
 
+    if not force and (session_id == current_session_id() or session_id in live_session_ids(cfg)):
+        raise CapsuleError(
+            f"session {session_id} is running on this machine right now; installing over a "
+            f"live transcript would corrupt it. Stop that session first, or import with force"
+        )
     elsewhere = [p for p in find_transcripts(cfg, session_id) if p.parent != dest_dir]
     if elsewhere and not force:
         listing = "\n  ".join(str(p) for p in elsewhere)
@@ -390,6 +465,17 @@ def install(
             f"session {session_id} already exists under other project keys, so resume by id "
             f"would be ambiguous:\n  {listing}\nimport with force to add another copy anyway"
         )
+    existing = dest_dir / f"{session_id}.jsonl"
+    if existing.is_file() and not force:
+        incoming = next(e for e in capsule["files"]
+                        if e["relative_destination"] == f"{session_id}.jsonl")
+        local, remote = record_count(existing), _record_count_of(incoming)
+        if local > remote:
+            raise CapsuleError(
+                f"the transcript already here has {local} records and the capsule only "
+                f"{remote}: this side is ahead, and installing would roll it back. Hand the "
+                f"session the other way, or import with force to keep the capsule's copy"
+            )
 
     written: list[str] = []
     unchanged: list[str] = []
@@ -406,8 +492,7 @@ def install(
             backup = target.with_name(f"{target.name}.bak-{stamp}")
             target.replace(backup)
             backed_up.append(str(backup))
-        target.write_bytes(data)
-        os.chmod(target, 0o600)
+        _write_private(target, data)
         written.append(str(target))
 
     return {
@@ -487,25 +572,49 @@ def spawn_resume(
     env = child_env()
     env[CONFIG_DIR_VAR] = str(cfg)
     command = shell_resume_command(session_id, cwd=cwd, config_dir=cfg, background=background)
+    out: dict[str, Any] = {"session_id": session_id, "started": False, "command": command}
+    # `claude --bg --resume` of an id it cannot find exits 0 and starts an
+    # empty session that evaporates, so check what resume will find first.
+    copies = find_transcripts(cfg, session_id)
+    if not copies:
+        return {**out, "reason": f"no transcript for {session_id} under {cfg / 'projects'}"}
+    if len(copies) > 1 and not (cwd and (cfg / "projects" / project_key(cwd)) in
+                                {c.parent for c in copies}):
+        return {**out, "reason": "the id exists under several project keys and the working "
+                                 "directory matches none of them; resume would refuse to choose"}
     if not claude_available():
-        return {"started": False, "reason": "claude is not on PATH", "command": command}
+        return {**out, "reason": "claude is not on PATH"}
     run_cwd = os.fspath(cwd) if cwd else None
     if run_cwd and not os.path.isdir(run_cwd):
-        return {"started": False, "reason": f"no such directory: {run_cwd}", "command": command}
+        return {**out, "reason": f"no such directory: {run_cwd}"}
     try:
-        if background:
-            done = subprocess.run(
-                argv, cwd=run_cwd, env=env, stdin=subprocess.DEVNULL,
-                capture_output=True, text=True, timeout=timeout,
-            )
-            return {
-                "started": done.returncode == 0,
-                "returncode": done.returncode,
-                "output": (done.stdout + done.stderr).strip(),
-                "command": command,
-                "attach": f"claude attach {session_id[:8]}",
-            }
-        done = subprocess.run(argv, cwd=run_cwd, env=env)
-        return {"started": True, "returncode": done.returncode, "command": command}
+        if not background:
+            done = subprocess.run(argv, cwd=run_cwd, env=env)
+            return {**out, "started": True, "returncode": done.returncode}
+        done = subprocess.run(
+            argv, cwd=run_cwd, env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"started": False, "reason": str(exc), "command": command}
+        return {**out, "reason": str(exc)}
+    output = (done.stdout + done.stderr).strip()
+    out.update({"returncode": done.returncode, "output": output})
+    # What --bg prints: "backgrounded · <short id>" and, when nothing was
+    # loaded, "(idle — send a prompt to start)". The short id is what
+    # `claude attach` takes.
+    short = _short_id(output)
+    if done.returncode != 0 or short is None:
+        return {**out, "reason": "claude did not report a backgrounded session"}
+    if "idle" in output.lower():
+        return {**out, "reason": "claude started an empty session instead of resuming; "
+                                 "the transcript was not where it looked"}
+    return {**out, "started": True, "short_id": short, "attach": f"claude attach {short}"}
+
+
+def _short_id(output: str) -> str | None:
+    for line in output.splitlines():
+        if line.startswith("backgrounded"):
+            parts = line.replace("·", " ").split()
+            if len(parts) >= 2:
+                return parts[1]
+    return None
