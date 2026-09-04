@@ -351,6 +351,11 @@ class Store:
             isolation_level=None,  # explicit transaction control
         )
         conn.row_factory = sqlite3.Row
+        # Everything here expires, and a deleted row should be gone from the
+        # file, not just from the table: overwrite freed pages with zeros
+        # rather than leaving the old bytes in place until they are reused.
+        # Per connection, because that is the pragma's scope.
+        conn.execute("PRAGMA secure_delete=ON")
         return conn
 
     @contextmanager
@@ -943,13 +948,26 @@ class Store:
     # --- maintenance -------------------------------------------------------
 
     def sweep(self, *, now: float | None = None) -> dict[str, int]:
-        """Hard-delete expired rows. Reads already ignore them; this reclaims disk."""
+        """Hard-delete expired rows. Reads already ignore them; this reclaims disk.
+
+        Reclaiming it takes two steps. Deleting a row zeroes its pages
+        (``secure_delete``), but the write that created the row still sits in
+        the write-ahead log until a checkpoint folds the log into the main
+        file and truncates it — so a value deleted from the table could be
+        read off the ``-wal`` file for as long as the log kept growing. Each
+        sweep therefore checkpoints as well: what left the table leaves the
+        disk with it. Best effort, outside the transaction because a
+        checkpoint cannot run inside one; it yields to a reader holding a
+        snapshot and the next sweep tries again.
+        """
         now = time.time() if now is None else now
         counts: dict[str, int] = {}
         with self._tx() as conn:
             for table in ("agents", "leases", "messages", "board", "cursors"):
                 cur = conn.execute(f"DELETE FROM {table} WHERE expires_at <= ?", (now,))  # noqa: S608
                 counts[table] = cur.rowcount
+        with self._conn() as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return counts
 
     def stats(self, *, workspace: str | None = None, now: float | None = None) -> dict[str, Any]:

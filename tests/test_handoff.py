@@ -358,3 +358,69 @@ def test_the_pointer_never_outlives_a_message(room, tmp_path):
     assert sent["expires_in"] == 3 * 86400
     [message] = h.messages(f"@{receiver.agent_id}")
     assert message.expires_at - h.now == 86400
+
+
+# --- the hub really does not keep it ------------------------------------------------
+
+def _rows(db: str, table: str = "board") -> int:
+    """What is physically in the table, with no expiry filter in the way."""
+    import sqlite3
+
+    with sqlite3.connect(db) as raw:
+        return raw.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
+
+
+def _on_disk(db: str) -> bytes:
+    """Everything an operator could read off disk: main file, WAL and shm."""
+    blob = b""
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(db + suffix)
+        if path.exists():
+            blob += path.read_bytes()
+    return blob
+
+
+def test_a_collected_capsule_is_deleted_from_the_hub_not_hidden(tmp_path):
+    """The store filters expired rows on every read, so an empty listing proves
+    nothing about what the file holds. This reads the table without the
+    filter, and the file without the store."""
+    import json as _json
+    import sqlite3
+
+    db = str(tmp_path / "hub.db")
+    with make_hub(workspace=WS, key=generate_key(), db=db) as h:
+        sender, receiver = h.client("sender", register=True), h.client("receiver", register=True)
+        src_cfg, _ = _source_session(tmp_path)
+        handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+        assert _rows(db) == 1
+        with sqlite3.connect(db) as raw:
+            (stored,) = raw.execute("SELECT value FROM board").fetchone()
+        ciphertext = _json.loads(stored)["c"][100:160].encode()
+        assert ciphertext in _on_disk(db)
+
+        got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+        assert got["installed"][0]["deleted_from_board"] is True
+        assert _rows(db) == 0, "the row is gone from the table, not merely past its expiry"
+        # The sealed bytes may survive in the write-ahead log until SQLite next
+        # checkpoints it; the sweep does that, so after one nothing remains.
+        h.sweep()
+        assert ciphertext not in _on_disk(db)
+
+
+def test_an_uncollected_capsule_is_swept_off_the_hub(tmp_path):
+    import json as _json
+    import sqlite3
+
+    db = str(tmp_path / "hub.db")
+    with make_hub(workspace=WS, key=generate_key(), db=db) as h:
+        sender = h.client("sender", register=True)
+        src_cfg, _ = _source_session(tmp_path)
+        handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg), ttl=30)
+        with sqlite3.connect(db) as raw:
+            (stored,) = raw.execute("SELECT value FROM board").fetchone()
+        ciphertext = _json.loads(stored)["c"][100:160].encode()
+        h.advance(31)
+        assert h.board() == [] and _rows(db) == 1, "invisible at once; the row waits for the sweep"
+        assert h.sweep()["board"] == 1
+        assert _rows(db) == 0
+        assert ciphertext not in _on_disk(db)
