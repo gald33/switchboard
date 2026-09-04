@@ -357,6 +357,55 @@ def test_without_the_key_the_room_reads_as_sealed(browser, page, room):
         tab.close()
 
 
+def test_a_board_value_can_be_taken_out_of_the_page_as_a_file(browser, page, room):
+    """The escape hatch for a reader with no checkout and no CLI.
+
+    The page already holds the plaintext — it fetched the entry and opened it
+    with the room key, which is why a sealed value is legible here at all — so
+    handing it over as a file asks the hub for nothing new. What it buys is a
+    session capsule collectable by a human with only a browser, which is
+    exactly the case where no tooling is available to collect it.
+
+    Pinned end to end rather than by reading the handler, because the part
+    that breaks silently is the browser's: a blob URL that is revoked before
+    the click lands downloads nothing, and nothing is also what a working
+    button looks like from the outside.
+    """
+    tab, errors = open_page(browser, page, room)
+    try:
+        tab.click("#board-wide")               # the detail pane, where save lives
+        tab.click('[data-board="handoff/lexer"]')
+        with tab.expect_download() as download:
+            tab.click('[data-save="handoff/lexer"]')
+        saved = download.value
+        # Named after the key, so a directory of these says what each one is,
+        # and `.json` because a structured value is what a board carries.
+        assert saved.suggested_filename == "handoff-lexer.json"
+        assert json.loads(Path(saved.path()).read_text()) == {"next": "escapes"}
+        assert errors == []
+    finally:
+        tab.close()
+
+
+def test_nothing_offers_to_save_a_value_the_page_could_not_open(browser, page, room):
+    """No key, no plaintext — and a button that would write out the envelope is
+    worse than no button, because the file would look like the value.
+
+    The trap this pins: a board entry's `sealed` flag reports whether its
+    *key* stayed a blinded token, which needs a room key to establish, so it
+    is false for every entry in a room the page cannot read. Offering to save
+    has to ask whether the value came back, not whether it looks sealed.
+    """
+    tab, errors = open_page(browser, page, room, key="")
+    try:
+        tab.click("#board-wide")
+        assert tab.query_selector("#board-detail") is not None
+        assert tab.query_selector("[data-save]") is None
+        assert errors == []
+    finally:
+        tab.close()
+
+
 def test_the_conversation_follows_the_newest_message_unless_you_scrolled_up(
     browser, page, room, hub,
 ):

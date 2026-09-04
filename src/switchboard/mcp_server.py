@@ -558,6 +558,11 @@ TOOLS: list[dict[str, Any]] = [
                                            f"{handoff.DEFAULT_TTL:.0f})"},
             "release_leases": {**_BOOL, "description": "drop every lease you hold"},
             "allow_plaintext": {**_BOOL, "description": "publish even in an unencrypted room"},
+            "no_subagents": {**_BOOL, "description": "leave the subagent transcripts out. "
+                                                     "They are most of the bytes and none of "
+                                                     "the resume, and they cost the receiver "
+                                                     "no context — only say yes for a slow "
+                                                     "link"},
         }),
     },
     {
@@ -1513,13 +1518,15 @@ class Bridge:
 
     def session_handoff(self, to: str | None = None, session_id: str | None = None,
                         ttl: float | None = None, release_leases: bool = False,
-                        allow_plaintext: bool = False) -> dict[str, Any]:
+                        allow_plaintext: bool = False,
+                        no_subagents: bool = False) -> dict[str, Any]:
         unread_dms = self._touch()
         try:
             result = handoff.handoff(
                 self.client, to=to, session_id=session_id, ttl=ttl,
                 release_leases=release_leases, allow_plaintext=allow_plaintext,
                 cwd=claude_session.current_project_dir(),
+                subagents=not no_subagents,
             )
         except HandoffError as exc:
             # A refusal the model can act on — pass allow_plaintext, name the

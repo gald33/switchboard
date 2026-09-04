@@ -268,6 +268,7 @@ def package(
     *,
     config_dir: str | os.PathLike[str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
+    subagents: bool = True,
 ) -> dict[str, Any]:
     """Build a capsule for a session found under this machine's config dir.
 
@@ -275,6 +276,19 @@ def package(
     (rare: it means the session was already imported here from elsewhere).
     Nothing is modified; the transcript is read as it is, which inside a live
     session means up to the tool call that asked for the export.
+
+    ``subagents`` carries the sidecar directory — every subagent's own
+    transcript — and defaults to on, which looks expensive and is not. Those
+    files are most of the bytes (three quarters, on a session that ran a
+    couple of workflows) and none of them are needed to resume: ``--resume``
+    reads the main transcript alone, so they cost the receiving model no
+    context at all. What they are is the work already done, at rest: one
+    session here carried 153 subagent transcripts holding some five million
+    tokens of finished analysis for six megabytes on the wire. Dropping them
+    saves a transfer nobody notices and throws away the answer to "why did we
+    reject that finding?", which otherwise has to be bought again. Turn it
+    off for a slow link or a receiver that only needs the conversation; the
+    capsule then says so, rather than arriving quietly short.
     """
     session_id = valid_session_id(session_id)
     cfg = _resolve_config_dir(config_dir)
@@ -307,10 +321,14 @@ def package(
         })
 
     add(transcript, f"{session_id}.jsonl")
+    omitted = 0
     if sidecar.is_dir():
         for path in sorted(sidecar.rglob("*")):
             if path.is_file() and not path.is_symlink():
-                add(path, f"{session_id}/{path.relative_to(sidecar).as_posix()}")
+                if subagents:
+                    add(path, f"{session_id}/{path.relative_to(sidecar).as_posix()}")
+                else:
+                    omitted += 1
 
     meta = transcript_metadata(transcript)
     return {
@@ -323,6 +341,11 @@ def package(
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "stats": {k: meta[k] for k in ("records", "user_messages", "assistant_messages")},
         "files": files,
+        # Recorded rather than inferred from the file list: a session that
+        # never spawned a subagent and one whose subagents were dropped both
+        # arrive with a single file, and a receiver deciding whether to ask
+        # for them again needs to tell those apart.
+        **({"omitted_subagent_files": omitted} if omitted else {}),
     }
 
 
