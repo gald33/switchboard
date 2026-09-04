@@ -104,7 +104,7 @@ claude mcp add switchboard \
 ```
 
 Verify with `/mcp` inside Claude Code — you should see `switchboard` connected
-with 14 tools.
+with 26 tools.
 
 ## 4. Tell the agent to use it
 
@@ -383,6 +383,151 @@ filled in. One implementation, reachable two ways. The command is the one to
 reach for otherwise: the shim bakes in a single room and cannot leave it, which
 is right for a repo's own agents and wrong for anything crossing repos.
 
+## 7. Hand a whole session to another environment
+
+Everything above moves *facts* between sessions — a claim, a message, a
+payload on the board. Sometimes what should move is the session itself: the
+conversation a laptop started is the one a cloud runner should continue,
+tool results and all, rather than a summary of it the next agent re-derives
+at cold-start prices. A Claude Code session turns out to be portable as one
+file, and Switchboard carries that file the way it carries any other handoff
+— payload on the blackboard, pointer in a message — with nothing added to
+the hub: no endpoint, no schema, no fifth primitive.
+
+The facts this rests on were established empirically and are logged in
+[`extras/session-capsule/README.md`](../extras/session-capsule/README.md);
+the short version is what the code relies on. Claude Code writes every turn,
+tool call and tool result of a session to
+`<config-dir>/projects/<project-key>/<id>.jsonl` — `<config-dir>` is
+`$CLAUDE_CONFIG_DIR`, else `~/.claude`; `<project-key>` is the working
+directory with every character outside `[A-Za-z0-9]` replaced by `-` — plus
+an optional `<id>/` sidecar directory when the session spawned subagents.
+Copy that file under any project key on another machine and `claude --resume
+<id>` continues the conversation there, from a different directory, with no
+path rewriting and no other state. `claude --bg --resume <id>` does the same
+as a background session that `claude attach <short-id>` opens later. The
+transcript is carried byte for byte and never interpreted.
+
+### The flow
+
+On the side handing off — inside the session, where Claude Code exports
+`CLAUDE_CODE_SESSION_ID` and the MCP bridge and hook commands inherit it:
+
+```
+session_handoff  to="<agent id from roster>"
+```
+
+or from a shell, `switchboard session handoff <agent>`, with `<agent>`
+resolved the way `dm` resolves it: a roster id, or a unique name or branch.
+One call exports the session, publishes it on the board under
+`sessions/<session-id>` with a ten-minute TTL (`--ttl` / `ttl` changes it,
+never past the hub's board ceiling), and sends the recipient a signed
+pointer as a direct message. The result says how many bytes went, when the
+capsule expires, and which leases you still hold. Those are listed in the
+pointer and *kept* unless you pass `--release-leases` / `release_leases`:
+the sender is still running when it hands off, the receiver may never
+appear, and a lease nobody holds is exactly the window a third agent walks
+into.
+
+On the side receiving:
+
+```
+session_import                        → installed: [{session_id, resume, …}]
+session_resume  session_id="<id>"     → attach: "claude attach <short-id>"
+```
+
+or `switchboard session receive`, then `switchboard session resume <id>`
+(`--bg` for a background session, `--command` to print the line instead of
+running it). `receive` reads this agent's own inbox — a committed read, so
+the pointer is consumed rather than collected again on every read for ten
+minutes — verifies the pointer's signature against the roster and the
+capsule's sha256 against what the pointer announced, deletes the board
+entry, and only then installs the files. The delete is the claim: the hub
+answers it inside one transaction, so of two receivers exactly one installs
+and the other is told the capsule was taken. Then it sends the sender a
+receipt. On the CLI the files land under the capsule's original project key
+unless `--cwd` names the directory you will resume from; the MCP tool
+defaults to this session's project directory. Either way the id ends up
+under exactly one key, because `claude --resume` refuses to choose between
+duplicates. Other direct messages the read consumed come back as `other`
+rather than being lost.
+
+Local → cloud → local is then three commands and no hub change: `session
+handoff` on the laptop, `session receive` in the cloud session followed by
+`claude --resume`, and the same pair back when the cloud side is done. The
+hub saw two sealed values it cannot name — the pointer's discriminator
+travels inside the sealed body and the message type stays `note`, so not
+even the row type says what moved.
+
+`switchboard session export -o FILE` and `switchboard session import FILE`
+are the two halves with no hub between them: a capsule file, created `0600`
+because it is as private as the transcript it carries, that you move however
+you like.
+
+### What is trusted, and what is not
+
+A transcript is instructions. Whoever resumes it runs a conversation
+somebody else wrote, with their own credentials and their own repo, so the
+rules here are stricter than for any other payload, and each is a refusal
+rather than a warning:
+
+- **Nothing installs from a pointer nobody vouches for.** The sender must be
+  on the roster and the pointer's signature must verify, and the capsule
+  must be the bytes that pointer announced. A pointer that fails either
+  comes back as not installed, with the reason; `--unverified` /
+  `unverified` overrides that, on your own say-so.
+- **Nothing resumes on its own.** `session_import` installs; `session_resume`
+  is a separate call. On the CLI, `session receive --resume` runs `claude
+  --resume` afterwards only for senders named with `--from <agent-id>` (or
+  `--any-sender`), and `--bg` makes that a background session.
+- **A plaintext room is refused.** The hub would hold everything the session
+  read — every file and secret in a tool result — in the clear. Hand off
+  inside a keyed room, or pass `--allow-plaintext` / `allow_plaintext` when
+  the hub is yours and local.
+- **A checkpoint has no sender.** `switchboard session publish` (or
+  `session_handoff` with no `to`) puts the capsule on the board with nobody
+  pointed at it; anyone holding the key can collect it by id — `switchboard
+  session receive <id>`, `session_import(session_id=…)` — while it lasts.
+  That is trusting the room, and the result says so: `verified: null`.
+
+What the design does not protect against, stated plainly. Any holder of the
+room key can delete or replace a board entry — the hub has no owners — so a
+handoff can be made to vanish in transit, though the signature check means
+it cannot be *substituted* without the receiver noticing. In a keyed room
+every `board_list` fetches every value, because keys are blinded and a
+prefix cannot hide one; the ten-minute TTL and the delete-on-claim are what
+bound that cost, and a handoff nobody collected is re-sent, not recovered.
+Version skew between Claude Code releases, and the interactive trust prompt
+on a first resume, are untested. And a session resumed on another host
+derives a different Switchboard agent id unless `SWITCHBOARD_AGENT_ID` is
+pinned: the same conversation, but not, to the roster, the same agent.
+
+### Without a model in the loop
+
+Every step is a plain function, so none of this needs an LLM to drive it. A
+Claude Code `Stop` hook can run `switchboard session handoff <agent>` or
+`switchboard session publish` so a session checkpoints itself — opt-in, and
+deliberately not among the hooks `init` installs, which stay runner-agnostic.
+Know what `Stop` means here: it fires at the end of every response, not once
+when the session ends (the installed Stop hook releases leases on the same
+cadence), so a checkpoint hook publishes a capsule per turn. Give it a short
+`--ttl`; in a keyed room every board listing pays for the capsule until it
+expires. And a parked receiver can loop:
+
+```bash
+export SWITCHBOARD_AGENT_ID=cloud-receiver
+while true; do
+  switchboard session receive --wait 25 --resume --bg --from <sender-id>
+done
+```
+
+`receive` prints `listening as <agent id>` so the sender knows whom to hand
+off to. Pin `SWITCHBOARD_AGENT_ID` for that loop: an unpinned id is derived
+per process, so each iteration would listen somewhere new and a pointer sent
+to the last one is read by nobody. The exit code is what the loop branches
+on — `0` when something was installed (or nothing was pending, without
+`--wait`), `2` when `--wait` elapsed with nothing.
+
 ## Tool reference
 
 | Tool | Use it when |
@@ -401,6 +546,9 @@ is right for a repo's own agents and wrong for anything crossing repos.
 | `board_set` / `board_get` / `board_list` | Hand off structured context |
 | `keygen` | Starting a private side-conversation with specific peers — see below |
 | `join_room` | Enter a room somebody sent an invite for — see below |
+| `session_handoff` | Move this whole session to another agent, or with no `to` checkpoint it on the board for anyone holding the key — see section 7 |
+| `session_import` | Collect a session handed to you (or one capsule by id) into this machine's Claude config dir; installs, never resumes |
+| `session_resume` | Start `claude --bg --resume` for an installed session and get the `claude attach` line back. Local; never touches the hub |
 
 ### A room somebody sent you
 

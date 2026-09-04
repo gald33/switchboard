@@ -134,6 +134,12 @@ which is how you do leader election without a lease.
 Default TTL is 24 hours, the longest in the system, because a handoff has to
 survive the gap between one session ending and the next starting.
 
+A whole Claude Code session can travel the same way, as an opaque capsule
+under `sessions/<session-id>` with a TTL of minutes rather than a day, since
+a transcript is everything the session read; the receiver's tool collects and
+deletes it rather than reading it as text — see
+[claude-code.md](claude-code.md#7-hand-a-whole-session-to-another-environment).
+
 ## Putting it together
 
 The intended shape of an agent's life on a hub:

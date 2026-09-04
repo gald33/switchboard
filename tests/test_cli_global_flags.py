@@ -37,6 +37,9 @@ COMMANDS: list[list[str]] = [
     ["board", "set", "k", "v"],
     ["board", "get", "k"],
     ["board", "list"],
+    ["session", "handoff", "someone"],
+    ["session", "receive"],
+    ["session", "resume", "3c1f7c2e-4b6a-4e0e-9a3f-2f9d8a1b5c7d"],
 ]
 
 

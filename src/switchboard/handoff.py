@@ -56,8 +56,8 @@ from __future__ import annotations
 from typing import Any
 
 from . import claude_session, holds
-from .client import Client, SwitchboardError
-from .config import MAX_BOARD_TTL
+from .client import Client, SwitchboardError, detect_identity
+from .config import MAX_AGENT_TTL, MAX_AWAY_SECONDS, MAX_BOARD_TTL, MAX_MESSAGE_TTL
 
 #: Where a capsule in transit lives. Its own prefix rather than ``coord/`` so
 #: an *unkeyed* ``arrive`` (which lists ``coord/``) never pulls it; in a keyed
@@ -172,6 +172,33 @@ def release_all(hub: Client) -> list[str]:
     return released
 
 
+def stay_on_roster(hub: Client, seconds: float) -> None:
+    """Keep this agent's signing key findable for as long as the capsule lives.
+
+    The receiver verifies the pointer against keys it reads off the roster,
+    and presence lapses in two minutes while a capsule lasts ten: a sender
+    that goes quiet after handing off would be `unknown` by the time the
+    receiver looks, and its handoff refused for it. So the sender declares it
+    will be back within the capsule's TTL, which keeps its roster row (and
+    key) visible that long, exactly as `arrive --back-in` does. A CLI agent
+    that never registered is registered here, with the identity the CLI
+    would have derived for it.
+    """
+    ttl = min(seconds, MAX_AGENT_TTL)
+    back_in = min(seconds, MAX_AWAY_SECONDS)
+    mine = next((a for a in hub.agents() if a.get("agent_id") == hub.agent_id), None)
+    # A CLI agent is a new process each time, and a signing key does not
+    # outlive a process: the key on the roster may be an earlier one, and the
+    # pointer about to be sent is signed by this one. Announce again when they
+    # differ, as `announce` would; a heartbeat republishes nothing.
+    if mine is not None and (not hub.public_key or mine.get("pubkey") == hub.public_key):
+        hub.heartbeat(ttl=ttl, back_in=back_in, renew_leases=False)
+        return
+    identity = detect_identity(agent_id=hub.local_agent_id)
+    hub.register(name=identity.name, kind=identity.kind, branch=identity.branch,
+                 task=(mine or {}).get("task"), meta=identity.meta, ttl=ttl, back_in=back_in)
+
+
 def publish(
     hub: Client,
     capsule: dict[str, Any],
@@ -216,6 +243,7 @@ def publish(
         "capsule": capsule,
     }
     entry = hub.board_set(key, envelope, ttl=ttl)
+    stay_on_roster(hub, ttl)
     released = release_all(hub) if release_leases else []
     out: dict[str, Any] = {
         "session_id": session_id,
@@ -251,7 +279,9 @@ def publish(
             "held_leases": out["held_leases"],
             "released_leases": released,
         }
-        msg = hub.send(to, pointer, ttl=ttl)
+        # A message cannot outlive a day; a capsule can. The pointer carries
+        # the board entry's own expires_at, so a short pointer is honest.
+        msg = hub.send(to, pointer, ttl=min(ttl, MAX_MESSAGE_TTL))
         out["seq"] = msg.get("seq")
     return out
 
@@ -295,25 +325,45 @@ def take_delivery(hub: Client, *, wait: float = 0.0) -> dict[str, Any]:
     The roster is read first so signatures can be checked: a pointer whose
     sender is not on the roster, or whose signature does not verify, is
     ``unverified`` and is never installed on its own.
+
+    The channel's recent history is read as well, because the cursor has
+    usually moved already: every MCP result says ``unread_dms`` and the
+    model does what that asks — ``inbox`` or ``checkin`` — before it thinks
+    to collect a session, and that read is the one that consumes the
+    pointer. History is cursor-free, so a pointer read once is still found;
+    the newest per session wins, and one from history whose capsule has
+    since gone is ``stale`` rather than a failure.
     """
     hub.agents()
-    messages = hub.inbox(channels=[f"@{hub.agent_id}"], wait=wait, limit=1000)
+    me = f"@{hub.agent_id}"
+    messages = hub.inbox(channels=[me], wait=wait, limit=1000)
     pointers: dict[str, dict[str, Any]] = {}
     other: list[dict[str, Any]] = []
     for message in messages:
         if not _is_pointer(message):
             other.append(message)
             continue
-        body = message["body"]
-        verdict = message.get("signature") or {}
-        pointers[str(body["session_id"])] = {
-            **body,
-            "seq": message.get("seq"),
-            "from_agent": message.get("from"),
-            "verified": verdict.get("status") == "verified",
-            "signature": verdict.get("status", "unsigned"),
-        }
+        pointers[str(message["body"]["session_id"])] = _pointer_of(message, "inbox")
+    for message in hub.history(me, limit=200):
+        if not _is_pointer(message):
+            continue
+        sid = str(message["body"]["session_id"])
+        seen = pointers.get(sid)
+        if seen is None or (message.get("seq") or 0) > (seen.get("seq") or 0):
+            pointers[sid] = _pointer_of(message, "history")
     return {"pointers": list(pointers.values()), "other": other}
+
+
+def _pointer_of(message: dict[str, Any], source: str) -> dict[str, Any]:
+    verdict = message.get("signature") or {}
+    return {
+        **message["body"],
+        "seq": message.get("seq"),
+        "from_agent": message.get("from"),
+        "verified": verdict.get("status") == "verified",
+        "signature": verdict.get("status", "unsigned"),
+        "source": source,
+    }
 
 
 def fetch(hub: Client, session_id: str) -> dict[str, Any] | None:
@@ -379,6 +429,7 @@ def receive_one(
         return _not_installed(
             session_id,
             "no capsule on the board: it expired, was already collected, or was never published",
+            stale=bool(pointer and pointer.get("source") == "history"),
         )
     if pointer is not None and envelope.get("sha256") != pointer.get("sha256"):
         return _not_installed(
@@ -468,11 +519,16 @@ def receive(
             for p in delivery["pointers"]
         ]
     installed = [r for r in results if r.get("installed")]
+    # A pointer that only history still remembers, for a capsule that is
+    # gone, is the ordinary afterlife of a handoff already collected: noted,
+    # not reported as something that went wrong.
+    stale = [r for r in results if r.get("stale")]
     return {
         "listening_as": hub.agent_id,
         "installed": installed,
-        "missing": [r for r in results if not r.get("installed")],
-        "pointers": seen,
+        "missing": [r for r in results if not r.get("installed") and not r.get("stale")],
+        "stale": [r["session_id"] for r in stale],
+        "pointers": seen - len(stale),
         "other": other,
         "resume": [r["resume"] for r in installed],
     }

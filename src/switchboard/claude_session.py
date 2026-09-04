@@ -443,9 +443,16 @@ def install(
     validate(capsule)
     session_id = capsule["session_id"]
     cfg = _resolve_config_dir(config_dir)
+    local = find_transcripts(cfg, session_id)
     if cwd is not None:
         dest_key = project_key(cwd)
         resume_cwd: str | None = os.path.abspath(os.fspath(cwd))
+    elif len(local) == 1:
+        # The session has been here before — the return leg of a round trip,
+        # typically — so home is where it already is, and resume from where
+        # it was last driven here, not from the sender's directory.
+        dest_key = local[0].parent.name
+        resume_cwd = transcript_metadata(local[0])["cwd"]
     else:
         dest_key = str(capsule.get("project_key") or "")
         if not dest_key or "/" in dest_key or dest_key in (".", ".."):
@@ -458,7 +465,7 @@ def install(
             f"session {session_id} is running on this machine right now; installing over a "
             f"live transcript would corrupt it. Stop that session first, or import with force"
         )
-    elsewhere = [p for p in find_transcripts(cfg, session_id) if p.parent != dest_dir]
+    elsewhere = [p for p in local if p.parent != dest_dir]
     if elsewhere and not force:
         listing = "\n  ".join(str(p) for p in elsewhere)
         raise CapsuleError(

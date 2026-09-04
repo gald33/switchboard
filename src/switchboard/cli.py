@@ -30,7 +30,17 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import __version__, drill, holds, invite, knownrooms, rendezvous, rooms
+from . import (
+    __version__,
+    claude_session,
+    drill,
+    handoff,
+    holds,
+    invite,
+    knownrooms,
+    rendezvous,
+    rooms,
+)
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -3114,6 +3124,197 @@ def cmd_board(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_session(args: argparse.Namespace) -> int:
+    """Move a whole Claude Code session between environments.
+
+    Thin over `switchboard.handoff` and `switchboard.claude_session`, which is
+    the point: a hook, a script, a human and the MCP bridge all drive the same
+    functions, and none of them needs a model in the loop. What the CLI adds is
+    resolving the recipient the way `dm` does, the resume allowlist, and exit
+    codes a loop can branch on.
+
+    Local failures — a capsule that will not parse, a transcript that is not
+    where it should be, `claude` missing — are caught here as sentences.
+    `main()` would otherwise report an `OSError` from disk as "cannot reach
+    hub", which for an import that failed on the filesystem is exactly wrong.
+    """
+    fmt = Fmt(_use_color(sys.stdout))
+    action = args.session_action
+    try:
+        if action == "export":
+            return _session_export(args)
+        if action == "import":
+            return _session_import(args)
+        if action == "resume":
+            return _session_resume(args)
+        if action in ("handoff", "publish"):
+            return _session_publish(args, fmt)
+        return _session_receive(args, fmt)
+    except (handoff.HandoffError, claude_session.CapsuleError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def _session_export(args: argparse.Namespace) -> int:
+    capsule = handoff.package_current(args.session_id, cwd=args.cwd)
+    summary = claude_session.summary(capsule)
+    if args.output == "-":
+        if claude_session.current_session_id() and not args.quiet:
+            # From inside a session this lands in the model's context, which is
+            # the one place capsule bytes should never go. Say so; do not stop.
+            print("note: writing the capsule to stdout inside a Claude Code session "
+                  "puts it in the model's context — prefer -o FILE or `session handoff`",
+                  file=sys.stderr)
+        print(json.dumps(capsule, separators=(",", ":")))
+        return EXIT_OK
+    path = args.output or f"session-{summary['session_id'][:8]}.capsule.json"
+    written = claude_session.write_capsule(capsule, path)
+    if args.json:
+        _print_json({**summary, "path": str(written)})
+    elif not args.quiet:
+        print(f"exported {summary['session_id']} ({summary['files']} files, "
+              f"{summary['bytes']} bytes) -> {written}")
+    return EXIT_OK
+
+
+def _session_import(args: argparse.Namespace) -> int:
+    capsule = claude_session.read_capsule(args.capsule_file)
+    result = claude_session.install(capsule, cwd=args.cwd, force=args.force)
+    if args.json:
+        _print_json(result)
+    elif not args.quiet:
+        print(f"installed {result['session_id']} -> {result['project_dir']}")
+        if result["backed_up"]:
+            print(f"  kept the previous copy as {result['backed_up'][0]}")
+        print(f"resume with:\n  {result['resume']}")
+    return EXIT_OK
+
+
+def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
+    with _make_client(args) as hub:
+        to = None
+        if args.session_action == "handoff":
+            to = _resolve_recipient(hub, args.to, fmt)
+        result = handoff.handoff(
+            hub, to=to, session_id=args.session_id, ttl=args.ttl,
+            release_leases=args.release_leases, allow_plaintext=args.allow_plaintext,
+        )
+        unread = hub.unread_dms
+    if args.json:
+        _print_json({**result, "unread_dms": unread})
+        return EXIT_OK
+    if not args.quiet:
+        sid = result["session_id"]
+        where = f"to {args.to}" if to else "as a checkpoint"
+        print(f"handed off {sid} {where}: {result['bytes']} bytes at {result['key']}, "
+              f"expires in {_dur(result['expires_in'])}")
+        if result["held_leases"]:
+            n = len(result["held_leases"])
+            print(f"  still holding {n} lease{'s' if n != 1 else ''}; the receiver is told "
+                  f"which — pass --release-leases if this was your last turn")
+        if result["released_leases"]:
+            print(f"  released {len(result['released_leases'])} lease(s)")
+        if not result["encrypted"]:
+            print(f"{fmt.yellow('warning')}: this room is not encrypted; the hub holds the "
+                  f"transcript in the clear until it expires", file=sys.stderr)
+        _print_unread(unread)
+    return EXIT_OK
+
+
+def _session_receive(args: argparse.Namespace, fmt: Fmt) -> int:
+    with _make_client(args) as hub:
+        identity = detect_identity(agent_id=args.agent_id)
+        pinned = identity.id_source != "derived" or any(
+            os.environ.get(v) for v in ("SWITCHBOARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID")
+        )
+        if args.wait and not args.session_id and not pinned:
+            # A derived id is minted per process. A loop that starts a new
+            # `session receive` each time listens somewhere new each time, and
+            # the pointer sent to the previous id is read by nobody — the
+            # handoff then expires unheard, with no error anywhere.
+            raise SystemExit(
+                f"session receive --wait needs an address that outlives this process: "
+                f"this id ({hub.agent_id}) is derived per run. Pin SWITCHBOARD_AGENT_ID "
+                f"or pass --agent-id, and hand the same id to the sender."
+            )
+        if not args.json and not args.quiet:
+            print(f"listening as {hub.agent_id}", file=sys.stderr)
+        result = handoff.receive(
+            hub, session_id=args.session_id, wait=args.wait or 0.0, cwd=args.cwd,
+            force=args.force, unverified=args.unverified, keep=args.keep,
+        )
+    resumed: list[dict[str, Any]] = []
+    if args.resume:
+        for installed in result["installed"]:
+            sender = (installed.get("from") or {}).get("agent_id")
+            allowed = args.any_sender or (sender in (args.from_agents or []))
+            if not allowed:
+                resumed.append({
+                    "session_id": installed["session_id"], "started": False,
+                    "reason": f"not resuming a session from {sender}: name the sender with "
+                              f"--from, or pass --any-sender",
+                })
+                continue
+            resumed.append(claude_session.spawn_resume(
+                installed["session_id"], cwd=installed.get("resume_cwd") or args.cwd,
+                config_dir=installed.get("config_dir"), background=args.bg,
+            ))
+    if args.json:
+        _print_json({**result, "resumed": resumed})
+    elif not args.quiet:
+        for installed in result["installed"]:
+            who = (installed.get("from") or {}).get("who") or "?"
+            vouched = ("" if installed.get("verified") else
+                       " (nobody vouched: collected on your say-so)")
+            print(f"installed {installed['session_id']} from {who}{vouched} -> "
+                  f"{installed['project_dir']}")
+            if installed.get("held_leases"):
+                print(f"  the sender still holds {len(installed['held_leases'])} lease(s); "
+                      f"claim what you need with `switchboard claim`")
+            print(f"  resume with: {installed['resume']}")
+        for missing in result["missing"]:
+            print(f"not installed {missing['session_id']}: {missing['reason']}",
+                  file=sys.stderr)
+        for run in resumed:
+            if run.get("started"):
+                print(f"resumed {run['session_id']}: {run.get('attach') or 'foreground'}")
+            else:
+                print(f"not resumed {run['session_id']}: {run['reason']}", file=sys.stderr)
+        if result["other"]:
+            n = len(result["other"])
+            print(f"{n} other direct message{'s' if n != 1 else ''} came out with the "
+                  f"pointer{'s' if result['pointers'] != 1 else ''}:", file=sys.stderr)
+            for m in result["other"]:
+                print(f"  {m.get('from', '?')[:22]}: {_body_text(m.get('body'))[:200]}",
+                      file=sys.stderr)
+        if not result["installed"] and not result["missing"]:
+            print("nothing waiting" if not args.wait else "nothing arrived", file=sys.stderr)
+    if result["installed"]:
+        return EXIT_OK
+    if args.wait and not result["missing"]:
+        return EXIT_DEADLINE
+    return EXIT_OK if not result["missing"] else EXIT_ERROR
+
+
+def _session_resume(args: argparse.Namespace) -> int:
+    sid = claude_session.valid_session_id(args.session_id)
+    if args.show_command:
+        print(claude_session.shell_resume_command(sid, cwd=args.cwd, background=args.bg))
+        return EXIT_OK
+    result = claude_session.spawn_resume(sid, cwd=args.cwd, background=args.bg)
+    if args.json:
+        _print_json(result)
+    elif not result.get("started"):
+        print(f"error: {result.get('reason')}", file=sys.stderr)
+        print(f"  the command would have been: {result['command']}", file=sys.stderr)
+    elif not args.quiet and result.get("attach"):
+        print(f"resumed {sid} in the background: {result['attach']}")
+    return EXIT_OK if result.get("started") else EXIT_ERROR
+
+
 def cmd_checkin(args: argparse.Namespace) -> int:
     """Heartbeat, renew leases, and drain the inbox in one round-trip.
 
@@ -5467,6 +5668,10 @@ _MISTAKEN_VERBS = {
     "board_set": "board set",
     "board_get": "board get",
     "join_room": "join",
+    "handoff": "session handoff <agent>",
+    "export": "session export",
+    "resume": "session resume <session-id>",
+    "receive": "session receive",
 }
 
 
@@ -6178,6 +6383,73 @@ def build_parser() -> argparse.ArgumentParser:
     b = bsub.add_parser("delete")
     b.add_argument("board_key", metavar="key")
     p.set_defaults(func=cmd_board)
+
+    p = sub.add_parser(
+        "session",
+        help="move a whole Claude Code session to another environment",
+        description=(
+            "A Claude Code session is one transcript file; these commands package it as an "
+            "opaque capsule, carry it through the hub sealed like any other board value, "
+            "and install it where `claude --resume <id>` will find it on the other side."
+        ),
+    )
+    ssub = p.add_subparsers(dest="session_action", required=True)
+    s = ssub.add_parser("export", help="write this session's capsule to a file")
+    s.add_argument("-o", "--output", help="capsule path (created 0600); - for stdout")
+    s.add_argument("--session-id", help="default: this session (CLAUDE_CODE_SESSION_ID)")
+    s.add_argument("--cwd", help="the session's working directory, if the id is ambiguous")
+    s = ssub.add_parser("import", help="install a capsule file for `claude --resume`")
+    s.add_argument("capsule_file", metavar="capsule")
+    s.add_argument("--cwd", help="resume from this directory (default: the original one)")
+    s.add_argument("--force", action="store_true",
+                   help="install even over a live, longer or duplicated transcript")
+    for verb, blurb in (
+        ("handoff", "publish this session and point an agent at it"),
+        ("publish", "publish this session as a checkpoint anyone with the key can collect"),
+    ):
+        s = ssub.add_parser(verb, help=blurb)
+        if verb == "handoff":
+            s.add_argument("to", metavar="agent",
+                           help="an agent_id from `switchboard agents`, or a unique name/branch")
+        s.add_argument("--session-id", help="default: this session (CLAUDE_CODE_SESSION_ID)")
+        s.add_argument("--ttl", type=float,
+                       help=f"seconds the capsule waits to be collected "
+                            f"(default {handoff.DEFAULT_TTL:.0f})")
+        s.add_argument("--release-leases", action="store_true",
+                       help="drop every lease you hold; default keeps them and tells "
+                            "the receiver which")
+        s.add_argument("--allow-plaintext", action="store_true",
+                       help="publish even in an unencrypted room")
+    s = ssub.add_parser("receive", help="collect sessions handed to you, or one by id")
+    s.add_argument("session_id", nargs="?", metavar="session-id",
+                   help="collect this capsule on your own say-so (no pointer needed)")
+    s.add_argument("--wait", type=float, default=0.0,
+                   help="seconds to wait for a pointer to arrive (max 25 per poll)")
+    s.add_argument("--cwd", help="resume from this directory (default: the original one)")
+    s.add_argument("--force", action="store_true",
+                   help="install even over a live, longer or duplicated transcript")
+    s.add_argument("--unverified", action="store_true",
+                   help="also collect pointers whose signature does not verify")
+    s.add_argument("--keep", action="store_true",
+                   help="leave the capsule on the board after installing it")
+    s.add_argument("--resume", action="store_true",
+                   help="run `claude --resume` for what was installed (see --from)")
+    s.add_argument("--bg", action="store_true",
+                   help="with --resume: as a background session (`claude attach` opens it)")
+    s.add_argument("--from", dest="from_agents", action="append", metavar="agent",
+                   help="senders whose sessions --resume may start (repeatable)")
+    s.add_argument("--any-sender", action="store_true",
+                   help="with --resume: start sessions from any verified sender")
+    s = ssub.add_parser("resume", help="continue an installed session with `claude --resume`")
+    s.add_argument("session_id", metavar="session-id")
+    s.add_argument("--bg", action="store_true",
+                   help="as a background session (`claude attach` opens it)")
+    s.add_argument("--cwd", help="directory to resume from")
+    # dest= because a positional-less flag literally named "command" would
+    # land on the Namespace slot the top-level subparser writes the verb to.
+    s.add_argument("--command", dest="show_command", action="store_true",
+                   help="print the command, do not run it")
+    p.set_defaults(func=cmd_session)
 
     _accept_global_flags_after_subcommand(parser)
     return parser

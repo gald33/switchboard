@@ -1,5 +1,17 @@
 # Claude Code session capsule (prototype)
 
+> **This experiment graduated.** What it established now lives in the
+> package:
+> [`switchboard.claude_session`](../../src/switchboard/claude_session.py)
+> locates, packages, installs and resumes a session, and
+> [`switchboard.handoff`](../../src/switchboard/handoff.py) carries the
+> capsule through the hub as a board value with a signed pointer. Both are
+> driven by the `switchboard session` commands and the `session_handoff` /
+> `session_import` / `session_resume` MCP tools — see
+> [docs/claude-code.md](../../docs/claude-code.md). This directory remains
+> the experiment log: the observations below are the facts the code relies
+> on, and the prototype is kept as it ran them.
+
 Experiment log and disposable tooling for carrying a **native Claude Code
 session** between environments and resuming it there by its original session
 id. This is the "native handoff" mode (Claude Code -> Claude Code). It does

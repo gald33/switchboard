@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, knownrooms, rendezvous, rooms
+from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -38,6 +38,7 @@ from .client import (
 from .config import ClientConfig, isolation_warning, rooms_warning
 from .crypto import CryptoError, generate_key
 from .guidance import skill_text
+from .handoff import HandoffError
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
 from .invite import Invite, InviteError
@@ -111,7 +112,7 @@ _BOOL = {"type": "boolean"}
 #: one instead of the default. Added in one loop below rather than typed into
 #: fifteen schemas, so a tool added later is routable the moment it is
 #: room-scoped — the dispatcher already handles it.
-_ROOMLESS = {"help", "whoami", "keygen", "join_room"}
+_ROOMLESS = {"help", "whoami", "keygen", "join_room", "session_resume"}
 
 #: The one room handle that is not a join_room result. Derived from the key
 #: rather than handed over, so every holder of the key names the same room
@@ -529,6 +530,77 @@ TOOLS: list[dict[str, Any]] = [
             "prefix. Use this to discover what context other agents have left behind."
         ),
         "inputSchema": _schema({"prefix": _STR}),
+    },
+    {
+        "name": "session_handoff",
+        "description": (
+            "Hand THIS WHOLE SESSION — the conversation you are in, every turn and tool "
+            "result — to another environment, so a Claude Code there can `claude --resume` "
+            "it and carry on where you are. Call it when the work should continue "
+            "somewhere else (a laptop, a cloud session) rather than describing what you did "
+            "in a message. Nothing is summarised: the transcript travels as an opaque, "
+            "sealed capsule on the blackboard under sessions/<id> and expires in ten "
+            "minutes; 'to' gets a signed pointer to it. 'to' must be an agent_id from "
+            "'roster' — a name is accepted by the hub and read by nobody. Without 'to' the "
+            "capsule is a checkpoint anyone holding this room's key can collect by session "
+            "id while it lasts. Refuses an unencrypted room unless allow_plaintext is set, "
+            "because the hub would then hold everything this session read. Your leases are "
+            "kept and named in the pointer for the receiver to claim; release_leases drops "
+            "them if this is your last turn. Returns the key, size, expiry and lease "
+            "details — never the capsule itself. Expected refusals (no session id, plaintext "
+            "room) come back as handed_off:false with a reason."
+        ),
+        "inputSchema": _schema({
+            "to": {**_STR, "description": "agent_id of the receiver, from 'roster'; omit "
+                                          "to publish a checkpoint"},
+            "session_id": {**_STR, "description": "another session's id (default: this one)"},
+            "ttl": {**_NUM, "description": f"seconds it waits to be collected (default "
+                                           f"{handoff.DEFAULT_TTL:.0f})"},
+            "release_leases": {**_BOOL, "description": "drop every lease you hold"},
+            "allow_plaintext": {**_BOOL, "description": "publish even in an unencrypted room"},
+        }),
+    },
+    {
+        "name": "session_import",
+        "description": (
+            "Collect a session somebody handed to you and install it on this machine, so "
+            "`claude --resume <id>` here continues THEIR conversation. Call it when "
+            "unread_dms or a message says a session was handed off, or with a session_id to "
+            "collect a checkpoint you were told about. Reads your direct messages (a real "
+            "read, not a peek: whatever else was waiting comes back as 'other'), installs "
+            "only capsules whose pointer's signature verifies against the roster and whose "
+            "bytes match what that pointer announced, deletes each capsule from the board as "
+            "it is claimed, and sends the sender a receipt. Files land under the project key "
+            "of 'cwd' (default: this session's directory). Returns the resume command per "
+            "installed session — it does NOT start anything; that is session_resume, or the "
+            "human. A capsule that expired, was already collected, or is not what was "
+            "announced is reported in 'missing', not raised."
+        ),
+        "inputSchema": _schema({
+            "session_id": {**_STR, "description": "collect this capsule by id (no pointer "
+                                                  "needed: you are trusting the room)"},
+            "cwd": {**_STR, "description": "directory the session will be resumed from"},
+            "force": {**_BOOL, "description": "install over a live, longer or duplicated "
+                                              "transcript"},
+            "unverified": {**_BOOL, "description": "also install pointers whose signature "
+                                                   "does not verify — say why to the user"},
+        }),
+    },
+    {
+        "name": "session_resume",
+        "description": (
+            "Start an installed session as a Claude Code background session: runs "
+            "`claude --bg --resume <id>` on this machine and returns the `claude attach` "
+            "command the human opens it with. Call it after session_import, when the user "
+            "wants the handed-off conversation running here now. Local: does not touch the "
+            "hub. Cannot start a session that is not installed, or one whose id sits under "
+            "two project keys; those come back as started:false with a reason."
+        ),
+        "inputSchema": _schema({
+            "session_id": _STR,
+            "cwd": {**_STR, "description": "directory to resume from (default: this "
+                                           "session's directory)"},
+        }, ["session_id"]),
     },
     {
         "name": "join_room",
@@ -1439,6 +1511,43 @@ class Bridge:
             "unread_dms": unread_dms,
         }
 
+    def session_handoff(self, to: str | None = None, session_id: str | None = None,
+                        ttl: float | None = None, release_leases: bool = False,
+                        allow_plaintext: bool = False) -> dict[str, Any]:
+        unread_dms = self._touch()
+        try:
+            result = handoff.handoff(
+                self.client, to=to, session_id=session_id, ttl=ttl,
+                release_leases=release_leases, allow_plaintext=allow_plaintext,
+                cwd=claude_session.current_project_dir(),
+            )
+        except HandoffError as exc:
+            # A refusal the model can act on — pass allow_plaintext, name the
+            # session, tell the user — is an answer, not a failure.
+            return {"handed_off": False, "published": False, "reason": str(exc),
+                    "unread_dms": unread_dms}
+        return {"handed_off": to is not None, "published": True, **result,
+                "unread_dms": unread_dms, "now": _now_iso()}
+
+    def session_import(self, session_id: str | None = None, cwd: str | None = None,
+                       force: bool = False, unverified: bool = False) -> dict[str, Any]:
+        unread_dms = self._touch()
+        result = handoff.receive(
+            self.client, session_id=session_id,
+            cwd=cwd or claude_session.current_project_dir(),
+            force=force, unverified=unverified,
+        )
+        # The committed read took delivery of everything on @me; hand the rest
+        # over in the shape inbox uses, so nothing is read and then hidden.
+        result["other"] = [self._msg(m) for m in result["other"]]
+        return {**result, "unread_dms": unread_dms, "now": _now_iso()}
+
+    def session_resume(self, session_id: str, cwd: str | None = None) -> dict[str, Any]:
+        """Local, like keygen: no `_touch()`, so no `unread_dms`."""
+        return {**claude_session.spawn_resume(
+            session_id, cwd=cwd or claude_session.current_project_dir(), background=True,
+        ), "now": _now_iso()}
+
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
         body, timing_forecast = unwrap_forecast(m["body"])
@@ -1614,6 +1723,12 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         except TypeError as exc:
             return _response(request_id, _tool_result(
                 {"error": "bad_arguments", "detail": str(exc)}, is_error=True
+            ))
+        except (HandoffError, claude_session.CapsuleError) as exc:
+            # Same placement and reason as SpecError below: a capsule that will
+            # not verify is not an unknown tool.
+            return _response(request_id, _tool_result(
+                {"error": "handoff", "detail": str(exc)}, is_error=True
             ))
         except SpecError as exc:
             # Before the ValueError branch below, which reports `unknown_tool`

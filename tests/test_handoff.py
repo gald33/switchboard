@@ -306,3 +306,55 @@ def test_other_messages_in_the_inbox_are_handed_back_not_lost(room, tmp_path):
     got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
     assert len(got["installed"]) == 1
     assert [m["body"] for m in got["other"]] == ["unrelated: the build is green"]
+
+
+# --- the shapes a real day produces --------------------------------------------
+
+def test_a_pointer_the_model_already_read_is_still_found(room, tmp_path):
+    """Every MCP result says unread_dms; the model calls inbox; the cursor
+    moves past the pointer. Collecting afterwards must still work."""
+    h, sender, receiver = room
+    src_cfg, transcript_bytes = _source_session(tmp_path)
+    handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+    drained = receiver.inbox()
+    assert len(drained) == 1 and receiver.inbox() == []
+    got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert got["pointers"] == 1 and got["installed"][0]["verified"] is True
+    assert Path(got["installed"][0]["transcript"]).read_bytes() == transcript_bytes
+    # Collected; the pointer history still remembers is noted as stale, and
+    # nothing is reported as missing.
+    again = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert again["installed"] == [] and again["missing"] == []
+    assert again["stale"] == [SID] and again["pointers"] == 0
+
+
+def test_the_round_trip_comes_home_to_one_copy(room, tmp_path):
+    """A -> B -> A with default arguments ends with one transcript under A's
+    original key, resumed from A's original directory."""
+    h, alice, bob = room
+    a_cfg, _ = _source_session(tmp_path)
+    a_home = a_cfg / "projects" / "-Users-gal-code-switchboard" / f"{SID}.jsonl"
+    b_cfg = tmp_path / "bob-claude"
+
+    handoff.handoff(alice, to=bob.agent_id, session_id=SID, config_dir=str(a_cfg))
+    [on_b] = handoff.receive(bob, config_dir=str(b_cfg), cwd="/workspace/switchboard")["installed"]
+    with Path(on_b["transcript"]).open("a") as fh:
+        fh.write(_record(type="assistant", cwd="/workspace/switchboard") + "\n")
+
+    handoff.handoff(bob, to=alice.agent_id, session_id=SID, config_dir=str(b_cfg))
+    [back] = handoff.receive(alice, config_dir=str(a_cfg))["installed"]
+    assert Path(back["transcript"]) == a_home
+    assert back["resume_cwd"] == "/Users/gal/code/switchboard"
+    assert len(back["backed_up"]) == 1
+    assert cs.find_transcripts(a_cfg, SID) == [a_home]
+    assert a_home.read_bytes() == Path(on_b["transcript"]).read_bytes()
+
+
+def test_the_pointer_never_outlives_a_message(room, tmp_path):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    sent = handoff.handoff(sender, to=receiver.agent_id, session_id=SID,
+                           config_dir=str(src_cfg), ttl=3 * 86400)
+    assert sent["expires_in"] == 3 * 86400
+    [message] = h.messages(f"@{receiver.agent_id}")
+    assert message.expires_at - h.now == 86400
