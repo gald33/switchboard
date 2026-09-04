@@ -32,6 +32,29 @@ The deprecated alias for `whisper`, kept since 1.0.0, is gone from the sync
 and async clients. Nothing else answered to the old name any longer. The
 wire `type` `"ask"` a 0.11.0 sender puts on a message still opens.
 
+### Also new, none of it breaking
+
+- **A book of known rooms**, per machine, at `~/.switchboard/known-rooms.json`.
+  Written by `init`, `join`, `keygen --as-invite`, any `--invite` command and
+  any command run inside an `init`-ed checkout. It holds *references* — the
+  variable, the checkout, or the invite a key arrived as — never a key's
+  value. `SWITCHBOARD_KNOWN_ROOMS` moves it; set it empty to disable it.
+  `switchboard rooms --known`, `--forget`, `--label` manage it.
+- **`rendezvous` sweeps every known room** by default, read-only, and reports
+  per room who is there and who has a listener parked; `--here` keeps it to
+  this room. New `switchboard find <name or branch>` is the same sweep with a
+  peer in mind. `--room <label>` runs any command in a known room.
+- **`listen` parks in more than one room**, in one process: this room, the
+  lobby every holder of your key shares, and every room this machine joined,
+  was invited into or minted in the last hour. `--no-lobby`, `--in <label>`
+  and `--only <label>` adjust that. The wake payload keeps `messages` first
+  and adds `room`, `role` and `agent_id`.
+- **Minted keys never start with a hyphen**, so `--key <key>` cannot be read
+  as a flag. Existing keys are unaffected.
+- **The coordination skill is a third the length**, with one table naming
+  every primitive on both surfaces; `init` upgrades an installed copy in
+  place, as it does for every recorded revision.
+
 ## 2.0.0 → 2.0.1
 
 Server only. The hub's CORS allow-list now includes the two write-key
