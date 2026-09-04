@@ -337,15 +337,13 @@ def test_without_any_session_id_it_still_differs_per_process(monkeypatch, tmp_pa
     assert len(session_suffix()) == 8
 
 
-def test_a_long_branch_cannot_truncate_the_suffix(monkeypatch, tmp_path):
+def test_a_long_hostname_cannot_truncate_the_suffix(monkeypatch, tmp_path):
     # Truncating to 96 chars must never eat the part that makes it unique.
+    from switchboard import client as client_module
     from switchboard.client import detect_identity, session_suffix
 
-    project = tmp_path / "p"
-    project.mkdir()
-    _git(project, "init")
-    _git(project, "checkout", "-b", "feature/" + ("x" * 200))
-    monkeypatch.chdir(project)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(client_module.socket, "gethostname", lambda: "h" * 200)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s")
     agent_id = detect_identity().agent_id
     assert len(agent_id) <= 96
@@ -399,13 +397,23 @@ def test_a_pinned_id_is_identical_from_any_directory(monkeypatch, tmp_path):
     assert inside.agent_id == outside.agent_id == "pinned-one"
 
 
-def test_an_unpinned_id_changes_with_the_directory(monkeypatch, tmp_path):
-    """The defect itself, pinned down so it cannot come back silently."""
+def test_one_session_keeps_one_id_wherever_it_runs(monkeypatch, tmp_path):
+    """The defect this derivation was carrying, pinned down as its inverse.
+
+    An id built from the branch and the directory changed whenever either
+    did — so one session became two identities, with a separate roster row,
+    inbox and lease set, while believing it was one agent. Both inputs are
+    gone from the id now. What legitimately still differs outside a checkout
+    is the *workspace*, which `rootless_warning` says.
+    """
     from switchboard.client import detect_identity
 
     project = tmp_path / "p"
     project.mkdir()
     _git(project, "init")
+    _git(project, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
+    _git(project, "checkout", "-q", "-b", "feature/one")
     elsewhere = tmp_path / "not-a-repo"
     elsewhere.mkdir()
     for var in ("SWITCHBOARD_AGENT_ID", "SWITCHBOARD_AGENT_NAME"):
@@ -417,14 +425,14 @@ def test_an_unpinned_id_changes_with_the_directory(monkeypatch, tmp_path):
     monkeypatch.chdir(elsewhere)
     outside = detect_identity()
 
-    assert inside.agent_id != outside.agent_id, (
-        "one session, two identities — a separate roster row, inbox and lease set"
+    assert inside.agent_id == outside.agent_id, (
+        "one session, one identity — the directory does not decide who you are"
     )
     assert inside.in_repo and not outside.in_repo
 
 
-def test_the_drift_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
-    from switchboard.client import detect_identity, identity_drift_warning
+def test_the_rootless_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
+    from switchboard.client import detect_identity, rootless_warning
 
     project = tmp_path / "p"
     project.mkdir()
@@ -434,15 +442,48 @@ def test_the_drift_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path):
     monkeypatch.delenv("SWITCHBOARD_AGENT_ID", raising=False)
 
     monkeypatch.chdir(project)
-    assert identity_drift_warning(detect_identity()) is None, "inside a checkout"
+    assert rootless_warning(detect_identity()) is None, "inside a checkout"
 
     monkeypatch.chdir(elsewhere)
-    note = identity_drift_warning(detect_identity())
-    assert note is not None and "SWITCHBOARD_AGENT_ID" in note
+    note = rootless_warning(detect_identity())
+    # The room, not the id: the id no longer depends on the directory, so
+    # advising a pinned id here would leave the real problem in place.
+    assert note is not None and "SWITCHBOARD_WORKSPACE" in note
+    assert "SWITCHBOARD_AGENT_ID" not in note
 
-    # Pinned: the directory no longer decides who you are, so silent again.
+    # Pinned id: nothing about *this* is fixed, but a pinned id means the
+    # caller is driving identity by hand and has said so.
     monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "pinned-one")
-    assert identity_drift_warning(detect_identity()) is None
+    assert rootless_warning(detect_identity()) is None
+
+
+def test_the_agent_id_survives_a_branch_switch(monkeypatch, tmp_path):
+    # The id is what the signer socket is keyed on, what the roster holds a
+    # pubkey against, what owns a lease and a read cursor. Checking out a
+    # branch is the most ordinary thing an agent does; it must not mint a
+    # second identity and orphan all four.
+    from switchboard.client import detect_identity
+
+    project = tmp_path / "p"
+    project.mkdir()
+    _git(project, "init")
+    _git(project, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
+    _git(project, "checkout", "-q", "-b", "feature/one")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "one-session")
+    monkeypatch.delenv("SWITCHBOARD_AGENT_ID", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_AGENT_NAME", raising=False)
+
+    before = detect_identity()
+    _git(project, "checkout", "-q", "-b", "feature/two")
+    after = detect_identity()
+
+    assert before.agent_id == after.agent_id
+    # The branch still travels — on the field the roster registers and
+    # `dm` resolves against, which says where the agent is now.
+    assert (before.branch, after.branch) == ("feature/one", "feature/two")
+    assert after.name.endswith(":feature/two")
 
 
 # --- what a checkout says, and what only its owner may read -----------------

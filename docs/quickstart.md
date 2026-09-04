@@ -35,7 +35,7 @@ export SWITCHBOARD_WORKSPACE=demo
 ```
 
 In the second terminal, give the agent a distinct identity so you can tell them
-apart (normally this is inferred from branch and hostname):
+apart (normally this is inferred from your host and session):
 
 ```bash
 export SWITCHBOARD_AGENT_ID=beta

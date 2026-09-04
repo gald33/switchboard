@@ -43,20 +43,23 @@ An agent registers itself (id, name, kind, branch, current task) and then
 heartbeats. If it stops heartbeating, it disappears from the roster within its
 TTL — two minutes by default.
 
-The agent id is inferred from `kind`, git branch and hostname, so a session
-that restarts on the same branch reclaims its own identity rather than
-appearing as a stranger. Override it with `SWITCHBOARD_AGENT_ID` when you want
-something specific.
+The agent id is inferred from `kind`, hostname and a hash of the session id,
+so a session that resumes reclaims its own identity — its leases, its read
+cursor — rather than appearing as a stranger. Two sessions on one machine get
+different ids, because the session is part of the derivation. Override it with
+`SWITCHBOARD_AGENT_ID` when you want something specific.
 
 `kind` is auto-detected as `ci` (in GitHub Actions), `cloud` (in a remote
 Claude Code session or a Codespace) or `local`.
 
-Because the inferred id has no process or session component, two sessions
-that share `kind`, branch and hostname — two terminals on the same checkout,
-say — collide on the same agent id. They are indistinguishable to the hub:
-same presence row, same lease ownership, same message cursor. If you run
-more than one session against the same branch and host, set
-`SWITCHBOARD_AGENT_ID` explicitly for at least one of them.
+**The branch is deliberately not part of the id.** It is registered as its own
+field, which is what `dm` resolves a typed branch name against — so it says
+where an agent is *now* and follows it across a checkout, while the id stays
+put. An id has to outlive the session's whole life: it is what the signer
+socket is keyed on, what the roster stores a public key against, what holds a
+lease and what owns a read cursor. Folding the branch in meant that checking
+one out — the most ordinary thing an agent does — minted a second identity and
+orphaned all four.
 
 ## Leases
 

@@ -49,7 +49,7 @@ from .client import (
     ReadOnlyRoom,
     SwitchboardError,
     detect_identity,
-    identity_drift_warning,
+    rootless_warning,
 )
 from .config import (
     LOCAL_SETTINGS_FILE,
@@ -668,7 +668,7 @@ def _warn_identity_drift(args: argparse.Namespace, identity: Identity | None = N
         return
     if identity is None:
         identity = detect_identity(agent_id=getattr(args, "agent_id", None))
-    note = identity_drift_warning(identity)
+    note = rootless_warning(identity)
     if note:
         _DRIFT_WARNED = True
         print(note, file=sys.stderr)
