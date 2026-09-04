@@ -6493,6 +6493,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _join_dash_leading_option_value(
+    parser: argparse.ArgumentParser, args: list[str], index: int,
+) -> bool:
+    """Fold ``--from -abc`` into ``--from=-abc`` in place, if it needs it.
+
+    The sibling of the escaping below, for the other half of the same bug. An
+    agent id is base64url and may begin with ``-``; `switchboard session
+    receive --from -yLAoQ63…` then dies on "argument --from: expected one
+    argument", because argparse will not read a dash-leading token as an
+    option's value. Same origin as the positional case — the id came from
+    `switchboard agents`, which the skill tells every agent to copy from — and
+    the same 1-in-66 shape, which is why it reached a release instead of a bug
+    report.
+
+    Only where argparse would actually refuse. A value carrying a space is
+    already taken as a value (argparse's own rule: a token with a space "was
+    meant to be a positional"), so `claim x -m "-a dashed note"` is left
+    exactly as it is. And only for an option taking one value, since the
+    joined forms carry exactly one.
+
+    Returns whether it joined, because the caller's step differs: two tokens
+    became one.
+    """
+    token = args[index]
+    action = parser._option_string_actions[token]
+    if action.nargs is not None or index + 1 >= len(args):
+        return False
+    value = args[index + 1]
+    if not value.startswith("-") or len(value) == 1 or " " in value:
+        return False
+    if value in parser._option_string_actions:
+        return False  # a real option: argparse should complain, not us
+    # `--long=value`, but `-svalue` — a short option reads `=` as part of the
+    # value, which would hand the receiver an id it never had.
+    args[index:index + 2] = [f"{token}={value}" if token.startswith("--")
+                             else f"{token}{value}"]
+    return True
+
+
 def _escape_dash_leading_positionals(
     parser: argparse.ArgumentParser, argv: Sequence[str],
 ) -> list[str]:
@@ -6538,6 +6577,9 @@ def _escape_dash_leading_positionals(
             continue
         if token in current._option_string_actions:
             action = current._option_string_actions[token]
+            if _join_dash_leading_option_value(current, args, index):
+                index += 1
+                continue
             index += 2 if action.nargs != 0 else 1
             continue
         if token.startswith("--") and "=" in token:
@@ -6552,6 +6594,9 @@ def _escape_dash_leading_positionals(
         token = args[index]
         if token in options:
             action = current._option_string_actions[token]
+            if _join_dash_leading_option_value(current, args, index):
+                index += 1
+                continue
             index += 2 if action.nargs != 0 else 1
             continue
         if token.startswith("--") and "=" in token and token.split("=", 1)[0] in options:

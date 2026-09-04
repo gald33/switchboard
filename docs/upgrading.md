@@ -34,6 +34,14 @@ happens. What still drifts outside a checkout is the *workspace*, derived
 from the directory when there is no remote to read, which puts the agent in a
 different room entirely; that is what the renamed function now says.
 
+Also fixed: an option value beginning with `-` no longer has to be escaped
+by hand. `switchboard session receive --from <agent-id>` and `board list
+--prefix <key>` died on "expected one argument" for about one id in
+sixty-six, because ids and board keys are base64url and argparse will not
+read a dash-leading token as an option's value. Both now work as typed —
+the same repair `dm -yLAoQ63…` already had for positionals, extended to the
+other half of the problem.
+
 Additive in the same release: `--no-subagents` on `session export`,
 `handoff` and `publish` (`no_subagents` on `session_handoff`) leaves the
 subagent transcripts out of a capsule, and the viewer can save an opened
