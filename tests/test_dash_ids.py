@@ -62,9 +62,11 @@ def test_a_dash_leading_positional_is_escaped(parser, argv, expected):
 
 
 @pytest.mark.parametrize("argv", [
-    # A real flag, and a value that merely looks like one. `-m` takes it.
+    # A real flag, and a value that merely looks like one. `-m` takes it, and
+    # argparse already reads a token with a space as a value rather than a
+    # flag, so there is nothing here to repair.
     ["claim", "x", "-m", "-a dashed note"],
-    ["board", "list", "--prefix", "-weird"],
+    # Already joined by hand.
     ["board", "list", "--prefix=-weird"],
     # `-` on its own is the stdin sentinel, not a positional to protect.
     ["say", "chan", "-"],
@@ -111,3 +113,42 @@ def test_a_dm_reaches_a_peer_whose_id_begins_with_a_dash(capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "unrecognized arguments" not in err
     assert "nobody on the roster" not in err, "escaped, but addressed to the wrong id"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    # The bug this pins: an agent id is base64url and may begin with `-`, and
+    # `--from` is how a parked receiver names the sender it will run for. The
+    # id comes from `switchboard agents` — the tool refusing a value it
+    # generated, again, one time in sixty-six.
+    (["session", "receive", "--from", "-yLAoQ63KcM86gn3wjgD3w"],
+     ["session", "receive", "--from=-yLAoQ63KcM86gn3wjgD3w"]),
+    # A board key is blinded too, so `--prefix` had it as well.
+    (["board", "list", "--prefix", "-weird"], ["board", "list", "--prefix=-weird"]),
+    # Global flags before the subcommand are walked over the same way.
+    (["--url", "http://x", "session", "receive", "--from", "-abc"],
+     ["--url", "http://x", "session", "receive", "--from=-abc"]),
+    # A short option reads `=` as part of the value, so it takes the
+    # concatenated form instead — `-m=-x` would set the note to `=-x`.
+    (["claim", "x", "-m", "-dashed"], ["claim", "x", "-m-dashed"]),
+])
+def test_a_dash_leading_option_value_is_joined_to_its_flag(parser, argv, expected):
+    """The other half of the same bug. `--` cannot help here: it protects
+    positionals, and this is an option's value."""
+    assert escape(parser, argv) == expected
+
+
+@pytest.mark.parametrize("argv", [
+    ["session", "receive", "--from", "-yLAoQ63KcM86gn3wjgD3w"],
+    ["board", "list", "--prefix", "-weird"],
+    ["claim", "x", "-m", "-dashed"],
+])
+def test_the_joined_form_is_one_argparse_accepts(parser, argv):
+    """The rewrite is only worth anything if argparse then takes it — and the
+    two joined forms are not interchangeable, which is the trap. Parsed here
+    rather than eyeballed, because `-m=-x` also parses and means the wrong
+    thing.
+    """
+    dest = {"--from": "from_agents", "--prefix": "prefix", "-m": "note"}[argv[-2]]
+    got = vars(parser.parse_args(escape(parser, argv)))[dest]
+    # `--from` is repeatable, so it collects into a list.
+    assert (got == [argv[-1]] if isinstance(got, list) else got == argv[-1])
