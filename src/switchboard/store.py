@@ -163,7 +163,7 @@ class Agent:
     pubkey: str | None
     #: The agent's X25519 exchange key, sealed by the client. Opaque to the
     #: hub in the same way `pubkey` is — stored and echoed, never used for
-    #: anything here. What it enables (`ask`, in crypto.py's `seal_to_peer`)
+    #: anything here. What it enables (`whisper`, in crypto.py's `seal_to_peer`)
     #: happens entirely between the two peers holding a workspace key or not.
     exchange_key: str | None
     registered_at: float

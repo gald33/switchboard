@@ -22,6 +22,7 @@ import httpx
 from . import peers, rooms, signing
 from .config import ClientConfig
 from .crypto import (
+    WHISPER_CONTEXT,
     CryptoError,
     DecryptionError,
     WorkspaceCipher,
@@ -377,7 +378,9 @@ _looks_sealed = looks_sealed
 
 #: The message `type` a whisper carries on the wire. 0.11.0 sent `"ask"`
 #: under the old name; both open, so a mixed room stays readable in the
-#: direction that matters — reading an older peer's whisper.
+#: direction that matters — reading an older peer's whisper. The envelope
+#: inside is the same story, in `crypto.py`: written as `whisper` since
+#: 2.1.0, opened as either.
 WHISPER_TYPE = "whisper"
 WHISPER_TYPES = frozenset({WHISPER_TYPE, "ask"})
 
@@ -1060,7 +1063,8 @@ class _Base:
             raise CryptoError(_WHISPER_MISSING)
         peer_key = self._peer_exchange_key_for(to_agent)
         return seal_to_peer(
-            body, my_identity=self.signing, peer_exchange_key=peer_key, context="ask.body",
+            body, my_identity=self.signing, peer_exchange_key=peer_key,
+            context=WHISPER_CONTEXT,
         )
 
     def _open_whispers(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1093,7 +1097,7 @@ class _Base:
             try:
                 message["body"] = unseal_from_peer(
                     message["body"], my_identity=self.signing,
-                    peer_exchange_key=peer_key, context="ask.body",
+                    peer_exchange_key=peer_key, context=WHISPER_CONTEXT,
                 )
             except DecryptionError:
                 message["unreadable"] = True
@@ -1540,12 +1544,6 @@ class Client(_Base):
         envelope = self._seal_whisper_body(to_agent, body)
         return self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
 
-    def ask(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
-        """Deprecated alias for `whisper`, the name this shipped under in
-        0.11.0. Kept because renaming a method one release after publishing
-        it is not a reason to break the callers who took it up."""
-        return self.whisper(to_agent, body, **kwargs)
-
     def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
               limit: int = 100, peek: bool = False, include_own: bool = False,
               workspace: str | None = None,
@@ -1809,10 +1807,6 @@ class AsyncClient(_Base):
         """The async half of `Client.whisper`. Same envelope, same guarantee."""
         envelope = self._seal_whisper_body(to_agent, body)
         return await self.send(to_agent, envelope, type=type, ttl=ttl, workspace=workspace)
-
-    async def ask(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
-        """Deprecated alias for `whisper`. See `Client.ask`."""
-        return await self.whisper(to_agent, body, **kwargs)
 
     async def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
                     limit: int = 100, peek: bool = False, include_own: bool = False,

@@ -96,11 +96,28 @@ ENVELOPE_VERSION = 1
 #: is what lets `WorkspaceCipher.unseal` refuse one with a useful message
 #: instead of an opaque AEAD failure, and `unseal_from_peer` refuse the
 #: opposite mix-up the same way.
-#: The wire value stays `"ask"` — the name this feature shipped under in
-#: 0.11.0 — even though the tool, CLI and client method are now `whisper`.
-#: Changing it would make 0.11.0 and 1.0.0 refuse each other's envelopes for
-#: a rename that is only ever read by humans.
-WHISPER_MARKER = "ask"
+#:
+#: **`"whisper"` on the wire since 2.1.0.** From 0.11.0 to 2.0.1 the marker,
+#: the HKDF label and the AEAD context all said `ask` — the name the feature
+#: shipped under — after the tool, CLI and client method had been renamed,
+#: on the reasoning that a name only humans read was not worth a break. It
+#: was worth one: a second implementation written to the human name opened
+#: whispers under the wrong context for four days without an error
+#: (gald33/ai-lab#216), which is the failure a name that lies invites. So
+#: the wire now says what the tool says, and what the old releases wrote is
+#: still *opened* — never written — so a reader on this release goes on
+#: reading a sender on any of those. The other direction does not hold: a
+#: 2.0.1 reader cannot open a 2.1.0 whisper. Readers upgrade before senders;
+#: see docs/upgrading.md.
+WHISPER_MARKER = "whisper"
+WHISPER_LABEL = "switchboard/v1/whisper"
+#: The context a whisper's body is sealed under, in both directions.
+WHISPER_CONTEXT = "whisper.body"
+#: What 0.11.0 through 2.0.1 wrote. Opened, never written.
+LEGACY_WHISPER_MARKER = "ask"
+LEGACY_WHISPER_LABEL = "switchboard/v1/ask"
+LEGACY_WHISPER_CONTEXT = "ask.body"
+WHISPER_MARKERS = frozenset({WHISPER_MARKER, LEGACY_WHISPER_MARKER})
 
 #: Pad plaintext up to a bucket before sealing, so ciphertext length stops
 #: reporting plaintext length. AEAD preserves length exactly: measured on real
@@ -322,7 +339,7 @@ class WorkspaceCipher:
         version = envelope[ENVELOPE_KEY]
         if version != ENVELOPE_VERSION:
             raise DecryptionError(f"unsupported envelope version {version!r}")
-        if envelope.get("m") == WHISPER_MARKER:
+        if envelope.get("m") in WHISPER_MARKERS:
             # Right shape, wrong key entirely: this was sealed pairwise to one
             # recipient's exchange key by `seal_to_peer`, not to the workspace
             # key every member holds. Opening it here would either fail on an
@@ -443,16 +460,17 @@ class WorkspaceCipher:
 # all — the pairwise secret never depends on one.
 
 
-def _whisper_aad(context: str) -> bytes:
+def _whisper_aad(context: str, label: str = WHISPER_LABEL) -> bytes:
     # No workspace to bind — the pair key already ties this to exactly two
     # identities — but `context` is bound the same way `WorkspaceCipher._aad`
     # binds it, for the same reason: without it a hub could take a sealed
     # whisper body and relocate it onto another field, and the ciphertext would still
     # look authentic there.
-    return f"switchboard/v1/ask\x00{context}".encode()
+    return f"{label}\x00{context}".encode()
 
 
-def _derive_whisper_key(my_identity: Any, peer_exchange_key: str) -> bytes:
+def _derive_whisper_key(my_identity: Any, peer_exchange_key: str,
+                        label: str = WHISPER_LABEL) -> bytes:
     """The per-pair AES-256-GCM key two identities agree on without a hub.
 
     ECDH already gives both ends an identical shared secret — that symmetry
@@ -472,7 +490,7 @@ def _derive_whisper_key(my_identity: Any, peer_exchange_key: str) -> bytes:
     pair = "\x00".join(sorted([my_identity.exchange_key, peer_exchange_key]))
     return HKDF(
         algorithm=hashes.SHA256(), length=32, salt=None,
-        info=b"switchboard/v1/ask\x00" + pair.encode(),
+        info=f"{label}\x00{pair}".encode(),
     ).derive(secret)
 
 
@@ -490,18 +508,30 @@ def seal_to_peer(
 
     Uses the same envelope shape `WorkspaceCipher.seal` does — `is_sealed`/
     `looks_sealed` need no changes to keep telling "sealed" from "empty" —
-    with one added field, `"m": "ask"` (the name this shipped under before
-    the rename to `whisper`), that tells the two apart so neither
-    cipher can be handed the other's envelope and misread it as its own.
+    with one added field, `"m": "whisper"`, that tells the two apart so
+    neither cipher can be handed the other's envelope and misread it as its
+    own.
     """
+    return _seal_to_peer(value, my_identity=my_identity,
+                         peer_exchange_key=peer_exchange_key, context=context,
+                         pad=pad, marker=WHISPER_MARKER, label=WHISPER_LABEL)
+
+
+def _seal_to_peer(
+    value: Any, *, my_identity: Any, peer_exchange_key: str, context: str,
+    pad: bool, marker: str, label: str,
+) -> dict[str, Any]:
+    """`seal_to_peer` with the wire names as parameters. Nothing in this
+    package writes the legacy names; the parameter exists so a test can
+    make what a 2.0.1 sender made and prove this release still opens it."""
     if not AVAILABLE:
         raise CryptoError(_MISSING)
-    key = _derive_whisper_key(my_identity, peer_exchange_key)
+    key = _derive_whisper_key(my_identity, peer_exchange_key, label)
     plaintext = json.dumps(value, separators=(",", ":")).encode()
     if pad:
         plaintext = _pad(plaintext)
-    envelope = _seal_bytes(key, plaintext, _whisper_aad(context))
-    envelope["m"] = WHISPER_MARKER
+    envelope = _seal_bytes(key, plaintext, _whisper_aad(context, label))
+    envelope["m"] = marker
     return envelope
 
 
@@ -519,6 +549,11 @@ def unseal_from_peer(
     `WorkspaceCipher.unseal` refusing one that is: the two ciphers protect
     different things, and silently accepting either envelope in the other's
     place would make a hub's or a peer's mix-up look like it worked.
+
+    An envelope a release before 2.1.0 sealed — marked `ask`, keyed and
+    bound under the `ask` label — still opens, under the names that sealed
+    it: the marker says which names to use, and it is authenticated by the
+    AEAD like everything else, so a forged marker only fails the open.
     """
     if not AVAILABLE:
         raise CryptoError(_MISSING)
@@ -530,13 +565,19 @@ def unseal_from_peer(
     version = envelope[ENVELOPE_KEY]
     if version != ENVELOPE_VERSION:
         raise DecryptionError(f"unsupported envelope version {version!r}")
-    if envelope.get("m") != WHISPER_MARKER:
+    marker = envelope.get("m")
+    if marker not in WHISPER_MARKERS:
         raise DecryptionError(
             f"the value at {context!r} is sealed to the workspace, not to you "
             "specifically with `whisper`; open it with `WorkspaceCipher.unseal` instead"
         )
-    key = _derive_whisper_key(my_identity, peer_exchange_key)
-    plaintext = _unseal_bytes(key, envelope, _whisper_aad(context), context)
+    label = WHISPER_LABEL
+    if marker == LEGACY_WHISPER_MARKER:
+        label = LEGACY_WHISPER_LABEL
+        if context == WHISPER_CONTEXT:
+            context = LEGACY_WHISPER_CONTEXT
+    key = _derive_whisper_key(my_identity, peer_exchange_key, label)
+    plaintext = _unseal_bytes(key, envelope, _whisper_aad(context, label), context)
     return json.loads(_unpad(plaintext))
 
 
