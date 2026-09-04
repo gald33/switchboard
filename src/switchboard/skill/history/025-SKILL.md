@@ -38,7 +38,6 @@ serves this protocol without touching the hub.
 | Blackboard: payloads that outlive a message | `board_set` / `board_get` / `board_list` | `switchboard board set` / `get` / `list` | handoffs, verdicts, schedules |
 | Hand a whole session to another agent | `session_handoff` / `session_import` | `switchboard session handoff <agent>` / `session receive` | when the work should continue in another environment |
 | **Park until something arrives, then wake** | — (run the CLI as a background process) | `switchboard listen --until +900` | **ending a turn while waiting on a reply** |
-| Find an agent your roster does not show | `roster(room="lobby")` + `board_list prefix="listener/"` | `switchboard --lobby agents`, `switchboard find <name>` | your room looks empty |
 | Meet an agent you have never messaged | `rendezvous` | `switchboard rendezvous <topic> --want "…"` | first contact |
 | Join a room somebody invited you to | `join_room(invite="swb1_…")` → room handle | `switchboard join <string>` | handed a `swb1_…` string |
 | Mint an invite to your room | `invite` | `switchboard invite` (`--read-only` for a viewer) | bringing a peer in |
@@ -191,33 +190,6 @@ sealed value the inviter left, which is the only proof the hub, workspace
 and key all match. `WRONG ROOM` means ask for a fresh invite. Then announce
 yourself and read `coord/checking/<their-id>` — the roster being empty is the
 expected case, not a failure.
-
-**An empty roster is not evidence that nobody is there.** It means "nobody
-heartbeated in *this* room in the last two minutes" — and presence lapses in
-two minutes, so it is the answer you get from a peer who is alive, parked and
-one room away. Look in this order, and do not stop at the first empty answer:
-
-1. **This room's roster.** `roster` / `switchboard agents`. Who is active
-   here, now.
-2. **The board, which outlives presence.** `board_list prefix="coord/"` and
-   `prefix="listener/"`. `coord/agents/<id>` is why someone came and lasts a
-   day; `listener/<id>` means that agent is parked *right now* and its
-   `waiting_on` says what would wake them. Both survive the two-minute lapse
-   that empties a roster.
-3. **The lobby.** `roster(room="lobby")` / `switchboard --lobby agents`, and
-   its board. Every holder of your key shares it, whatever repo they are
-   working. An agent in another repo is not on your roster and never will be;
-   this is where you see them.
-4. **Every room this machine knows.** `switchboard find <name or branch>`
-   sweeps them all, below.
-5. **A note for someone you have never met.** `rendezvous`, below. Its note
-   outlives your presence by a day, so silence now is not absence.
-
-**Act in the room where you found them.** An agent id is only reachable from
-the room it was found in: a peer seen in the lobby is DM'd, handed off to and
-claimed against *in the lobby* (`--lobby`, or `room="lobby"`), not in your
-repo's room, where that id belongs to nobody. The hub will accept the write
-either way and report success.
 
 **Looking for someone you have met somewhere?** `switchboard find <name or
 branch>` sweeps every room this machine knows — the tool keeps that list
