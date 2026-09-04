@@ -114,6 +114,16 @@ def harness_for(name: str | None) -> Any:
         ) from None
 
 
+def _main_sha256(capsule: dict[str, Any], session_id: str) -> str:
+    """The hash of the main transcript entry — the one `decode_entry` checks
+    the bytes against, which is what makes a pointer's hash mean something."""
+    main = f"{session_id}.jsonl"
+    for entry in capsule.get("files") or []:
+        if isinstance(entry, dict) and entry.get("relative_destination") == main:
+            return str(entry.get("sha256") or "")
+    raise HandoffError("capsule has no main transcript")
+
+
 def _summary(capsule: dict[str, Any]) -> dict[str, Any]:
     harness = harness_for((capsule.get("source_harness") or {}).get("name"))
     return harness.summary(capsule)
@@ -166,9 +176,20 @@ def release_all(hub: Client) -> list[str]:
         try:
             if hub.release(resource):
                 released.append(resource)
-            holds.clear_own_declaration(hub, resource)
         except SwitchboardError:
             continue
+    # A declaration is keyed by the resource's readable name, and under a
+    # key the hub lists resources as tokens, so `clear_own_declaration` by
+    # name would look for `coord/holds/<token>` and find nothing. Values are
+    # readable where keys are not: find our own by who wrote them.
+    if released:
+        try:
+            for entry in hub.board_list(prefix=holds.HOLDS_PREFIX):
+                value = entry.get("value")
+                if isinstance(value, dict) and value.get("agent_id") == hub.agent_id:
+                    hub.board_delete(entry["key"])
+        except SwitchboardError:
+            pass
     return released
 
 
@@ -191,12 +212,15 @@ def stay_on_roster(hub: Client, seconds: float) -> None:
     # outlive a process: the key on the roster may be an earlier one, and the
     # pointer about to be sent is signed by this one. Announce again when they
     # differ, as `announce` would; a heartbeat republishes nothing.
-    if mine is not None and (not hub.public_key or mine.get("pubkey") == hub.public_key):
-        hub.heartbeat(ttl=ttl, back_in=back_in, renew_leases=False)
-        return
-    identity = detect_identity(agent_id=hub.local_agent_id)
-    hub.register(name=identity.name, kind=identity.kind, branch=identity.branch,
-                 task=(mine or {}).get("task"), meta=identity.meta, ttl=ttl, back_in=back_in)
+    if mine is None or (hub.public_key and mine.get("pubkey") != hub.public_key):
+        identity = detect_identity(agent_id=hub.local_agent_id)
+        hub.register(name=identity.name, kind=identity.kind, branch=identity.branch,
+                     task=(mine or {}).get("task"), meta=identity.meta, ttl=ttl,
+                     back_in=back_in)
+    # Always, even right after a register: the heartbeat's answer is what
+    # carries `unread_dms`, and a checkpoint that posts nothing would
+    # otherwise report a count nobody refreshed.
+    hub.heartbeat(ttl=ttl, back_in=back_in, renew_leases=False)
 
 
 def publish(
@@ -228,7 +252,7 @@ def publish(
     if ttl <= 0:
         raise HandoffError("ttl must be positive")
     key = key_for(session_id)
-    sha256 = capsule["files"][0]["sha256"]
+    sha256 = _main_sha256(capsule, session_id)
     held = held_resources(hub)
     envelope = {
         "t": ENVELOPE_TYPE,
@@ -404,19 +428,31 @@ def receive_one(
     """Collect one capsule: fetch, verify, claim, install, acknowledge.
 
     With a ``pointer`` the capsule must be what the pointer's verified sender
-    announced (same sha256). Without one — collecting a checkpoint by id —
-    there is nobody vouching, so the caller is trusting the room; that is
-    reported as ``verified: None`` rather than hidden.
+    announced: the pointer's hash is compared with the main transcript entry's
+    own hash, which ``decode_entry`` then checks the bytes against, so the
+    chain from signed pointer to bytes on disk has no free link in it.
+    Without one — collecting a checkpoint by id — there is nobody vouching,
+    so the caller is trusting the room; that is reported as ``verified: None``
+    rather than hidden.
 
     The board delete comes *before* the install and doubles as the claim:
     the hub answers it inside one transaction, so of two receivers exactly
     one gets ``True`` and the other is told the capsule was claimed. If the
-    install then fails, the capsule is put back for whatever TTL it had left.
+    install then fails for any reason, the capsule is put back for whatever
+    TTL it had left.
 
     Every outcome that is an answer rather than a failure comes back as data
     with ``installed: False`` and a reason: expired, claimed elsewhere,
     unverified, not what was announced.
     """
+    from_history = bool(pointer and pointer.get("source") == "history")
+    envelope = fetch(hub, session_id)
+    if envelope is None:
+        return _not_installed(
+            session_id,
+            "no capsule on the board: it expired, was already collected, or was never published",
+            stale=from_history,
+        )
     if pointer is not None and not pointer.get("verified") and not unverified:
         return _not_installed(
             session_id,
@@ -424,25 +460,23 @@ def receive_one(
             f"the roster vouches for this capsule; pass unverified=True to collect it anyway",
             signature=pointer.get("signature"),
         )
-    envelope = fetch(hub, session_id)
-    if envelope is None:
-        return _not_installed(
-            session_id,
-            "no capsule on the board: it expired, was already collected, or was never published",
-            stale=bool(pointer and pointer.get("source") == "history"),
-        )
-    if pointer is not None and envelope.get("sha256") != pointer.get("sha256"):
-        return _not_installed(
-            session_id,
-            "the capsule on the board is not the one the pointer announced (sha256 differs); "
-            "it was republished or replaced — ask the sender for a fresh pointer",
-        )
     harness = harness_for(envelope.get("harness"))
     capsule = envelope["capsule"]
     try:
         harness.validate(capsule)
     except harness.CapsuleError as exc:
         raise HandoffError(str(exc)) from exc
+    if envelope.get("session_id") != session_id or capsule.get("session_id") != session_id:
+        return _not_installed(
+            session_id, "the capsule on the board is for a different session than its key says",
+        )
+    announced = _main_sha256(capsule, session_id)
+    if pointer is not None and announced != pointer.get("sha256"):
+        return _not_installed(
+            session_id,
+            "the capsule on the board is not the one the pointer announced (sha256 differs); "
+            "it was republished or replaced — ask the sender for a fresh pointer",
+        )
 
     claimed = False
     if not keep:
@@ -451,16 +485,12 @@ def receive_one(
         claimed = True
     try:
         result = harness.install(capsule, config_dir=config_dir, cwd=cwd, force=force)
-    except harness.CapsuleError as exc:
+    except BaseException as exc:
         if claimed:
-            remaining = (envelope.get("_entry") or {}).get("expires_in")
-            envelope.pop("_entry", None)
-            with_ttl = float(remaining) if remaining and remaining > 0 else DEFAULT_TTL
-            try:
-                hub.board_set(key_for(session_id), envelope, ttl=with_ttl)
-            except SwitchboardError:
-                pass
-        raise HandoffError(str(exc)) from exc
+            _put_back(hub, session_id, envelope)
+        if isinstance(exc, (harness.CapsuleError, OSError)):
+            raise HandoffError(str(exc)) from exc
+        raise
 
     sender = (envelope.get("from") or {}).get("agent_id")
     acknowledged = False
@@ -477,6 +507,8 @@ def receive_one(
         **result,
         "installed": True,
         "verified": pointer.get("verified") if pointer is not None else None,
+        # The signer the hub attested to, not the name the board value claims.
+        "sender": pointer.get("from_agent") if pointer is not None else None,
         "harness": envelope.get("harness"),
         "from": envelope.get("from"),
         "bytes": envelope.get("bytes"),
@@ -484,6 +516,17 @@ def receive_one(
         "deleted_from_board": claimed,
         "acknowledged": acknowledged,
     }
+
+
+def _put_back(hub: Client, session_id: str, envelope: dict[str, Any]) -> None:
+    """Return a claimed capsule to the board with the TTL it had left."""
+    remaining = (envelope.get("_entry") or {}).get("expires_in")
+    envelope.pop("_entry", None)
+    ttl = float(remaining) if remaining and remaining > 0 else DEFAULT_TTL
+    try:
+        hub.board_set(key_for(session_id), envelope, ttl=ttl)
+    except SwitchboardError:
+        pass
 
 
 def receive(

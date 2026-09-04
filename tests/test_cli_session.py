@@ -235,3 +235,47 @@ def test_an_unattended_wait_needs_an_address_that_lasts(room, tmp_path, capsys, 
     monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "parked-receiver")
     assert main(["--url", BASE_URL, "-w", WS, "session", "receive", "--wait", "0.1"]) == 2
     assert "listening as" in capsys.readouterr().err
+
+
+def test_resume_gates_on_the_verified_signer_not_the_board_value(room, sender_cfg, tmp_path,
+                                                                   capsys, monkeypatch):
+    h = room
+    receiver = h.client("bob", register=True)
+    monkeypatch.setattr(cs.shutil, "which", lambda name: None)
+    # A checkpoint nobody signed for: --any-sender still does not start it.
+    _run(capsys, "session", "publish")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob-claude"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    code, got, err = _run(capsys, "session", "receive", SID, "--cwd", "/w", "--resume",
+                          "--any-sender", agent="bob")
+    assert code == 0, (got, err)
+    [run] = got["resumed"]
+    assert run["started"] is False and "vouched" in run["reason"]
+
+    # A signed handoff, allowed by the alias the sender pinned, not its hub form.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(sender_cfg))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SID)
+    _run(capsys, "session", "handoff", receiver.agent_id)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob-claude"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    code, got, err = _run(capsys, "session", "receive", "--cwd", "/w", "--resume", "--bg",
+                          "--from", "cli-agent", agent="bob")
+    assert code == 0, (got, err)
+    [run] = got["resumed"]
+    assert "PATH" in run["reason"], "allowed by --from; only the missing binary stopped it"
+
+
+def test_publish_reports_what_is_waiting_for_you(room, sender_cfg, tmp_path, capsys):
+    h = room
+    bob = h.client("bob", register=True)
+    me = h.client("cli-agent")
+    bob.send(me.agent_id, "read this first")
+    code, sent, _ = _run(capsys, "session", "publish")
+    assert code == 0 and sent["unread_dms"] == 1
+
+
+def test_resume_command_honours_json(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "c"))
+    assert main(["--json", "session", "resume", SID, "--command", "--cwd", "/w"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == SID and payload["command"].startswith("cd /w && ")

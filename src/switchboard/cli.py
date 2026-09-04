@@ -3246,17 +3246,30 @@ def _session_receive(args: argparse.Namespace, fmt: Fmt) -> int:
             hub, session_id=args.session_id, wait=args.wait or 0.0, cwd=args.cwd,
             force=args.force, unverified=args.unverified, keep=args.keep,
         )
+        # `--from` takes what `handoff <agent>` takes: a hub id or the alias
+        # the sender pinned. Under a key the alias blinds to the hub form
+        # the pointer's signer is reported in, so normalise here, where the
+        # cipher is.
+        allowed_senders = {hub.peer_id(name) for name in (args.from_agents or [])}
     resumed: list[dict[str, Any]] = []
     if args.resume:
         for installed in result["installed"]:
-            sender = (installed.get("from") or {}).get("agent_id")
-            allowed = args.any_sender or (sender in (args.from_agents or []))
-            if not allowed:
-                resumed.append({
-                    "session_id": installed["session_id"], "started": False,
-                    "reason": f"not resuming a session from {sender}: name the sender with "
-                              f"--from, or pass --any-sender",
-                })
+            # The signer the hub attested to — never the name the board value
+            # claims, which any key holder can write.
+            signer = installed.get("sender")
+            who = (installed.get("from") or {}).get("who") or "?"
+            if installed.get("verified") is not True or not signer:
+                reason = (f"not resuming: nobody on the roster vouched for this session "
+                          f"(collected on your say-so from {who}); resume it by hand if you "
+                          f"trust it")
+            elif args.any_sender or signer in allowed_senders:
+                reason = None
+            else:
+                reason = (f"not resuming a session signed by {signer} ({who}): name that "
+                          f"sender with --from, or pass --any-sender")
+            if reason:
+                resumed.append({"session_id": installed["session_id"], "started": False,
+                                "reason": reason})
                 continue
             resumed.append(claude_session.spawn_resume(
                 installed["session_id"], cwd=installed.get("resume_cwd") or args.cwd,
@@ -3302,7 +3315,11 @@ def _session_receive(args: argparse.Namespace, fmt: Fmt) -> int:
 def _session_resume(args: argparse.Namespace) -> int:
     sid = claude_session.valid_session_id(args.session_id)
     if args.show_command:
-        print(claude_session.shell_resume_command(sid, cwd=args.cwd, background=args.bg))
+        line = claude_session.shell_resume_command(sid, cwd=args.cwd, background=args.bg)
+        if args.json:
+            _print_json({"session_id": sid, "command": line})
+        else:
+            print(line)
         return EXIT_OK
     result = claude_session.spawn_resume(sid, cwd=args.cwd, background=args.bg)
     if args.json:
@@ -5656,7 +5673,7 @@ _MISTAKEN_VERBS = {
     "send": "say <channel> to post where the room can read it, "
             "or dm <agent> for one peer",
     "post": "say <channel>",
-    "publish": "say <channel>",
+    "publish": "say <channel>, or session publish to checkpoint this session",
     "broadcast": "say <channel>",
     "message": "dm <agent>, or say <channel>",
     "msg": "dm <agent>, or say <channel>",
@@ -6439,7 +6456,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from", dest="from_agents", action="append", metavar="agent",
                    help="senders whose sessions --resume may start (repeatable)")
     s.add_argument("--any-sender", action="store_true",
-                   help="with --resume: start sessions from any verified sender")
+                   help="with --resume: start sessions from any roster-verified sender "
+                        "(never one nobody vouched for)")
     s = ssub.add_parser("resume", help="continue an installed session with `claude --resume`")
     s.add_argument("session_id", metavar="session-id")
     s.add_argument("--bg", action="store_true",

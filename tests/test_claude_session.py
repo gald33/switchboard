@@ -385,3 +385,27 @@ def test_spawn_does_not_trust_claudes_exit_code(monkeypatch, tmp_path):
     result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
     assert result["started"] is True and result["attach"] == "claude attach 3c1f7c2e"
 
+
+
+def test_a_transcript_without_a_final_newline_reinstalls_unchanged(source, tmp_path):
+    cfg, transcript = source
+    transcript.write_bytes(transcript.read_bytes().rstrip(b"\n"))
+    dest = tmp_path / "dest-claude"
+    capsule = cs.package(SID, config_dir=cfg)
+    first = cs.install(capsule, config_dir=dest, cwd="/w")
+    again = cs.install(capsule, config_dir=dest, cwd="/w")
+    assert first["written"] and again["written"] == [] and again["unchanged"]
+    assert cs.count_records(transcript.read_bytes()) == 5
+
+
+def test_odd_metadata_is_tolerated_on_read_and_refused_on_install(source, tmp_path):
+    cfg, transcript = source
+    with transcript.open("a") as fh:
+        odd = {"type": "user", "cwd": 42, "version": None, "gitBranch": ["x"]}
+        fh.write(json.dumps(odd) + "\n")
+    meta = cs.transcript_metadata(transcript)
+    assert meta["cwd"] == "/Users/gal/code/switchboard" and meta["version"] == "2.1.260"
+    capsule = cs.package(SID, config_dir=cfg)
+    capsule["original_working_directory"] = 42
+    with pytest.raises(cs.CapsuleError, match="not a string"):
+        cs.install(capsule, config_dir=tmp_path / "dest", cwd="/w")

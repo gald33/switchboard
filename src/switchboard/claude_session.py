@@ -166,13 +166,18 @@ def live_session_ids(cfg: Path) -> set[str]:
     return live
 
 
+def count_records(data: bytes) -> int:
+    """How many lines a transcript has — its length, as Claude Code appends it.
+
+    A final line without its newline still counts: a session captured
+    mid-append ends that way, and the same bytes must count the same on both
+    sides of a comparison.
+    """
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
 def record_count(path: Path) -> int:
-    """How many lines a transcript has — its length, as Claude Code appends it."""
-    count = 0
-    with path.open("rb") as fh:
-        for _ in fh:
-            count += 1
-    return count
+    return count_records(path.read_bytes())
 
 
 def transcript_metadata(path: Path) -> dict[str, Any]:
@@ -200,12 +205,11 @@ def transcript_metadata(path: Path) -> dict[str, Any]:
                 continue
             if not isinstance(record, dict):
                 continue
-            if record.get("cwd"):
-                meta["cwd"] = record["cwd"]
-            if record.get("version"):
-                meta["version"] = record["version"]
-            if record.get("gitBranch"):
-                meta["git_branch"] = record["gitBranch"]
+            for field, source in (("cwd", "cwd"), ("version", "version"),
+                                  ("git_branch", "gitBranch")):
+                value = record.get(source)
+                if isinstance(value, str) and value:
+                    meta[field] = value
             kind = record.get("type")
             if kind == "user":
                 meta["user_messages"] += 1
@@ -329,7 +333,7 @@ def _write_private(path: Path, data: bytes) -> None:
 
 
 def _record_count_of(entry: dict[str, Any]) -> int:
-    return decode_entry(entry).count(b"\n")
+    return count_records(decode_entry(entry))
 
 
 def write_capsule(capsule: dict[str, Any], path: str | os.PathLike[str]) -> Path:
@@ -366,6 +370,10 @@ def validate(capsule: Any) -> dict[str, Any]:
     if not isinstance(harness, dict) or harness.get("name") != HARNESS:
         raise CapsuleError(f"not a {HARNESS} capsule: source_harness={harness!r}")
     session_id = valid_session_id(str(capsule.get("session_id", "")))
+    for field in ("project_key", "original_working_directory", "git_branch"):
+        value = capsule.get(field)
+        if value is not None and not isinstance(value, str):
+            raise CapsuleError(f"capsule {field} is not a string: {value!r}")
     files = capsule.get("files")
     if not isinstance(files, list) or not files:
         raise CapsuleError("capsule carries no files")
@@ -476,8 +484,9 @@ def install(
     if existing.is_file() and not force:
         incoming = next(e for e in capsule["files"]
                         if e["relative_destination"] == f"{session_id}.jsonl")
-        local, remote = record_count(existing), _record_count_of(incoming)
-        if local > remote:
+        current = existing.read_bytes()
+        local, remote = count_records(current), _record_count_of(incoming)
+        if local > remote and current != decode_entry(incoming):
             raise CapsuleError(
                 f"the transcript already here has {local} records and the capsule only "
                 f"{remote}: this side is ahead, and installing would roll it back. Hand the "

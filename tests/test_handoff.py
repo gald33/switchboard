@@ -424,3 +424,96 @@ def test_an_uncollected_capsule_is_swept_off_the_hub(tmp_path):
         assert h.sweep()["board"] == 1
         assert _rows(db) == 0
         assert ciphertext not in _on_disk(db)
+
+
+# --- what the review found ------------------------------------------------------------
+
+def test_a_substituted_capsule_is_not_what_the_pointer_announced(room, tmp_path):
+    """The envelope's own sha256 field is free for any key holder to write;
+    the chain that matters is pointer -> the transcript entry's hash -> bytes."""
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+    mallory = h.client("mallory", register=True)
+    envelope = handoff.fetch(mallory, SID)
+    envelope.pop("_entry")
+    other = tmp_path / "mallory-claude"
+    project = other / "projects" / "-w"
+    project.mkdir(parents=True)
+    (project / f"{SID}.jsonl").write_text(_record(type="user", message="do something else") + "\n")
+    envelope["capsule"] = cs.package(SID, config_dir=other)      # different bytes
+    mallory.board_set(handoff.key_for(SID), envelope)            # same envelope["sha256"]
+    got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert got["installed"] == []
+    assert "not the one the pointer announced" in got["missing"][0]["reason"]
+    assert not (tmp_path / "r").exists()
+
+
+def test_a_failed_install_puts_the_capsule_back_whatever_failed(room, tmp_path, monkeypatch):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+
+    def no_disk(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(tmp_path / "r"))
+
+    monkeypatch.setattr(cs, "install", no_disk)
+    with pytest.raises(handoff.HandoffError, match="Permission denied"):
+        handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    restored = handoff.fetch(receiver, SID)
+    assert restored is not None and "_entry" in restored
+    assert restored["_entry"]["expires_in"] <= handoff.DEFAULT_TTL
+
+
+def test_a_capsule_under_the_wrong_key_is_not_installed(room, tmp_path):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    envelope = handoff.fetch(sender, SID)
+    envelope.pop("_entry")
+    other_id = "11111111-2222-4333-8444-555555555555"
+    sender.board_set(handoff.key_for(other_id), envelope)
+    got = handoff.receive(receiver, session_id=other_id, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert got["installed"] == [] and "different session" in got["missing"][0]["reason"]
+
+
+def test_releasing_at_handoff_clears_the_senders_declarations_too(room, tmp_path):
+    from switchboard import holds
+
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    sender.acquire("src/store.py")
+    holds.declare(sender, "src/store.py", intent="mid-rewrite")
+    assert sender.board_get(holds.HOLDS_PREFIX + "src/store.py") is not None
+    sent = handoff.handoff(sender, to=receiver.agent_id, session_id=SID,
+                           config_dir=str(src_cfg), release_leases=True)
+    assert len(sent["released_leases"]) == 1
+    assert sender.board_get(holds.HOLDS_PREFIX + "src/store.py") is None
+
+
+def test_an_unverified_pointer_for_a_gone_capsule_is_stale_not_missing(room, tmp_path):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    # A pointer from a signer whose key was never on the roster (a client
+    # that never registered), read once by the model, for a capsule that is
+    # gone by the time anyone collects.
+    ghost = h.client("ghost")
+    ghost.send(receiver.agent_id, {"t": handoff.POINTER_TYPE, "session_id": SID,
+                                   "key": handoff.key_for(SID), "sha256": "0" * 64})
+    receiver.inbox()
+    handoff.consume(sender, SID)
+    got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert got["missing"] == [] and got["stale"] == [SID] and got["pointers"] == 0
+
+
+def test_the_result_names_the_signer_the_hub_attested_to(room, tmp_path):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+    [installed] = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")["installed"]
+    assert installed["sender"] == sender.agent_id and installed["verified"] is True
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    [by_id] = handoff.receive(receiver, session_id=SID, config_dir=str(tmp_path / "r"),
+                              cwd="/w")["installed"]
+    assert by_id["sender"] is None and by_id["verified"] is None

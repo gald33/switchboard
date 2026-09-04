@@ -151,3 +151,19 @@ def test_a_corrupt_capsule_is_an_error_with_its_own_code(room, tmp_path, monkeyp
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob"))
     payload, is_error = call(bob, "session_import", session_id=SID, cwd="/w")
     assert is_error and payload["error"] == "handoff" and "corrupt" in payload["detail"]
+
+
+def test_a_disk_failure_is_not_reported_as_a_hub_outage(room, tmp_path, monkeypatch):
+    from switchboard import handoff
+
+    alice, bob = make_bridge(room, "alice"), make_bridge(room, "bob")
+    _session(tmp_path / "c", "/w")
+    handoff.publish(alice.client, cs.package(SID, config_dir=tmp_path / "c"))
+
+    def no_disk(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "/nope")
+
+    monkeypatch.setattr(cs, "install", no_disk)
+    payload, is_error = call(bob, "session_import", session_id=SID, cwd="/w")
+    assert is_error and payload["error"] == "handoff" and "Permission denied" in payload["detail"]
+    assert handoff.fetch(bob.client, SID) is not None, "the claimed capsule went back"

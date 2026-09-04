@@ -1532,11 +1532,16 @@ class Bridge:
     def session_import(self, session_id: str | None = None, cwd: str | None = None,
                        force: bool = False, unverified: bool = False) -> dict[str, Any]:
         unread_dms = self._touch()
-        result = handoff.receive(
-            self.client, session_id=session_id,
-            cwd=cwd or claude_session.current_project_dir(),
-            force=force, unverified=unverified,
-        )
+        try:
+            result = handoff.receive(
+                self.client, session_id=session_id,
+                cwd=cwd or claude_session.current_project_dir(),
+                force=force, unverified=unverified,
+            )
+        except OSError as exc:
+            # handle_request reads OSError as "hub unreachable"; a config
+            # dir that cannot be written is a different problem entirely.
+            raise HandoffError(f"local filesystem: {exc}") from exc
         # The committed read took delivery of everything on @me; hand the rest
         # over in the shape inbox uses, so nothing is read and then hidden.
         result["other"] = [self._msg(m) for m in result["other"]]
@@ -1544,9 +1549,13 @@ class Bridge:
 
     def session_resume(self, session_id: str, cwd: str | None = None) -> dict[str, Any]:
         """Local, like keygen: no `_touch()`, so no `unread_dms`."""
-        return {**claude_session.spawn_resume(
-            session_id, cwd=cwd or claude_session.current_project_dir(), background=True,
-        ), "now": _now_iso()}
+        try:
+            started = claude_session.spawn_resume(
+                session_id, cwd=cwd or claude_session.current_project_dir(), background=True,
+            )
+        except OSError as exc:
+            raise HandoffError(f"local filesystem: {exc}") from exc
+        return {**started, "now": _now_iso()}
 
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
