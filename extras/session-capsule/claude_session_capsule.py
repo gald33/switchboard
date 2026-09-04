@@ -8,7 +8,8 @@ directory (subagent transcripts and metadata). Nothing inside those files is
 parsed for any purpose other than reading two metadata fields (``cwd`` and
 ``version``) off native records.
 
-    claude_session_capsule.py export  [--session-id ID] [--config-dir DIR] [--cwd DIR] -o capsule.json
+    claude_session_capsule.py export  [--session-id ID] [--config-dir DIR] [--cwd DIR] \
+                                      -o capsule.json
     claude_session_capsule.py inspect capsule.json
     claude_session_capsule.py import  capsule.json [--config-dir DIR] [--cwd DIR] [--force]
 
@@ -109,7 +110,8 @@ def cmd_export(args: argparse.Namespace) -> int:
 
     candidates = find_session_files(cfg, session_id)
     if args.cwd:
-        preferred = cfg / "projects" / project_key(os.path.abspath(args.cwd)) / f"{session_id}.jsonl"
+        key = project_key(os.path.abspath(args.cwd))
+        preferred = cfg / "projects" / key / f"{session_id}.jsonl"
         candidates = [p for p in candidates if p == preferred] or candidates
     if not candidates:
         raise SystemExit(f"session {session_id} not found under {cfg / 'projects'}")
@@ -163,7 +165,8 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 def load_capsule(path: str) -> dict:
     cap = json.loads(Path(path).read_text())
-    if cap.get("capsule_version") != CAPSULE_VERSION or cap.get("source_harness", {}).get("name") != HARNESS:
+    harness = cap.get("source_harness", {}).get("name")
+    if cap.get("capsule_version") != CAPSULE_VERSION or harness != HARNESS:
         raise SystemExit("not a ClaudeSessionCapsule this prototype understands")
     for f in cap["files"]:
         rel = f["relative_destination"]
@@ -202,8 +205,10 @@ def cmd_import(args: argparse.Namespace) -> int:
     # refuse to resume, so surface them before writing anything.
     others = [p for p in find_session_files(cfg, session_id) if p.parent != dest_dir]
     if others and not args.force:
-        raise SystemExit("session already exists under other project key(s); resume by id would be ambiguous:\n  "
-                         + "\n  ".join(map(str, others)) + "\nre-run with --force to import anyway")
+        raise SystemExit("session already exists under other project key(s); "
+                         "resume by id would be ambiguous:\n  "
+                         + "\n  ".join(map(str, others))
+                         + "\nre-run with --force to import anyway")
 
     dest_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -224,22 +229,26 @@ def cmd_import(args: argparse.Namespace) -> int:
     print()
     print(f"imported session {session_id} into {dest_dir}")
     print("resume with:")
-    prefix = f"CLAUDE_CONFIG_DIR={cfg} " if args.config_dir or os.environ.get("CLAUDE_CONFIG_DIR") else ""
+    explicit_cfg = args.config_dir or os.environ.get("CLAUDE_CONFIG_DIR")
+    prefix = f"CLAUDE_CONFIG_DIR={cfg} " if explicit_cfg else ""
     cd = f"cd {resume_cwd} && " if resume_cwd else ""
     print(f"  {cd}{prefix}claude --resume {session_id}")
     if not args.cwd:
-        print("  (file placed under the original project key; any directory works, resume falls back to a scan)")
+        print("  (file placed under the original project key; any directory works, "
+              "resume falls back to a scan)")
     return 0
 
 
 # ------------------------------------------------------------------- main ---
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("export", help="package a session from a Claude config dir")
-    e.add_argument("--session-id", help="defaults to $CLAUDE_CODE_SESSION_ID (set inside a running session)")
+    e.add_argument("--session-id",
+                   help="defaults to $CLAUDE_CODE_SESSION_ID (set inside a running session)")
     e.add_argument("--config-dir", help="defaults to $CLAUDE_CONFIG_DIR or ~/.claude")
     e.add_argument("--cwd", help="disambiguate: the working directory the session was run from")
     e.add_argument("-o", "--output", required=True)
@@ -254,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("capsule")
     m.add_argument("--config-dir", help="defaults to $CLAUDE_CONFIG_DIR or ~/.claude")
     m.add_argument("--cwd", help="destination working directory; file goes under its project key")
-    m.add_argument("--force", action="store_true", help="import even if the id exists under other project keys")
+    m.add_argument("--force", action="store_true",
+                   help="import even if the id exists under other project keys")
     m.set_defaults(fn=cmd_import)
 
     args = ap.parse_args(argv)
