@@ -33,6 +33,7 @@ import httpx
 from . import (
     __version__,
     claude_session,
+    desktop,
     drill,
     handoff,
     holds,
@@ -3147,6 +3148,8 @@ def cmd_session(args: argparse.Namespace) -> int:
             return _session_import(args)
         if action == "resume":
             return _session_resume(args)
+        if action in ("register", "unregister"):
+            return _session_register(args)
         if action in ("handoff", "publish"):
             return _session_publish(args, fmt)
         return _session_receive(args, fmt)
@@ -3181,15 +3184,93 @@ def _session_export(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _epoch_ms_now() -> int:
+    return int(time.time() * 1000)
+
+
+def _register_installed(installed: dict[str, Any], *, title: str,
+                        force: bool = False) -> dict[str, Any] | None:
+    """Give the desktop app a row for a session we just installed.
+
+    Opt-in, and silent where it does not apply: no app, no project for this
+    repo, or a checkout that never said yes at `init` time. Registration writes
+    into another program's store, so it happens only where somebody agreed to
+    it (`desktop.ENABLE_VAR`); `force` is the explicit `session register`
+    command saying so at the call site instead.
+
+    Every failure is reported and none is fatal. A handoff whose transcript
+    installed correctly has succeeded — a missing sidebar row is cosmetic, and
+    failing the receive over it would misreport the thing that actually matters.
+    """
+    if not (force or desktop.enabled()):
+        return None
+    try:
+        return desktop.register(
+            installed["session_id"],
+            cwd=installed.get("resume_cwd") or Path(".").resolve(),
+            title=title,
+            created_at=_epoch_ms_now(),
+            last_activity_at=_epoch_ms_now(),
+        )
+    except desktop.DesktopError as exc:
+        return {"registered": False, "reason": str(exc)}
+
+
+def _print_registration(report: dict[str, Any] | None) -> None:
+    if not report:
+        return
+    if report.get("registered"):
+        print(f"  registered with the desktop app; {report['note']}")
+    else:
+        print(f"  not registered with the desktop app: {report['reason']}")
+
+
+def _session_register(args: argparse.Namespace) -> int:
+    """Add or remove the desktop app's row for a session already installed here."""
+    session_id = claude_session.valid_session_id(args.session_id)
+    if args.session_action == "unregister":
+        report = desktop.unregister(session_id)
+        if args.json:
+            _print_json(report)
+        elif report.get("unregistered"):
+            print(f"removed {report['record']}")
+        else:
+            print(f"not removed: {report['reason']}", file=sys.stderr)
+        return EXIT_OK if report.get("unregistered") else EXIT_ERROR
+    cfg = claude_session.config_dir(getattr(args, "config_dir", None))
+    found = claude_session.find_transcripts(cfg, session_id)
+    if not found:
+        print(f"error: no transcript for {session_id} under {cfg / 'projects'} — install "
+              f"it first with `switchboard session receive`", file=sys.stderr)
+        return EXIT_ERROR
+    meta = claude_session.transcript_metadata(found[0])
+    report = desktop.register(
+        session_id, cwd=args.cwd or meta.get("cwd") or Path(".").resolve(),
+        title=args.title or f"session {session_id[:8]}",
+        created_at=_epoch_ms_now(), last_activity_at=_epoch_ms_now(),
+    )
+    if args.json:
+        _print_json(report)
+    elif report.get("registered"):
+        print(f"registered {report['record']}")
+        print(f"  {report['note']}")
+        print(f"  undo with: switchboard session unregister {session_id}")
+    else:
+        print(f"not registered: {report['reason']}", file=sys.stderr)
+    return EXIT_OK if report.get("registered") else EXIT_ERROR
+
+
 def _session_import(args: argparse.Namespace) -> int:
     capsule = claude_session.read_capsule(args.capsule_file)
     result = claude_session.install(capsule, cwd=args.cwd, force=args.force)
+    registered = _register_installed(result, title=f"imported {result['session_id'][:8]}")
     if args.json:
-        _print_json(result)
+        _print_json({**result, "desktop": registered})
     elif not args.quiet:
         print(f"installed {result['session_id']} -> {result['project_dir']}")
         if result["backed_up"]:
             print(f"  kept the previous copy as {result['backed_up'][0]}")
+        _print_registration(registered)
         print(f"resume with:\n  {result['resume']}")
     return EXIT_OK
 
@@ -3257,6 +3338,10 @@ def _session_receive(args: argparse.Namespace, fmt: Fmt) -> int:
         # the pointer's signer is reported in, so normalise here, where the
         # cipher is.
         allowed_senders = {hub.peer_id(name) for name in (args.from_agents or [])}
+    for installed in result["installed"]:
+        sender = (installed.get("from") or {}).get("who") or "another agent"
+        installed["desktop"] = _register_installed(
+            installed, title=f"handed off from {sender}")
     resumed: list[dict[str, Any]] = []
     if args.resume:
         for installed in result["installed"]:
@@ -3290,6 +3375,7 @@ def _session_receive(args: argparse.Namespace, fmt: Fmt) -> int:
                        " (nobody vouched: collected on your say-so)")
             print(f"installed {installed['session_id']} from {who}{vouched} -> "
                   f"{installed['project_dir']}")
+            _print_registration(installed.get("desktop"))
             if installed.get("held_leases"):
                 print(f"  the sender still holds {len(installed['held_leases'])} lease(s); "
                       f"claim what you need with `switchboard claim`")
@@ -4967,6 +5053,12 @@ _LOCAL_SECRETS = {
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
+    "SWITCHBOARD_DESKTOP_REGISTER": (
+        "desktop-registration answer",
+        "It records a yes or no you gave once about writing into another "
+        "application's store, and flipping it silently would either start or stop "
+        "that without you being asked again",
+    ),
     "SWITCHBOARD_WRITE_KEY": (
         "write key",
         "Replacing it silently would make every write this agent sends refused, "
@@ -5018,6 +5110,59 @@ def _init_local_setting(
         f"{_LOCAL_SETTINGS_REL}"
     )
     return steps, True
+
+
+def _init_desktop(directory: Path, *, interactive: bool, force: bool) -> list[str]:
+    """Ask once whether a received session should also appear in the desktop app.
+
+    Asked at setup rather than decided per handoff, for two reasons. It writes
+    into another program's store, which is a thing to agree to deliberately and
+    once, not to have an agent decide mid-transfer. And the account and project
+    the record belongs under are uuids the app assigns, discoverable only on the
+    machine that runs it — so setup, which happens there with a human present,
+    is the moment the question can even be answered.
+
+    Silent where it cannot apply: no app on this machine, or an app that has
+    never opened this repo and so has no project to file the row under. Never
+    enabled without an answer, which is why a non-interactive run leaves it off
+    rather than assuming yes.
+    """
+    if desktop.store_dir() is None:
+        return []
+    if not force and desktop.enabled(_local_settings_env(directory)):
+        return [f"left {_LOCAL_SETTINGS_REL} alone: desktop registration is already on"]
+    where = desktop.discover(directory)
+    if where is None:
+        return [
+            "skipped desktop registration: the app has no project for this directory "
+            "yet — open it there once, then `switchboard session register <id>`"
+        ]
+    if not interactive:
+        return [
+            "left desktop registration off: it writes into the Claude app's own store, "
+            f"so it needs an answer — re-run `init` on a terminal, or set "
+            f"{desktop.ENABLE_VAR}=1 in {_LOCAL_SETTINGS_REL}"
+        ]
+    if not _ask(
+        "\nThis machine runs the Claude Code desktop app. Should a session handed to "
+        "you\nalso appear in its sidebar? That writes one small record into the app's "
+        f"own\nstore (verified against {desktop.VERIFIED_AGAINST}); the transcript is "
+        "installed either way.",
+        default=True,
+    ):
+        return ["left desktop registration off"]
+    steps, _ = _init_local_setting(directory, desktop.ENABLE_VAR, "1", force=True)
+    return steps + ["a received session will also appear in the desktop app after a restart"]
+
+
+def _local_settings_env(directory: Path) -> dict[str, str]:
+    """The `env` block `init` writes, as a plain dict, for reading a setting back."""
+    try:
+        data = json.loads((directory / _LOCAL_SETTINGS_REL).read_text())
+    except (OSError, ValueError):
+        return {}
+    env = data.get("env") if isinstance(data, dict) else None
+    return {k: str(v) for k, v in env.items()} if isinstance(env, dict) else {}
 
 
 def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], bool]:
@@ -5287,6 +5432,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if key:
         key_steps, key_ok = _init_key(directory, key, force=args.force)
         steps.extend(key_steps)
+    steps.extend(_init_desktop(directory, interactive=interactive, force=args.force))
     write_key_on_disk = False
     if write_key and key_ok and workspace != RoomWriteKey.from_seed(write_key).workspace:
         # `.mcp.json` won the reconciliation above and routes elsewhere. A
@@ -6478,6 +6624,33 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--any-sender", action="store_true",
                    help="with --resume: start sessions from any roster-verified sender "
                         "(never one nobody vouched for)")
+    s = ssub.add_parser(
+        "register",
+        help="give the desktop app a row for a session installed here",
+        description="`receive` installs a transcript where `claude --resume` finds it, "
+                    "which is all a CLI user needs. The desktop app keeps its own list "
+                    "of sessions beside the transcripts, so one with no record there is "
+                    "invisible in the app; this writes the record. `switchboard init` "
+                    "asks once whether to do it for every session you receive. The app "
+                    "reads its store only at launch, so the row appears after a restart.",
+    )
+    s.add_argument("session_id", metavar="session-id")
+    s.add_argument("--title", help="what the row is called (default: the session's id)")
+    s.add_argument("--cwd", help="the directory the session resumes in "
+                                 "(default: the transcript's own)")
+    s.add_argument("--config-dir", help=argparse.SUPPRESS)
+    s.set_defaults(func=cmd_session, session_action="register")
+
+    s = ssub.add_parser(
+        "unregister",
+        help="remove the desktop app's row, leaving the transcript alone",
+        description="The safe undo for `register`. Deleting or archiving the session "
+                    "from inside the app instead writes a release marker next to the "
+                    "transcript that the CLI acts on; this removes only the record.",
+    )
+    s.add_argument("session_id", metavar="session-id")
+    s.set_defaults(func=cmd_session, session_action="unregister")
+
     s = ssub.add_parser("resume", help="continue an installed session with `claude --resume`")
     s.add_argument("session_id", metavar="session-id")
     s.add_argument("--bg", action="store_true",
