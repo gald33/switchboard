@@ -6417,7 +6417,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cwd", help="the session's working directory, if the id is ambiguous")
     s = ssub.add_parser("import", help="install a capsule file for `claude --resume`")
     s.add_argument("capsule_file", metavar="capsule")
-    s.add_argument("--cwd", help="resume from this directory (default: the original one)")
+    s.add_argument("--cwd", help="resume from this directory (default: where this session "
+                                 "already lives here, else the capsule's original one)")
     s.add_argument("--force", action="store_true",
                    help="install even over a live, longer or duplicated transcript")
     for verb, blurb in (
@@ -6442,7 +6443,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="collect this capsule on your own say-so (no pointer needed)")
     s.add_argument("--wait", type=float, default=0.0,
                    help="seconds to wait for a pointer to arrive (max 25 per poll)")
-    s.add_argument("--cwd", help="resume from this directory (default: the original one)")
+    s.add_argument("--cwd", help="resume from this directory (default: where this session "
+                                 "already lives here, else the capsule's original one)")
     s.add_argument("--force", action="store_true",
                    help="install even over a live, longer or duplicated transcript")
     s.add_argument("--unverified", action="store_true",

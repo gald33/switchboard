@@ -445,9 +445,11 @@ capsule's sha256 against what the pointer announced, deletes the board
 entry, and only then installs the files. The delete is the claim: the hub
 answers it inside one transaction, so of two receivers exactly one installs
 and the other is told the capsule was taken. Then it sends the sender a
-receipt. On the CLI the files land under the capsule's original project key
-unless `--cwd` names the directory you will resume from; the MCP tool
-defaults to this session's project directory. Either way the id ends up
+receipt. On the CLI the files land where the session already lives on this
+machine if it does (the return leg of a round trip), else under the capsule's
+original project key, unless `--cwd` names the directory you will resume
+from; the MCP tool defaults to this session's project directory. Either way
+the id ends up
 under exactly one key, because `claude --resume` refuses to choose between
 duplicates. Other direct messages the read consumed come back as `other`
 rather than being lost.
@@ -526,7 +528,10 @@ off to. Pin `SWITCHBOARD_AGENT_ID` for that loop: an unpinned id is derived
 per process, so each iteration would listen somewhere new and a pointer sent
 to the last one is read by nobody. The exit code is what the loop branches
 on — `0` when something was installed (or nothing was pending, without
-`--wait`), `2` when `--wait` elapsed with nothing.
+`--wait`), `2` when `--wait` elapsed with nothing, and `1` when a pointer or
+an id named a capsule that could not be installed: expired, claimed by
+another receiver, unverified, or not what was announced. That last one is
+the case to log.
 
 ## Tool reference
 

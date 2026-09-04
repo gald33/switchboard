@@ -185,7 +185,7 @@ def test_resume_needs_an_allowlist_and_claude(room, sender_cfg, tmp_path, capsys
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob-claude"))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
     code, got, err = _run(capsys, "session", "receive", "--cwd", "/w", "--resume", "--bg",
-                          "--from", from_id, "--force", agent="bob")
+                          "--from", from_id, agent="bob")
     assert got["installed"], (got, err)
     [run] = got["resumed"]
     assert run["started"] is False and "PATH" in run["reason"]
@@ -279,3 +279,40 @@ def test_resume_command_honours_json(tmp_path, capsys, monkeypatch):
     assert main(["--json", "session", "resume", SID, "--command", "--cwd", "/w"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["session_id"] == SID and payload["command"].startswith("cd /w && ")
+
+
+def test_export_to_stdout_keeps_the_note_off_the_stream(sender_cfg, capsys):
+    assert main(["session", "export", "-o", "-"]) == 0
+    out, err = capsys.readouterr()
+    capsule = json.loads(out)
+    assert capsule["session_id"] == SID and "model's context" in err
+    assert main(["-q", "session", "export", "-o", "-"]) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out)["session_id"] == SID and err == ""
+
+
+def test_import_force_is_the_way_past_a_live_session(sender_cfg, tmp_path, capsys, monkeypatch):
+    path = tmp_path / "cap.json"
+    assert main(["session", "export", "-o", str(path)]) == 0
+    capsys.readouterr()
+    dest = tmp_path / "dest-claude"
+    (dest / "sessions").mkdir(parents=True)
+    (dest / "sessions" / "77.json").write_text(json.dumps({"pid": 77, "sessionId": SID}))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(dest))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    assert main(["session", "import", str(path), "--cwd", "/w"]) == 1
+    assert "running on this machine" in capsys.readouterr().err
+    assert main(["session", "import", str(path), "--cwd", "/w", "--force"]) == 0
+
+
+def test_receive_keep_and_unverified_are_plumbed(room, sender_cfg, tmp_path, capsys, monkeypatch):
+    h = room
+    _run(capsys, "session", "publish")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob-claude"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    code, got, err = _run(capsys, "session", "receive", SID, "--cwd", "/w", "--keep", agent="bob")
+    assert code == 0, (got, err)
+    assert got["installed"][0]["deleted_from_board"] is False and h.board() != []
+    code, got, err = _run(capsys, "session", "receive", SID, "--cwd", "/w", "--unverified",
+                          agent="bob")
+    assert code == 0 and got["installed"][0]["verified"] is None and h.board() == []

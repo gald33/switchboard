@@ -517,3 +517,55 @@ def test_the_result_names_the_signer_the_hub_attested_to(room, tmp_path):
     [by_id] = handoff.receive(receiver, session_id=SID, config_dir=str(tmp_path / "r"),
                               cwd="/w")["installed"]
     assert by_id["sender"] is None and by_id["verified"] is None
+
+
+def test_two_receivers_through_receive_and_exactly_one_installs(room, tmp_path, monkeypatch):
+    h, sender, receiver = room
+    second = h.client("second", register=True)
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    winner = handoff.receive(receiver, session_id=SID, config_dir=str(tmp_path / "r"), cwd="/w")
+    loser = handoff.receive(second, session_id=SID, config_dir=str(tmp_path / "s"), cwd="/w")
+    assert winner["installed"][0]["deleted_from_board"] is True
+    assert loser["installed"] == [] and "collected" in loser["missing"][0]["reason"]
+    # And the race itself: both have read the capsule, one delete wins.
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    real_delete = second.board_delete
+    monkeypatch.setattr(second, "board_delete", lambda key: real_delete(key) and False)
+    lost = handoff.receive(second, session_id=SID, config_dir=str(tmp_path / "s"), cwd="/w")
+    assert lost["installed"] == [] and "another receiver" in lost["missing"][0]["reason"]
+
+
+def test_a_put_back_capsule_keeps_the_ttl_it_had_left(room, tmp_path, monkeypatch):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg), ttl=300)
+    h.advance(100)
+    monkeypatch.setattr(cs, "install", lambda *a, **k: (_ for _ in ()).throw(OSError("no")))
+    with pytest.raises(handoff.HandoffError):
+        handoff.receive(receiver, session_id=SID, config_dir=str(tmp_path / "r"), cwd="/w")
+    restored = handoff.fetch(receiver, SID)
+    assert restored["_entry"]["expires_in"] == 200
+    assert restored["_entry"]["revision"] == 1, "a deleted row comes back as a new one"
+
+
+def test_the_unverified_override_installs_but_still_checks_the_bytes(room, tmp_path):
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, session_id=SID, config_dir=str(src_cfg))
+    ghost = h.client("ghost")   # never registered: its signature cannot be checked
+    sha = handoff.fetch(receiver, SID)["sha256"]
+    ghost.send(receiver.agent_id, {"t": handoff.POINTER_TYPE, "session_id": SID,
+                                   "key": handoff.key_for(SID), "sha256": sha})
+    refused = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w", keep=True)
+    assert refused["installed"] == [] and refused["missing"][0]["signature"] == "unknown"
+    [got] = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w",
+                            unverified=True, keep=True)["installed"]
+    assert got["verified"] is False and got["deleted_from_board"] is False
+    assert h.board() != [], "--keep left it there"
+    # Unverified is not unchecked: an announced hash that does not match still refuses.
+    ghost.send(receiver.agent_id, {"t": handoff.POINTER_TYPE, "session_id": SID,
+                                   "key": handoff.key_for(SID), "sha256": "0" * 64})
+    bad = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w", unverified=True)
+    assert bad["installed"] == []
+    assert "not the one the pointer announced" in bad["missing"][0]["reason"]

@@ -45,6 +45,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -64,6 +65,11 @@ CAPSULE_VERSION = 1
 #: prototype's plain ``base64`` is still accepted on the way in.
 ENCODING = "zlib+base64"
 _ENCODINGS = ("zlib+base64", "base64")
+
+#: The most one capsule file may decode to. A transcript is a few MB after a
+#: long day; this is far above that and far below what a small sealed value
+#: could be made to expand into on the receiver's machine.
+MAX_FILE_BYTES = 256 * 1024 * 1024
 
 SESSION_ID_VAR = "CLAUDE_CODE_SESSION_ID"
 CONFIG_DIR_VAR = "CLAUDE_CONFIG_DIR"
@@ -234,14 +240,25 @@ def decode_entry(entry: dict[str, Any]) -> bytes:
     encoding = entry.get("encoding", "base64")
     if encoding not in _ENCODINGS:
         raise CapsuleError(f"unknown capsule file encoding: {encoding!r}")
+    declared = entry.get("bytes")
+    if not isinstance(declared, int) or declared < 0 or declared > MAX_FILE_BYTES:
+        raise CapsuleError(f"capsule file {name!r} declares an unusable size: {declared!r}")
     try:
         raw = base64.b64decode(entry["data"], validate=True)
-        data = zlib.decompress(raw) if encoding == "zlib+base64" else raw
+        if encoding == "zlib+base64":
+            # Bounded by what the entry declares, so a small value cannot be
+            # made to expand into more than the receiver agreed to hold.
+            inflater = zlib.decompressobj()
+            data = inflater.decompress(raw, declared + 1)
+            if inflater.unconsumed_tail or not inflater.eof:
+                raise CapsuleError(f"capsule file {name!r} inflates past its declared size")
+        else:
+            data = raw
     except (KeyError, ValueError, zlib.error) as exc:
         raise CapsuleError(f"capsule file {name!r} is corrupt: {exc}") from exc
     if _sha256(data) != entry.get("sha256"):
         raise CapsuleError(f"sha256 mismatch for {name!r}; capsule corrupt")
-    if entry.get("bytes") not in (None, len(data)):
+    if declared != len(data):
         raise CapsuleError(f"size mismatch for {name!r}; capsule corrupt")
     return data
 
@@ -399,6 +416,9 @@ def validate(capsule: Any) -> dict[str, Any]:
             raise CapsuleError(f"unknown capsule file encoding: {entry.get('encoding')!r}")
         if not isinstance(entry.get("sha256"), str) or not isinstance(entry.get("data"), str):
             raise CapsuleError(f"capsule file {rel!r} lacks sha256 or data")
+        size = entry.get("bytes")
+        if not isinstance(size, int) or size < 0 or size > MAX_FILE_BYTES:
+            raise CapsuleError(f"capsule file {rel!r} declares an unusable size: {size!r}")
     if f"{session_id}.jsonl" not in seen:
         raise CapsuleError("capsule has no main transcript")
     return capsule
@@ -550,12 +570,14 @@ def shell_resume_command(
     background: bool = False,
 ) -> str:
     """The one line a human runs to pick the session up, for messages and docs."""
+    # Quoted: the directory came from a capsule somebody else built, and the
+    # line is meant to be pasted into a shell.
     parts: list[str] = []
     if cwd:
-        parts.append(f"cd {os.fspath(cwd)} &&")
+        parts.append(f"cd {shlex.quote(os.fspath(cwd))} &&")
     explicit = os.fspath(config_dir) if config_dir else os.environ.get(CONFIG_DIR_VAR)
     if explicit and Path(explicit).expanduser() != Path.home() / ".claude":
-        parts.append(f"{CONFIG_DIR_VAR}={explicit}")
+        parts.append(f"{CONFIG_DIR_VAR}={shlex.quote(explicit)}")
     parts.append(" ".join(resume_argv(session_id, background=background)))
     return " ".join(parts)
 

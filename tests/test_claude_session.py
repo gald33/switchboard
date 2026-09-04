@@ -409,3 +409,22 @@ def test_odd_metadata_is_tolerated_on_read_and_refused_on_install(source, tmp_pa
     capsule["original_working_directory"] = 42
     with pytest.raises(cs.CapsuleError, match="not a string"):
         cs.install(capsule, config_dir=tmp_path / "dest", cwd="/w")
+
+
+def test_the_resume_line_is_safe_to_paste(tmp_path):
+    line = cs.shell_resume_command(SID, cwd="/tmp/it's here; rm -rf /", config_dir=tmp_path / "c d")
+    assert line.startswith("cd '/tmp/it'\"'\"'s here; rm -rf /' && CLAUDE_CONFIG_DIR='")
+    assert line.endswith(f"/c d' claude --resume {SID}")
+
+
+def test_a_capsule_cannot_inflate_past_what_it_declares(source, tmp_path):
+    cfg, _ = source
+    capsule = cs.package(SID, config_dir=cfg)
+    bomb = base64.b64encode(zlib.compress(b"\0" * (4 * 1024 * 1024), 9)).decode()
+    entry = capsule["files"][0]
+    entry["data"] = bomb              # a few KB that inflate to 4 MiB
+    with pytest.raises(cs.CapsuleError, match="inflates past"):
+        cs.install(capsule, config_dir=tmp_path / "dest", cwd="/w")
+    entry["bytes"] = cs.MAX_FILE_BYTES + 1
+    with pytest.raises(cs.CapsuleError, match="unusable size"):
+        cs.install(capsule, config_dir=tmp_path / "dest", cwd="/w")

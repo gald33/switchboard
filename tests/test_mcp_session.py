@@ -167,3 +167,62 @@ def test_a_disk_failure_is_not_reported_as_a_hub_outage(room, tmp_path, monkeypa
     payload, is_error = call(bob, "session_import", session_id=SID, cwd="/w")
     assert is_error and payload["error"] == "handoff" and "Permission denied" in payload["detail"]
     assert handoff.fetch(bob.client, SID) is not None, "the claimed capsule went back"
+
+
+OTHER = "w_invited-room"
+
+
+def _invited(hub, monkeypatch):
+    """An invite to a second room on this hub — the recipe tests/test_mcp.py uses."""
+    from switchboard import mcp_server
+    from switchboard.invite import PROBE_SENTINEL, Invite
+    from switchboard.testing import BASE_URL
+
+    room_key = generate_key()
+    host = hub.client("host", workspace=OTHER, key=room_key, agent_id="host")
+    host.register(name="host:main", kind="local")
+    host.board_set("join/probe/abcd", PROBE_SENTINEL)
+    monkeypatch.setattr(mcp_server, "Client", hub.client_class())
+    return Invite(url=BASE_URL, workspace=OTHER, key=room_key, probe="join/probe/abcd").encode()
+
+
+def test_the_session_tools_follow_the_room_parameter(room, tmp_path, monkeypatch):
+    """A handoff in a joined room lands on that room's board, not the default one."""
+    alice, bob = make_bridge(room, "alice"), make_bridge(room, "bob")
+    invite = _invited(room, monkeypatch)
+    for bridge in (alice, bob):
+        joined, is_error = call(bridge, "join_room", invite=invite)
+        assert not is_error and joined["joined"], joined
+    bob_there = bob._rooms[OTHER].agent_id
+    call(bob, "whoami", room=OTHER)
+
+    _session(tmp_path / "c", "/w")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "c"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SID)
+    before = len(room.board(workspace=OTHER))
+    sent, is_error = call(alice, "session_handoff", to=bob_there, room=OTHER)
+    assert not is_error and sent["published"] is True, sent
+    assert room.board() == [] and len(room.board(workspace=OTHER)) == before + 1
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    got, is_error = call(bob, "session_import", cwd="/x", room=OTHER)
+    assert not is_error and len(got["installed"]) == 1, got
+    assert len(room.board(workspace=OTHER)) == before, "collected from that room's board"
+
+
+def test_other_messages_come_back_in_inbox_shape(room, tmp_path, monkeypatch):
+    alice, bob = make_bridge(room, "alice"), make_bridge(room, "bob")
+    _session(tmp_path / "c", "/w")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "c"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SID)
+    call(bob, "whoami")
+    alice.client.send(bob.client.agent_id, "unrelated: the build is green")
+    call(alice, "session_handoff", to=bob.client.agent_id)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "bob"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    got, is_error = call(bob, "session_import", cwd="/x")
+    assert not is_error and len(got["installed"]) == 1
+    [other] = got["other"]
+    assert other["body"] == "unrelated: the build is green"
+    assert {"seq", "from", "channel", "at"} <= set(other)
