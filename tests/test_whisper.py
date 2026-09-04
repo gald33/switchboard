@@ -13,8 +13,13 @@ import pytest
 
 from switchboard.client import UnknownPeerExchangeKey
 from switchboard.crypto import (
+    LEGACY_WHISPER_CONTEXT,
+    LEGACY_WHISPER_LABEL,
+    LEGACY_WHISPER_MARKER,
+    WHISPER_CONTEXT,
     DecryptionError,
     WorkspaceCipher,
+    _seal_to_peer,
     seal_to_peer,
     unseal_from_peer,
 )
@@ -119,21 +124,21 @@ def test_a_wrong_peer_exchange_key_fails_to_open_rather_than_decoding_wrong():
 
     envelope = seal_to_peer(
         "the launch code is 0142", my_identity=a,
-        peer_exchange_key=b.exchange_key, context="ask.body",
+        peer_exchange_key=b.exchange_key, context=WHISPER_CONTEXT,
     )
     with pytest.raises(DecryptionError):
         # bob opens with the wrong sender key — a's, not mallory's — and it
         # must fail loudly rather than hand back something else.
         unseal_from_peer(
             envelope, my_identity=b, peer_exchange_key=mallory.exchange_key,
-            context="ask.body",
+            context=WHISPER_CONTEXT,
         )
 
 
 def test_workspace_cipher_refuses_a_whisper_envelope_with_a_clear_error(key):
     a, b = SigningIdentity.generate(), SigningIdentity.generate()
     envelope = seal_to_peer(
-        "hi", my_identity=a, peer_exchange_key=b.exchange_key, context="ask.body",
+        "hi", my_identity=a, peer_exchange_key=b.exchange_key, context=WHISPER_CONTEXT,
     )
     cipher = WorkspaceCipher.from_key(key, WS)
     with pytest.raises(DecryptionError, match="whisper"):
@@ -189,11 +194,75 @@ def test_whisper_through_a_socket_backed_signing_identity(key):
             server.close()
 
 
-def test_the_ask_alias_still_sends_and_a_0_11_0_typed_message_still_opens(key):
-    """0.11.0 called this `ask`. Both halves of that name go on working: the
-    method a caller wrote against then, and the `type` such a peer puts on
-    the wire — a rename made for readability is not a reason to make an
-    already-published release unreadable."""
+# --- what the wire said before 2.1.0 -----------------------------------------
+
+
+def _sealed_by_a_2_0_1_sender(value, *, my_identity, peer_exchange_key):
+    """Exactly the bytes a release from 0.11.0 to 2.0.1 put on the wire: the
+    `ask` marker, the `ask` HKDF label, the `ask.body` context."""
+    return _seal_to_peer(
+        value, my_identity=my_identity, peer_exchange_key=peer_exchange_key,
+        context=LEGACY_WHISPER_CONTEXT, pad=True,
+        marker=LEGACY_WHISPER_MARKER, label=LEGACY_WHISPER_LABEL,
+    )
+
+
+def test_the_wire_says_whisper():
+    """2.1.0 renamed the wire to match the tool. What is written is checked
+    here rather than only round-tripped: a round trip passes just as well
+    if both ends still said `ask`."""
+    a, b = SigningIdentity.generate(), SigningIdentity.generate()
+    envelope = seal_to_peer(
+        "hi", my_identity=a, peer_exchange_key=b.exchange_key, context=WHISPER_CONTEXT,
+    )
+    assert envelope["m"] == "whisper"
+    assert WHISPER_CONTEXT == "whisper.body"
+
+
+def test_a_whisper_a_2_0_1_sender_sealed_still_opens():
+    """Readers upgrade before senders, and the reader keeps reading: the
+    marker says which names an envelope was sealed under, and the old names
+    are accepted on the way in. A wrong sender key still fails on such an
+    envelope, so the acceptance is of names, not of anything weaker."""
+    a, b, mallory = (SigningIdentity.generate() for _ in range(3))
+    legacy = _sealed_by_a_2_0_1_sender(
+        "sealed by 2.0.1", my_identity=a, peer_exchange_key=b.exchange_key,
+    )
+    assert legacy["m"] == "ask"
+    assert unseal_from_peer(
+        legacy, my_identity=b, peer_exchange_key=a.exchange_key,
+        context=WHISPER_CONTEXT,
+    ) == "sealed by 2.0.1"
+    with pytest.raises(DecryptionError):
+        unseal_from_peer(
+            legacy, my_identity=b, peer_exchange_key=mallory.exchange_key,
+            context=WHISPER_CONTEXT,
+        )
+
+
+def test_a_2_0_1_reader_cannot_open_a_2_1_0_whisper():
+    """The direction that does *not* hold, pinned so docs/upgrading.md is
+    describing a measured fact: an old reader tries the old names and fails
+    the AEAD rather than reading anything."""
+    from switchboard.crypto import _derive_whisper_key, _unseal_bytes, _whisper_aad
+
+    a, b = SigningIdentity.generate(), SigningIdentity.generate()
+    new = seal_to_peer(
+        "sealed by 2.1.0", my_identity=a, peer_exchange_key=b.exchange_key,
+        context=WHISPER_CONTEXT,
+    )
+    old_key = _derive_whisper_key(b, a.exchange_key, LEGACY_WHISPER_LABEL)
+    with pytest.raises(DecryptionError):
+        _unseal_bytes(old_key, new,
+                      _whisper_aad(LEGACY_WHISPER_CONTEXT, LEGACY_WHISPER_LABEL),
+                      LEGACY_WHISPER_CONTEXT)
+
+
+def test_a_0_11_0_typed_message_still_opens_and_the_alias_is_gone(key):
+    """0.11.0 called this `ask`. The `type` such a peer puts on the wire
+    still opens — a rename is not a reason to make an already-published
+    release unreadable in the direction that matters — and the method that
+    answered to the old name is gone, as 2.1.0 says it is."""
     with make_hub(workspace=WS, key=key) as h:
         alice, bob = h.client("alice"), h.client("bob")
         alice.register(name="alice")
@@ -201,12 +270,11 @@ def test_the_ask_alias_still_sends_and_a_0_11_0_typed_message_still_opens(key):
         alice.agents()
         bob.agents()
 
-        # The old method name, sending under the old wire type a 0.11.0
-        # client would have used.
-        alice.ask(bob.agent_id, "sealed by the old name", type="ask")
+        assert not hasattr(alice, "ask")
+        alice.whisper(bob.agent_id, "sealed under the old type", type="ask")
         [got] = bob.inbox()
         assert got["type"] == "ask"
-        assert got["body"] == "sealed by the old name"
+        assert got["body"] == "sealed under the old type"
         assert not got.get("unreadable")
 
 

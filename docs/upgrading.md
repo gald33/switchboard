@@ -3,6 +3,35 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.0.1 → 2.1.0
+
+**The whisper envelope says `whisper` on the wire.** From 0.11.0 to 2.0.1 it
+said `ask` in three places a reader never sees — the envelope marker
+`m`, the HKDF label the pair key is derived under, and the AEAD context the
+body is sealed under (`ask.body`) — while the tool, CLI and method had said
+`whisper` since 1.0.0. The split was kept on purpose, to spare a break for a
+name only humans read; it cost more than it saved when a page written to
+the human name opened whispers under `message.body` and every one came back
+unreadable, with no error to say why. Now the wire says what the tool says:
+`m: "whisper"`, `switchboard/v1/whisper`, `whisper.body`.
+
+### Upgrade readers before senders
+
+A 2.1.0 client **opens** everything an earlier one sealed — the marker says
+which names an envelope was sealed under, and the old names are still
+accepted on the way in. The other direction does not hold: **a 2.0.1 client
+cannot open a 2.1.0 whisper**, and reports it `unreadable` exactly as it
+would a sender whose exchange key it has not seen. So upgrade the agents
+that *receive* whispers first, and the ones that send them last. In a room
+where one process does both, upgrade it with everybody it whispers to. The
+hub is not involved — it never opens an envelope — and needs no change.
+
+### `Client.ask` is removed
+
+The deprecated alias for `whisper`, kept since 1.0.0, is gone from the sync
+and async clients. Nothing else answered to the old name any longer. The
+wire `type` `"ask"` a 0.11.0 sender puts on a message still opens.
+
 ## 2.0.0 → 2.0.1
 
 Server only. The hub's CORS allow-list now includes the two write-key

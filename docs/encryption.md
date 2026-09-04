@@ -700,8 +700,13 @@ already published.
 > **Named `ask` in 0.11.0.** The name said "question" when the primitive is
 > "sealed to one peer" — you may equally want to *tell* someone something the
 > room should not read. 1.0.0 renamed the tool, CLI command and client method
-> to `whisper`. `Client.ask` still works as a deprecated alias; the CLI takes
-> `whisper` only. The wire format is unchanged, so 0.11.0 peers stay readable.
+> to `whisper` and left the wire alone: the envelope marker, the HKDF label
+> and the AEAD context all still said `ask`, on the reasoning that a name only
+> humans read was not worth a break. **2.1.0 renamed the wire too**, after a
+> second implementation written to the human name opened whispers under the
+> wrong context for four days without an error. A 2.1.0 reader still opens
+> what any earlier release sealed; an earlier reader cannot open a 2.1.0
+> whisper. `Client.ask` is gone. See [upgrading.md](upgrading.md#201--210).
 
 What it costs, stated as plainly as everything above:
 
