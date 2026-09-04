@@ -124,6 +124,24 @@ def _main_sha256(capsule: dict[str, Any], session_id: str) -> str:
     raise HandoffError("capsule has no main transcript")
 
 
+def manifest_digest(capsule: dict[str, Any]) -> str:
+    """One hash over every file's name and hash, sidecars included.
+
+    The pointer's ``sha256`` names the main transcript for a human; this is
+    what the receiver checks, because a room-key holder who cannot swap the
+    transcript could still swap a subagent's sidecar under it. Each entry's
+    hash is what ``decode_entry`` binds the bytes to, so the chain from the
+    signed pointer to every byte on disk closes here.
+    """
+    import hashlib
+
+    lines = sorted(
+        f"{entry.get('relative_destination')} {entry.get('sha256')}"
+        for entry in capsule.get("files") or [] if isinstance(entry, dict)
+    )
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
 def _summary(capsule: dict[str, Any]) -> dict[str, Any]:
     harness = harness_for((capsule.get("source_harness") or {}).get("name"))
     return harness.summary(capsule)
@@ -296,6 +314,7 @@ def publish(
             "bytes": summary["bytes"],
             "files": summary["files"],
             "sha256": sha256,
+            "digest": manifest_digest(capsule),
             "expires_at": entry.get("expires_at"),
             "from": hub.local_agent_id,
             "branch": summary.get("git_branch"),
@@ -471,7 +490,10 @@ def receive_one(
             session_id, "the capsule on the board is for a different session than its key says",
         )
     announced = _main_sha256(capsule, session_id)
-    if pointer is not None and announced != pointer.get("sha256"):
+    if pointer is not None and (
+        announced != pointer.get("sha256")
+        or ("digest" in pointer and manifest_digest(capsule) != pointer.get("digest"))
+    ):
         return _not_installed(
             session_id,
             "the capsule on the board is not the one the pointer announced (sha256 differs); "

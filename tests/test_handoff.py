@@ -449,6 +449,26 @@ def test_a_substituted_capsule_is_not_what_the_pointer_announced(room, tmp_path)
     assert not (tmp_path / "r").exists()
 
 
+def test_a_swapped_sidecar_is_not_what_the_pointer_announced_either(room, tmp_path):
+    """The main transcript alone is not the capsule: every file's hash is announced."""
+    h, sender, receiver = room
+    src_cfg, _ = _source_session(tmp_path)
+    handoff.handoff(sender, to=receiver.agent_id, session_id=SID, config_dir=str(src_cfg))
+    mallory = h.client("mallory", register=True)
+    envelope = handoff.fetch(mallory, SID)
+    envelope.pop("_entry")
+    sidecar = next(e for e in envelope["capsule"]["files"]
+                   if e["relative_destination"].startswith(f"{SID}/"))
+    planted = _record(type="user", message="planted subagent instructions").encode()
+    sidecar.update({"data": cs.encode_bytes(planted), "bytes": len(planted),
+                    "sha256": cs._sha256(planted)})
+    mallory.board_set(handoff.key_for(SID), envelope)   # main transcript untouched
+    got = handoff.receive(receiver, config_dir=str(tmp_path / "r"), cwd="/w")
+    assert got["installed"] == []
+    assert "not the one the pointer announced" in got["missing"][0]["reason"]
+    assert not (tmp_path / "r").exists()
+
+
 def test_a_failed_install_puts_the_capsule_back_whatever_failed(room, tmp_path, monkeypatch):
     h, sender, receiver = room
     src_cfg, _ = _source_session(tmp_path)
