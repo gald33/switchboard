@@ -466,6 +466,36 @@ are the two halves with no hub between them: a capsule file, created `0600`
 because it is as private as the transcript it carries, that you move however
 you like.
 
+### If you work in the desktop app
+
+Installing the transcript is the whole job for a CLI user and half of one for
+everybody else. The desktop app keeps its own list of sessions beside the
+transcripts, so a conversation whose transcript is installed but whose record
+is not exists on disk and is invisible in the app — which is exactly what
+happened the first time a session was handed from a cloud agent to a laptop:
+it resumed perfectly on the command line and could not be found in the app the
+recipient actually used.
+
+So `switchboard init` asks, once, on a machine that runs the app: should a
+session handed to you also appear in its sidebar? Say yes and `receive` writes
+the record too. The question is asked at setup rather than per handoff for two
+reasons — it writes into another program's store, which is a thing to agree to
+deliberately, and the account and project the row is filed under are ids that
+app assigns, discoverable only where it runs. A cloud runner has neither, so
+the step is silently skipped there.
+
+`switchboard session register <id>` does it for a session already installed,
+and `session unregister <id>` is the undo. Prefer that over deleting the row
+inside the app: in-app delete and archive both write a release marker next to
+the transcript which the CLI acts on, while unregister removes only the record.
+
+Two things worth knowing. The app reads its store at launch, so a registered
+session appears after the next restart rather than immediately. And this is an
+undocumented format belonging to another program: `switchboard.desktop` says
+which app version it was verified against, keeps every detail in that one
+module, and answers "not here" rather than guessing when the shape is not what
+it expects.
+
 ### What travels, and what a reader can take out
 
 The subagent transcripts in the `<id>/` sidecar travel by default, and that

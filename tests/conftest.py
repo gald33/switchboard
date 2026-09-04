@@ -70,6 +70,12 @@ def clean_switchboard_env(monkeypatch, tmp_path):
     # its throwaway rooms in the developer's own ~/.switchboard. One file per
     # test; subprocesses inherit it through the environment.
     monkeypatch.setenv("SWITCHBOARD_KNOWN_ROOMS", str(tmp_path / "known-rooms.json"))
+    # Desktop registration writes into the Claude app's own session store. Point
+    # every test at an empty directory that does not exist, so a test which
+    # reaches for it finds nothing rather than the developer's real sidebar —
+    # and so `init` on this machine cannot quietly enable it during a test run.
+    monkeypatch.setenv("SWITCHBOARD_DESKTOP_STORE", str(tmp_path / "no-desktop-app"))
+    monkeypatch.delenv("SWITCHBOARD_DESKTOP_REGISTER", raising=False)
     # Session capsules are read from and written to Claude Code's own config
     # dir, which defaults to the developer's real ~/.claude. Point every test at
     # a throwaway one so an import test can never land a transcript there.
