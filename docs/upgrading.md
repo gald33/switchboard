@@ -3,6 +3,19 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.1.0 → 2.2.0
+
+Additive. A whole Claude Code session can be moved between environments
+through the hub: `switchboard session handoff <agent>` publishes the
+conversation as a capsule sealed to the room, and `switchboard session
+receive` collects it and installs it for `claude --resume`. `export` and
+`import` do the two halves against a file instead. The capsule is a
+blackboard entry that expires on its own and is deleted the moment it is
+collected; the hub never opens it. Nothing that worked in 2.1.0 changed.
+
+The commands are new, so a peer running 2.1.0 or earlier cannot collect a
+capsule you publish and will not recognise the pointer. Both ends need 2.2.0.
+
 ## 2.0.1 → 2.1.0
 
 **The whisper envelope says `whisper` on the wire.** From 0.11.0 to 2.0.1 it
