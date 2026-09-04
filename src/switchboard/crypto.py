@@ -402,6 +402,25 @@ class WorkspaceCipher:
         ).digest()
         return _b64e(digest[:BLIND_BYTES])
 
+    def blind_resource(self, resource: str) -> str:
+        """Blind a lease resource, letting a token the hub handed back pass through.
+
+        The same two forms as `blind_channel` below, for the same reason. A
+        lease listing (`claims`, `Client.leases`) reports resources as the
+        tokens the hub stores, because a resource is an identifier the hub
+        compares and never reads. Releasing by that token used to blind it a
+        second time — `blind(blind(resource))` — which matched nothing, so the
+        release was reported as "no lease" while the lease stood. The Stop
+        hook's release-everything loop is exactly that call, and every handoff
+        that hands leases on with the session needs it to work.
+
+        Told apart by shape, with the same caveat as agent ids: a resource
+        named as exactly `BLIND_BYTES` of base64url would be misread.
+        """
+        if _HUB_FORM_ID.fullmatch(resource):
+            return resource
+        return self.blind(resource, "resource")
+
     def blind_channel(self, channel: str) -> str:
         """Blind a named channel, and resolve a direct-message channel.
 

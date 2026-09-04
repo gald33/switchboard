@@ -873,7 +873,11 @@ class _Base:
     def _blind(self, value: str, domain: str, cipher: Any = _UNSET) -> str:
         if cipher is _UNSET:
             cipher = self.cipher
-        return cipher.blind(value, domain) if cipher else value
+        if not cipher:
+            return value
+        if domain == "resource":
+            return cipher.blind_resource(value)
+        return cipher.blind(value, domain)
 
     def _sign_message(self, channel: str, body: Any) -> dict[str, Any] | None:
         """The signature block for one outgoing message, or None unsigned."""

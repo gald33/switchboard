@@ -22,6 +22,8 @@ no service to run for the tests — they spin the app up in-process.
 | `cli.py` | The `switchboard` command. |
 | `mcp_server.py` | MCP stdio bridge — speaks JSON-RPC directly, no SDK. |
 | `config.py` | Env-driven settings and the TTL defaults/ceilings. |
+| `claude_session.py` | Claude Code harness adapter: locate, package, install, resume a session's transcript; stdlib only. |
+| `handoff.py` | Session capsules over the hub: board value + signed pointer; hub-neutral. |
 
 The dependency direction is one-way: `store` knows nothing about HTTP,
 `server` knows nothing about the CLI, and `cli`/`mcp_server` both go through

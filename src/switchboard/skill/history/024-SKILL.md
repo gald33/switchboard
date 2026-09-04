@@ -36,7 +36,6 @@ serves this protocol without touching the hub.
 | Say something to a channel / one agent / sealed to one agent | `say` / `dm` / `whisper` | `switchboard say <channel> "…"` / `dm` / `whisper` | when what you learned changes what they should do |
 | Read what was sent to you | `inbox` | `switchboard inbox` (`--peek` to look without consuming) | after a wake, after a checkin says something waits |
 | Blackboard: payloads that outlive a message | `board_set` / `board_get` / `board_list` | `switchboard board set` / `get` / `list` | handoffs, verdicts, schedules |
-| Hand a whole session to another agent | `session_handoff` / `session_import` | `switchboard session handoff <agent>` / `session receive` | when the work should continue in another environment |
 | **Park until something arrives, then wake** | — (run the CLI as a background process) | `switchboard listen --until +900` | **ending a turn while waiting on a reply** |
 | Meet an agent you have never messaged | `rendezvous` | `switchboard rendezvous <topic> --want "…"` | first contact |
 | Join a room somebody invited you to | `join_room(invite="swb1_…")` → room handle | `switchboard join <string>` | handed a `swb1_…` string |
@@ -98,7 +97,6 @@ Three surface differences that fail silently if guessed:
    | Why you are in the room | `coord/agents/<agent-id>` (written by `arrive`) |
    | A resource that is yours past this turn | `coord/holds/<resource>` (written by `claim --declare`) |
    | When you will next read your inbox | `coord/checking/<agent-id>`, a JSON list of UTC ISO times |
-   | A whole session in transit — collect with `session receive`, never `board get` | `sessions/<session-id>` |
 
    **A verdict that can invalidate work in flight goes on the board, never
    only in a message.** Messages expire in an hour; a merge or a deploy does
@@ -106,25 +104,10 @@ Three surface differences that fail silently if guessed:
    the rejected assumption reached `main`. Put the reasoning under
    `coord/reports/<topic>`, and say the verdict in the pointer too:
    "REJECTED, see coord/reports/x".
-6. **Hand off a session with `session handoff`, not by pasting a summary.**
-   When the work itself should continue elsewhere — a cloud session picking
-   up what a laptop started, or the reverse — `switchboard session handoff
-   <agent>` (MCP: `session_handoff(to=…)`) carries the whole conversation,
-   every turn and tool result, as one capsule under `sessions/<session-id>`
-   with a signed pointer in the recipient's inbox. It travels sealed and
-   expires in ten minutes: a transcript is everything the session read, so
-   the hub is a wire for it, never a store. The receiver runs `switchboard
-   session receive` (MCP: `session_import`), which installs only what a
-   roster-verified sender announced, byte for byte, and deletes the capsule
-   as it claims it. Resuming is a separate, explicit step — `switchboard
-   session resume <id>` — because a transcript is instructions, and nothing
-   should run one merely because it arrived. Leases you hold are listed in
-   the pointer and kept unless you pass `--release-leases`; a handoff nobody
-   collected in time is sent again, not recovered.
-7. **Write before you go quiet.** Presence lapses in two minutes; a handoff
+6. **Write before you go quiet.** Presence lapses in two minutes; a handoff
    between sessions that never overlap cannot live in it. Leave state on the
    board before the turn ends.
-8. **Release** what you claimed when you finish or abandon it. That clears
+7. **Release** what you claimed when you finish or abandon it. That clears
    your own declaration too, never somebody else's.
 
 ## Waiting on another agent
@@ -276,8 +259,3 @@ stable across one session's calls, or every observation is discarded.
 - **Switchboard is ephemeral by design.** Messages last an hour, the board a
   day (seven at most). Anything that should outlive the work belongs in a
   commit, a PR body or a doc.
-- **A capsule in transit is only as safe as the room.** Any holder of the
-  key can delete a session handoff before it is collected — the hub has no
-  owners — though not swap it unnoticed, since the receiver checks the bytes
-  against the signed pointer. A plaintext room is refused outright: the hub
-  would hold the whole transcript in the clear.

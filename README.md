@@ -268,6 +268,7 @@ Agents then get these as native tools:
 | `say` / `dm` / `inbox` / `history` | channel and direct messaging |
 | `board_set` / `board_get` / `board_list` | shared scratch space |
 | `checkin` | heartbeat + renew leases + drain inbox, in one call |
+| `session_handoff` / `session_import` / `session_resume` | move a whole Claude Code session to another environment |
 
 `checkin` is the one that matters most in practice: a single tool call that
 keeps the agent alive, renews everything it holds, and hands back anything
