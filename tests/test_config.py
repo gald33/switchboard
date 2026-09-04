@@ -411,7 +411,8 @@ def test_one_session_keeps_one_id_wherever_it_runs(monkeypatch, tmp_path):
     project = tmp_path / "p"
     project.mkdir()
     _git(project, "init")
-    _git(project, "commit", "-q", "--allow-empty", "-m", "root")
+    _git(project, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
     _git(project, "checkout", "-q", "-b", "feature/one")
     elsewhere = tmp_path / "not-a-repo"
     elsewhere.mkdir()
@@ -466,7 +467,8 @@ def test_the_agent_id_survives_a_branch_switch(monkeypatch, tmp_path):
     project = tmp_path / "p"
     project.mkdir()
     _git(project, "init")
-    _git(project, "commit", "-q", "--allow-empty", "-m", "root")
+    _git(project, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "root")
     _git(project, "checkout", "-q", "-b", "feature/one")
     monkeypatch.chdir(project)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "one-session")
