@@ -70,6 +70,10 @@ def clean_switchboard_env(monkeypatch, tmp_path):
     # its throwaway rooms in the developer's own ~/.switchboard. One file per
     # test; subprocesses inherit it through the environment.
     monkeypatch.setenv("SWITCHBOARD_KNOWN_ROOMS", str(tmp_path / "known-rooms.json"))
+    # Session capsules are read from and written to Claude Code's own config
+    # dir, which defaults to the developer's real ~/.claude. Point every test at
+    # a throwaway one so an import test can never land a transcript there.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     # `init` only prompts when it detects a terminal, and never under CI. Tests
     # inherit neither, but be explicit: a test that blocks on input that never
     # arrives hangs the suite rather than failing it.
