@@ -365,25 +365,83 @@ def test_capsule_files_are_private_and_round_trip(source, tmp_path, monkeypatch)
 
 
 def test_spawn_does_not_trust_claudes_exit_code(monkeypatch, tmp_path):
-    """`claude --bg --resume <unknown id>` exits 0 and starts an empty session;
-    the output is what says whether anything was resumed."""
+    """`claude --bg --resume <unknown id>` exits 0 and starts an empty session,
+    so the id it reports back is what says whether anything was resumed.
+
+    Not the word "idle", which is what this used to read. A backgrounded
+    session is idle either way — nothing has prompted it yet — so that test
+    called a real resume a failure and, worse, called a *different* session a
+    success. The id claude reports is the one signal that separates them.
+    """
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     script = fake_bin / "claude"
-    script.write_text("#!/bin/sh\necho 'backgrounded · 3c1f7c2e (idle — send a prompt to start)'\n")
+    other = "3c1f7c2e"  # deliberately not a prefix of SID
+    idle = "(idle — send a prompt to start)"
+    script.write_text(f"#!/bin/sh\necho 'backgrounded · {other} {idle}'\n")
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
     cfg = tmp_path / "c"
     # Nothing installed: refused before claude is even run.
     result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
     assert result["started"] is False and "no transcript" in result["reason"]
-    # Installed, but claude reports an idle session: also not a success.
+    # Installed, but claude answers with an id that is not the one asked for:
+    # it started a new session rather than resuming, whatever the exit code.
     _make_session(cfg, str(tmp_path), sidecar=False)
     result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
-    assert result["started"] is False and "empty session" in result["reason"]
-    script.write_text("#!/bin/sh\necho 'backgrounded · 3c1f7c2e'\n")
+    assert result["started"] is False
+    assert other in result["reason"] and SID in result["reason"]
+    # The same id back is the success, and it stays a success while idle.
+    script.write_text(f"#!/bin/sh\necho 'backgrounded · {SID[:8]} {idle}'\n")
     result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
-    assert result["started"] is True and result["attach"] == "claude attach 3c1f7c2e"
+    assert result["started"] is True
+    assert result["attach"] == f"claude attach {SID[:8]}"
+
+
+def test_a_transcript_another_account_owns_is_reported_as_refused(monkeypatch, tmp_path):
+    """The failure that looks most like success, and cost a live test to find.
+
+    A session handed over from another account installs cleanly, resumes under
+    its own id, and comes back with no conversation in it: Claude Code loads
+    the transcript, sees an owner it does not match, and writes a
+    `history-suppression` record instead of replaying. Every other signal —
+    exit code, hash, record count, the id claude reports — says success.
+
+    So the veto outranks the id check, and it is read across the whole file
+    rather than only what this spawn appended: the refusal is a property of
+    the transcript and the account, so it holds on every later attempt too,
+    and a caller re-running to "try again" needs to be told that.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    script = fake_bin / "claude"
+    script.write_text(f"#!/bin/sh\necho 'backgrounded · {SID[:8]}'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+    cfg = tmp_path / "c"
+    transcript = _make_session(cfg, str(tmp_path), sidecar=False)
+
+    # Without the record it is an ordinary success.
+    assert cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)["started"] is True
+    assert cs.suppressions(transcript) == []
+
+    with transcript.open("a") as handle:
+        handle.write(json.dumps({
+            "type": "history-suppression", "sessionId": SID,
+            "cause": "restored_owner_mismatch",
+            "vetoedAgainstAccountUuid": "3aa45cbd-39c1-4da0-b5c2-983ab5d7a876",
+        }) + "\n")
+
+    result = cs.spawn_resume(SID, cwd=str(tmp_path), config_dir=cfg)
+    assert result["started"] is False
+    assert "restored_owner_mismatch" in result["reason"]
+    # The capsule is not the problem, and the message must not send anyone
+    # hunting through it for one.
+    assert "installed and intact" in result["reason"]
+    # Still attachable, so the id is reported: it is the conversation that is
+    # missing, not the session.
+    assert result["short_id"] == SID[:8]
+    assert [r["cause"] for r in cs.suppressions(transcript)] == ["restored_owner_mismatch"]
 
 
 
