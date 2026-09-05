@@ -89,10 +89,15 @@ def store_dir(explicit: str | os.PathLike[str] | None = None) -> Path | None:
     return path if path.is_dir() else None
 
 
-def enabled(env: dict[str, str] | None = None) -> bool:
-    """Whether this checkout opted in at `init` time."""
+def enabled(env: dict[str, str] | None = None, *, var: str = ENABLE_VAR) -> bool:
+    """Whether this checkout opted in at `init` time.
+
+    ``var`` names which answer to read, so the other opt-ins `init` records
+    share one truthiness rule rather than each inventing its own idea of what
+    counts as yes.
+    """
     source = os.environ if env is None else env
-    return (source.get(ENABLE_VAR) or "").strip().lower() in ("1", "true", "yes", "on")
+    return (source.get(var) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _records(store: Path) -> list[tuple[Path, dict[str, Any]]]:
