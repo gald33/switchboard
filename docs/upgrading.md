@@ -47,6 +47,18 @@ Additive in the same release: `--no-subagents` on `session export`,
 subagent transcripts out of a capsule, and the viewer can save an opened
 board value to a file. Neither changes an existing default.
 
+## 2.2.1 → 2.2.2
+
+Additive. `switchboard session brief <id>` prints what a session was for —
+the human's instructions, the files touched, the tools used — read off the
+transcript rather than retold by a model. It exists for the place a capsule
+cannot reach: a session running in Claude's own cloud, which accepts no
+transcript through any endpoint. On a 4.5 MB transcript the brief is under a
+kilobyte, so it fits in a message you can paste anywhere.
+
+`docs/claude-code.md` now states plainly what a handoff can and cannot reach,
+checked against Claude Code 2.1.259. Nothing that worked in 2.2.1 changed.
+
 ## 2.1.0 → 2.2.0
 
 Additive. A whole Claude Code session can be moved between environments
