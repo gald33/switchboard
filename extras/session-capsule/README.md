@@ -47,6 +47,18 @@ No transcript was modified. No path translation was needed. The destination
 needs neither the repo path nor the repo contents to *resume the conversation*;
 it needs them only for whatever the conversation does next.
 
+**One boundary this matrix never crossed (observed later, in production).**
+Every case above moved a session owned by one account — between config dirs,
+between directories, between machines, but never between *accounts*. A
+transcript can carry a `bridge-session` record naming its owner, and restoring
+one under a different account installs, resumes under the right id, and comes
+back empty; Claude Code appends
+`{"type":"history-suppression","cause":"restored_owner_mismatch"}` rather than
+replaying it. So "portable as a single opaque file" holds within an account
+and not across one, and the row above that reads "the real, live 537 KB
+session that ran this investigation" passed because it was *our own*. Whether
+an unbridged local session carries the marker at all is still untested.
+
 ## 1. Where Claude Code stores sessions (observed)
 
 ```

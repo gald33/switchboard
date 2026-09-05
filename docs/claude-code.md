@@ -454,12 +454,44 @@ under exactly one key, because `claude --resume` refuses to choose between
 duplicates. Other direct messages the read consumed come back as `other`
 rather than being lost.
 
-Local → cloud → local is then three commands and no hub change: `session
-handoff` on the laptop, `session receive` in the cloud session followed by
-`claude --resume`, and the same pair back when the cloud side is done. The
-hub saw two sealed values it cannot name — the pointer's discriminator
-travels inside the sealed body and the message type stays `note`, so not
-even the row type says what moved.
+Local → cloud → local is three commands and no hub change: `session handoff`
+on the laptop, `session receive` in the cloud session followed by `claude
+--resume`, and the same pair back when the cloud side is done. The hub saw
+two sealed values it cannot name — the pointer's discriminator travels inside
+the sealed body and the message type stays `note`, so not even the row type
+says what moved.
+
+**One account, though — see below.** Cloud → local has been run end to end.
+The other direction was run and *failed*, for a reason that is not
+Switchboard's and not fixable here.
+
+### A session belongs to the account that made it
+
+A transcript can carry a `bridge-session` record naming the account that
+owned it. Restoring one under a different account installs and resumes
+normally and then comes back **empty**: Claude Code loads the file, sees the
+mismatch, and appends
+
+```json
+{"type": "history-suppression", "cause": "restored_owner_mismatch", "vetoedAgainstAccountUuid": "…"}
+```
+
+instead of replaying the conversation. Observed moving a bridged laptop
+session into a cloud container: 14.7 MB and 36 files arrived with a matching
+sha256, `claude --resume` bound the right id, and the conversation was not
+there.
+
+Nothing in the capsule causes this and nothing in it can prevent it — the
+bytes are carried and verified faithfully, and the refusal happens after
+Claude Code has already read them. `session resume` detects the record and
+says so rather than blaming the transport; re-running does not help, because
+the veto is a property of the transcript and the account.
+
+So the boundary a handoff can cross is a *machine*, not an *account*. Between
+your own environments, signed in as yourself, this works. Handing a session to
+someone else's Claude, or to a container signed in as a different account,
+moves the file and not the conversation. Whether an unbridged local session
+carries the owner marker at all is untested.
 
 `switchboard session export -o FILE` and `switchboard session import FILE`
 are the two halves with no hub between them: a capsule file, created `0600`

@@ -712,6 +712,42 @@ def claude_available() -> bool:
     return shutil.which("claude") is not None
 
 
+#: What Claude Code appends when it declines to replay a transcript it did
+#: load. Observed rather than documented: moving a session between two
+#: accounts installs cleanly, resumes under the right id, and comes back
+#: empty, with only this record to say why.
+SUPPRESSION = "history-suppression"
+
+
+def suppressions(path: Path) -> list[dict[str, Any]]:
+    """Records where Claude Code refused to restore this history, newest last.
+
+    The known cause is ``restored_owner_mismatch``: a transcript carries the
+    account that owned it, and Claude Code will not replay one account's
+    conversation for another. Read rather than interpreted — the cause string
+    is Claude Code's to define, and is passed through to whoever has to act
+    on it.
+
+    The whole file is scanned, not just what a spawn appended, because the
+    veto is durable. It is a property of this transcript and this account, so
+    a second attempt is refused exactly like the first; a record left by an
+    earlier one is still the reason the next will come back empty.
+    """
+    found: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text("utf-8", "replace").splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("type") == SUPPRESSION:
+            found.append(record)
+    return found
+
+
 def spawn_resume(
     session_id: str,
     *,
@@ -748,6 +784,7 @@ def spawn_resume(
                                  "directory matches none of them; resume would refuse to choose"}
     if not claude_available():
         return {**out, "reason": "claude is not on PATH"}
+    transcript = copies[0]  # where a veto, if there is one, is written
     run_cwd = os.fspath(cwd) if cwd else None
     if run_cwd and not os.path.isdir(run_cwd):
         return {**out, "reason": f"no such directory: {run_cwd}"}
@@ -763,15 +800,29 @@ def spawn_resume(
         return {**out, "reason": str(exc)}
     output = (done.stdout + done.stderr).strip()
     out.update({"returncode": done.returncode, "output": output})
-    # What --bg prints: "backgrounded · <short id>" and, when nothing was
-    # loaded, "(idle — send a prompt to start)". The short id is what
-    # `claude attach` takes.
+    # What --bg prints: "backgrounded · <short id>", where the short id is
+    # what `claude attach` takes.
     short = _short_id(output)
     if done.returncode != 0 or short is None:
         return {**out, "reason": "claude did not report a backgrounded session"}
-    if "idle" in output.lower():
-        return {**out, "reason": "claude started an empty session instead of resuming; "
-                                 "the transcript was not where it looked"}
+    # A veto outranks the id check, because it survives it: claude will bind
+    # the right id and still hand back an empty session, which is the failure
+    # that looks most like success.
+    veto = suppressions(transcript)
+    if veto:
+        cause = veto[-1].get("cause") or "unstated"
+        return {**out, "short_id": short, "reason": (
+            f"claude has the transcript and refuses to replay it ({cause}), so the "
+            f"session opens without its conversation. The capsule is installed and "
+            f"intact — `restored_owner_mismatch` means it belongs to another account, "
+            f"and no amount of re-running changes that")}
+    # Otherwise the id is the test, not the word "idle". A backgrounded session
+    # is idle whether or not it resumed — nothing has prompted it yet — so
+    # reading "idle" as "empty" called every success a failure. A resume that
+    # did not take reports a *different* id, because claude quietly started a
+    # new session instead.
+    if not session_id.startswith(short):
+        return {**out, "reason": f"claude started {short} instead of resuming {session_id}"}
     return {**out, "started": True, "short_id": short, "attach": f"claude attach {short}"}
 
 
