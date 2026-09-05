@@ -487,11 +487,20 @@ Claude Code has already read them. `session resume` detects the record and
 says so rather than blaming the transport; re-running does not help, because
 the veto is a property of the transcript and the account.
 
-So the boundary a handoff can cross is a *machine*, not an *account*. Between
-your own environments, signed in as yourself, this works. Handing a session to
-someone else's Claude, or to a container signed in as a different account,
-moves the file and not the conversation. Whether an unbridged local session
-carries the owner marker at all is untested.
+**Which sessions carry the marker (observed).** Not most of them. Of six
+transcripts compared on one machine — a plain `claude -p` session, a cloud
+session, three sessions Claude Code started itself, and the bridged one — only
+the bridged session had a `bridge-session` record at all. The cloud session
+did not, and it is a remote session with its own `cse_…` id, so this is not
+local versus cloud: the marker rides on the *bridge*, and it names the account
+that owns the session on the other end of it.
+
+So the boundary a handoff cannot cross is an *account*, and only a session
+bridged under one carries the evidence. An ordinary session moves between your
+own environments as the matrix says. A bridged one moves its bytes and not its
+conversation unless the destination is signed in as the same account —
+including where "the same person" is signed into two accounts, which is what
+produced the observation above.
 
 `switchboard session export -o FILE` and `switchboard session import FILE`
 are the two halves with no hub between them: a capsule file, created `0600`

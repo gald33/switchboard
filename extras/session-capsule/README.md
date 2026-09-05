@@ -56,8 +56,14 @@ back empty; Claude Code appends
 `{"type":"history-suppression","cause":"restored_owner_mismatch"}` rather than
 replaying it. So "portable as a single opaque file" holds within an account
 and not across one, and the row above that reads "the real, live 537 KB
-session that ran this investigation" passed because it was *our own*. Whether
-an unbridged local session carries the marker at all is still untested.
+session that ran this investigation" passed because it was *our own*.
+
+Comparing six transcripts on one machine afterwards (**observed**): only a
+bridged session carries the record. A plain `claude -p` session, a cloud
+session with its own `cse_…` id, and three sessions Claude Code started itself
+had no owner field anywhere. So the marker is not a property of every session
+and not of cloud sessions — it rides on the bridge, and the account it names
+is the one on the far side.
 
 ## 1. Where Claude Code stores sessions (observed)
 
