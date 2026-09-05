@@ -3150,6 +3150,8 @@ def cmd_session(args: argparse.Namespace) -> int:
             return _session_resume(args)
         if action in ("register", "unregister"):
             return _session_register(args)
+        if action == "brief":
+            return _session_brief(args)
         if action in ("handoff", "publish"):
             return _session_publish(args, fmt)
         return _session_receive(args, fmt)
@@ -3258,6 +3260,64 @@ def _session_register(args: argparse.Namespace) -> int:
     else:
         print(f"not registered: {report['reason']}", file=sys.stderr)
     return EXIT_OK if report.get("registered") else EXIT_ERROR
+
+
+def _session_brief(args: argparse.Namespace) -> int:
+    """What a session was about, small enough to paste into another one.
+
+    The answer to a question `receive` cannot address: a cloud session in
+    somebody's browser cannot be handed a transcript — no endpoint accepts one
+    — and could not hold this one if it could, since 4.5 MB does not fit in a
+    context window. What travels is the shape: what was asked, what was
+    touched, how it worked. Read off the record rather than retold by a model.
+    """
+    session_id = claude_session.valid_session_id(args.session_id)
+    cfg = claude_session.config_dir(getattr(args, "config_dir", None))
+    found = claude_session.find_transcripts(cfg, session_id)
+    if not found:
+        print(f"error: no transcript for {session_id} under {cfg / 'projects'}",
+              file=sys.stderr)
+        return EXIT_ERROR
+    if len(found) > 1 and not args.cwd:
+        where = ", ".join(str(p.parent.name) for p in found)
+        print(f"error: {session_id} is under more than one project key ({where}); "
+              f"name the directory with --cwd", file=sys.stderr)
+        return EXIT_ERROR
+    path = found[0]
+    if args.cwd:
+        key = claude_session.project_key(args.cwd)
+        path = next((p for p in found if p.parent.name == key), found[0])
+    report = claude_session.brief(path, limit=args.limit)
+    if args.json:
+        _print_json({"session_id": session_id, **report})
+        return EXIT_OK
+    fmt = Fmt(_use_color(sys.stdout))
+    print(fmt.bold(f"session {session_id}"))
+    print(f"  {report['records']} records · {report['user_messages']} user / "
+          f"{report['assistant_messages']} assistant turns · "
+          f"claude {report['version'] or '?'}")
+    if report["cwd"]:
+        branch = f" on {report['git_branch']}" if report["git_branch"] else ""
+        print(f"  worked in {report['cwd']}{branch}")
+    if report["tools"]:
+        top = ", ".join(f"{name} {count}" for name, count in
+                        list(report["tools"].items())[:5])
+        print(f"  tools: {top}")
+    if report["files"]:
+        shown = ", ".join(Path(f).name for f in report["files"][:8])
+        more = f" (+{len(report['files']) - 8})" if len(report["files"]) > 8 else ""
+        print(f"  files: {shown}{more}")
+    total = report["instructions_total"]
+    kept = len(report["instructions"])
+    heading = "what was asked" + (f" ({kept} of {total})" if kept < total else
+                                  f" ({total})")
+    print(f"\n{fmt.bold(heading)}")
+    for line in report["instructions"]:
+        print(f"  - {line}")
+    if not report["instructions"]:
+        print(fmt.dim("  (nothing a human typed — every user record is tool "
+                      "output or a notification)"))
+    return EXIT_OK
 
 
 def _session_import(args: argparse.Namespace) -> int:
@@ -6624,6 +6684,26 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--any-sender", action="store_true",
                    help="with --resume: start sessions from any roster-verified sender "
                         "(never one nobody vouched for)")
+    s = ssub.add_parser(
+        "brief",
+        help="what a session was about, small enough to paste into another one",
+        description="A transcript is the wrong thing to hand a fresh session even "
+                    "where the machinery allows it: a large one does not fit in a "
+                    "context window, and replaying it costs more than the work it "
+                    "describes. This prints what actually carries — what the human "
+                    "asked for, which files were touched, how the session worked — "
+                    "read off the record rather than retold by a model. Use it to "
+                    "start a session somewhere a capsule cannot reach, a cloud "
+                    "session in a browser being the case that prompted it.",
+    )
+    s.add_argument("session_id", metavar="session-id")
+    s.add_argument("--limit", type=int, default=0,
+                   help="keep at most this many instructions: the first, then the "
+                        "most recent (default: all)")
+    s.add_argument("--cwd", help="which project key, when the id is under more than one")
+    s.add_argument("--config-dir", help=argparse.SUPPRESS)
+    s.set_defaults(func=cmd_session, session_action="brief")
+
     s = ssub.add_parser(
         "register",
         help="give the desktop app a row for a session installed here",

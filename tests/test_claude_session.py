@@ -458,3 +458,103 @@ def test_a_session_with_no_subagents_says_nothing_about_omitting_them(source, tm
     solo = cs.package(SID, config_dir=cfg, cwd="/solo")
     assert len(solo["files"]) == 1
     assert "omitted_subagent_files" not in solo
+
+
+# --- brief: what carries where a transcript cannot go -------------------------
+#
+# A cloud session in a browser cannot be handed a capsule — no endpoint takes
+# one — and could not hold this one if it could: the first real handoff was
+# 4.5 MB, which no context window fits. What travels instead is the shape of
+# the session, and the whole difficulty is separating what a human actually
+# typed from the tool results, hook output and notifications the harness also
+# writes as `user` records.
+
+
+def _briefable(cfg: Path, cwd: str) -> Path:
+    project = cfg / "projects" / cs.project_key(cwd)
+    project.mkdir(parents=True)
+    transcript = project / f"{SID}.jsonl"
+    def user(text):
+        return _record(type="user", message={"role": "user", "content": text})
+    lines = [
+        user("build the thing"),
+        _record(type="assistant", message={"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/a.py"}}]}),
+        # Everything the harness writes as a `user` record but no human typed.
+        user("<task-notification>\n<task-id>x</task-id>\n</task-notification>"),
+        user("<system-reminder>be careful</system-reminder>"),
+        user("<local-command-caveat>ignore me</local-command-caveat>"),
+        user("[Request interrupted by user]"),
+        _record(type="assistant", message={"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/repo/a.py"}}]}),
+        # The same ask re-sent after an interruption is one instruction.
+        user("now ship it"),
+        user("now ship it"),
+        "not json at all",
+    ]
+    transcript.write_text("\n".join(lines) + "\n")
+    return transcript
+
+
+def test_brief_keeps_what_a_human_typed_and_drops_what_the_harness_wrote(tmp_path):
+    report = cs.brief(_briefable(tmp_path, "/repo"))
+    assert report["instructions"] == ["build the thing", "now ship it"]
+    assert report["instructions_total"] == 2
+    # Seven user records — four harness wrappers and a repeat — of which two
+    # are instructions. That gap is the whole reason this filtering exists.
+    assert report["user_messages"] == 7
+
+
+def test_brief_counts_tools_and_files_the_session_actually_touched(tmp_path):
+    report = cs.brief(_briefable(tmp_path, "/repo"))
+    assert report["tools"] == {"Read": 2, "Bash": 1}
+    assert report["files"] == ["/repo/a.py"]
+
+
+def test_brief_carries_where_the_session_ran(tmp_path):
+    report = cs.brief(_briefable(tmp_path, "/repo"))
+    assert report["cwd"] == "/Users/gal/code/switchboard"
+    assert report["git_branch"] == "main" and report["version"] == "2.1.260"
+
+
+def test_brief_limit_keeps_the_first_ask_and_the_latest(tmp_path):
+    """A long session's shape is what it was for and where it got to; the
+    middle is what a limit is allowed to lose."""
+    project = tmp_path / "projects" / cs.project_key("/repo")
+    project.mkdir(parents=True)
+    transcript = project / f"{SID}.jsonl"
+    transcript.write_text("\n".join(
+        _record(type="user", message={"role": "user", "content": f"ask {i}"})
+        for i in range(10)) + "\n")
+    report = cs.brief(transcript, limit=3)
+    assert report["instructions"] == ["ask 0", "ask 8", "ask 9"]
+    assert report["instructions_total"] == 10
+
+
+def test_brief_tolerates_a_transcript_with_nothing_human_in_it(tmp_path):
+    """A session driven entirely by hooks or notifications is not an error —
+    it just has nothing to say, and must say that rather than crash."""
+    project = tmp_path / "projects" / cs.project_key("/repo")
+    project.mkdir(parents=True)
+    transcript = project / f"{SID}.jsonl"
+    transcript.write_text(_record(
+        type="user", message={"role": "user", "content": "<system-reminder>x</system-reminder>"}
+    ) + "\n")
+    report = cs.brief(transcript)
+    assert report["instructions"] == [] and report["instructions_total"] == 0
+
+
+def test_brief_is_small_enough_to_paste(tmp_path):
+    """The point of the command: a transcript no context window holds becomes
+    something that fits in a message."""
+    project = tmp_path / "projects" / cs.project_key("/repo")
+    project.mkdir(parents=True)
+    transcript = project / f"{SID}.jsonl"
+    transcript.write_text("\n".join(
+        _record(type="user", message={"role": "user", "content": "x" * 5000})
+        for _ in range(200)) + "\n")
+    assert transcript.stat().st_size > 1_000_000
+    report = cs.brief(transcript, limit=5)
+    assert len(json.dumps(report)) < 4000
+    assert all(len(i) <= cs.BRIEF_CHARS for i in report["instructions"])

@@ -466,6 +466,44 @@ are the two halves with no hub between them: a capsule file, created `0600`
 because it is as private as the transcript it carries, that you move however
 you like.
 
+### What a handoff cannot reach, and what to send instead
+
+A handoff lands a transcript on a filesystem. That covers every environment
+where a session can run a shell — your laptop, another machine, a cloud
+container — because the receiving side collects the capsule and
+`claude --resume` finds it. The first real handoff went cloud-container to
+laptop that way.
+
+It does not reach a session running in Claude's own cloud, and it is worth
+saying why rather than leaving somebody to discover it. Checked against CLI
+2.1.259 on 2026-09-05: `--cloud <session_id>` **attaches** to a cloud session
+that already exists, `--environment ccpool_…` creates a **new** one on a
+self-hosted pool, and neither takes a transcript. The `/move-to-cloud` and
+`/teleport` commands exist in the binary but are registered only for an
+interactive terminal, and the teleport path seeds a fresh session with a
+written summary rather than the conversation. There is no endpoint anywhere
+that accepts a transcript, so a conversation cannot be uploaded to become a
+cloud session, and nothing in this repo pretends otherwise.
+
+Two things do work in that direction, and between them they cover most of
+what people want from it.
+
+**Consult it.** A cloud container can run `session receive` like anything
+else. The transcript lands on its disk and the session *reads* it — greps for
+the decision it needs, opens the twenty records that matter — instead of
+resuming it. This is not a workaround for the missing upload: a 4.5 MB
+transcript could not be injected into a context window even if an endpoint
+existed, and consulting on demand is the only shape that scales.
+
+**Send the shape of it.** `switchboard session brief <id>` prints what a
+session was for, read off the record rather than retold by a model: what the
+human asked, which files were touched, how it worked. On the first real
+handoff that is 960 bytes out of 4.5 MB, and it fits in a message you can
+paste anywhere — including a cloud session in a browser that no capsule can
+reach. The filtering is the substance: Claude Code writes tool results, hook
+output and notifications as `user` records too, so 285 user turns there
+contain 14 things a human actually typed.
+
 ### If you work in the desktop app
 
 Installing the transcript is the whole job for a CLI user and half of one for

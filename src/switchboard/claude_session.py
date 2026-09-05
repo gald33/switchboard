@@ -224,6 +224,109 @@ def transcript_metadata(path: Path) -> dict[str, Any]:
     return meta
 
 
+#: Wrappers the harness puts in `user` records that no human typed: tool
+#: results, hook output, notifications, slash-command echoes. A brief that
+#: counted these as instructions would report hundreds of turns for a session
+#: whose human said twenty things.
+_NOT_TYPED = (
+    "<task-notification", "<system-reminder", "<local-command", "<command-name",
+    "<command-message", "<command-args", "<user-prompt-submit-hook",
+    # Not a wrapper but not an instruction either: the harness writes this
+    # where a human pressed escape, and it says nothing about the work.
+    "[Request interrupted",
+)
+#: How much of one instruction a brief keeps. Long enough to recognise what was
+#: asked, short enough that the whole brief stays pasteable.
+BRIEF_CHARS = 240
+
+
+def _record_text(record: dict[str, Any]) -> str:
+    """The prose of a record, ignoring tool calls and results."""
+    content = (record.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        part.get("text", "") for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def brief(path: Path, *, limit: int = 0) -> dict[str, Any]:
+    """What a session was *about*, small enough to paste into another one.
+
+    A transcript is the wrong thing to hand a fresh session even where the
+    machinery allows it: this one is 4.5 MB, which no context window holds, and
+    replaying it would cost more than the work it describes. What actually
+    carries is much smaller — what the human asked for, which files were
+    touched, how the session worked. Read off the record rather than
+    summarised by a model, so it states what happened instead of what a
+    retelling remembers.
+
+    The filtering is the substance. Claude Code writes tool results, hook
+    output and notifications as ``user`` records too, so a naive count reports
+    hundreds of "instructions" for a session whose human typed twenty. Only
+    prose that no wrapper claims is kept.
+
+    ``limit`` caps the instructions returned, newest first after the opening
+    one — a long session's shape is its first ask and its last few, not its
+    middle.
+    """
+    records = 0
+    instructions: list[str] = []
+    files: dict[str, int] = {}
+    tools: dict[str, int] = {}
+    with path.open("rb") as fh:
+        for raw in fh:
+            records += 1
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            kind = record.get("type")
+            if kind == "user":
+                text = " ".join(_record_text(record).split())
+                if text and not text.startswith(_NOT_TYPED):
+                    text = text[:BRIEF_CHARS]
+                    # A repeated instruction is usually the same ask re-sent
+                    # after an interruption, not a second thing wanted.
+                    if not instructions or instructions[-1] != text:
+                        instructions.append(text)
+            elif kind == "assistant":
+                content = (record.get("message") or {}).get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "tool_use":
+                        continue
+                    name = str(part.get("name") or "?")
+                    tools[name] = tools.get(name, 0) + 1
+                    target = (part.get("input") or {}).get("file_path")
+                    if isinstance(target, str) and target:
+                        files[target] = files.get(target, 0) + 1
+    kept = instructions
+    if limit and len(instructions) > limit:
+        # The opening ask plus the most recent ones: a session's shape is what
+        # it was for and where it got to, not the middle.
+        kept = instructions[:1] + instructions[-(limit - 1):]
+    meta = transcript_metadata(path)
+    return {
+        "records": records,
+        "cwd": meta["cwd"],
+        "git_branch": meta["git_branch"],
+        "version": meta["version"],
+        "user_messages": meta["user_messages"],
+        "assistant_messages": meta["assistant_messages"],
+        "instructions": kept,
+        "instructions_total": len(instructions),
+        "files": sorted(files, key=lambda f: -files[f]),
+        "tools": dict(sorted(tools.items(), key=lambda kv: -kv[1])),
+    }
+
+
 # -------------------------------------------------------------- package ---
 
 def _sha256(data: bytes) -> str:
