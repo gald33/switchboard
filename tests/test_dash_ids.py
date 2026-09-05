@@ -16,6 +16,8 @@ is to stop waiting and do something else. Nobody would have filed this.
 
 from __future__ import annotations
 
+import string
+
 import pytest
 
 from switchboard.cli import _escape_dash_leading_positionals as escape
@@ -31,16 +33,32 @@ def parser():
     return build_parser()
 
 
-def test_about_one_agent_id_in_sixty_six_starts_with_a_dash():
+#: base64url, which is what the premise of this whole file rests on.
+ALPHABET = set(string.ascii_letters + string.digits + "-_")
+
+
+def test_a_blinded_id_is_base64url_which_is_why_one_can_begin_with_a_dash():
     """The premise, measured rather than asserted. If blinding ever stopped
     using base64url this whole file could go — and it should not quietly stay
-    as decoration that tests nothing."""
-    leading = sum(
-        WorkspaceCipher.from_key(generate_key(), "w").blind(f"a{i}", "agent")
-        .startswith("-")
-        for i in range(400)
-    )
-    assert leading, "no blinded id in 400 began with '-' — is the alphabet still base64url?"
+    as decoration that tests nothing.
+
+    Read across the whole of each id rather than its first character alone.
+    The earlier version drew 400 ids and asserted that at least one *began*
+    with `-`: the same coin, flipped 400 times, so about one run in five
+    hundred saw no dash and went red. It cost a release PR a cycle doing
+    exactly that, on a diff that changed only version strings.
+
+    The same sample read whole is thousands of draws instead of hundreds, and
+    the alphabet check does not depend on luck at all — it fails the moment
+    blinding emits a character base64url does not have, which is the change
+    that would actually make this file pointless.
+    """
+    ids = [WorkspaceCipher.from_key(generate_key(), "w").blind(f"a{i}", "agent")
+           for i in range(200)]
+    stray = set("".join(ids)) - ALPHABET
+    assert not stray, f"blinded ids left the base64url alphabet: {sorted(stray)}"
+    assert "-" in set("".join(ids)), (
+        "no '-' anywhere in 200 blinded ids — is the alphabet still base64url?")
 
 
 @pytest.mark.parametrize("argv, expected", [
@@ -99,10 +117,15 @@ def test_a_dm_reaches_a_peer_whose_id_begins_with_a_dash(capsys, monkeypatch):
         monkeypatch.setenv("SWITCHBOARD_KEY", key)
 
         # Find a peer name whose blinded id actually starts with '-', rather
-        # than asserting about a hypothetical one.
+        # than asserting about a hypothetical one. Deep enough that not
+        # finding one is impossible rather than unlucky: at one id in
+        # sixty-six, 500 candidates came up empty about one run in twenty-five
+        # hundred, and this file exists because of a bug that hid at exactly
+        # that rate.
         cipher = WorkspaceCipher.from_key(key, WS)
-        name = next(n for n in (f"bob{i}" for i in range(500))
-                    if cipher.blind(n, "agent").startswith("-"))
+        name = next((n for n in (f"bob{i}" for i in range(5000))
+                     if cipher.blind(n, "agent").startswith("-")), None)
+        assert name, "no blinded id in 5000 began with '-'"
         bob = handle.client(name, agent_id=name)
         bob.register(name=name)
         assert bob.agent_id.startswith("-")
