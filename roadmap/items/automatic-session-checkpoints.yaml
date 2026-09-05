@@ -1,0 +1,92 @@
+id: automatic-session-checkpoints
+title: A session that ends anywhere is collectable everywhere, without anyone running a command
+status: ready
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: selective-wake-for-the-listener
+  note: 'Both are about a session being reachable across a gap the agent is not awake
+    for. That one wakes a parked session when a message lands; this one makes sure the
+    session''s own context survives the gap at all. Read that one first for the hook
+    and background-process conventions this must follow.'
+- key: cross-key-rendezvous
+  note: 'Shares the addressing problem from the other end. That one asks how a stranger
+    finds you; this one asks which of several checkpoints is the one you meant. Both
+    resolve to "the tool decides, the agent does not choose", so settle the rule in
+    one place rather than twice.'
+refs:
+- 'src/switchboard/handoff.py'
+- 'src/switchboard/claude_session.py'
+- 'docs/claude-code.md'
+- 'https://github.com/gald33/switchboard/pull/229'
+evidence: |
+  **Inferred from a design conversation on 2026-09-05, after the first real
+  handoff the night before.** Nothing is broken; the mechanism works. What this
+  item records is what the working mechanism still asks of a human, and one
+  fragility that only shows up when something goes wrong.
+
+  **The question that started it: how does Cursor move sessions between cloud
+  and local so smoothly, and can we?** Reading Cursor's own store on a machine
+  that runs it answers the first half. Its `conversations` table tags each row
+  with a `source` — 496 `local` against 47 `cloud-cache` on the machine
+  inspected — the cloud ones carry a server-side `scope` hash the local ones
+  lack, the table has `root_fingerprint` and `cache_fingerprint` columns, and a
+  `conversation_search_reconciliation` table holds a sync `cursor`. That is a
+  client cache over a server-authoritative store. Cursor does not move a
+  session between cloud and local; both ends are clients of one record its
+  servers hold, so there is nothing to move.
+
+  **That is exactly the trade Switchboard must not make.** Copying it means the
+  hub storing transcripts it currently cannot read, which is the single
+  property the whole design exists to protect (`docs/model.md`). The local-first
+  choice is what let a session cross from a cloud container to a laptop on
+  2026-09-04 between two agents sharing no account, sealed with a key the hub
+  never saw. A cache-and-sync design cannot do that, because the server has to
+  hold the conversation in order to synchronise it.
+
+  **So the achievable version of "seamless" is not shared storage — it is that
+  nobody types a command.** A Cursor user does not experience syncing; they
+  experience "it was there". That experience needs the handoff to happen at the
+  boundaries automatically, and every part is already built:
+
+  - `session publish` with no recipient is already a **checkpoint** — the
+    capsule goes up sealed, addressed to nobody, collectable by anyone holding
+    the room's key, which in practice is your own other machines
+    (`handoff.py`).
+  - `init` already installs `SessionStart` and `Stop` hooks
+    (`cli.py`, `_session_start_cmd` / `_stop_cmd`).
+  - `session receive` already takes `--wait`.
+
+  Wiring them is the work: checkpoint on `Stop` and on going idle, collect on
+  `SessionStart`.
+
+  **And it closes a fragility, which is the stronger half of the case.** A
+  handoff is explicit today, so a session that dies unexpectedly leaves nothing
+  behind — the 2026-09-04 transfer survived only because the cloud agent chose
+  to publish before it finished. Cursor survives that case because the server
+  already holds the conversation. Periodic self-checkpointing is how a
+  local-first design gets the same durability without giving anything away: the
+  last checkpoint is always collectable and expires on its own, so nothing
+  accumulates on the hub.
+
+  **The open question, and the reason this is an item rather than a patch.**
+  Addressing. When several sessions have checkpointed, a starting session must
+  not collect all of them, and "the newest" is not obviously right either.
+  `--from` and sender verification are the raw material; the rule is not
+  decided. Most likely: the most recent checkpoint for **this repo** from **this
+  account**, with everything else needing to be asked for by id. Settle it
+  together with `cross-key-rendezvous`, which has the same shape of question.
+
+  **What this must not promise, and the docs should say so rather than let
+  somebody find out.** Two live sessions cannot edit one conversation: without
+  an authority to reconcile against, a handoff is a baton and not a mirror.
+  Continuity is only as good as the checkpoint interval. And a transcript is
+  large — the first real one was 19.8 MB across 175 files — so checkpointing
+  every turn is not free, which argues for idle and end-of-session rather than
+  continuous.
+
+  **Done when** a session that ends on one machine is collectable on another
+  with nobody running `handoff` or `receive`, when a session killed without
+  warning still leaves a collectable checkpoint, and when the addressing rule is
+  written down and tested rather than left to whoever calls `receive` first.

@@ -17,8 +17,12 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
   - ↔ related: **`read-only-rooms`** — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
+- `next` **`automatic-session-checkpoints`** — A session that ends anywhere is collectable everywhere, without anyone running a command
+  - ↔ related: **`cross-key-rendezvous`** — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
+  - ↔ related: **`selective-wake-for-the-listener`** — Both are about a session being reachable across a gap the agent is not awake for. That one wakes a parked session when a message lands; this one makes sure the session's own context survives the gap at all. Read that one first for the hook and background-process conventions this must follow.
 - `next` **`cross-key-rendezvous`** — Two agents that share no key have no room to meet in, and a human had to carry the coordinates
   - ↔ related: **`a-lobby-derived-from-the-key`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
+  - ↔ related: **`automatic-session-checkpoints`** — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
   - ↔ related: **`known-rooms-address-book`** — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
   - ↔ related: **`selective-wake-for-the-listener`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
@@ -60,6 +64,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
 - **`selective-wake-for-the-listener`** — Wake the listener on what matters, and on the time it promised, not on every message
   - ↔ related: **`a-lobby-derived-from-the-key`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - ↔ related: **`automatic-session-checkpoints`** — Both are about a session being reachable across a gap the agent is not awake for. That one wakes a parked session when a message lands; this one makes sure the session's own context survives the gap at all. Read that one first for the hook and background-process conventions this must follow.
   - ↔ related: **`cross-key-rendezvous`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - ↔ related: **`known-rooms-address-book`** — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
@@ -110,6 +115,7 @@ _Nothing blocked._
 graph TD
   a_lobby_derived_from_the_key["Give every key a lobby, so agents that share one can find each other without naming a room"]
   abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
+  automatic_session_checkpoints["A session that ends anywhere is collectable everywhere, without anyone running a command"]
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
@@ -144,6 +150,8 @@ graph TD
   a_lobby_derived_from_the_key -.- one_resolved_context_across_surfaces
   a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
   abuse_control_after_authorization -.- ci_workspace_is_public
+  automatic_session_checkpoints -.- cross_key_rendezvous
+  automatic_session_checkpoints -.- selective_wake_for_the_listener
   board_ttl_ceiling -.- ttl_clamped_silently
   ci_workspace_is_public -.- init_writes_rooms_file
   ci_workspace_is_public -.- read_only_rooms
@@ -279,6 +287,95 @@ graph TD
 > penalizes* — PoW spreads cheaply across a botnet and expensively across one
 > honest laptop or CI runner, so it raises the price of a concentrated attack while
 > mildly taxing the clients least able to pay.
+
+</details>
+
+### `automatic-session-checkpoints`
+
+- **title:** A session that ends anywhere is collectable everywhere, without anyone running a command
+- **status:** ready
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `cross-key-rendezvous` — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
+  - `selective-wake-for-the-listener` — Both are about a session being reachable across a gap the agent is not awake for. That one wakes a parked session when a message lands; this one makes sure the session's own context survives the gap at all. Read that one first for the hook and background-process conventions this must follow.
+- **refs:**
+  - `src/switchboard/handoff.py`
+  - `src/switchboard/claude_session.py`
+  - `docs/claude-code.md`
+  - `https://github.com/gald33/switchboard/pull/229`
+
+<details><summary>evidence</summary>
+
+> **Inferred from a design conversation on 2026-09-05, after the first real
+> handoff the night before.** Nothing is broken; the mechanism works. What this
+> item records is what the working mechanism still asks of a human, and one
+> fragility that only shows up when something goes wrong.
+>
+> **The question that started it: how does Cursor move sessions between cloud
+> and local so smoothly, and can we?** Reading Cursor's own store on a machine
+> that runs it answers the first half. Its `conversations` table tags each row
+> with a `source` — 496 `local` against 47 `cloud-cache` on the machine
+> inspected — the cloud ones carry a server-side `scope` hash the local ones
+> lack, the table has `root_fingerprint` and `cache_fingerprint` columns, and a
+> `conversation_search_reconciliation` table holds a sync `cursor`. That is a
+> client cache over a server-authoritative store. Cursor does not move a
+> session between cloud and local; both ends are clients of one record its
+> servers hold, so there is nothing to move.
+>
+> **That is exactly the trade Switchboard must not make.** Copying it means the
+> hub storing transcripts it currently cannot read, which is the single
+> property the whole design exists to protect (`docs/model.md`). The local-first
+> choice is what let a session cross from a cloud container to a laptop on
+> 2026-09-04 between two agents sharing no account, sealed with a key the hub
+> never saw. A cache-and-sync design cannot do that, because the server has to
+> hold the conversation in order to synchronise it.
+>
+> **So the achievable version of "seamless" is not shared storage — it is that
+> nobody types a command.** A Cursor user does not experience syncing; they
+> experience "it was there". That experience needs the handoff to happen at the
+> boundaries automatically, and every part is already built:
+>
+> - `session publish` with no recipient is already a **checkpoint** — the
+>   capsule goes up sealed, addressed to nobody, collectable by anyone holding
+>   the room's key, which in practice is your own other machines
+>   (`handoff.py`).
+> - `init` already installs `SessionStart` and `Stop` hooks
+>   (`cli.py`, `_session_start_cmd` / `_stop_cmd`).
+> - `session receive` already takes `--wait`.
+>
+> Wiring them is the work: checkpoint on `Stop` and on going idle, collect on
+> `SessionStart`.
+>
+> **And it closes a fragility, which is the stronger half of the case.** A
+> handoff is explicit today, so a session that dies unexpectedly leaves nothing
+> behind — the 2026-09-04 transfer survived only because the cloud agent chose
+> to publish before it finished. Cursor survives that case because the server
+> already holds the conversation. Periodic self-checkpointing is how a
+> local-first design gets the same durability without giving anything away: the
+> last checkpoint is always collectable and expires on its own, so nothing
+> accumulates on the hub.
+>
+> **The open question, and the reason this is an item rather than a patch.**
+> Addressing. When several sessions have checkpointed, a starting session must
+> not collect all of them, and "the newest" is not obviously right either.
+> `--from` and sender verification are the raw material; the rule is not
+> decided. Most likely: the most recent checkpoint for **this repo** from **this
+> account**, with everything else needing to be asked for by id. Settle it
+> together with `cross-key-rendezvous`, which has the same shape of question.
+>
+> **What this must not promise, and the docs should say so rather than let
+> somebody find out.** Two live sessions cannot edit one conversation: without
+> an authority to reconcile against, a handoff is a baton and not a mirror.
+> Continuity is only as good as the checkpoint interval. And a transcript is
+> large — the first real one was 19.8 MB across 175 files — so checkpointing
+> every turn is not free, which argues for idle and end-of-session rather than
+> continuous.
+>
+> **Done when** a session that ends on one machine is collectable on another
+> with nobody running `handoff` or `receive`, when a session killed without
+> warning still leaves a collectable checkpoint, and when the addressing rule is
+> written down and tested rather than left to whoever calls `receive` first.
 
 </details>
 
@@ -484,6 +581,7 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
+  - `automatic-session-checkpoints` — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
   - `known-rooms-address-book` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
   - `selective-wake-for-the-listener` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - **refs:**
@@ -1744,6 +1842,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
+  - `automatic-session-checkpoints` — Both are about a session being reachable across a gap the agent is not awake for. That one wakes a parked session when a message lands; this one makes sure the session's own context survives the gap at all. Read that one first for the hook and background-process conventions this must follow.
   - `cross-key-rendezvous` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - `every-silent-failure-looks-like-a-quiet-room` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - `known-rooms-address-book` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
