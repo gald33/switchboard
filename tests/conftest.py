@@ -12,9 +12,20 @@ per test.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+from pathlib import Path
 
 import pytest
+
+# Import the checkout being tested, not whatever `pip install -e` last pointed
+# at. An editable install records one absolute path, so every git worktree of
+# this repo imports the *main* checkout's `src/` — the suite then runs green
+# against code that is not the code under edit, which is a false pass and a
+# silent one. Prepending the sibling `src/` makes a worktree test itself.
+_SRC = Path(__file__).resolve().parent.parent / "src"
+if _SRC.is_dir():
+    sys.path.insert(0, str(_SRC))
 
 _SWITCHBOARD_ENV = (
     "SWITCHBOARD_URL",

@@ -466,6 +466,34 @@ are the two halves with no hub between them: a capsule file, created `0600`
 because it is as private as the transcript it carries, that you move however
 you like.
 
+### Checkpointing, for the session that does not end politely
+
+A handoff saves a session that ends *deliberately*. The first real transfer
+survived only because the cloud agent chose to publish before it finished; a
+container that dies takes its context with it, and an explicit command cannot
+help a session that never got to run one.
+
+So `switchboard init` asks, once, whether a session should checkpoint itself
+when it ends. Say yes and the stop hook publishes the transcript as a handoff
+addressed to nobody: sealed to the room, expiring on its own, collectable by
+anyone holding the key — which in practice means your own other machines.
+Publishing happens after the hook releases this agent's leases, so the capsule
+records an agent that holds nothing, which is true once the session is over,
+and it ends in `|| true` because a session finishing must never fail on an
+unreachable hub.
+
+It is asked rather than assumed because it is real traffic and real storage: a
+transcript can be megabytes and every session end would publish one. The
+default is no, a non-interactive run leaves it off, and the answer is baked
+into the hook script rather than read at run time, since a hook runs as a plain
+shell and never sees `.mcp.json`'s environment.
+
+Collecting stays explicit for now. `switchboard session receive <id>` takes a
+checkpoint by id, and which one a *starting* session should collect
+automatically is an open question — see the `automatic-session-checkpoints`
+roadmap item, which would rather leave it undecided than guess wrong about
+whose conversation lands on your disk.
+
 ### What a handoff cannot reach, and what to send instead
 
 A handoff lands a transcript on a filesystem. That covers every environment

@@ -1042,7 +1042,8 @@ def test_ci_env_suppresses_prompts(monkeypatch, capsys, tmp_path):
 def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_mcp(tmp_path, "acme/billing")
-    err = make_interactive(monkeypatch, ["2"])  # switch to the freshly minted workspace
+    # Two prompts now: the workspace choice, then whether to checkpoint.
+    err = make_interactive(monkeypatch, ["2", "n"])  # switch to the freshly minted workspace
     code = main(["init", "--new-key"])
     assert code == 0
     assert "acme/billing" in err.getvalue()
@@ -1052,7 +1053,7 @@ def test_interactive_can_repoint_the_workspace(monkeypatch, capsys, tmp_path):
 def test_interactive_defaults_to_keeping_the_registered_workspace(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_mcp(tmp_path, "acme/billing")
-    make_interactive(monkeypatch, [""])  # bare enter takes the default
+    make_interactive(monkeypatch, ["", "n"])  # bare enter takes the default
     code = main(["init", "--new-key"])
     assert code == 0
     assert _mcp_ws(tmp_path) == "acme/billing"
@@ -1997,3 +1998,76 @@ def test_a_plain_checkout_has_no_sibling_to_disagree_with(monkeypatch, capsys, t
     assert main_checkout(main_co) is None
     _, out = run_init(monkeypatch, capsys, main_co, "--local")
     assert "WARNING" not in out
+
+
+# --- checkpointing on stop ----------------------------------------------------
+#
+# A handoff only saves a session that ends deliberately. The first real
+# transfer survived because the cloud agent chose to publish before finishing;
+# a container that dies leaves nothing. Checkpointing closes that, and is asked
+# about rather than assumed because a transcript can be megabytes and every
+# session end would publish one.
+
+
+def _stop_hook(tmp_path):
+    return (tmp_path / _HOOKS_DIR / "stop.sh").read_text()
+
+
+def test_checkpointing_is_off_unless_somebody_said_yes(monkeypatch, capsys, tmp_path):
+    """An unanswered question is not consent: a non-interactive run must leave
+    the stop hook publishing nothing."""
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local", "--no-input")
+    assert code == 0
+    assert "session publish" not in _stop_hook(tmp_path)
+    # Not `"checkpoint" not in out`: pytest names this test's own tmp_path
+    # after the test, so that substring is in every path init prints. What
+    # must be absent is the *report* that it was turned on.
+    assert "checkpoint itself" not in out
+    settings = json.loads((tmp_path / _LOCAL_SETTINGS_REL).read_text())
+    assert "SWITCHBOARD_CHECKPOINT" not in settings.get("env", {})
+
+
+def test_saying_yes_writes_the_publish_into_the_stop_hook(monkeypatch, capsys, tmp_path):
+    """The hook runs as a plain shell and never sees `.mcp.json`'s env, so the
+    answer is baked into the script rather than read at run time."""
+    monkeypatch.chdir(tmp_path)
+    make_interactive(monkeypatch, ["y"])
+    assert main(["init", "--local", "--skip-claude-md", "--skip-skill",
+                 "--skip-token"]) == 0
+    out = capsys.readouterr().out
+    hook = _stop_hook(tmp_path)
+    assert "sb -q session publish" in hook
+    # After the lease release, so the capsule records an agent holding nothing.
+    assert hook.index("release") < hook.index("session publish")
+    # And it must never fail the end of a session over an unreachable hub.
+    assert "session publish || true" in hook
+    settings = json.loads((tmp_path / _LOCAL_SETTINGS_REL).read_text())
+    assert settings["env"]["SWITCHBOARD_CHECKPOINT"] == "1"
+    assert "checkpoint" in out.lower()
+
+
+def test_the_answer_is_asked_once(monkeypatch, capsys, tmp_path):
+    """Having said yes, a later `init` keeps checkpointing without asking —
+    the recorded answer is what a second run reads."""
+    monkeypatch.chdir(tmp_path)
+    make_interactive(monkeypatch, ["y"])
+    assert main(["init", "--local", "--skip-claude-md", "--skip-skill",
+                 "--skip-token"]) == 0
+    capsys.readouterr()
+    # No answers queued: a prompt now would raise StopIteration.
+    make_interactive(monkeypatch, [])
+    assert main(["init", "--local", "--skip-claude-md", "--skip-skill",
+                 "--skip-token"]) == 0
+    assert "sb -q session publish" in _stop_hook(tmp_path)
+
+
+def test_saying_no_leaves_the_hook_as_it_was(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    make_interactive(monkeypatch, ["n"])
+    assert main(["init", "--local", "--skip-claude-md", "--skip-skill",
+                 "--skip-token"]) == 0
+    capsys.readouterr()
+    hook = _stop_hook(tmp_path)
+    assert "session publish" not in hook
+    # The lease release the hook has always done is untouched.
+    assert "release" in hook

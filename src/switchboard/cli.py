@@ -4099,6 +4099,19 @@ _SESSION_START_BODY = "sb -q register -c build"
 #: releasing happens in shell rather than from inside a python subprocess —
 #: a function is not visible to a spawned process, and re-resolving the binary
 #: per lease would be worse than reading it.
+#: Appended to the stop hook when `init` was told to checkpoint. Publishing
+#: comes *after* the lease release below, so the capsule records an agent that
+#: holds nothing — which is true, the session is over.
+#:
+#: A checkpoint is a handoff addressed to nobody: sealed to the room, expiring
+#: on its own, collectable by anyone holding the key, which in practice means
+#: your own other machines. It exists because an explicit handoff only saves a
+#: session that ends *deliberately*; the first real transfer survived only
+#: because the cloud agent chose to publish before finishing, and a container
+#: that dies leaves nothing behind. `|| true` because a session ending must
+#: never fail on the hub being unreachable.
+_CHECKPOINT_BODY = "sb -q session publish || true"
+
 _STOP_BODY = (
     'holder="$(sb --json whoami | '
     "python -c 'import sys,json;print(json.load(sys.stdin)[\"agent_id\"])')\"\n"
@@ -4136,8 +4149,10 @@ def _session_start_script(url: str, workspace: str, bootstrap: bool = True) -> s
     return _hook_script(_SESSION_START_BODY, url, workspace, bootstrap)
 
 
-def _stop_script(url: str, workspace: str, bootstrap: bool = True) -> str:
-    return _hook_script(_STOP_BODY, url, workspace, bootstrap)
+def _stop_script(url: str, workspace: str, bootstrap: bool = True,
+                 checkpoint: bool = False) -> str:
+    body = _STOP_BODY + ("\n" + _CHECKPOINT_BODY if checkpoint else "")
+    return _hook_script(body, url, workspace, bootstrap)
 
 
 #: Where the listener lands: beside `hooks/`, not in it. See `_init_hook_scripts`.
@@ -4940,6 +4955,7 @@ def _hooks_dangle_when_cloned(directory: Path) -> bool:
 def _init_hook_scripts(
     directory: Path, url: str, workspace: str, *, force: bool = False,
     confirm: Callable[[str], bool] | None = None, bootstrap: bool = True,
+    checkpoint: bool = False,
 ) -> list[str]:
     """Write the hook bodies switchboard owns.
 
@@ -4954,7 +4970,7 @@ def _init_hook_scripts(
     # same authorship, same upgrade rules, different caller.
     scripts = {
         f"{_HOOKS_DIR}/session-start.sh": _session_start_script(url, workspace, bootstrap),
-        f"{_HOOKS_DIR}/stop.sh": _stop_script(url, workspace, bootstrap),
+        f"{_HOOKS_DIR}/stop.sh": _stop_script(url, workspace, bootstrap, checkpoint),
         _WAKE_REL: _wake_script(url, workspace, bootstrap),
     }
     for label, current in scripts.items():
@@ -5113,6 +5129,11 @@ _LOCAL_SECRETS = {
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
+    "SWITCHBOARD_CHECKPOINT": (
+        "checkpoint answer",
+        "It records a yes or no you gave once about publishing this session's "
+        "transcript when it ends, and the stop hook was written to match it",
+    ),
     "SWITCHBOARD_DESKTOP_REGISTER": (
         "desktop-registration answer",
         "It records a yes or no you gave once about writing into another "
@@ -5170,6 +5191,41 @@ def _init_local_setting(
         f"{_LOCAL_SETTINGS_REL}"
     )
     return steps, True
+
+
+#: Recorded in the repo's gitignored settings when `init` was told to
+#: checkpoint. Read by `init` itself on a later run so the answer is not asked
+#: twice, and by nothing else — the stop hook has the decision baked in, since
+#: a hook runs as a plain shell and does not see `.mcp.json`'s env.
+CHECKPOINT_VAR = "SWITCHBOARD_CHECKPOINT"
+
+
+def _wants_checkpoint(directory: Path, *, interactive: bool, force: bool) -> bool:
+    """Ask once whether a session should checkpoint itself when it ends.
+
+    Asked rather than assumed because it is real traffic and real storage: a
+    transcript can be megabytes, and every session end would publish one. It
+    is worth it for the case it exists to cover — a session that dies without
+    handing off leaves nothing behind, which is how the first real transfer
+    could have been lost — but that is a judgement about a particular repo,
+    not a default anyone should inherit silently.
+
+    A non-interactive run leaves it off, for the same reason `init` never
+    enables desktop registration unasked: an unanswered question is not
+    consent.
+    """
+    already = desktop.enabled  # same truthiness rule, one implementation
+    if not force and already(_local_settings_env(directory), var=CHECKPOINT_VAR):
+        return True
+    if not interactive:
+        return False
+    return _ask(
+        "\nCheckpoint a session to the hub when it ends, so another machine can "
+        "pick it up?\nIt publishes the transcript sealed to this room, expiring on "
+        "its own — which is\nwhat saves a session that dies instead of handing off. "
+        "It is also real traffic:\na transcript can be megabytes.",
+        default=False,
+    )
 
 
 def _init_desktop(directory: Path, *, interactive: bool, force: bool) -> list[str]:
@@ -5469,16 +5525,25 @@ def cmd_init(args: argparse.Namespace) -> int:
             directory, url, workspace, overwrite=repoint_mcp,
             bootstrap=not args.no_bootstrap,
         ))
+    checkpoint = False
     if not args.skip_hooks:
+        # Asked before the scripts are written, because the answer changes what
+        # the stop hook contains — a hook cannot read the setting at run time.
+        checkpoint = _wants_checkpoint(directory, interactive=interactive,
+                                       force=args.force)
         # Bodies first, then the registration that points at them — so a
         # half-finished run never leaves a hook calling a script that is not
         # there yet.
         steps.extend(
             _init_hook_scripts(
                 directory, url, workspace, force=args.force, confirm=confirm,
-                bootstrap=not args.no_bootstrap,
+                bootstrap=not args.no_bootstrap, checkpoint=checkpoint,
             )
         )
+        if checkpoint:
+            steps.extend(_init_local_setting(
+                directory, CHECKPOINT_VAR, "1", force=True)[0])
+            steps.append("this session will checkpoint itself to the hub when it ends")
         steps.extend(
             _init_claude_settings(
                 directory, url, workspace, force=args.force, confirm=confirm
