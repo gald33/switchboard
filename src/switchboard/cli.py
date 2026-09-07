@@ -2285,8 +2285,12 @@ def cmd_say(args: argparse.Namespace) -> int:
         # Read inside the block: the hub attached it to the response we just
         # got, and the client is closed by the time we print.
         unread = hub.unread_dms
+        # Same reason, and the same connection: a channel post is answered on
+        # the channel, so whether anything of yours is parked decides whether
+        # the answer is read this turn or next week.
+        listener = {} if args.quiet else _listener_state(hub)
     if args.json:
-        _print_json({**msg, "unread_dms": unread,
+        _print_json({**msg, "unread_dms": unread, **({"listener": listener} if listener else {}),
                      **({"timing_forecast": sender_forecast(forecast)} if forecast else {})})
     elif not args.quiet:
         print(f"posted #{msg['seq']} to {msg['channel']}")
@@ -2294,6 +2298,7 @@ def cmd_say(args: argparse.Namespace) -> int:
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
+        _print_listener_advice(listener, Fmt(_use_color(sys.stdout)))
     return EXIT_OK
 
 
@@ -2361,14 +2366,17 @@ def cmd_dm(args: argparse.Namespace) -> int:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
         msg = hub.send(target, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
+        listener = {} if args.quiet else _listener_state(hub, peer=target)
     if args.json:
-        _print_json({**msg, **({"timing_forecast": sender_forecast(forecast)}
-                               if forecast else {})})
+        _print_json({**msg, **({"listener": listener} if listener else {}),
+                     **({"timing_forecast": sender_forecast(forecast)}
+                        if forecast else {})})
     elif not args.quiet:
         print(f"sent #{msg['seq']} to {args.to}")
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
+        _print_listener_advice(listener, Fmt(_use_color(sys.stdout)), peer=target)
     return EXIT_OK
 
 
@@ -2385,8 +2393,9 @@ def cmd_whisper(args: argparse.Namespace) -> int:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
         msg = hub.whisper(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
         unread = hub.unread_dms
+        listener = {} if args.quiet else _listener_state(hub, peer=target)
     if args.json:
-        _print_json({**msg, "unread_dms": unread,
+        _print_json({**msg, "unread_dms": unread, **({"listener": listener} if listener else {}),
                      **({"timing_forecast": sender_forecast(forecast)} if forecast else {})})
     elif not args.quiet:
         print(f"whispered #{msg['seq']} to {args.to} (sealed to them alone)")
@@ -2394,6 +2403,7 @@ def cmd_whisper(args: argparse.Namespace) -> int:
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
                                  forecast.as_message_meta(), "you expect to be"))
+        _print_listener_advice(listener, Fmt(_use_color(sys.stdout)), peer=target)
     return EXIT_OK
 
 
@@ -2408,6 +2418,81 @@ def _print_unread(count: int) -> None:
     if count > 0:
         noun = "message" if count == 1 else "messages"
         print(f"{count} unread direct {noun} waiting — read with `switchboard inbox`")
+
+
+#: Printed once per process. Every send in a turn has the same answer, and a
+#: block repeated four times is a block that gets skimmed past on the first.
+_LISTENER_ADVISED = False
+
+
+def _listener_state(hub: Client, *, peer: str | None = None) -> dict[str, Any]:
+    """Which end of the message just sent can be woken by an answer to it.
+
+    One board read answers both halves, because both come off the same
+    `listener/` listing: whether the recipient is parked — does a reply reach
+    them in seconds, or at their next turn — and whether *this* agent is.
+
+    The second half is the one that gets forgotten, and it is the one that
+    decides whether the exchange happens at all. An agent that sends a
+    question and ends its turn has asked something it will not hear the answer
+    to: the reply lands in an inbox no process is watching, and nothing on the
+    hub can say so, because from the hub's side a delivered message and a read
+    one are the same row. Sending is the half this CLI already reported on.
+
+    Never fatal. It annotates a message the hub has already accepted, so a
+    board read that fails costs the advice and not the send.
+    """
+    try:
+        parked = rendezvous.reachable_now(
+            hub.board_list(prefix=rendezvous.LISTENER_PREFIX)
+        )
+    except Exception:  # noqa: BLE001 - advice about a send that already happened
+        return {}
+    state: dict[str, Any] = {"you_parked": hub.agent_id in parked}
+    if peer is not None:
+        state["peer_parked"] = peer in parked
+    # The prose comes from `rendezvous` so that `--json` here and the MCP
+    # bridge's `listener` field are the same sentence, not two that drift.
+    state["next"] = rendezvous.listener_advice(
+        you_parked=state["you_parked"], peer_parked=state.get("peer_parked")
+    )
+    return state
+
+
+def _print_listener_advice(
+    state: dict[str, Any], fmt: Fmt, *, peer: str | None = None
+) -> None:
+    """Say where the conversation this message opened can actually be had.
+
+    A message is rarely a one-off — an agent sends because it needs something
+    back — so the useful thing to print after a send is not "sent" but the two
+    facts that decide when the answer arrives and whether anything is there to
+    receive it.
+    """
+    global _LISTENER_ADVISED
+    if not state:
+        return
+    if peer is not None:
+        print(fmt.dim(
+            "their listener is parked, so an answer can arrive within seconds."
+            if state.get("peer_parked") else
+            "no listener is parked for them; they read this on their next turn."
+        ))
+    if state.get("you_parked"):
+        print(fmt.dim("yours is parked too, so their answer wakes you." if peer
+                      else "a listener is parked for you, so an answer wakes you."))
+        return
+    if _LISTENER_ADVISED:
+        return
+    _LISTENER_ADVISED = True
+    print(
+        f"{fmt.yellow('nothing is parked for you')} — an answer to this lands in an "
+        f"inbox no process\nis watching, and waits there until something starts you "
+        f"again. If you expect\none, before this turn ends:\n"
+        f"  switchboard listen --until forecast:p50\n"
+        f"as a background process your runner tracks. Exit 0 is a message (then "
+        f"`inbox`),\n2 is the deadline with nothing."
+    )
 
 
 def _read_body(args: argparse.Namespace) -> Any:
@@ -4282,22 +4367,28 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   which is worth interrupting for in a way general channel traffic is not.
   On this CLI it is a line after `say` and `whisper` (and a field under
   `--json`), printed only when something is actually waiting.
-- **If you are ending a turn while still waiting on another agent**, read
+- **Before ending a turn in which you sent anything you need an answer to,
+  arm the listener.** A message here is the opening of a conversation, not a
+  one-off: you send because you need something back, and the answer arrives on
+  the other agent's schedule — after this turn has ended, into an inbox no
+  process is watching. Run `switchboard listen --until forecast:p50` as a
+  background process. It parks on your inbox and exits when something arrives,
+  and a runner that re-invokes a session when a background process exits —
+  Claude Code does — wakes you seconds after the message lands rather than at
+  the next scheduled check. `say`, `dm` and `whisper` tell you where you
+  stand: a `listener` field on the MCP results and a line on the CLI, saying
+  whether one is parked for you and for them. `--until` is when to give up and
+  come back empty; without one it parks indefinitely, which is a promise to be
+  reachable that nothing keeps. It peeks rather than drains, so still call
+  `inbox` yourself when you wake, and it exits on the first message, so arm it
+  again if you are still waiting. It takes the flags every command takes, so
+  `-w` or `--invite` parks it in another room for cross-repo work.
+- **If you cannot park one** — no background mechanism your runner tracks, or
+  a wait that outlives this session — read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
-  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  check-in instead of leaving the wait unbounded. `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
-- **If the thing you are waiting for is a message**, arm the listener before
-  the turn ends: run `switchboard listen --until forecast:p50` as a background
-  process. It parks on your inbox and exits when something arrives, and a
-  runner that re-invokes a session when a background process exits — Claude
-  Code does — wakes you seconds after the message lands rather than at the
-  next scheduled check. `--until` is when to give up and come back empty;
-  without one it parks indefinitely, which is a promise to be reachable that
-  nothing keeps. It peeks rather than drains, so still call `inbox` yourself
-  when you wake, and it exits on the first message, so arm it again if you are
-  still waiting. It takes the flags every command takes, so `-w` or `--invite`
-  parks it in another room for cross-repo work.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -4646,6 +4737,79 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   they hold, and `claim` the resource you are about to touch (a path, a
   directory, a subsystem). If `claim` reports someone else holds it, pick
   different work rather than waiting.
+- **While working**, call `checkin` every few minutes. It keeps your claims
+  alive, keeps you listed in `roster`, and hands you anything other agents
+  have said. If you stop calling it, you drop off `roster` and your claims
+  expire and free themselves — which is correct if you have crashed and wrong
+  if you are still working. (Your read position in `inbox` is unaffected
+  either way — it survives a quiet stretch on its own, much longer than
+  presence does.)
+- **Watch `unread_dms`** on every tool result, not just `checkin`'s. It is a
+  live count of direct messages waiting for you, kept current on every call
+  so a ping is noticed as soon as you do anything at all. A nonzero value
+  means call `inbox` or `checkin` soon — someone specifically addressed you,
+  which is worth interrupting for in a way general channel traffic is not.
+  On this CLI it is a line after `say` and `whisper` (and a field under
+  `--json`), printed only when something is actually waiting.
+- **If you are ending a turn while still waiting on another agent**, read
+  `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
+  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  while you are still making tool calls, and nothing else will interrupt an
+  idle session.
+- **If the thing you are waiting for is a message**, arm the listener before
+  the turn ends: run `switchboard listen --until forecast:p50` as a background
+  process. It parks on your inbox and exits when something arrives, and a
+  runner that re-invokes a session when a background process exits — Claude
+  Code does — wakes you seconds after the message lands rather than at the
+  next scheduled check. `--until` is when to give up and come back empty;
+  without one it parks indefinitely, which is a promise to be reachable that
+  nothing keeps. It peeks rather than drains, so still call `inbox` yourself
+  when you wake, and it exits on the first message, so arm it again if you are
+  still waiting. It takes the flags every command takes, so `-w` or `--invite`
+  parks it in another room for cross-repo work.
+- **Optionally, when a message precedes a stretch of heads-down work**, pass
+  `execution_class` (a short label like "coding") and `effort`
+  (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
+  that pair into an estimate of when you will next read messages and attaches
+  it for collaborators — you never estimate seconds. Incoming messages may
+  carry the same as `timing_forecast`: a prediction, not a promise, and best
+  used to size how often you check rather than as exact times to check at.
+- **If you are driving the `switchboard` CLI rather than the MCP tools**, the
+  same primitives are there under slightly different spellings — `roster` is
+  `switchboard agents`, `board_set` is `switchboard board set`, and the two
+  timing fields above are `--execution-class` and `--effort` flags.
+  `.claude/skills/switchboard-coordinate/SKILL.md` has the full mapping and
+  the two things only the MCP surface offers.
+- **When something you learn changes what another agent should do**, `say` it
+  on a channel, or `dm` the specific agent. Examples worth sending: an
+  interface you just changed, a test you discovered is flaky, a migration
+  number you took, a plan you abandoned.
+- **When you finish or abandon a piece of work**, `release` the claim.
+- **For handoffs**, put the detail on the blackboard with `board_set` and
+  mention the key in a message — messages are for signals, the blackboard is
+  for payloads. `.claude/skills/switchboard-coordinate/SKILL.md` has the
+  shared key-naming convention that keeps independent sessions finding each
+  other's handoffs instead of missing them.
+
+Switchboard is ephemeral by design. Anything that should outlive the work still
+belongs in a commit message, a PR body, or a doc — not in a channel.
+""",
+    f"""{_CLAUDE_MD_MARKER}
+
+Other Claude sessions may be working this repo at the same time — locally, in
+cloud sessions, and in CI. Switchboard is how you coordinate with them.
+
+- **Before starting work**, call `roster` to see who else is active and what
+  they hold, and `claim` the resource you are about to touch (a path, a
+  directory, a subsystem). If `claim` reports someone else holds it, pick
+  different work rather than waiting.
+- **If this work spans more than one repo**, put `--lobby` on every
+  `switchboard` command (or `join_room` on the MCP side). Each repo has its own
+  room, so an agent in another checkout is not on your roster even holding the
+  same key and hub — the lobby is the room that key already shares, and it
+  needs no workspace agreed between you. Compare `switchboard --lobby whoami`
+  with a peer before trusting an empty roster: a different key derives a
+  different lobby, and that looks exactly like a quiet one.
 - **While working**, call `checkin` every few minutes. It keeps your claims
   alive, keeps you listed in `roster`, and hands you anything other agents
   have said. If you stop calling it, you drop off `roster` and your claims
