@@ -1,0 +1,50 @@
+id: inbox-consumes-what-it-cannot-open
+title: A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed
+status: ready
+arc: setup-and-first-run
+priority: now
+blocked_on: []
+related_to:
+- key: first-contact-needs-a-key-it-cannot-have
+  note: 'That item is why a stranger''s first message arrives unopenable. This is why
+    it is also gone afterwards. Fixing that one reduces how often this fires; fixing
+    this one is what makes the failure survivable when it does.'
+refs:
+- 'src/switchboard/cli.py'
+- 'src/switchboard/client.py'
+evidence: |
+  **Observed 2026-09-07.** Two whispers from a peer arrived while this session
+  held no exchange key for the sender. `inbox` printed:
+
+      ^ could not be opened: sealing is pairwise, so call `agents` to read the
+      sender's exchange key, then ask them to resend. This message HAS been
+      marked read -- use `--peek` to look without consuming.
+
+  Both were consumed. Reading the roster afterwards did not bring them back;
+  the only recovery was to ask the sender to send them again, and the sender
+  was a cloud agent whose presence had already lapsed. The content was a
+  report and an authorisation, reconstructed by hand over the following hour.
+
+  The guidance in that message is correct and arrives one moment too late.
+  `--peek` is the flag that would have saved the message, and the only way to
+  learn it is to have already lost one.
+
+  **The moment a caller is guaranteed to lack a peer's key is that peer's
+  first message.** So the default read destroys, specifically and reliably,
+  first contact from anyone not already known — the messages with the least
+  redundancy and the highest cost to reconstruct. A drained inbox at least
+  means the caller *has* the content; here the caller has neither the content
+  nor another chance at it.
+
+  **Fix.** An undecryptable message is not read. Leave it unread, print the
+  same explanation, and let a later call — after the roster read the message
+  itself recommends — pick it up and open it. `--peek` stays as it is, for
+  looking without consuming in the ordinary case; it stops being the thing
+  standing between a caller and permanent loss.
+
+  Cheap, local to the read path, and it removes an entire class of
+  unrecoverable loss rather than making it less likely.
+
+  Done when no read path advances the cursor past a message it could not
+  open, and a peer key learned after the fact is enough to recover every
+  message that arrived before it.

@@ -67,6 +67,22 @@ evidence: |
     where to look: "to reach a project's agents, read its README for a
     `swb1_…` meeting room; rendezvous there".
 
+  **Second instance, 2026-09-07 — the same failure, four days later.** A
+  maintainer session parked a listener in its repo room and its key-derived
+  lobby; a cloud agent in gald33/ai-lab was calling for whoever held shell on
+  the host, from `island-lobby`. Different keys, so different lobbies, so
+  neither listener could ever hear the other. `rendezvous` cannot bridge it by
+  construction — its shared slot is *derived from the workspace*, which is the
+  very thing the two sides do not have in common. What crossed the gap was
+  `switchboard find` sweeping this machine's known-rooms book, and then, again,
+  Gal telling one side the other was looking. Eight hours, on a launch day,
+  with a production host stalled the whole time.
+
+  That is twice now that the human has been the transport. The item stays as
+  scoped — a project publishes its meeting room — and this instance says only
+  that the workaround does not generalise: `find` worked here because *this*
+  machine happened to hold a book, and the peer's machine held none.
+
   Done when a fresh agent with no key and no human can find this project's
   maintainers by reading the repository and running two commands, and the
   island's `ENTER.md` is one instance of a documented convention rather than

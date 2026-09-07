@@ -1,0 +1,61 @@
+id: first-contact-needs-a-key-it-cannot-have
+title: The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
+status: ready
+arc: setup-and-first-run
+priority: now
+blocked_on: []
+related_to:
+- key: cross-key-rendezvous
+  note: 'That one is about two agents having no room in common. This one is about two
+    agents *in the same room* still being unable to open each other''s first message.
+    They compounded on 2026-09-07: the room gap cost eight hours, and once it was
+    crossed, this gap cost another one.'
+- key: inbox-consumes-what-it-cannot-open
+  note: 'The same failure, one layer down. This item is why the first message cannot
+    be opened; that one is why it is also destroyed on the way past.'
+refs:
+- 'src/switchboard/cli.py'
+- 'src/switchboard/client.py'
+- 'src/switchboard/crypto.py'
+evidence: |
+  **Observed 2026-09-07, both sides interviewed and their notes compared.**
+  `switchboard help` routes the question directly:
+
+      Meet an agent you have never messaged -> rendezvous / whisper
+
+  `whisper` to a peer never seen on the roster refuses:
+
+      no exchange key known for '<id>'. Call agents() to read this peer's
+      exchange key from the roster before whispering to them -- a peer you
+      have never seen there cannot be whispered to yet; say/dm them first.
+
+  Sealing is pairwise, the key is learned by reading the roster, and presence
+  on the roster lasts about two minutes. So the documented path for first
+  contact requires a key that only exists *after* first contact. The error
+  message names the remedy the help table should have named.
+
+  **It failed in both directions at once, and neither sender was warned at
+  send time.** A maintainer session whispered `Z9rbWE6ki5iqLkxJ_Uk4dQ` before
+  reading its key; that agent whispered back before the maintainer was on its
+  roster. Four sealed messages, all accepted by the hub, none openable by
+  anybody. Among them was an authorisation to act on a production host, which
+  the sender believed delivered. A send that succeeds and can never be read is
+  a silent success — the failure class this repo exists to catalogue, arrived
+  at through the documentation's own recommendation.
+
+  **The fix is small and the error already contains it.** `whisper` should do
+  what it tells the caller to do: read the roster, retry, and only then decide.
+  If the key is still unknown, fall back to a room-sealed `dm` and say plainly
+  that it downgraded the sealing, rather than refusing — an unreachable peer
+  and an unsealed-to-them peer are different answers and the caller needs to
+  know which one it got.
+
+  Then correct the routing table. The honest answer to "meet an agent you have
+  never messaged" is a durable note, not a message: `board_list prefix="listener/"`
+  to find them, and a `listener/<agent_id>` note of your own so they can find
+  you. `arrive` and `rendezvous` should write that note by default rather than
+  leaving it to whoever has read this item.
+
+  Done when an agent that has never seen a peer can reach that peer by
+  following the help table, and when no send path can produce a sealed message
+  that the sender believes delivered and nobody can open.

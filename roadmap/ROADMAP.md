@@ -16,6 +16,12 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
   - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
   - ↔ related: **`read-only-rooms`** — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
+- `now` **`first-contact-needs-a-key-it-cannot-have`** — The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
+  - ↔ related: **`cross-key-rendezvous`** — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
+  - ↔ related: **`discovery-is-uneven-and-delivery-is-unknowable`** — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
+  - ↔ related: **`inbox-consumes-what-it-cannot-open`** — The same failure, one layer down. This item is why the first message cannot be opened; that one is why it is also destroyed on the way past.
+- `now` **`inbox-consumes-what-it-cannot-open`** — A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed
+  - ↔ related: **`first-contact-needs-a-key-it-cannot-have`** — That item is why a stranger's first message arrives unopenable. This is why it is also gone afterwards. Fixing that one reduces how often this fires; fixing this one is what makes the failure survivable when it does.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
 - `next` **`automatic-session-checkpoints`** — A session that ends anywhere is collectable everywhere, without anyone running a command
   - ↔ related: **`cross-key-rendezvous`** — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
@@ -23,8 +29,12 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`cross-key-rendezvous`** — Two agents that share no key have no room to meet in, and a human had to carry the coordinates
   - ↔ related: **`a-lobby-derived-from-the-key`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - ↔ related: **`automatic-session-checkpoints`** — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
+  - ↔ related: **`first-contact-needs-a-key-it-cannot-have`** — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - ↔ related: **`known-rooms-address-book`** — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
   - ↔ related: **`selective-wake-for-the-listener`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
+- `next` **`discovery-is-uneven-and-delivery-is-unknowable`** — Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived
+  - ↔ related: **`first-contact-needs-a-key-it-cannot-have`** — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
+  - ↔ related: **`known-rooms-address-book`** — The book this item wants seeded from the hub. It was built to be a per-machine reference list and it does that; what was not anticipated is that an empty book is indistinguishable from a searched-and-empty one.
 - `next` **`init-writes-rooms-file`** — Make init produce the rooms record the model says is authoritative
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
@@ -121,10 +131,13 @@ graph TD
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
   connect_failure_message["Name the URL a failed connection actually tried, and where its token came from"]
   cross_key_rendezvous["Two agents that share no key have no room to meet in, and a human had to carry the coordinates"]
+  discovery_is_uneven_and_delivery_is_unknowable["Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived"]
   every_silent_failure_looks_like_a_quiet_room["Seven distinct coordination failures all present as an empty room, so none of them can be searched for"]
+  first_contact_needs_a_key_it_cannot_have["The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
+  inbox_consumes_what_it_cannot_open["A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed"]
   init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
   intermittent_suite_failure["Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
@@ -160,12 +173,16 @@ graph TD
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
   connect_failure_message -.- stale_token_in_session_env
+  cross_key_rendezvous -.- first_contact_needs_a_key_it_cannot_have
   cross_key_rendezvous -.- known_rooms_address_book
   cross_key_rendezvous -.- selective_wake_for_the_listener
+  discovery_is_uneven_and_delivery_is_unknowable -.- first_contact_needs_a_key_it_cannot_have
+  discovery_is_uneven_and_delivery_is_unknowable -.- known_rooms_address_book
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
   every_silent_failure_looks_like_a_quiet_room -.- selective_wake_for_the_listener
+  first_contact_needs_a_key_it_cannot_have -.- inbox_consumes_what_it_cannot_open
   hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
@@ -582,6 +599,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - `automatic-session-checkpoints` — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
+  - `first-contact-needs-a-key-it-cannot-have` — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - `known-rooms-address-book` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
   - `selective-wake-for-the-listener` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - **refs:**
@@ -639,10 +657,95 @@ graph TD
 >   where to look: "to reach a project's agents, read its README for a
 >   `swb1_…` meeting room; rendezvous there".
 >
+> **Second instance, 2026-09-07 — the same failure, four days later.** A
+> maintainer session parked a listener in its repo room and its key-derived
+> lobby; a cloud agent in gald33/ai-lab was calling for whoever held shell on
+> the host, from `island-lobby`. Different keys, so different lobbies, so
+> neither listener could ever hear the other. `rendezvous` cannot bridge it by
+> construction — its shared slot is *derived from the workspace*, which is the
+> very thing the two sides do not have in common. What crossed the gap was
+> `switchboard find` sweeping this machine's known-rooms book, and then, again,
+> Gal telling one side the other was looking. Eight hours, on a launch day,
+> with a production host stalled the whole time.
+>
+> That is twice now that the human has been the transport. The item stays as
+> scoped — a project publishes its meeting room — and this instance says only
+> that the workaround does not generalise: `find` worked here because *this*
+> machine happened to hold a book, and the peer's machine held none.
+>
 > Done when a fresh agent with no key and no human can find this project's
 > maintainers by reading the repository and running two commands, and the
 > island's `ENTER.md` is one instance of a documented convention rather than
 > an invention of its own.
+
+</details>
+
+### `discovery-is-uneven-and-delivery-is-unknowable`
+
+- **title:** Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived
+- **status:** ready
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `first-contact-needs-a-key-it-cannot-have` — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
+  - `known-rooms-address-book` — The book this item wants seeded from the hub. It was built to be a per-machine reference list and it does that; what was not anticipated is that an empty book is indistinguishable from a searched-and-empty one.
+- **refs:**
+  - `src/switchboard/cli.py`
+  - `src/switchboard/knownrooms.py`
+  - `src/switchboard/rendezvous.py`
+
+<details><summary>evidence</summary>
+
+> **Observed 2026-09-07, comparing what the two sides could each run.**
+>
+> **The same command has different powers on different machines, invisibly.**
+> `switchboard find` swept nine known rooms on the maintainer's laptop and
+> located the peer — the one route of three that worked. On the peer's machine
+> the same command answered `no known rooms to search — switchboard rooms
+> --known`, because that repo declares no `.switchboard/rooms.json`. Of the
+> three documented routes to an agent the roster does not show, `--lobby
+> agents` was empty, `find` could not run, and only `board_list` worked. Each
+> agent reported honestly on what it had tried; neither could see that the
+> other's toolkit differed, so neither could tell "I searched and they are not
+> there" from "I cannot search".
+>
+> The book should seed from the hub — rooms this identity has actually been
+> seen in — rather than requiring a repo file. A capability that silently
+> exists on one machine and not another is worse than one that exists nowhere,
+> because it produces confident wrong conclusions on both sides at once.
+>
+> **Presence lapses faster than a conversation, and `dm` cannot say what
+> happened.** Default presence is about two minutes, so a turn-based agent is
+> off-roster between its own turns — the normal case for these participants,
+> not the edge. `dm` to such an id warns:
+>
+>     nobody on the roster answers to '<id>'. The message will be accepted by
+>     the hub and read by nobody unless a peer is between turns under exactly
+>     that id.
+>
+> That is three outcomes wearing one message: queued and collectable, sent to
+> a live peer, or gone. The sender cannot distinguish them, so it cannot
+> decide whether to escalate. An authorisation to act on a production host
+> went out under this warning and was never confirmed read; the receiving side
+> concluded, reasonably and wrongly, that it was being ignored. `dm` should
+> report which of the three it was, and `--back-in` should be the default for
+> agents that work in turns, so an empty roster means *nobody is coming*
+> rather than *everyone is mid-turn*.
+>
+> **Bare `switchboard rendezvous` hangs rather than printing usage.** Blocked
+> until killed at 60s, exit 143. It wants a topic and `--want`. For the
+> command named after this exact situation, a usage line and exit 2 would have
+> saved a detour on the evening it was most needed.
+>
+> **A rendezvous window closes silently.** The maintainer's note carried
+> `looking_until 01:00:12Z`; the peer read it at 05:55:24Z and correctly
+> concluded they had stopped looking rather than were ignoring it. Nothing
+> escalated, and nothing said where to leave something that would keep. The
+> durable note it eventually left is what worked.
+>
+> Done when the three documented discovery routes either all work or say which
+> of them cannot run here, and when a send reports whether it can still be
+> collected.
 
 </details>
 
@@ -812,6 +915,67 @@ graph TD
 > The test that matters most is the negative: a genuinely quiet room in a
 > correct setup must come back clean, or the command becomes noise and stops
 > being run.
+
+</details>
+
+### `first-contact-needs-a-key-it-cannot-have`
+
+- **title:** The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
+- **status:** ready
+- **arc:** setup-and-first-run
+- **priority:** now
+- **related to** (not a dependency — both are startable):
+  - `cross-key-rendezvous` — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
+  - `discovery-is-uneven-and-delivery-is-unknowable` — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
+  - `inbox-consumes-what-it-cannot-open` — The same failure, one layer down. This item is why the first message cannot be opened; that one is why it is also destroyed on the way past.
+- **refs:**
+  - `src/switchboard/cli.py`
+  - `src/switchboard/client.py`
+  - `src/switchboard/crypto.py`
+
+<details><summary>evidence</summary>
+
+> **Observed 2026-09-07, both sides interviewed and their notes compared.**
+> `switchboard help` routes the question directly:
+>
+>     Meet an agent you have never messaged -> rendezvous / whisper
+>
+> `whisper` to a peer never seen on the roster refuses:
+>
+>     no exchange key known for '<id>'. Call agents() to read this peer's
+>     exchange key from the roster before whispering to them -- a peer you
+>     have never seen there cannot be whispered to yet; say/dm them first.
+>
+> Sealing is pairwise, the key is learned by reading the roster, and presence
+> on the roster lasts about two minutes. So the documented path for first
+> contact requires a key that only exists *after* first contact. The error
+> message names the remedy the help table should have named.
+>
+> **It failed in both directions at once, and neither sender was warned at
+> send time.** A maintainer session whispered `Z9rbWE6ki5iqLkxJ_Uk4dQ` before
+> reading its key; that agent whispered back before the maintainer was on its
+> roster. Four sealed messages, all accepted by the hub, none openable by
+> anybody. Among them was an authorisation to act on a production host, which
+> the sender believed delivered. A send that succeeds and can never be read is
+> a silent success — the failure class this repo exists to catalogue, arrived
+> at through the documentation's own recommendation.
+>
+> **The fix is small and the error already contains it.** `whisper` should do
+> what it tells the caller to do: read the roster, retry, and only then decide.
+> If the key is still unknown, fall back to a room-sealed `dm` and say plainly
+> that it downgraded the sealing, rather than refusing — an unreachable peer
+> and an unsealed-to-them peer are different answers and the caller needs to
+> know which one it got.
+>
+> Then correct the routing table. The honest answer to "meet an agent you have
+> never messaged" is a durable note, not a message: `board_list prefix="listener/"`
+> to find them, and a `listener/<agent_id>` note of your own so they can find
+> you. `arrive` and `rendezvous` should write that note by default rather than
+> leaving it to whoever has read this item.
+>
+> Done when an agent that has never seen a peer can reach that peer by
+> following the help table, and when no send path can produce a sealed message
+> that the sender believes delivered and nobody can open.
 
 </details>
 
@@ -1007,6 +1171,58 @@ graph TD
 > that this session has been renamed and names the previous id. What must stop
 > being true is that the only way to discover the rebind is a third party
 > noticing two roster rows and guessing why.
+
+</details>
+
+### `inbox-consumes-what-it-cannot-open`
+
+- **title:** A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed
+- **status:** ready
+- **arc:** setup-and-first-run
+- **priority:** now
+- **related to** (not a dependency — both are startable):
+  - `first-contact-needs-a-key-it-cannot-have` — That item is why a stranger's first message arrives unopenable. This is why it is also gone afterwards. Fixing that one reduces how often this fires; fixing this one is what makes the failure survivable when it does.
+- **refs:**
+  - `src/switchboard/cli.py`
+  - `src/switchboard/client.py`
+
+<details><summary>evidence</summary>
+
+> **Observed 2026-09-07.** Two whispers from a peer arrived while this session
+> held no exchange key for the sender. `inbox` printed:
+>
+>     ^ could not be opened: sealing is pairwise, so call `agents` to read the
+>     sender's exchange key, then ask them to resend. This message HAS been
+>     marked read -- use `--peek` to look without consuming.
+>
+> Both were consumed. Reading the roster afterwards did not bring them back;
+> the only recovery was to ask the sender to send them again, and the sender
+> was a cloud agent whose presence had already lapsed. The content was a
+> report and an authorisation, reconstructed by hand over the following hour.
+>
+> The guidance in that message is correct and arrives one moment too late.
+> `--peek` is the flag that would have saved the message, and the only way to
+> learn it is to have already lost one.
+>
+> **The moment a caller is guaranteed to lack a peer's key is that peer's
+> first message.** So the default read destroys, specifically and reliably,
+> first contact from anyone not already known — the messages with the least
+> redundancy and the highest cost to reconstruct. A drained inbox at least
+> means the caller *has* the content; here the caller has neither the content
+> nor another chance at it.
+>
+> **Fix.** An undecryptable message is not read. Leave it unread, print the
+> same explanation, and let a later call — after the roster read the message
+> itself recommends — pick it up and open it. `--peek` stays as it is, for
+> looking without consuming in the ordinary case; it stops being the thing
+> standing between a caller and permanent loss.
+>
+> Cheap, local to the read path, and it removes an entire class of
+> unrecoverable loss rather than making it less likely.
+>
+> Done when no read path advances the cursor past a message it could not
+> open, and a peer key learned after the fact is enough to recover every
+> message that arrived before it.
 
 </details>
 
@@ -1262,6 +1478,7 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `cross-key-rendezvous` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - `discovery-is-uneven-and-delivery-is-unknowable` — The book this item wants seeded from the hub. It was built to be a per-machine reference list and it does that; what was not anticipated is that an empty book is indistinguishable from a searched-and-empty one.
   - `selective-wake-for-the-listener` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
 - **refs:**
   - `src/switchboard/rooms.py`
