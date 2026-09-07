@@ -79,7 +79,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 19 item(s), 13 startable
+`setup-and-first-run` · 22 item(s), 16 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -101,9 +101,12 @@ wrong says so.
 
 | item | status | priority |
 |---|---|---|
+| `first-contact-needs-a-key-it-cannot-have` | ready | now |
+| `inbox-consumes-what-it-cannot-open` | ready | now |
 | `automatic-session-checkpoints` | ready | next |
 | `connect-failure-message` | done | next |
 | `cross-key-rendezvous` | ready | next |
+| `discovery-is-uneven-and-delivery-is-unknowable` | ready | next |
 | `init-writes-rooms-file` | ready | next |
 | `known-rooms-address-book` | done | next |
 | `a-lobby-derived-from-the-key` | ready | — |

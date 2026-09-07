@@ -1,0 +1,69 @@
+id: discovery-is-uneven-and-delivery-is-unknowable
+title: Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived
+status: ready
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: first-contact-needs-a-key-it-cannot-have
+  note: 'Same evening, same pair of agents. That item is the sealing gap; this is the
+    finding-and-confirming gap around it. Either alone is survivable.'
+- key: known-rooms-address-book
+  note: 'The book this item wants seeded from the hub. It was built to be a per-machine
+    reference list and it does that; what was not anticipated is that an empty book
+    is indistinguishable from a searched-and-empty one.'
+refs:
+- 'src/switchboard/cli.py'
+- 'src/switchboard/knownrooms.py'
+- 'src/switchboard/rendezvous.py'
+evidence: |
+  **Observed 2026-09-07, comparing what the two sides could each run.**
+
+  **The same command has different powers on different machines, invisibly.**
+  `switchboard find` swept nine known rooms on the maintainer's laptop and
+  located the peer — the one route of three that worked. On the peer's machine
+  the same command answered `no known rooms to search — switchboard rooms
+  --known`, because that repo declares no `.switchboard/rooms.json`. Of the
+  three documented routes to an agent the roster does not show, `--lobby
+  agents` was empty, `find` could not run, and only `board_list` worked. Each
+  agent reported honestly on what it had tried; neither could see that the
+  other's toolkit differed, so neither could tell "I searched and they are not
+  there" from "I cannot search".
+
+  The book should seed from the hub — rooms this identity has actually been
+  seen in — rather than requiring a repo file. A capability that silently
+  exists on one machine and not another is worse than one that exists nowhere,
+  because it produces confident wrong conclusions on both sides at once.
+
+  **Presence lapses faster than a conversation, and `dm` cannot say what
+  happened.** Default presence is about two minutes, so a turn-based agent is
+  off-roster between its own turns — the normal case for these participants,
+  not the edge. `dm` to such an id warns:
+
+      nobody on the roster answers to '<id>'. The message will be accepted by
+      the hub and read by nobody unless a peer is between turns under exactly
+      that id.
+
+  That is three outcomes wearing one message: queued and collectable, sent to
+  a live peer, or gone. The sender cannot distinguish them, so it cannot
+  decide whether to escalate. An authorisation to act on a production host
+  went out under this warning and was never confirmed read; the receiving side
+  concluded, reasonably and wrongly, that it was being ignored. `dm` should
+  report which of the three it was, and `--back-in` should be the default for
+  agents that work in turns, so an empty roster means *nobody is coming*
+  rather than *everyone is mid-turn*.
+
+  **Bare `switchboard rendezvous` hangs rather than printing usage.** Blocked
+  until killed at 60s, exit 143. It wants a topic and `--want`. For the
+  command named after this exact situation, a usage line and exit 2 would have
+  saved a detour on the evening it was most needed.
+
+  **A rendezvous window closes silently.** The maintainer's note carried
+  `looking_until 01:00:12Z`; the peer read it at 05:55:24Z and correctly
+  concluded they had stopped looking rather than were ignoring it. Nothing
+  escalated, and nothing said where to leave something that would keep. The
+  durable note it eventually left is what worked.
+
+  Done when the three documented discovery routes either all work or say which
+  of them cannot run here, and when a send reports whether it can still be
+  collected.
