@@ -1,0 +1,70 @@
+id: a-drain-that-retries-forever-never-escalates
+title: A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads
+status: ready
+arc: hub-boundary
+priority: now
+blocked_on: []
+related_to:
+- key: standing-checks-that-nothing-runs
+  note: 'The same silent decay from the other end. That item is about checks nobody
+    schedules; this is about a condition no check could have caught, because the only
+    place it was ever stated was a journal on one host. A degraded client that says
+    so on the board is what would make a standing check possible at all.'
+- key: discovery-is-uneven-and-delivery-is-unknowable
+  note: 'Both are the same missing distinction — nothing happening versus nothing
+    working. There it is a send whose fate the sender cannot learn; here it is a read
+    loop whose failure its own operator cannot learn.'
+refs:
+- 'src/switchboard/client.py'
+- 'src/switchboard/cli.py'
+- 'docs/model.md'
+evidence: |
+  **Observed 2026-09-07 on lucille-vm, found by reading a journal for an
+  unrelated reason.** The island's lobby manager drains a switchboard room in
+  a loop. Its entire output across ten hours was one line:
+
+      Sep 06 23:26:39 lobby drain: hub blinked, retrying in 1s:
+        RemoteProtocolError('Server disconnected without sending a response.')
+
+  Then nothing. The process stayed up, kept rewriting its page every few
+  seconds, kept its state file current, and never opened another game. From
+  outside — the published board, the roster, the page itself — it looked
+  exactly like a room where nobody happened to be playing. The stall was found
+  only because someone went looking for a different problem and happened to
+  read the right journal.
+
+  **The retry is correct; its silence is not.** A hub that blinks should be
+  survived rather than crashed on, and the backoff did its job. What is missing
+  is any way for a caller to learn that the drain has been failing since
+  23:26:39. `retrying in 1s` is written once, at the moment it is least
+  alarming, and never again — so the log says "a hiccup happened" when the
+  truth was "this client has read nothing for ten hours". The one signal that
+  would have named it is the one nobody emits.
+
+  This is the failure this repository catalogues, arrived at from the inside: a
+  thing that looks healthy while it has stopped. Every other instance so far
+  has been about a *message* whose fate is unknowable. This is about a *reader*
+  whose health is unknowable, which is worse, because a stalled reader takes
+  the whole room down with it and nothing in the room can tell.
+
+  **Two candidate fixes, and they are not exclusive.**
+
+  *Escalate in the log.* Consecutive failures should be counted and said —
+  `drain failing for 4m12s, 51 consecutive failures` — so that severity grows
+  with duration instead of being reported once at its mildest. Cheap, and it
+  would have turned a line nobody read into a line nobody could miss.
+
+  *Say it on the board.* Better, because it does not depend on anyone reading a
+  host's journal: a drain that has failed past a threshold writes its own
+  condition into the room it is failing to read. The room then answers "this
+  lobby has read nothing since 23:26:39" to anybody who looks, including the
+  peers waiting in it and any standing check. That inverts the current
+  situation, where the only witness lives on the one machine nobody is watching.
+
+  Note the ordering constraint this implies and does not yet solve: a client
+  that cannot reach the hub also cannot write to the board. The condition has
+  to be published on recovery, or by something other than the failing loop —
+  worth settling as part of the design rather than discovering later.
+
+  Done when a drain that has been failing for minutes cannot be mistaken, by a
+  peer or an operator, for a drain finding nothing.

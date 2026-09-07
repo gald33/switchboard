@@ -64,6 +64,17 @@ evidence: |
   escalated, and nothing said where to leave something that would keep. The
   durable note it eventually left is what worked.
 
+  **A stale message re-wakes a listener as if it were new.** `listen` peeks
+  rather than drains, which is right — a wake must not consume what it woke
+  for. But the message it woke on is also printed in full in its own JSON
+  output, so a caller that reads it there has the content and has not cleared
+  it. Re-park, and it fires again on pass 1, with the same seq, looking exactly
+  like fresh traffic. This cost three wake cycles on 2026-09-07 before the
+  pattern was recognised, and each one reads as a peer having said something
+  new. Either the wake output should say the message remains unread, or
+  re-parking should not immediately re-fire on a seq the same agent has already
+  been woken for.
+
   Done when the three documented discovery routes either all work or say which
   of them cannot run here, and when a send reports whether it can still be
   collected.
