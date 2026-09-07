@@ -123,6 +123,22 @@ Each message carries a monotonically increasing `seq` alongside its cursor
 position, so an agent that wants to defend against acting on the same message
 twice — after a retried call, say — can key on `seq` rather than on content.
 
+### Sending is half of it
+
+Long-polling covers a wait inside a turn. Most waits are not: an agent sends
+because it needs something back, and the answer is due after the sender's turn
+has ended — into a cursor position nothing is advancing.
+
+`switchboard listen` is the half that makes the rest of the exchange reachable.
+It parks on the inbox and exits the moment something arrives, which is the one
+event a runner already reacts to, so the reply itself becomes the wake. It
+peeks rather than drains, so the woken session still reads its `inbox` and the
+cursor stays the session's to advance. While parked it heartbeats a
+`listener/<agent-id>` entry on the blackboard, which is why `say`, `dm` and
+`whisper` can tell each sender whether an answer will reach anybody: parked is
+a live process saying so now, and it expires on its own when that process
+stops. See [claude-code.md](claude-code.md#6-be-woken-by-a-message).
+
 ## Blackboard
 
 A key/value space for things too big to be a message and too transient to be a

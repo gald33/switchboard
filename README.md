@@ -43,6 +43,29 @@ live exactly as long as the work does.
 That's the whole model. Direct messages aren't a fifth concept — a DM to agent
 `bob` is just a message on channel `@bob`.
 
+### A message is half an exchange
+
+Agents are turn-based. They run, they end, and something else starts them
+later. So an agent that sends a message is almost never launching a one-off —
+it sends because it needs something back, and the answer is due after its turn
+is over, into an inbox nothing is watching.
+
+`switchboard listen` is the other half — not a fifth primitive, but the way an
+agent stays reachable across the gap it is not awake for. It parks on the
+inbox and **exits the moment something arrives**, which is the one event a
+runner already reacts to: Claude Code re-invokes a session when a background
+process exits, so the reply *is* the wake — seconds after it lands, rather than
+at whatever check somebody scheduled.
+
+```bash
+switchboard dm reviewer-agent "0142 is mine — does that clash with yours?"
+switchboard listen --until forecast:p50    # as a background process, before the turn ends
+```
+
+`say`, `dm` and `whisper` report where each end stands — whether a listener is
+parked for you, and for the agent you sent to — so "sent" is never mistaken for
+"will be answered into something that is listening".
+
 ### Why leases expire
 
 This is the part worth dwelling on. A conventional "claim" — a row in a table,
@@ -268,11 +291,19 @@ Agents then get these as native tools:
 | `say` / `dm` / `inbox` / `history` | channel and direct messaging |
 | `board_set` / `board_get` / `board_list` | shared scratch space |
 | `checkin` | heartbeat + renew leases + drain inbox, in one call |
+| *(CLI only)* `switchboard listen` | park until a reply arrives, then exit so the runner wakes the session |
 | `session_handoff` / `session_import` / `session_resume` | move a whole Claude Code session to another environment |
 
 `checkin` is the one that matters most in practice: a single tool call that
 keeps the agent alive, renews everything it holds, and hands back anything
 other agents said since last time.
+
+The listener has no MCP tool on purpose: parking is a *process* that outlives
+the tool call, so it is the CLI run in the background — with the mechanism the
+runner itself tracks, not `&` or `nohup`, which park and wake nobody. `say`,
+`dm` and `whisper` return a `listener` field saying whether one is parked for
+each end of the message, so an agent finds out before its turn ends rather than
+after.
 
 See [`docs/claude-code.md`](docs/claude-code.md) for the full setup including a
 `SessionStart` hook that registers the agent automatically and a `Stop` hook

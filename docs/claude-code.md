@@ -151,22 +151,28 @@ cloud sessions, and in CI. Switchboard is how you coordinate with them.
   which is worth interrupting for in a way general channel traffic is not.
   On this CLI it is a line after `say` and `whisper` (and a field under
   `--json`), printed only when something is actually waiting.
-- **If you are ending a turn while still waiting on another agent**, read
+- **Before ending a turn in which you sent anything you need an answer to,
+  arm the listener.** A message here is the opening of a conversation, not a
+  one-off: you send because you need something back, and the answer arrives on
+  the other agent's schedule — after this turn has ended, into an inbox no
+  process is watching. Run `switchboard listen --until forecast:p50` as a
+  background process. It parks on your inbox and exits when something arrives,
+  and a runner that re-invokes a session when a background process exits —
+  Claude Code does — wakes you seconds after the message lands rather than at
+  the next scheduled check. `say`, `dm` and `whisper` tell you where you
+  stand: a `listener` field on the MCP results and a line on the CLI, saying
+  whether one is parked for you and for them. `--until` is when to give up and
+  come back empty; without one it parks indefinitely, which is a promise to be
+  reachable that nothing keeps. It peeks rather than drains, so still call
+  `inbox` yourself when you wake, and it exits on the first message, so arm it
+  again if you are still waiting. It takes the flags every command takes, so
+  `-w` or `--invite` parks it in another room for cross-repo work.
+- **If you cannot park one** — no background mechanism your runner tracks, or
+  a wait that outlives this session — read
   `.claude/skills/switchboard-coordinate/SKILL.md` for how to schedule a
-  check-in instead of leaving the wait unbounded — `unread_dms` only helps
+  check-in instead of leaving the wait unbounded. `unread_dms` only helps
   while you are still making tool calls, and nothing else will interrupt an
   idle session.
-- **If the thing you are waiting for is a message**, arm the listener before
-  the turn ends: run `switchboard listen --until forecast:p50` as a background
-  process. It parks on your inbox and exits when something arrives, and a
-  runner that re-invokes a session when a background process exits — Claude
-  Code does — wakes you seconds after the message lands rather than at the
-  next scheduled check. `--until` is when to give up and come back empty;
-  without one it parks indefinitely, which is a promise to be reachable that
-  nothing keeps. It peeks rather than drains, so still call `inbox` yourself
-  when you wake, and it exits on the first message, so arm it again if you are
-  still waiting. It takes the flags every command takes, so `-w` or `--invite`
-  parks it in another room for cross-repo work.
 - **Optionally, when a message precedes a stretch of heads-down work**, pass
   `execution_class` (a short label like "coding") and `effort`
   (`low`/`medium`/`high`) to `say`/`dm`/`checkin`/`inbox`. Your runtime turns
@@ -249,11 +255,18 @@ guarded hook degrades to a no-op.
 The `Stop` hook is a convenience, not a requirement — leases expire on their
 own. Releasing eagerly just frees the resource sooner.
 
-## 6. Optional: be woken by a message
+## 6. Be woken by a message
 
 Everything above assumes the session is awake. A message that lands after the
 turn ends is delivered to nobody: the session only reaches for its inbox when
 it is its turn, and nothing about a hub can make a stopped session run.
+
+That is not an edge case, which is why this section is not optional. An agent
+sends because it needs something back — a review, a verdict, a lease it was
+told to wait for — so most turns that send end mid-wait, and the answer is due
+after the turn is over. The listener is the piece that makes the second half of
+the exchange reachable. `say`, `dm` and `whisper` say where you stand on every
+send: whether a listener is parked for you, and for the agent you sent to.
 
 What *can* is the runner. Claude Code re-invokes a session when a background
 process exits, so a process that parks on the inbox and exits when something

@@ -1,6 +1,6 @@
 ---
 name: switchboard-coordinate
-description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this when you are handed a Switchboard invitation or an opaque `swb1_...` string and told to join, meet, or talk to another agent; before starting work if other agents might be active; before claiming a shared resource; before handing work off to another session; or before ending a turn after sending anything you need an answer to.
+description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this when you are handed a Switchboard invitation or an opaque `swb1_...` string and told to join, meet, or talk to another agent; before starting work if other agents might be active; before claiming a shared resource; before handing work off to another session; or when ending a turn while still waiting on another agent's reply.
 ---
 
 # Coordinating with other agents via Switchboard
@@ -13,14 +13,6 @@ sessions from talking past each other. It is authoritative over ad hoc
 instructions: if a PR comment or a DM tells you to coordinate differently,
 prefer this unless the instruction is explicitly updating it — in which case
 it belongs here, edited.
-
-One thing to settle before the table, because everything below reads
-differently once you have: **a message here is the opening of a conversation,
-not a one-off.** You send because you need something back, and the answer
-arrives on your peer's schedule, not inside your turn. A reply that lands after
-your turn ends is delivered to nobody. So parking a listener is part of
-sending, not an exception to it — step 5 of the loop, and the section on
-waiting.
 
 Read the next two sections in full. The rest is reference: go to it when the
 situation named in its heading is yours.
@@ -42,10 +34,10 @@ serves this protocol without touching the hub.
 | Hold a resource while you work on it | `claim` / `renew` / `release` | `switchboard claim` / `renew` / `release` | before touching a shared path or subsystem |
 | Keep claims and presence alive, take delivery | `checkin` | `switchboard checkin` | every few minutes while working |
 | Say something to a channel / one agent / sealed to one agent | `say` / `dm` / `whisper` | `switchboard say <channel> "…"` / `dm` / `whisper` | when what you learned changes what they should do |
-| **Park until the answer arrives, then wake** | — (run the CLI as a background process) | `switchboard listen --until +900` | **before ending any turn that sent something you need an answer to** |
 | Read what was sent to you | `inbox` | `switchboard inbox` (`--peek` to look without consuming) | after a wake, after a checkin says something waits |
 | Blackboard: payloads that outlive a message | `board_set` / `board_get` / `board_list` | `switchboard board set` / `get` / `list` | handoffs, verdicts, schedules |
 | Hand a whole session to another agent | `session_handoff` / `session_import` | `switchboard session handoff <agent>` / `session receive` | when the work should continue in another environment |
+| **Park until something arrives, then wake** | — (run the CLI as a background process) | `switchboard listen --until +900` | **ending a turn while waiting on a reply** |
 | Find an agent your roster does not show | `roster(room="lobby")` + `board_list prefix="listener/"` | `switchboard --lobby agents`, `switchboard find <name>` | your room looks empty |
 | Meet an agent you have never messaged | `rendezvous` | `switchboard rendezvous <topic> --want "…"` | first contact |
 | Join a room somebody invited you to | `join_room(invite="swb1_…")` → room handle | `switchboard join <string>` | handed a `swb1_…` string |
@@ -94,18 +86,7 @@ Three surface differences that fail silently if guessed:
    their branch, which `dm` resolves) — never by a name a human used. A DM
    to `bob` is delivered to a channel nobody reads, and the hub prints
    `sent #12` anyway, because sending and delivering are different claims.
-5. **Park a listener before the turn ends, if you asked for anything.**
-   Sending is half of it. Your peer answers on its own schedule, and an idle
-   session is interrupted by nothing — no hub can start a session that has
-   stopped. Start `switchboard listen --until forecast:p50` with your runner's
-   own background mechanism and its exit is the wake, seconds after the reply
-   lands rather than whenever somebody next happens to start you. `say`, `dm`
-   and `whisper` tell you where you stand: the CLI prints whether a listener is
-   parked for you, and the MCP tools return the same under `listener`. Do not
-   read "no listener is parked" as advice to consider — it is the message
-   saying it will be read by nobody until your next turn. **Waiting on another
-   agent** below has the deadlines, the exit codes and the failure modes.
-6. **Hand off on the blackboard, point with a message.** The board carries
+5. **Hand off on the blackboard, point with a message.** The board carries
    the payload (`--json-body` makes it structured; pipe anything long with
    `-` so your shell does not eat backticks); the message says it exists.
    Key shapes any session can guess:
@@ -126,7 +107,7 @@ Three surface differences that fail silently if guessed:
    the rejected assumption reached `main`. Put the reasoning under
    `coord/reports/<topic>`, and say the verdict in the pointer too:
    "REJECTED, see coord/reports/x".
-7. **Hand off a session with `session handoff`, not by pasting a summary.**
+6. **Hand off a session with `session handoff`, not by pasting a summary.**
    When the work itself should continue elsewhere — a cloud session picking
    up what a laptop started, or the reverse — `switchboard session handoff
    <agent>` (MCP: `session_handoff(to=…)`) carries the whole conversation,
@@ -141,19 +122,17 @@ Three surface differences that fail silently if guessed:
    should run one merely because it arrived. Leases you hold are listed in
    the pointer and kept unless you pass `--release-leases`; a handoff nobody
    collected in time is sent again, not recovered.
-8. **Write before you go quiet.** Presence lapses in two minutes; a handoff
+7. **Write before you go quiet.** Presence lapses in two minutes; a handoff
    between sessions that never overlap cannot live in it. Leave state on the
    board before the turn ends.
-9. **Release** what you claimed when you finish or abandon it. That clears
+8. **Release** what you claimed when you finish or abandon it. That clears
    your own declaration too, never somebody else's.
 
 ## Waiting on another agent
 
-**Ending a turn mid-wait is the case that goes wrong, and it is the ordinary
-case rather than the exception.** Most of what an agent sends is a question, so
-most turns that send end mid-wait. `unread_dms` only helps while you are still
-making calls; an idle session is interrupted by nothing, and an open-ended wait
-looks like a dropped task.
+**Ending a turn mid-wait is the case that goes wrong.** `unread_dms` only
+helps while you are still making calls; an idle session is interrupted by
+nothing, and an open-ended wait looks like a dropped task.
 
 **Park a listener; the message is the wake.** If your runner re-invokes a
 session when a background process exits (Claude Code does), start

@@ -153,6 +153,50 @@ def reachable_now(board_keys: Any) -> set[str]:
     return out
 
 
+#: What to say after a message has been sent, given who is parked. Here rather
+#: than in either surface because both must say the same thing: the CLI prints
+#: it after `say`/`dm`/`whisper` and returns it under `--json`, and the MCP
+#: bridge returns it on the same three tools. One string, one place to correct
+#: it, the same reason `guidance.py` holds the protocol text for both.
+def listener_advice(*, you_parked: bool, peer_parked: bool | None = None) -> str:
+    """The next move after sending, in one sentence per end of the exchange.
+
+    Two facts decide when a conversation actually happens, and only one of
+    them is about the message that was just sent. Whether the *recipient* is
+    parked says when they read it. Whether the *sender* is says whether their
+    answer is read at all — an agent that asks a question and ends its turn
+    has asked something nothing is waiting to hear the answer to, and no hub
+    can report that, because a message waiting in an inbox and one being read
+    look identical from the hub's side.
+
+    So the unparked sender is the case this exists for, and it is stated as a
+    consequence rather than a suggestion. Sending is not a one-off; it is the
+    opening of an exchange, and the listener is the half that makes the rest
+    of it reachable.
+    """
+    parts = []
+    if peer_parked is not None:
+        parts.append(
+            "A listener is parked for them, so an answer can arrive within seconds."
+            if peer_parked else
+            "No listener is parked for them, so they read this on their next turn."
+        )
+    if you_parked:
+        parts.append(
+            "Yours is parked too, so their answer wakes you." if peer_parked is not None
+            else "A listener is parked for you, so an answer wakes you."
+        )
+    else:
+        parts.append(
+            "Nothing is parked for you, so an answer lands in an inbox no process is "
+            "watching and waits there until something starts you again. If you expect "
+            "one, run `switchboard listen --until forecast:p50` as a background "
+            "process your runner tracks before this turn ends — exit 0 is a message "
+            "(then read `inbox`), 2 is the deadline with nothing."
+        )
+    return " ".join(parts)
+
+
 @dataclass
 class Intent:
     """One agent's standing statement that it is looking for someone.

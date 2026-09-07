@@ -219,6 +219,21 @@ _TIMING_EFFORT = {
 }
 
 
+#: What every sending tool has to say about the turn after it. Sending is
+#: rarely a one-off — an agent posts because it needs something back — and the
+#: reply arrives on the peer's schedule, after this turn has ended. Appended to
+#: all three descriptions rather than written out three times.
+_SENDING_OPENS_A_CONVERSATION = (
+    " Every result carries 'listener': whether a listener is parked for you, "
+    "for them where there is a them, and what to do about it. Read it — you are "
+    "usually opening a conversation rather than posting a one-off, and an answer "
+    "that lands after this turn ends reaches nobody. If you expect one, park a "
+    "listener before the turn ends: this bridge cannot, so run `switchboard "
+    "listen --until forecast:p50` with your runner's own background mechanism "
+    "(not '&' or 'nohup', which the runner is not watching), and its exit is the "
+    "wake seconds after the reply lands."
+)
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "help",
@@ -351,7 +366,7 @@ TOOLS: list[dict[str, Any]] = [
             "flaky. Messages expire after an hour by default — anything that should be "
             "permanent belongs in a commit message or a PR instead. Optionally pass "
             "execution_class/effort to attach a check-in forecast for collaborators — "
-            "advisory only, based on your own local history."
+            "advisory only, based on your own local history." + _SENDING_OPENS_A_CONVERSATION
         ),
         "inputSchema": _schema({
             "channel": {**_STR, "description": "channel name, e.g. 'build' or 'backend'"},
@@ -370,7 +385,7 @@ TOOLS: list[dict[str, Any]] = [
             "this to hand off context, answer another agent's question, or warn one agent "
             "specifically that you are about to change something it depends on. Optionally "
             "pass execution_class/effort to attach a check-in forecast — advisory only, "
-            "based on your own local history."
+            "based on your own local history." + _SENDING_OPENS_A_CONVERSATION
         ),
         "inputSchema": _schema({
             "to": {**_STR, "description": "recipient agent id (see roster)"},
@@ -396,6 +411,7 @@ TOOLS: list[dict[str, Any]] = [
             "they have been seen. If this fails because their exchange key is not known yet, "
             "read the roster and try again. Optionally pass execution_class/effort to attach "
             "a check-in forecast — advisory only, based on your own local history."
+            + _SENDING_OPENS_A_CONVERSATION
         ),
         "inputSchema": _schema({
             "to": {**_STR, "description": "recipient agent id (see roster)"},
@@ -1327,6 +1343,34 @@ class Bridge:
 
     _sender_forecast = staticmethod(sender_forecast)
 
+    def _listener(self, peer: str | None = None) -> dict[str, Any]:
+        """Which end of the message just sent can be woken by an answer to it.
+
+        One board read answers both halves — whether the recipient is parked,
+        which decides when they read it, and whether this agent is, which
+        decides whether their answer is read at all. The second is the one
+        that gets forgotten: an agent that asks a question and ends its turn
+        has asked something nothing is waiting to hear the answer to, and
+        `unread_dms` cannot say so because it only rides on calls this agent
+        is still making.
+
+        Never fatal. It annotates a message the hub has already accepted, so
+        a board read that fails costs the advice and not the send.
+        """
+        try:
+            parked = rendezvous.reachable_now(
+                self.client.board_list(prefix=rendezvous.LISTENER_PREFIX)
+            )
+        except Exception:  # noqa: BLE001 - advice about a send that already happened
+            return {}
+        out: dict[str, Any] = {"you_parked": self.client.agent_id in parked}
+        if peer is not None:
+            out["peer_parked"] = peer in parked
+        out["next"] = rendezvous.listener_advice(
+            you_parked=out["you_parked"], peer_parked=out.get("peer_parked")
+        )
+        return out
+
     def say(self, channel: str, message: str, type: str = "note",
             ttl: float | None = None,
             custom_scope: dict[str, str] | None = None,
@@ -1338,6 +1382,9 @@ class Bridge:
         out = {
             "posted": True, "channel": msg["channel"], "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
+            # A channel post is answered on the channel, so only this agent's
+            # own end is in question here.
+            "listener": self._listener(),
         }
         if forecast:
             out["timing_forecast"] = self._sender_forecast(forecast)
@@ -1354,6 +1401,7 @@ class Bridge:
         out = {
             "sent": True, "to": to, "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
+            "listener": self._listener(peer=to),
         }
         if forecast:
             out["timing_forecast"] = self._sender_forecast(forecast)
@@ -1369,6 +1417,7 @@ class Bridge:
         out = {
             "sent": True, "to": to, "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
+            "listener": self._listener(peer=to),
         }
         if forecast:
             out["timing_forecast"] = self._sender_forecast(forecast)
