@@ -1,0 +1,186 @@
+# agentswitchboard.org — landing page principles
+
+Decided before any pixels. If a design choice contradicts one of these, the
+principle wins or the principle gets rewritten — not quietly ignored.
+
+## Who it is for
+
+One reader: **an engineer who already has two or more coding agents on one
+repo and has felt them collide.** They arrive from a README link, an HN
+comment, or a colleague. They are not shopping for a category; they are
+checking whether this is real and whether it is five minutes or five days of
+work.
+
+Everyone else — investors, "AI orchestration" tourists, people who have never
+run two agents — is a bystander. Do not widen the copy to include them. The
+page loses more by sounding generic to the one reader than it gains by
+sounding legible to the rest.
+
+## 1. Lead with the collision, not the category
+
+The first screen must make the reader recognize a thing that already happened
+to them: two agents editing the same migration, a stale claim nobody released,
+a question asked into an inbox nothing was watching. "Ephemeral orchestration
+hub for AI coding agents" is an accurate second sentence and a terrible first
+one — it asks the reader to accept a category before they have accepted a
+problem.
+
+## 2. The product is the expiry
+
+Every competing answer (a lock file, a label, a PR comment, a row in a table)
+is acquired explicitly and released explicitly, and **the release is the half
+that gets dropped**. Switchboard's one idea is that coordination state expires
+on its own. If a visitor leaves remembering exactly one sentence, it is that
+one. Give it a whole section; do not bury it in a feature grid.
+
+## 3. Show it running before asking for an install
+
+**Decided, and captured.** `demo/run.sh` — the reproducible async handoff:
+alice posts a migration proposal and expires, beta arrives with no memory of
+her and reads the board — recorded as real terminal output and replayed as
+text. It sits above the fold or immediately below it.
+
+The cast is [`site/demo.cast`](demo.cast): asciicast v2, 41.5s, 27 frames,
+3.5 KB, recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
+
+```bash
+python3 site/record-demo.py demo/run.sh site/demo.cast
+```
+
+and verify it still matches reality by diffing against a fresh real-pace run
+(`bash demo/run.sh`), normalizing only the three things that legitimately
+differ between runs: agent ids, TTL clocks, and the random hub port. At
+capture time that diff was 39 lines against 39 lines, zero mismatches. Re-run
+that check whenever the CLI's output changes — a stale cast is exactly the
+kind of quiet lie principle 4 exists to prevent. (Note that `DEMO_FAST=1` is
+not a valid comparison: it skips the pauses, so alice's presence has not
+expired by the time the roster prints, and the recording's central beat is
+missing.)
+
+Real output, not a dramatization: a visitor can run the same script and get the
+same thing. That is the whole reason this form was chosen over an animation.
+The one liberty the demo itself takes — alice's presence TTL shortened to 5s so
+the expiry is watchable — is disclosed on the page, not hidden. The viewer
+screenshot can still appear later on the page; it shows a state, while this
+shows the mechanism.
+
+## 4. Terminal-true
+
+Every command shown must be one that actually works today against the current
+release. No invented flags, no aspirational output, no prettified fake shell.
+The audience will paste it within a minute. A single wrong command costs more
+credibility than the whole page buys.
+
+## 5. Four primitives, no more
+
+Presence, leases, messages, blackboard. Plus the listener as the *other half*
+of a message — not a fifth box. The smallness of the model is the pitch. Any
+layout that grows to six or eight cards to fill space is actively lying about
+the product.
+
+## 6. Honest about maturity
+
+Pre-1.0, self-hosted first, managed hub partially built. Say so plainly and
+early. This reader rewards it; a page that oversells gets closed at the first
+gap they find. "Early release — the shape is still settling" is a feature for
+the person who wants to influence the shape.
+
+## 7. Two flavors, presented as equals
+
+The page offers **plug-and-play** (point at the managed hub, one export, no
+server to run) and **on-prem** (`pip install` + `switchboard init`, your own
+process and SQLite file). Both are first-class; neither is the fallback.
+Symmetric layout, symmetric weight, and each with a working command.
+
+Two things this must not become:
+
+- Plug-and-play must never read as the *price of entry*. Nothing in Switchboard
+  requires an account, and the page must leave the reader certain of that.
+- Plug-and-play must not oversell what ships. Multi-tenancy is built; rooms are
+  sealed by a key the hub never sees; **quotas, billing and operational
+  visibility do not ship yet.** Say so on the page, at the point of the offer —
+  principle 6 applies hardest here, because this is the claim a reader is most
+  likely to test.
+
+The on-prem side gets the argument that only it can make: the hub holds no
+source code and no credentials — only who is awake and what they are saying —
+so it is cheap to run and cheap to lose.
+
+## 8. One primary action per screen
+
+Primary CTA everywhere: **copy a command** — whichever of the two flavors that
+screen is about. Secondary: GitHub.
+Tertiary: docs. No newsletter, no waitlist, no "book a demo", no chat widget.
+Nothing on this page should ask for an email address.
+
+## 9. The page is not the hub
+
+Two hard rules inherited from the product's own security posture:
+
+- The site is static and must be served from a host that is *not* a hub. A hub
+  serving the viewer could serve a viewer that keeps the key.
+- If the invite viewer ever moves to this domain, the invite must stay in the
+  URL fragment, and the served page must remain diffable against the commit —
+  no build step that obscures what reads the key.
+
+## 10. No AI-marketing costume
+
+No gradient mesh, no glowing orbs, no "supercharge your workflow", no robot
+mascots, no fake logo wall, no invented metrics. The aesthetic is the one this
+reader trusts: dense, typographic, monospace where it means something,
+generous whitespace, one accent colour. Closer to a well-made protocol spec
+than to a SaaS homepage.
+
+## 11. Fast, static, accessible
+
+No framework, no tracker, no cookie banner. Single page, hand-written HTML/CSS,
+loads on a plane. Real text (not images) for all code. WCAG AA contrast in both
+light and dark. Every claim on it should be checkable by reading the source.
+
+## 12. Show what is built on it
+
+Switchboard is infrastructure, and infrastructure is judged by what runs on
+it. Two things do, and they make different arguments — feature both, and keep
+them distinct rather than merging into a generic "ecosystem" strip:
+
+- **The viewer** — the SDK used in anger. A read-only page showing one room to
+  the human the agents are working for: who is awake, what is claimed and for
+  how long, the board, the conversation as it happens. The honest detail is
+  the best part: it runs on *your* machine, not the hub, because the hub holds
+  no key and this is the side that can open the sealed traffic — which is also
+  why it binds to loopback. It is also the reason five holes in the public
+  surface were found and closed, which is the argument that the SDK is real
+  enough to build against.
+
+- **The island** — a live competition in `gald33/ai-lab` where the entrants
+  are *agents*, not people. It is the load-bearing case: entrants arrive with
+  no prior relationship, join through a room whose key the project publishes
+  on purpose (`ENTER.md`), and a lobby manager drains that room in a loop to
+  render the standing page. Nobody wired those agents together by hand. This
+  is what the viewer cannot show — Switchboard carrying a system that was not
+  built by the people who built Switchboard.
+
+Constraints on this section:
+
+- **Verify before writing copy.** The island lives in another repo and is
+  deployed across more than one host. Every claim about it must be checked
+  against `gald33/ai-lab` at the time the page is written, not against this
+  document.
+- **Don't dress them up.** The viewer is a local read-only page and the island
+  is an experiment. Presenting either as a polished product breaks principle 6
+  and is not what makes them convincing anyway.
+- **Two is the right number.** Do not pad to a grid of six with roadmap items
+  or the barter experiment. An honest two beats a speculative six.
+
+---
+
+## Open decisions (not principles — Gal's call)
+
+1. **Domain layout.** Recommended: `agentswitchboard.org` = landing page,
+   `viewer.agentswitchboard.org` = the static invite viewer, hub stays on its
+   own hostname. Keeps principle 9 structurally true rather than by discipline.
+2. **Hosting.** Recommended: Cloudflare Pages from this repo, so the page is
+   diffable and deploys on push. Workers only if we later need anything
+   dynamic, which principle 11 says we should not.
+3. **Does the GitHub Pages viewer move or stay?** Staying is zero work and
+   already trusted; moving is nicer branding. Not urgent either way.
