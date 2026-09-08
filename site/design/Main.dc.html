@@ -36,7 +36,7 @@
 
   <!-- ── hero: the collision ── -->
   <div style="padding: 86px 72px 68px;">
-    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.56 0.13 52); margin-bottom: 26px;">Early release — the shape is still settling</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.52 0.13 52); margin-bottom: 26px;">Early release — the shape is still settling</div>
     <h1 style="margin: 0 0 30px; font-size: 62px; line-height: 1.06; font-weight: 600; letter-spacing: -0.028em; max-width: 940px;">
       Your agent just claimed the migration file.<br>So did the other one.
     </h1>
@@ -48,7 +48,7 @@
       <div style="display: flex; align-items: center; gap: 16px; background: oklch(0.20 0.012 70); border-radius: 7px; padding: 15px 20px;">
         <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; color: #8b8377;">$</span>
         <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; color: #f4efe6;">pip install "agent-switchboard[all]" &amp;&amp; switchboard init</span>
-        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #8b8377; border: 1px solid #4a453d; border-radius: 4px; padding: 4px 9px; margin-left: 8px;">copy</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #8b8377; border: 1px solid #6f685c; border-radius: 4px; padding: 4px 9px; margin-left: 8px;">copy</span>
       </div>
       <a href="#" style="font-size: 15px; color: oklch(0.38 0.012 70); text-decoration: none; border-bottom: 1px solid oklch(0.84 0.01 80); padding-bottom: 2px;">or read the source →</a>
     </div>
@@ -79,7 +79,7 @@
 <span class="tbold">── 2 HOURS LATER — new session, new machine ──</span>
 
 <span class="tdim">$ </span><span class="t">switchboard agents</span>
-<span class="tbold">AGENT                              KIND    BRANCH                   SEEN</span>
+<span class="tbold">AGENT                              KIND    BRANCH                   SEEN       TASK</span>
 <span class="t">Fbmk3yUCkCKY1B1Vks9N2Q             cloud   claude/agentswitchboard  3s ago</span>
 
 <span class="tdim">$ </span><span class="t">switchboard board get coord/proposals/db-migration-order</span>
@@ -97,7 +97,7 @@
   <div style="background: oklch(0.955 0.006 82); border-top: 1px solid oklch(0.90 0.008 80); border-bottom: 1px solid oklch(0.90 0.008 80); padding: 86px 72px;">
     <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 76px; align-items: start;">
       <div>
-        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.56 0.13 52); margin-bottom: 22px;">The one idea</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.52 0.13 52); margin-bottom: 22px;">The one idea</div>
         <h2 style="margin: 0 0 26px; font-size: 40px; line-height: 1.14; font-weight: 600; letter-spacing: -0.022em;">Every claim you have ever used is released by somebody remembering.</h2>
         <p style="margin: 0 0 18px; font-size: 17px; color: oklch(0.36 0.012 70);">
           A lock file, a label on an issue, a row in a table, a comment saying "I've got this" — all acquired explicitly and released explicitly. The release is the half that gets dropped, because nothing ever asks an agent whether it is still working.
@@ -115,10 +115,10 @@
             Agents renew what they hold as a side effect of their heartbeat. A live agent keeps its claims. A dead one gives them up within the TTL of its last heartbeat — 15 minutes by default — with nobody having to remember anything.
           </p>
           <div style="display: flex; flex-direction: column; gap: 9px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; border-top: 1px solid oklch(0.91 0.008 80); padding-top: 22px;">
-            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">presence</span><span style="color: oklch(0.56 0.13 52);">2 min</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">leases</span><span style="color: oklch(0.56 0.13 52);">15 min</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">messages</span><span style="color: oklch(0.56 0.13 52);">1 hour</span></div>
-            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">blackboard</span><span style="color: oklch(0.56 0.13 52);">24 hours</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">presence</span><span style="color: oklch(0.52 0.13 52);">2 min</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">leases</span><span style="color: oklch(0.52 0.13 52);">15 min</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">messages</span><span style="color: oklch(0.52 0.13 52);">1 hour</span></div>
+            <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">blackboard</span><span style="color: oklch(0.52 0.13 52);">24 hours</span></div>
           </div>
         </div>
       </div>
@@ -151,6 +151,7 @@
 
     <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 56px; align-items: center; background: oklch(0.955 0.006 82); border-radius: 10px; padding: 34px 38px;">
       <div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(0.52 0.13 52); margin-bottom: 12px;">messages, continued — not a fifth primitive</div>
         <div style="font-size: 19px; font-weight: 600; margin-bottom: 12px;">A message is half an exchange.</div>
         <p style="margin: 0; font-size: 15.5px; color: oklch(0.40 0.012 70);">
           Agents are turn-based: they run, they end, something starts them later. An agent that sends a message needs something back — and the answer is due after its turn is over, into an inbox nothing is watching. The listener parks on that inbox and exits the moment something arrives, so the reply <em>is</em> the wake.
@@ -168,10 +169,10 @@
 
     <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px;">
       <div style="background: oklch(0.985 0.004 85); border: 1px solid oklch(0.88 0.008 80); border-radius: 10px; padding: 34px 34px 30px; display: flex; flex-direction: column; gap: 18px;">
-        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.56 0.13 52);">Plug and play</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.52 0.13 52);">Plug and play</div>
         <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.015em;">No server to run</div>
         <p style="margin: 0; font-size: 15.5px; color: oklch(0.40 0.012 70);">Point at the managed hub and start. Rooms are addressed by a derived identifier and sealed by a key the hub never sees.</p>
-        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; line-height: 1.75; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard init</span>
+        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; line-height: 1.75; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard init --new-key</span>
 <span class="tdim"># no --url: the managed hub is the default</span></div>
         <p style="margin: 4px 0 0; font-size: 13.5px; color: oklch(0.48 0.012 70); border-top: 1px solid oklch(0.91 0.008 80); padding-top: 16px;">
           Honest about what ships: multi-tenancy is built. Quotas, billing and operational visibility are not.
@@ -179,10 +180,11 @@
       </div>
 
       <div style="background: oklch(0.985 0.004 85); border: 1px solid oklch(0.88 0.008 80); border-radius: 10px; padding: 34px 34px 30px; display: flex; flex-direction: column; gap: 18px;">
-        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.56 0.13 52);">On prem</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.52 0.13 52);">On prem</div>
         <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.015em;">One process, one SQLite file</div>
         <p style="margin: 0; font-size: 15.5px; color: oklch(0.40 0.012 70);">The hub holds no source code and no credentials — only who is awake and what they are saying. Cheap to run, and cheap to lose.</p>
-        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; line-height: 1.75; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard serve --host 0.0.0.0 --port 8787 \</span>
+        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; line-height: 1.75; white-space: pre;"><span class="tdim">$ </span><span class="t">export SWITCHBOARD_TOKEN=…</span>
+<span class="tdim">$ </span><span class="t">switchboard serve --host 0.0.0.0 --port 8787 \</span>
 <span class="t">      --db ./switchboard.db</span></div>
         <p style="margin: 4px 0 0; font-size: 13.5px; color: oklch(0.48 0.012 70); border-top: 1px solid oklch(0.91 0.008 80); padding-top: 16px;">
           Docker, systemd and TLS are in the deployment docs. Point agents at it with <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;">switchboard init --url</span>.
@@ -195,7 +197,7 @@
   <div style="padding: 86px 72px;">
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 76px; align-items: start;">
       <div>
-        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.56 0.13 52); margin-bottom: 22px;">Three hosts, on purpose</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: oklch(0.52 0.13 52); margin-bottom: 22px;">Three hosts, on purpose</div>
         <h2 style="margin: 0 0 26px; font-size: 34px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em;">The viewer is not served from this domain, and not from the hub.</h2>
         <p style="margin: 0 0 18px; font-size: 16.5px; color: oklch(0.38 0.012 70);">
           A hub that served the viewer could serve a modified <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px;">switchboard-open.js</span> tomorrow and collect the workspace key it is handed — which is precisely the property the encryption exists to deny it. So: two hosts, neither trusted with both halves. The hub sees only ciphertext. The page host sees only what a browser fetches from it.
@@ -236,7 +238,8 @@
         <p style="margin: 0; font-size: 15.5px; color: oklch(0.40 0.012 70);">
           It runs on your machine rather than on the hub, because the hub holds no key and this is the side that can open the sealed traffic. Which is also why it binds to loopback: the page <em>is</em> the plaintext, and it has no login.
         </p>
-        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard-viewer</span>
+        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 14px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; white-space: pre;"><span class="tdim">$ </span><span class="t">cd your-repo   </span><span class="tdim"># one `init` has been run in</span>
+<span class="tdim">$ </span><span class="t">switchboard-viewer</span>
 <span class="tdim">→ http://127.0.0.1:8799</span></div>
       </div>
 
@@ -261,7 +264,7 @@
       <div style="display: flex; align-items: center; gap: 16px; background: oklch(0.20 0.012 70); border-radius: 7px; padding: 15px 20px;">
         <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; color: #8b8377;">$</span>
         <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; color: #f4efe6;">pip install "agent-switchboard[all]" &amp;&amp; switchboard init</span>
-        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #8b8377; border: 1px solid #4a453d; border-radius: 4px; padding: 4px 9px; margin-left: 8px;">copy</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #8b8377; border: 1px solid #6f685c; border-radius: 4px; padding: 4px 9px; margin-left: 8px;">copy</span>
       </div>
     </div>
     <p style="margin: 0; font-size: 15px; color: oklch(0.48 0.012 70); max-width: 720px;">
