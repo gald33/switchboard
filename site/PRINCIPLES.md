@@ -152,11 +152,24 @@ reader trusts: dense, typographic, monospace where it means something,
 generous whitespace, one accent colour. Closer to a well-made protocol spec
 than to a SaaS homepage.
 
-## 11. Fast, static, accessible
+## 11. Fast, static, accessible — and no build step
 
 No framework, no tracker, no cookie banner. Single page, hand-written HTML/CSS,
 loads on a plane. Real text (not images) for all code. WCAG AA contrast in both
-light and dark. Every claim on it should be checkable by reading the source.
+light and dark.
+
+**No bundler, no framework build, nothing between the repo and the served
+bytes.** This is not taste, it is principle 9 applied to ourselves: the page
+argues that the viewer can be diffed against the commit it claims to come
+from. A landing page whose served HTML is hashed-classname bundle output
+cannot be diffed against anything, and asking the reader to verify one page
+while shipping them another they cannot is exactly the hollowness principle 10
+is about. `.github/workflows/pages.yml` refuses a bundler for the same reason;
+so does this page.
+
+That specifically rules out Next.js — including `output: export`, which is
+static but still a build. For one page with a terminal player and no state
+there is nothing to route, fetch or componentize anyway.
 
 ## 12. Show what is built on it
 
@@ -201,10 +214,10 @@ Constraints on this section:
    page and nothing else. The viewer stays on `gald33.github.io/switchboard`
    and the hub keeps its own hostname — three hosts on purpose, and the page
    says why (principle 9).
-2. **Hosting for the landing page.** Recommended: Cloudflare Pages from this
-   repo, so it deploys on push and stays diffable against the commit, matching
-   the property the viewer already has. Workers only if something dynamic
-   appears, which principle 11 says should not.
+2. ~~**Hosting for the landing page.**~~ **Decided: Cloudflare Pages**,
+   serving hand-written files from this repo on push. No Workers: those are
+   for server-side compute at the edge, and this page has none — principle 8
+   rules out the forms and capture that would be the only reason to want it.
 3. ~~**Does the GitHub Pages viewer move?**~~ **Decided: it stays**, and
    deliberately so — see principle 9. Moving it to a domain we control would
    trade away the one claim a visitor can check in thirty seconds.
