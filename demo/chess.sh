@@ -128,12 +128,12 @@ done
 banner "TWO AGENTS, BOTH LIVE — chess channel"
 
 export SWITCHBOARD_AGENT_ID=tal
-step 'switchboard register --kind local -c chess --name tal --task "playing chess as Mikhail Tal"' \
-  switchboard register --kind local -c chess --name tal --task "playing chess as Mikhail Tal"
+step 'switchboard announce --kind local -c chess --name tal --task "playing chess as Mikhail Tal"' \
+  switchboard announce --kind local -c chess --name tal --task "playing chess as Mikhail Tal"
 
 export SWITCHBOARD_AGENT_ID=petrosian
-step 'switchboard register --kind local -c chess --name petrosian --task "playing chess as Tigran Petrosian"' \
-  switchboard register --kind local -c chess --name petrosian --task "playing chess as Tigran Petrosian"
+step 'switchboard announce --kind local -c chess --name petrosian --task "playing chess as Tigran Petrosian"' \
+  switchboard announce --kind local -c chess --name petrosian --task "playing chess as Tigran Petrosian"
 
 step 'switchboard agents' \
   switchboard agents
