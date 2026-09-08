@@ -113,15 +113,36 @@ screen is about. Secondary: GitHub.
 Tertiary: docs. No newsletter, no waitlist, no "book a demo", no chat widget.
 Nothing on this page should ask for an email address.
 
-## 9. The page is not the hub
+## 9. Say why the viewer is somewhere else
 
-Two hard rules inherited from the product's own security posture:
+The landing page lives on `agentswitchboard.org`. The viewer stays on GitHub
+Pages at `gald33.github.io/switchboard`, and **that split is content, not just
+infrastructure** — the page explains it rather than merely obeying it.
 
-- The site is static and must be served from a host that is *not* a hub. A hub
-  serving the viewer could serve a viewer that keeps the key.
-- If the invite viewer ever moves to this domain, the invite must stay in the
-  URL fragment, and the served page must remain diffable against the commit —
-  no build step that obscures what reads the key.
+The argument, which is the same one `.github/workflows/pages.yml` makes to
+anyone who opens it:
+
+- **Two hosts, neither trusted with both halves.** The hub sees only
+  ciphertext. The page host sees only what a browser fetches from it. A hub
+  that served the viewer could serve a modified `switchboard-open.js`
+  tomorrow and collect the workspace key it is handed — which is precisely
+  the property the encryption exists to deny it.
+- **No build step, and that is the feature.** Four static files ship exactly
+  as they sit in the repo. So "read the source instead of trusting the host"
+  is a thing a visitor can actually do: diff the served page against the
+  commit it claims to come from. A bundler would quietly end that, which is
+  why there isn't one.
+- **The invite rides in the URL fragment**, which is never sent to a server.
+
+This is the most persuasive thing on the page for the reader who is deciding
+whether the encryption story is real, because it is the rare security claim
+that costs the reader thirty seconds to verify rather than requiring trust.
+Give it room, and make the verification an invitation — link the workflow and
+the served page side by side.
+
+It also binds the landing page itself: `agentswitchboard.org` is static, and
+whatever serves it is never a hub. If the viewer ever does move onto this
+domain, all three properties above move with it or the move doesn't happen.
 
 ## 10. No AI-marketing costume
 
@@ -176,11 +197,14 @@ Constraints on this section:
 
 ## Open decisions (not principles — Gal's call)
 
-1. **Domain layout.** Recommended: `agentswitchboard.org` = landing page,
-   `viewer.agentswitchboard.org` = the static invite viewer, hub stays on its
-   own hostname. Keeps principle 9 structurally true rather than by discipline.
-2. **Hosting.** Recommended: Cloudflare Pages from this repo, so the page is
-   diffable and deploys on push. Workers only if we later need anything
-   dynamic, which principle 11 says we should not.
-3. **Does the GitHub Pages viewer move or stay?** Staying is zero work and
-   already trusted; moving is nicer branding. Not urgent either way.
+1. ~~**Domain layout.**~~ **Decided.** `agentswitchboard.org` is the landing
+   page and nothing else. The viewer stays on `gald33.github.io/switchboard`
+   and the hub keeps its own hostname — three hosts on purpose, and the page
+   says why (principle 9).
+2. **Hosting for the landing page.** Recommended: Cloudflare Pages from this
+   repo, so it deploys on push and stays diffable against the commit, matching
+   the property the viewer already has. Workers only if something dynamic
+   appears, which principle 11 says should not.
+3. ~~**Does the GitHub Pages viewer move?**~~ **Decided: it stays**, and
+   deliberately so — see principle 9. Moving it to a domain we control would
+   trade away the one claim a visitor can check in thirty seconds.
