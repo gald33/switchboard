@@ -1,13 +1,12 @@
 {
   "artboards": [
-    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1200, "h": 6200, "title": "Direction A — dark" },
-    { "file": "Amber.dc.html", "x": 1340, "y": 0, "w": 1200, "h": 5600, "title": "Direction B — warm amber" },
-    { "file": "Mobile.dc.html", "x": 2680, "y": 0, "w": 390, "h": 6200, "title": "A at 390px" }
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1200, "h": 6200 },
+    { "file": "Mobile.dc.html", "x": 1340, "y": 0, "w": 390, "h": 6200, "title": "390px" }
   ],
   "annotations": [
-    { "id": "decide", "x": 3150, "y": 0, "w": 320, "text": "DECIDE: A or B.\n\nA (dark) is what was open at handoff — cyan on deep blue-purple, hue 190/278.\nB (warm amber) keeps the palette the brief specified — burnt amber on warm paper.\n\nSame copy, same structure, same commands. This is purely the colour direction.\n\nOnce you pick, the other one gets deleted rather than kept around." },
-    { "id": "playback", "x": 3150, "y": 470, "w": 320, "text": "PLAYBACK — resolved, with two things to fix.\n\nHow it works: lines reveal on scroll into view, hidden by JS not CSS, so with JS off the whole transcript is simply visible. Honours prefers-reduced-motion, and fails open twice (a reveal-all timer and a 4s guard).\n\nFix 1: the label says 00:41 but playback defaults to 20s.\nFix 2: the pacing is invented weights, not the cast's real frame timings. The content is real; the rhythm is not — and the label claims a recording." },
-    { "id": "added", "x": 3150, "y": 1010, "w": 320, "text": "ADDED beyond the brief — all verified real, none invented:\n\n• 'Three things that go wrong quietly'\n• 'Two agents that have never met miss each other by six minutes' (the rendezvous gap)\n• 'A hub can coordinate agents whose traffic it cannot read' (encryption)\n\nNew commands checked against the CLI: rendezvous --want, init --key -w, listen --until +<slot>. All exist.\n\nBut principle 5 says the smallness is the pitch. Nine sections is not small. Worth cutting one or two." }
+    { "id": "decided", "x": 1810, "y": 0, "w": 320, "text": "DECIDED\n\nColour: the dark direction. The warm amber variant is deleted, not parked.\n\nThe recording: moved out of the slot under the hero and down below the four primitives, at a size that does not compete. The reader never runs these commands — their agent does — so it is evidence, not the pitch. Its caption now says that outright." },
+    { "id": "playback", "x": 1810, "y": 430, "w": 320, "text": "PLAYBACK — still two things to fix.\n\nThe label says 00:41 but playback defaults to 20s.\n\nThe pacing is a weight table rather than the cast's real frame timings, so the content is genuine while the rhythm is invented. Driving it from demo.cast's 27 timestamps fixes both at once.\n\nMechanism is sound: reveals on scroll, hidden by JS not CSS (so JS-off shows everything), honours reduced-motion, fails open twice." },
+    { "id": "open", "x": 1810, "y": 940, "w": 320, "text": "OPEN\n\n• Nine H2 sections. Principle 5 says the smallness of the model is the pitch; nine argues the opposite. At least one should come out — the rendezvous section is the weakest, since it describes a coordination gap rather than a capability.\n\n• If the human never watches the terminal, the viewer is the surface they DO look at. It may deserve more room than it has.\n\n• pyproject says 2.3.0, README says pre-1.0. The page prints both." }
   ],
   "launch": { "view": "canvas" }
 }

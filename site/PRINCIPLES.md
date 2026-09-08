@@ -33,12 +33,31 @@ that gets dropped**. Switchboard's one idea is that coordination state expires
 on its own. If a visitor leaves remembering exactly one sentence, it is that
 one. Give it a whole section; do not bury it in a feature grid.
 
-## 3. Show it running before asking for an install
+## 3. Show it running — but the reader is not the operator
 
-**Decided, and captured.** `demo/run.sh` — the reproducible async handoff:
-alice posts a migration proposal and expires, beta arrives with no memory of
-her and reads the board — recorded as real terminal output and replayed as
-text. It sits above the fold or immediately below it.
+**Revised 2026-09-08.** This principle used to put the recording above the
+fold or immediately below it. That was wrong, and wrong for a reason worth
+keeping: *the human reading this page is never going to type these commands.*
+Their agent runs them, on its own, in a session the human is not sitting in
+front of. A terminal recording in the hero slot implicitly casts the reader as
+the operator, which is the one thing they are not.
+
+So the recording stays — the argument still needs evidence that this runs —
+but as evidence rather than as the pitch: below the four primitives, where it
+proves the model works, at a size that does not compete with the hero. Its
+caption says so outright.
+
+The human's actual job on this page is one command, once: `switchboard init`.
+Everything after that is the agents' surface, not theirs.
+
+**A consequence not yet acted on.** If the human never watches the terminal,
+the thing they *will* look at is the viewer — the one surface built for them
+rather than for an agent. That argues for the viewer earning more room than
+it currently has. Left as a suggestion rather than done unilaterally.
+
+**Captured.** `demo/run.sh` — the reproducible async handoff: alice posts a
+migration proposal and expires, beta arrives with no memory of her and reads
+the board — recorded as real terminal output and replayed as text.
 
 The cast is [`site/demo.cast`](demo.cast): asciicast v2, 41.5s, 27 frames,
 3.5 KB, recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
@@ -146,11 +165,22 @@ domain, all three properties above move with it or the move doesn't happen.
 
 ## 10. No AI-marketing costume
 
-No gradient mesh, no glowing orbs, no "supercharge your workflow", no robot
-mascots, no fake logo wall, no invented metrics. The aesthetic is the one this
-reader trusts: dense, typographic, monospace where it means something,
-generous whitespace, one accent colour. Closer to a well-made protocol spec
-than to a SaaS homepage.
+No "supercharge your workflow", no robot mascots, no fake logo wall, no
+invented metrics. The aesthetic is the one this reader trusts: dense,
+typographic, monospace where it means something, generous whitespace. Closer
+to a well-made protocol spec than to a SaaS homepage.
+
+**Palette decided 2026-09-08: the dark direction.** Cyan on deep blue-purple
+(accent hue ~190, ground ~278), replacing the warm-amber-on-paper system this
+document previously specified. The amber variant is deleted rather than kept
+as an alternate.
+
+The earlier "no gradient mesh" line is relaxed to the extent the chosen
+direction uses soft radial washes behind the hero and section numerals. The
+rule it was protecting still stands: no decoration that carries no
+information, and nothing that reads as a SaaS template. Atmosphere in service
+of a dark terminal-adjacent aesthetic is not the costume this principle was
+written against.
 
 ## 11. Fast, static, accessible — and no build step
 
