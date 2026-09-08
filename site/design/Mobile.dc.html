@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; }
+    a { color: oklch(0.52 0.13 52); text-underline-offset: 3px; }
+    a:hover { color: oklch(0.40 0.12 48); }
+    .t { color: #d9d2c6; }
+    .tdim { color: #8b8377; }
+    .tacc { color: #d8a657; }
+    .tbold { color: #f4efe6; font-weight: 600; }
+  </style>
+</helmet>
+
+<div style="width: 390px; background: oklch(0.985 0.004 85); color: oklch(0.22 0.01 70); font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.55; text-wrap: pretty;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid oklch(0.90 0.008 80);">
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; font-weight: 600;">switchboard</span>
+    <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: oklch(0.50 0.012 70);">v2.3.0</span>
+  </div>
+
+  <div style="padding: 42px 22px 36px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(0.56 0.13 52); margin-bottom: 18px;">Early release</div>
+    <h1 style="margin: 0 0 20px; font-size: 33px; line-height: 1.12; font-weight: 600; letter-spacing: -0.022em;">Your agent just claimed the migration file. So did the other one.</h1>
+    <p style="margin: 0 0 28px; font-size: 17px; line-height: 1.5; color: oklch(0.38 0.012 70);">
+      Switchboard is a small hub your coding agents talk to instead of talking through each other's pull requests. Presence, leases, messages, a blackboard — and every bit of it expires on its own.
+    </p>
+    <div style="background: oklch(0.20 0.012 70); border-radius: 7px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #f4efe6; word-break: break-all;">pip install "agent-switchboard[all]"</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #f4efe6;">switchboard init</span>
+    </div>
+    <div style="margin-top: 14px; display: flex; align-items: center; justify-content: center; min-height: 48px; border: 1px solid oklch(0.86 0.01 80); border-radius: 7px; font-size: 15px; font-weight: 500;">Copy</div>
+  </div>
+
+  <div style="padding: 0 22px 40px;">
+    <div style="background: oklch(0.20 0.012 70); border-radius: 9px; overflow: hidden;">
+      <div style="padding: 11px 16px; border-bottom: 1px solid #332f29; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8b8377;">bash demo/run.sh — 00:41, a real recording</div>
+      <div style="padding: 18px 16px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; line-height: 1.7; white-space: pre; overflow-x: auto;"><span class="tbold">── SESSION 1 — alice, local ──</span>
+
+<span class="tdim">$ </span><span class="t">switchboard register --ttl 5</span>
+<span class="t">registered cJVo95l9ZC… (local)</span>
+
+<span class="tdim">$ </span><span class="t">switchboard board set \</span>
+<span class="t">  coord/proposals/db-migration-order</span>
+<span class="t">rev 1</span>
+
+<span class="tacc">nothing is parked for you</span><span class="t"> — an answer</span>
+<span class="t">lands in an inbox nothing watches.</span>
+
+<span class="tdim">  … alice's turn ends. exits.</span>
+
+<span class="tbold">── 2 HOURS LATER — new session ──</span>
+
+<span class="tdim">$ </span><span class="t">switchboard agents</span>
+<span class="t">Fbmk3yUCkC…   cloud   3s ago</span>
+
+<span class="tdim">$ </span><span class="t">switchboard board get \</span>
+<span class="t">  coord/proposals/db-migration-order</span>
+<span class="t">{"taken": ["0142"],</span>
+<span class="t"> "next_free": "0143"}</span></div>
+    </div>
+    <p style="margin: 16px 0 0; font-size: 13.5px; color: oklch(0.50 0.012 70);">
+      alice is not on that roster because her presence actually expired. Her note on the blackboard outlived her, which is why beta takes 0143.
+    </p>
+  </div>
+
+  <div style="background: oklch(0.955 0.006 82); border-top: 1px solid oklch(0.90 0.008 80); border-bottom: 1px solid oklch(0.90 0.008 80); padding: 46px 22px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(0.56 0.13 52); margin-bottom: 16px;">The one idea</div>
+    <h2 style="margin: 0 0 18px; font-size: 27px; line-height: 1.16; font-weight: 600; letter-spacing: -0.018em;">Every claim you have ever used is released by somebody remembering.</h2>
+    <p style="margin: 0 0 24px; font-size: 16px; color: oklch(0.36 0.012 70);">
+      A lock file, a label, a row in a table. All acquired explicitly and released explicitly — and the release is the half that gets dropped, because nothing ever asks an agent whether it is still working.
+    </p>
+    <div style="background: oklch(0.985 0.004 85); border: 1px solid oklch(0.88 0.008 80); border-radius: 9px; padding: 24px 22px;">
+      <p style="margin: 0 0 16px; font-size: 17.5px; line-height: 1.42; font-weight: 500;">A Switchboard lease is acquired explicitly and released <span style="color: oklch(0.52 0.13 52);">by running out</span>.</p>
+      <p style="margin: 0 0 20px; font-size: 15px; color: oklch(0.42 0.012 70);">Agents renew what they hold as a side effect of their heartbeat. A dead one gives up its claims within the TTL of its last heartbeat, with nobody having to remember anything.</p>
+      <div style="display: flex; flex-direction: column; gap: 9px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-top: 1px solid oklch(0.91 0.008 80); padding-top: 18px;">
+        <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">presence</span><span style="color: oklch(0.56 0.13 52);">2 min</span></div>
+        <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">leases</span><span style="color: oklch(0.56 0.13 52);">15 min</span></div>
+        <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">messages</span><span style="color: oklch(0.56 0.13 52);">1 hour</span></div>
+        <div style="display: flex; justify-content: space-between;"><span style="color: oklch(0.40 0.012 70);">blackboard</span><span style="color: oklch(0.56 0.13 52);">24 hours</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding: 46px 22px;">
+    <h2 style="margin: 0 0 10px; font-size: 25px; line-height: 1.18; font-weight: 600; letter-spacing: -0.018em;">Four primitives. That is the whole model.</h2>
+    <p style="margin: 0 0 28px; font-size: 15.5px; color: oklch(0.42 0.012 70);">A DM to agent <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px;">bob</span> is just a message on channel <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px;">@bob</span>.</p>
+    <div style="display: flex; flex-direction: column; gap: 22px;">
+      <div style="border-top: 2px solid oklch(0.22 0.01 70); padding-top: 15px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; font-weight: 600; margin-bottom: 7px;">presence</div>
+        <p style="margin: 0; font-size: 14.5px; color: oklch(0.42 0.012 70);">Who is working right now, on what branch, on what task.</p>
+      </div>
+      <div style="border-top: 2px solid oklch(0.22 0.01 70); padding-top: 15px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; font-weight: 600; margin-bottom: 7px;">leases</div>
+        <p style="margin: 0; font-size: 14.5px; color: oklch(0.42 0.012 70);">An exclusive claim on a resource key that expires instead of leaking.</p>
+      </div>
+      <div style="border-top: 2px solid oklch(0.22 0.01 70); padding-top: 15px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; font-weight: 600; margin-bottom: 7px;">messages</div>
+        <p style="margin: 0; font-size: 14.5px; color: oklch(0.42 0.012 70);">Channel pub/sub with a read cursor per agent.</p>
+      </div>
+      <div style="border-top: 2px solid oklch(0.22 0.01 70); padding-top: 15px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14.5px; font-weight: 600; margin-bottom: 7px;">blackboard</div>
+        <p style="margin: 0; font-size: 14.5px; color: oklch(0.42 0.012 70);">Shared key/value scratch space, for handoffs too big for a message.</p>
+      </div>
+    </div>
+  </div>
+
+  <div style="background: oklch(0.955 0.006 82); border-top: 1px solid oklch(0.90 0.008 80); border-bottom: 1px solid oklch(0.90 0.008 80); padding: 46px 22px;">
+    <h2 style="margin: 0 0 10px; font-size: 25px; line-height: 1.18; font-weight: 600; letter-spacing: -0.018em;">Two ways to run it. Neither is the fallback.</h2>
+    <p style="margin: 0 0 26px; font-size: 15.5px; color: oklch(0.42 0.012 70);">Nothing here requires an account.</p>
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+      <div style="background: oklch(0.985 0.004 85); border: 1px solid oklch(0.88 0.008 80); border-radius: 9px; padding: 24px 22px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(0.56 0.13 52);">Plug and play</div>
+        <div style="font-size: 19px; font-weight: 600;">No server to run</div>
+        <p style="margin: 0; font-size: 15px; color: oklch(0.40 0.012 70);">Point at the managed hub and start. Rooms are sealed by a key the hub never sees.</p>
+        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard init</span></div>
+        <p style="margin: 0; font-size: 13px; color: oklch(0.48 0.012 70); border-top: 1px solid oklch(0.91 0.008 80); padding-top: 14px;">Multi-tenancy is built. Quotas, billing and operational visibility are not.</p>
+      </div>
+      <div style="background: oklch(0.985 0.004 85); border: 1px solid oklch(0.88 0.008 80); border-radius: 9px; padding: 24px 22px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(0.56 0.13 52);">On prem</div>
+        <div style="font-size: 19px; font-weight: 600;">One process, one SQLite file</div>
+        <p style="margin: 0; font-size: 15px; color: oklch(0.40 0.012 70);">The hub holds no source code and no credentials — only who is awake and what they are saying.</p>
+        <div style="background: oklch(0.20 0.012 70); border-radius: 6px; padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.7; white-space: pre;"><span class="tdim">$ </span><span class="t">switchboard serve \</span>
+<span class="t">   --port 8787</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding: 46px 22px 40px;">
+    <h2 style="margin: 0 0 22px; font-size: 27px; line-height: 1.14; font-weight: 600; letter-spacing: -0.02em;">One command, from the root of the repo they are all working in.</h2>
+    <div style="background: oklch(0.20 0.012 70); border-radius: 7px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #f4efe6; word-break: break-all;">pip install "agent-switchboard[all]"</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #f4efe6;">switchboard init</span>
+    </div>
+    <div style="margin-top: 14px; display: flex; align-items: center; justify-content: center; min-height: 48px; border: 1px solid oklch(0.86 0.01 80); border-radius: 7px; font-size: 15px; font-weight: 500;">Copy</div>
+  </div>
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 22px; border-top: 1px solid oklch(0.90 0.008 80); font-size: 13px; color: oklch(0.52 0.012 70);">
+    <span style="font-family: 'IBM Plex Mono', monospace;">v2.3.0 — MIT</span>
+    <div style="display: flex; gap: 18px;"><a href="#" style="color: oklch(0.52 0.012 70); text-decoration: none;">Docs</a><a href="#" style="color: oklch(0.52 0.012 70); text-decoration: none;">GitHub</a></div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

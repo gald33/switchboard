@@ -1,0 +1,11 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1200, "h": 4980 },
+    { "file": "Mobile.dc.html", "x": 1340, "y": 0, "w": 390, "h": 3560 }
+  ],
+  "annotations": [
+    { "id": "brief", "x": 1800, "y": 0, "w": 300, "text": "agentswitchboard.org — drafted against site/PRINCIPLES.md.\n\nHero leads with the collision, not the category (p1).\nThe expiry gets its own section (p2).\nThe terminal block is real output from demo/run.sh (p3, p4).\nFour primitives, no padding to six (p5).\nTwo flavors as equals, with what doesn't ship stated at the offer (p6, p7).\nThree hosts explained, not just obeyed (p9)." },
+    { "id": "open", "x": 1800, "y": 460, "w": 300, "text": "Still open:\n\n• The terminal is drawn as static text here. On the real page it plays site/demo.cast.\n• Nav/footer links are placeholders.\n• pyproject says 2.3.0 but the README says pre-1.0 — the page currently says neither." }
+  ],
+  "launch": { "view": "canvas" }
+}
