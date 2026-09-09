@@ -147,11 +147,18 @@ Two things this must not become:
 
 - Plug-and-play must never read as the *price of entry*. Nothing in Switchboard
   requires an account, and the page must leave the reader certain of that.
-- Plug-and-play must not oversell what ships. Multi-tenancy is built; rooms are
-  sealed by a key the hub never sees; **quotas, billing and operational
-  visibility do not ship yet.** Say so on the page, at the point of the offer —
-  principle 6 applies hardest here, because this is the claim a reader is most
-  likely to test.
+- Plug-and-play must not oversell what ships. Multi-tenancy is built and rooms
+  are sealed by a key the hub never sees; quotas, billing and operational
+  visibility do not.
+
+  **Revised 2026-09-09.** This principle used to require saying that on the
+  page, at the point of the offer. Gal cut that line, and the requirement goes
+  with it rather than sitting here contradicted. The maturity claim is not lost
+  — the hero opens with *"Early release — the shape is still settling"*, which
+  is the honest signal principle 6 actually asks for, and a caveat about
+  billing is answering a question nobody reading a pre-release coordination
+  library has asked yet. What stays non-negotiable is the other half: the page
+  must never *claim* quotas or billing exist.
 
 The on-prem side gets the argument that only it can make: the hub holds no
 source code and no credentials — only who is awake and what they are saying —

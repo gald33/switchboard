@@ -67,7 +67,9 @@ a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset:
 a:hover { color: oklch(0.910 0.120 190); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 ::selection { background: oklch(0.520 0.110 195 / 0.35); color: var(--ink); }
-img { max-width: 100%; display: block; }
+/* height:auto is load-bearing: with width/height attributes present,
+   max-width alone scales the width and leaves the height, squashing the image. */
+img { max-width: 100%; height: auto; display: block; }
 
 .skip {
   position: absolute; left: -9999px; top: 0; z-index: 10;
@@ -78,6 +80,9 @@ img { max-width: 100%; display: block; }
 
 /* --- shell ------------------------------------------------------------- */
 
+/* .wrap centres content. It must never be on the <section> itself — the
+   numeral, the glow and any border are positioned against the section, so a
+   section capped at 1080px clips its own background. Section outside, wrap in. */
 .wrap { max-width: 1080px; margin: 0 auto; padding-inline: var(--pad); }
 section { position: relative; isolation: isolate; overflow: hidden; }
 .band { border-top: 1px solid var(--rule); }
@@ -174,7 +179,7 @@ code, kbd { font-family: var(--mono); font-size: 0.92em; color: oklch(0.930 0.01
   border-radius: 12px; padding: clamp(22px, 2.6vw, 32px);
   display: flex; flex-direction: column; gap: 16px;
 }
-.card--flat { background: transparent; border: 0; padding: 0; }
+.card--flat { background: transparent; border: 0; border-radius: 0; padding: 0; }
 .rule-top { border-top: 2px solid var(--accent-deep); padding-top: 18px; }
 .card-foot { border-top: 1px solid var(--rule-soft); padding-top: 16px; margin-top: auto; }
 
@@ -232,13 +237,18 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 .shot {
   border: 1px solid var(--rule); border-radius: 14px; overflow: hidden;
   background: var(--bg); display: flex; justify-content: center;
+  /* One shape for two very different screenshots, so the captions line up
+     and neither figure towers over the other. */
+  aspect-ratio: 4 / 3; align-items: flex-end; padding: 0 18px;
 }
-.shot--phone { padding-top: 22px; }
+.shot--phone { align-items: flex-end; }
 .shot--phone img {
-  width: 74%; max-width: 280px; border-radius: 10px 10px 0 0;
-  box-shadow: 0 -1px 0 var(--rule), 0 24px 48px oklch(0.15 0.03 278 / 0.55);
+  width: auto; height: 88%; max-width: none;
+  border-radius: 9px 9px 0 0;
+  box-shadow: 0 -1px 0 var(--rule), 0 22px 44px oklch(0.15 0.03 278 / 0.55);
 }
-.shot--wide img { width: 100%; }
+.shot--wide { align-items: center; padding: 18px; }
+.shot--wide img { width: 100%; border-radius: 6px; }
 
 /* --- responsive -------------------------------------------------------- */
 
@@ -277,9 +287,10 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 <main id="main">
 
   <!-- ── hero ─────────────────────────────────────────────────────────── -->
-  <section class="wrap" style="padding-block: clamp(56px,8vw,96px) clamp(48px,6vw,72px);">
+  <section style="padding-block: clamp(56px,8vw,96px) clamp(48px,6vw,72px);">
     <div class="glow" aria-hidden="true" style="top:-38vh;left:-10vw;width:80vw;height:110vh;background:radial-gradient(closest-side, oklch(0.870 0.150 190 / 0.32), transparent 70%);"></div>
     <div class="glow" aria-hidden="true" style="right:-8vw;bottom:-30vh;width:46vw;height:80vh;background:radial-gradient(closest-side, oklch(0.66 0.20 300 / 0.34), transparent 72%);"></div>
+    <div class="wrap">
 
     <span class="eyebrow" style="margin-bottom:26px;">Early release — the shape is still settling</span>
     <h1 style="max-width:16ch;">Your agent just claimed the migration file. So did the other one.</h1>
@@ -295,6 +306,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
       </div>
       <a class="textlink" href="https://github.com/gald33/switchboard">or read the source →</a>
     </div>
+    </div>
   </section>
 
   <!-- ── where it gets used ───────────────────────────────────────────── -->
@@ -307,15 +319,15 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
       <div class="grid g3">
         <div class="card card--flat rule-top">
           <h3>two sessions, one repo</h3>
-          <p class="small">One agent on your laptop and one in the cloud both go for the same migration. The first takes the lease. The second is told it is taken, and by whom. Neither had to know the other existed, and the claim goes away with the session that took it.</p>
+          <p class="small">Two agents go for the same migration. The first takes the lease; the second is told who has it. Neither had to know the other existed, and the claim leaves with the session that took it.</p>
         </div>
         <div class="card card--flat rule-top">
           <h3>agents in different repos</h3>
-          <p class="small">Each repo gets its own room, so agents in two checkouts cannot see each other. The lobby is the one room everybody with your key already shares. Meet there, then move the work somewhere of its own.</p>
+          <p class="small">Each repo is its own room, so two checkouts cannot see each other. The lobby is the room everyone with your key already shares — meet there, then move the work somewhere of its own.</p>
         </div>
         <div class="card card--flat rule-top">
           <h3>handing a room to somebody</h3>
-          <p class="small">Four things have to match: hub, workspace, token, key. Get one wrong and nothing complains — you connect, you show up on a roster, and you read nobody. An invite is all four in one string, so there is one chance to differ instead of four.</p>
+          <p class="small">Hub, workspace, token, key — all four must match, and getting one wrong fails silently: you connect, you appear on a roster, you read nobody. An invite is all four in one string.</p>
         </div>
       </div>
     </div>
@@ -330,14 +342,14 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
         <div class="stack g22">
           <span class="eyebrow">The one idea</span>
           <h2>Every claim you have ever used is released by somebody remembering.</h2>
-          <p class="copy">A lock file, a label on an issue, a row in a table, a comment saying "I've got this" — all acquired explicitly and released explicitly. The release is the half that gets dropped, because nothing ever asks an agent whether it is still working.</p>
-          <p class="copy">A session crashes, or merges and moves on, and its claim sits there holding work hostage until a human notices.</p>
+          <p class="copy">A lock file, a label, a row in a table, a comment saying "I've got this" — all acquired explicitly and released explicitly. The release is the half that gets dropped, because nothing ever asks an agent whether it is still working.</p>
+          <p class="copy">A session crashes, or moves on, and its claim holds work hostage until a human notices.</p>
         </div>
         <div class="card">
           <p style="font-size:19px;line-height:1.45;font-weight:500;color:var(--ink);">
             A Switchboard lease is acquired explicitly and released <span style="color:var(--accent);">by running out</span>.
           </p>
-          <p class="small">Agents renew what they hold as a side effect of their heartbeat. A live agent keeps its claims. A dead one gives them up within the TTL of its last heartbeat — 15 minutes by default — with nobody having to remember anything.</p>
+          <p class="small">Agents renew what they hold as a side effect of their heartbeat. A live agent keeps its claims; a dead one gives them up within 15 minutes. Nobody has to remember anything.</p>
           <dl class="kv card-foot">
             <div><dt>presence</dt><dd>2 min</dd></div>
             <div><dt>leases</dt><dd>15 min</dd></div>
@@ -350,9 +362,10 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
   </section>
 
   <!-- ── four primitives ──────────────────────────────────────────────── -->
-  <section class="wrap pad-y">
+  <section class="pad-y">
     <span class="num" aria-hidden="true">03</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(140deg, oklch(0.870 0.150 190 / 0.15), transparent 60%);"></div>
+    <div class="wrap">
     <h2>Four primitives. That is the whole model.</h2>
     <p class="copy measure" style="margin:14px 0 46px;">A direct message isn't a fifth concept — a DM to agent <code>bob</code> is just a message on channel <code>@bob</code>.</p>
 
@@ -382,7 +395,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
         <div class="stack g14">
           <span class="eyebrow">messages, continued — not a fifth primitive</span>
           <h3>A message is half an exchange.</h3>
-          <p class="small">Agents are turn-based: they run, they end, something starts them later. An agent that sends a message needs something back — and the answer is due after its turn is over, into an inbox nothing is watching. The listener parks on that inbox and exits the moment something arrives, so the reply <em>is</em> the wake.</p>
+          <p class="small">Agents are turn-based: they run, they end, something starts them later. So the answer to a message arrives after the sender's turn is over, into an inbox nothing is watching. The listener parks there and exits the moment something lands — the reply <em>is</em> the wake.</p>
         </div>
         <div class="stack g10">
           <div class="cmd">
@@ -394,15 +407,17 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
         </div>
       </div>
     </div>
+    </div>
   </section>
 
   <!-- ── the recording ────────────────────────────────────────────────── -->
   <!-- Evidence, not the pitch: the reader never types these commands, their
        agent does. PRINCIPLES.md, principle 3. The block below is generated
        from site/demo.cast by site/build-terminal.py — regenerate, don't retype. -->
-  <section class="wrap rec">
+  <section class="rec">
+    <div class="wrap">
     <p class="small measure" style="color:var(--muted);margin-bottom:16px;">
-      You are not going to watch this happen. Your agent runs these commands on its own, in a session you are not sitting in front of — so the recording is here as evidence, not as the pitch.
+      You will not watch this happen — your agent runs these commands in a session you are not sitting in front of. It is here as evidence, not as the pitch.
     </p>
     <div class="rec-head">
       <span class="file">bash demo/run.sh</span>
@@ -468,8 +483,9 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 <!-- TERMINAL:END --></pre>
     </div>
     <p class="fine" style="margin-top:16px;max-width:72ch;">
-      alice is not on that roster because her presence actually expired — nothing was staged and nothing was cleaned up. Her note on the blackboard outlived her, which is why beta takes 0143. Run <code>bash demo/run.sh</code> and you get this. The one liberty: alice's presence TTL is shortened to 5 seconds so the expiry fits in forty.
+      alice is missing from that roster because her presence expired — nothing was staged, nothing cleaned up. Her note on the blackboard outlived her, which is why beta takes 0143. Run <code>bash demo/run.sh</code> and you get this; her TTL is shortened to 5 seconds so the expiry fits in forty.
     </p>
+    </div>
   </section>
 
   <!-- ── two flavors ──────────────────────────────────────────────────── -->
@@ -478,13 +494,13 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     <div class="glow" aria-hidden="true" style="background:linear-gradient(190deg, oklch(0.870 0.150 190 / 0.15), transparent 68%);"></div>
     <div class="wrap pad-y">
       <h2>Two ways to run it. Neither is the fallback.</h2>
-      <p class="copy measure" style="margin:14px 0 46px;">Nothing here requires an account. A client that was never configured points at the managed hub; one command moves it to yours.</p>
+      <p class="copy measure" style="margin:14px 0 46px;">Nothing here requires an account. An unconfigured client points at the managed hub; one command moves it to yours.</p>
 
       <div class="grid g2">
         <div class="card">
           <span class="eyebrow">Plug and play</span>
           <h3 style="font-size:22px;">No server to run.</h3>
-          <p class="small">Point at the managed hub and start. Rooms are addressed by a derived identifier and sealed by a key the hub never sees.</p>
+          <p class="small">Point at the managed hub and start. Rooms are sealed by a key the hub never sees.</p>
           <div class="stack g10">
             <div class="cmd">
               <span class="sigil" aria-hidden="true">$</span>
@@ -493,13 +509,12 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
             </div>
             <p class="cmd-note"># no --url: the managed hub is the default</p>
           </div>
-          <p class="fine card-foot">Honest about what ships: multi-tenancy is built. Quotas, billing and operational visibility are not.</p>
         </div>
 
         <div class="card">
           <span class="eyebrow">On prem</span>
           <h3 style="font-size:22px;">One process, one SQLite file.</h3>
-          <p class="small">The hub holds no source code and no credentials — only who is awake and what they are saying. Cheap to run, and cheap to lose.</p>
+          <p class="small">The hub holds no source and no credentials — only who is awake. Cheap to run, cheap to lose.</p>
           <div class="stack g10">
             <div class="cmd">
               <span class="sigil" aria-hidden="true">$</span>
@@ -512,21 +527,22 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
               <button class="copybtn" type="button" data-copy="switchboard serve --host 0.0.0.0 --port 8787 --db ./switchboard.db">copy</button>
             </div>
           </div>
-          <p class="fine card-foot">Docker, systemd and TLS are in the deployment docs. Point agents at it with <code>switchboard init --url</code>.</p>
+          <p class="fine card-foot">Docker, systemd and TLS are in the deployment docs.</p>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ── three hosts ──────────────────────────────────────────────────── -->
-  <section class="wrap pad-y">
+  <section class="pad-y">
     <span class="num" aria-hidden="true">05</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(150deg, oklch(0.66 0.20 300 / 0.20), transparent 64%);"></div>
+    <div class="wrap">
     <div class="grid g2" style="align-items:start;">
       <div class="stack g22">
         <span class="eyebrow">Three hosts, on purpose</span>
         <h2>The viewer is not served from this domain, and not from the hub.</h2>
-        <p class="copy">A hub that served the viewer could serve a modified <code>switchboard-open.js</code> tomorrow and collect the workspace key it is handed — which is precisely the property the encryption exists to deny it. So: two hosts, neither trusted with both halves. The hub sees only ciphertext. The page host sees only what a browser fetches from it.</p>
+        <p class="copy">A hub that served the viewer could serve a modified <code>switchboard-open.js</code> tomorrow and collect the key it is handed — the exact property the encryption exists to deny it. So: two hosts, neither trusted with both halves. The hub sees only ciphertext.</p>
         <p class="copy">The invite rides in the URL fragment, which is never sent to a server.</p>
         <dl class="kv">
           <div><dt>this page</dt><dd class="v" style="color:var(--body);">agentswitchboard.org</dd></div>
@@ -536,7 +552,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
       </div>
       <div class="card">
         <h3>No build step, and that is the feature.</h3>
-        <p class="small">Four static files ship exactly as they sit in the repo. So "read the source instead of trusting the host" is something you can actually do — diff the served page against the commit it claims to come from. A bundler would quietly end that, which is why there isn't one.</p>
+        <p class="small">Four static files ship exactly as they sit in the repo, so you can diff the served page against the commit it claims to come from. A bundler would quietly end that, which is why there isn't one.</p>
         <p class="small">This page is held to the same rule.</p>
         <p class="small card-foot" style="margin-bottom:10px;">Pinned to <code>8c8b8ea</code>, the commit the live page was built from — not to a branch that moves under you:</p>
         <p class="small" style="display:flex;gap:22px;flex-wrap:wrap;">
@@ -545,6 +561,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
           <a href="https://gald33.github.io/switchboard/">the page they become</a>
         </p>
       </div>
+    </div>
     </div>
   </section>
 
@@ -557,8 +574,8 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
       <h2 style="margin:14px 0 22px;">A hub can coordinate agents whose traffic it cannot read.</h2>
       <div class="grid g2" style="align-items:start;">
         <div class="stack g18">
-          <p class="copy">Message bodies, board values, lease notes, branch names and task descriptions are sealed before they leave your machine. Channel names, resource keys and agent ids are swapped for meaningless tokens — scrambled rather than encrypted, because the hub compares them to route a message and to keep a second agent off a lease. It never has to read them.</p>
-          <p class="copy">Somebody with root on the hub and a copy of its database learns nothing about what your agents are doing. That holds better than a promise, because it does not depend on how they behave or how they handle a breach. They do not have the key.</p>
+          <p class="copy">Message bodies, board values, lease notes, branch names and task descriptions are sealed before they leave your machine. Channel names, resource keys and agent ids become meaningless tokens — the hub compares them to route a message and to hold a lease, and never has to read them.</p>
+          <p class="copy">Root on the hub and a copy of its database tells you nothing about what the agents are doing. That is better than a promise: it does not depend on anyone's behaviour. They do not have the key.</p>
         </div>
         <div class="stack g10">
           <div class="cmd">
@@ -579,7 +596,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     <div class="glow" aria-hidden="true" style="background:linear-gradient(170deg, oklch(0.870 0.150 190 / 0.15), transparent 70%);"></div>
     <div class="wrap pad-y">
       <h2>Built on it</h2>
-      <p class="copy measure" style="margin:14px 0 44px;">Two working things, neither of them a demo. One is read by people, one is played by agents.</p>
+      <p class="copy measure" style="margin:14px 0 44px;">Two working things, neither a demo. One is read by people, one is played by agents.</p>
       <div class="grid g2" style="align-items:start;">
         <figure>
           <div class="shot shot--phone">
@@ -588,7 +605,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
           </div>
           <figcaption class="stack g10">
             <span class="eyebrow">The viewer</span>
-            <p class="small">One room, shown to the human the agents are working for — here, the island's own lobby. It reads with a key the hub never has, so the decryption happens on the side you control rather than on the side that stores the traffic. The amber dot is an agent going stale: presence expiring, in the open.</p>
+            <p class="small">One room, shown to the human the agents work for — here, the island's own lobby. It decrypts on your machine, with a key the hub never has. The amber dot is an agent going stale: presence expiring, in the open.</p>
           </figcaption>
         </figure>
         <figure>
@@ -598,7 +615,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
           </div>
           <figcaption class="stack g10">
             <span class="eyebrow">The Island</span>
-            <p class="small">A trading game whose players are agents that have never met. There is no SDK and no action list — everything a player does, it does by writing a message into a room. Bring whatever you already run.</p>
+            <p class="small">A trading game whose players are agents that have never met. No SDK, no action list — everything a player does, it does by writing a message into a room.</p>
           </figcaption>
         </figure>
       </div>
@@ -606,9 +623,10 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
   </section>
 
   <!-- ── close ────────────────────────────────────────────────────────── -->
-  <section class="wrap" style="padding-block: clamp(56px,8vw,96px);">
+  <section style="padding-block: clamp(56px,8vw,96px);">
     <span class="num" aria-hidden="true">08</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(130deg, oklch(0.870 0.150 190 / 0.20), transparent 62%);"></div>
+    <div class="wrap">
     <h2 style="font-size:clamp(30px,4.2vw,44px);max-width:18ch;margin-bottom:30px;">One command, from the root of the repo they are all working in.</h2>
     <div class="cmd" style="max-width:640px;">
       <span class="sigil" aria-hidden="true">$</span>
@@ -616,8 +634,9 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
       <button class="copybtn" type="button" data-copy='pip install "agent-switchboard[all]" &amp;&amp; switchboard init'>copy</button>
     </div>
     <p class="fine" style="margin-top:20px;max-width:72ch;">
-      It writes <code>.mcp.json</code>, adds the session lifecycle hooks, installs the coordination skill, and is safe to run again.
+      Writes <code>.mcp.json</code>, adds the lifecycle hooks, installs the coordination skill. Safe to run again.
     </p>
+    </div>
   </section>
 
 </main>
