@@ -237,19 +237,21 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 /* Both screenshots sit in a drawn device, so it is obvious at a glance which
    one is a phone in your hand and which is a game on a laptop. One shared
    frame height keeps the two captions on the same line. */
+/* No box: each device draws its own edge, so a bordered panel around it was
+   the same boundary twice. The element stays only to reserve equal height, so
+   the two captions still line up. */
 .shot {
   display: flex; align-items: center; justify-content: center;
-  aspect-ratio: 4 / 3;
-  background:
-    radial-gradient(120% 90% at 50% 0%, oklch(0.325 0.050 280), transparent 70%),
-    var(--bg-sunk);
-  border: 1px solid var(--rule); border-radius: 14px; overflow: hidden;
+  /* A definite height, not an aspect-ratio: the phone is sized from its own
+     height, and `height: 100%` against an auto-height parent is indeterminate
+     — it falls back to sizing from the width and the slot grows to 954px. */
+  height: clamp(280px, 26vw, 390px);
 }
 
 /* phone --------------------------------------------------------------- */
 .phone {
   position: relative;
-  height: 86%;
+  height: 100%;
   aspect-ratio: 9 / 17.6;
   padding: 6px;
   border-radius: 26px;
@@ -258,18 +260,13 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     inset 0 0 0 1px oklch(0.545 0.072 280),
     0 20px 40px oklch(0.12 0.03 278 / 0.6);
 }
-.phone::after {                       /* speaker slot, not a fake status bar */
-  content: ""; position: absolute; top: 12px; left: 50%;
-  width: 26%; height: 4px; transform: translateX(-50%);
-  background: oklch(0.225 0.038 278); border-radius: 3px; z-index: 2;
-}
 .phone img {
   width: 100%; height: 100%; object-fit: cover; object-position: top;
   border-radius: 21px; display: block;
 }
 
 /* laptop -------------------------------------------------------------- */
-.laptop { width: 92%; display: flex; flex-direction: column; align-items: center; }
+.laptop { width: 100%; display: flex; flex-direction: column; align-items: center; }
 .laptop-lid {
   width: 100%; padding: 9px 9px 10px;
   border-radius: 12px 12px 3px 3px;
@@ -278,7 +275,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 }
 .laptop-lid img { width: 100%; border-radius: 4px; display: block; }
 .laptop-base {                        /* the wedge under the lid */
-  width: 114%; height: 11px;
+  width: 108%; height: 11px;
   border-radius: 0 0 10px 10px;
   background: linear-gradient(180deg, oklch(0.375 0.052 280), oklch(0.255 0.042 278));
   box-shadow: 0 8px 16px oklch(0.12 0.03 278 / 0.5);
@@ -291,8 +288,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 }
 
 @media (max-width: 680px) {
-  .shot { aspect-ratio: 5 / 4; }
-  .phone { height: 92%; }
+  .shot { height: clamp(300px, 78vw, 380px); }
 }
 
 /* --- responsive -------------------------------------------------------- */
