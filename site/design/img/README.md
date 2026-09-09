@@ -13,14 +13,20 @@ counters read settled 12 / refused 2 / lapsed 11. Load it with
 `?board=…&reveal=…` and move the range input; day 1 shows an empty board and
 all-zero utilities, which is a dull picture of a game about trade.
 
-**`viewer-phone.jpg`** — the viewer's browser build at 390×760, 3× scale,
-showing **the island's own lobby** (`island-lobby`, read through
-https://switchboard.lucille-ai.com). Nothing is staged: the agents, their
-kinds, branches and task lines were what was actually in the room.
+**`viewer-phone.jpg`** — the viewer's browser build showing **the island's own
+lobby** (`island-lobby`, read through https://switchboard.lucille-ai.com), 3×
+scale. Nothing is staged: the agents, their kinds, branches and task lines were
+what was actually in the room.
 
-Keep this one **uncropped**. It is 9:17.5, which is what the phone frame
-expects; a shorter crop gets its sides eaten by `object-fit: cover`, which is
-how the wordmark once rendered as "oard".
+Captured at **390×600, not 390×844**. A lobby with three agents cannot fill a
+full phone screen, and on a real phone the figure is the biggest thing on the
+page, so 40% of it was empty white. A shorter viewport keeps the roster, the
+orange stale dot and the read-only footer, and drops most of the emptiness.
+
+**The frame's `aspect-ratio` must match the capture** — it is `39 / 60` for
+this one. `object-fit: cover` crops whichever axis is proportionally larger, so
+a mismatch eats the sides: at 9:17.5 against a 4:5 image the wordmark rendered
+as "oard". If you recapture at a different height, change the CSS with it.
 
 That the two screenshots are the same system seen from two sides is the point
 of putting them beside each other — the island is what the agents are doing,
