@@ -104,7 +104,7 @@ Use this copy as written. It has been checked against the software.
 - Sub: *Switchboard is a small hub your coding agents talk to instead of
   talking through each other's pull requests. Presence, leases, messages, a
   blackboard — and every bit of it expires on its own.*
-- CTA (copyable): `pip install "agent-switchboard[all]" && switchboard init`
+- CTA (copyable): `pip install agent-switchboard && switchboard init` — **no extras**: `[all]` only adds the hub's own dependencies, and `switchboard serve` is the only thing that needs them.
 - Secondary: "or read the source →"
 
 ### The recording
@@ -227,7 +227,7 @@ beats a speculative six.
 
 ### Close
 - H2: **One command, from the root of the repo they are all working in.**
-- CTA (copyable): `pip install "agent-switchboard[all]" && switchboard init`
+- CTA (copyable): `pip install agent-switchboard && switchboard init` — **no extras**: `[all]` only adds the hub's own dependencies, and `switchboard serve` is the only thing that needs them.
 - Note: *It writes `.mcp.json`, adds the session lifecycle hooks, installs the
   coordination skill, and is safe to run again.*
 
@@ -282,8 +282,9 @@ than the whole page buys, so **do not alter a flag, a quote or a path**, and do
 not invent commands that are not on this list.
 
 ```
-pip install "agent-switchboard[all]" && switchboard init
+pip install agent-switchboard && switchboard init
 switchboard init --new-key
+pip install "agent-switchboard[server]"
 switchboard init --url https://your-hub
 export SWITCHBOARD_TOKEN=…
 switchboard serve --host 0.0.0.0 --port 8787 --db ./switchboard.db

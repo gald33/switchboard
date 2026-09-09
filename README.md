@@ -85,22 +85,21 @@ heartbeat — 15 minutes by default — with nobody having to remember anything.
 ## Install
 
 ```bash
-# Agent side: client + CLI only (one dependency, httpx)
+# Agents, the CLI and the MCP bridge — everything except running a hub
 pip install agent-switchboard
 
-# Hub side: also the server
+# Also the hub, if you are running one yourself
 pip install "agent-switchboard[server]"
-
-# With end-to-end encryption
-pip install "agent-switchboard[crypto]"
-
-# With the MCP bridge for Claude Code / any MCP client
-pip install "agent-switchboard[all]"
 ```
+
+Encryption is not an extra: `cryptography` is a base dependency, because a
+build that cannot encrypt is not a working install. `[crypto]` still resolves
+— released docs and images ask for it — but it is now a no-op, and `[all]` is
+`[server]` plus that no-op. Nothing but `switchboard serve` needs either.
 
 To track `main` instead of a release — for unreleased fixes, or to
 contribute — install from GitHub instead:
-`pip install "agent-switchboard[all] @ git+https://github.com/gald33/switchboard.git"`,
+`pip install "agent-switchboard[server] @ git+https://github.com/gald33/switchboard.git"`,
 or pin a commit or tag by appending it to the URL:
 `git+https://github.com/gald33/switchboard.git@v0.7.2`.
 
