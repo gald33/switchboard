@@ -55,9 +55,22 @@ the thing they *will* look at is the viewer — the one surface built for them
 rather than for an agent. That argues for the viewer earning more room than
 it currently has. Left as a suggestion rather than done unilaterally.
 
-**Captured.** `demo/run.sh` — the reproducible async handoff: alice posts a
-migration proposal and expires, beta arrives with no memory of her and reads
-the board — recorded as real terminal output and replayed as text.
+**Captured, and shipped.** `demo/run.sh` — the reproducible async handoff:
+alice posts a migration proposal and expires, beta arrives with no memory of
+her and reads the board — recorded as real terminal output and replayed as
+text.
+
+`site/build-terminal.py` renders the cast into the block the page ships, so
+the transcript is the recording rather than a retyping of it and **each line
+carries the timestamp at which it actually appeared**. Playback is therefore
+the real rhythm of the run, and the `00:41` on the page is true rather than
+decorative. Regenerate it whenever the cast changes; the page and the cast
+must never drift.
+
+Hidden lines are hidden by a class the script adds, never by CSS alone, so
+with JS off — or if any of it throws — the whole transcript is simply there.
+It also does nothing under `prefers-reduced-motion`, and reveals everything
+after 20 seconds for a reader who never scrolls that far.
 
 The cast is [`site/demo.cast`](demo.cast): asciicast v2, 41.5s, 27 frames,
 3.5 KB, recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
