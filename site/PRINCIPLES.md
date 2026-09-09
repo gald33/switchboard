@@ -230,7 +230,8 @@ loads on a plane. Real text (not images) for all code. WCAG AA contrast in both
 light and dark.
 
 **No bundler, no framework build, nothing between the repo and the served
-bytes.** This is not taste, it is principle 9 applied to ourselves: the page
+bytes.** Vercel is configured with a null `buildCommand` for exactly this
+reason: it uploads `site/` as it stands in the commit. This is not taste, it is principle 9 applied to ourselves: the page
 argues that the viewer can be diffed against the commit it claims to come
 from. A landing page whose served HTML is hashed-classname bundle output
 cannot be diffed against anything, and asking the reader to verify one page
@@ -285,10 +286,29 @@ Constraints on this section:
    page and nothing else. The viewer stays on `gald33.github.io/switchboard`
    and the hub keeps its own hostname — three hosts on purpose, and the page
    says why (principle 9).
-2. ~~**Hosting for the landing page.**~~ **Decided: Cloudflare Pages**,
-   serving hand-written files from this repo on push. No Workers: those are
-   for server-side compute at the edge, and this page has none — principle 8
-   rules out the forms and capture that would be the only reason to want it.
+2. ~~**Hosting for the landing page.**~~ **Decided: Vercel**, serving `site/`
+   from this repo with no build command
+   ([`site/vercel.json`](vercel.json)).
+
+   **Correcting the record.** An earlier revision of this document said
+   "Decided: Cloudflare Pages". That was never decided — Cloudflare was named
+   only for *nameservers*, and Pages was a recommendation of mine that got
+   written down as a decision a couple of turns later. The house pattern is
+   GitHub Pages for trusted static pages, otherwise Vercel.
+
+   **GitHub Pages cannot take this one**, which is the whole reason Vercel
+   wins: a repository gets exactly one Pages site, and this repository already
+   spends it on the viewer at `gald33.github.io/switchboard`. Attaching the
+   apex here would move the viewer onto it and break every invite that
+   `switchboard invite --link` has already minted. Serving the page from a
+   second repository would work and need no credentials at all, but it would
+   separate `record-demo.py` from the `demo/run.sh` it records, so the cast
+   could not be regenerated from one checkout.
+
+   Vercel keeps the page beside the demo it records, needs no build, and needs
+   no secret in this repository — its GitHub app holds the auth. Cloudflare
+   stays what it always was here: DNS.
+
 3. ~~**Does the GitHub Pages viewer move?**~~ **Decided: it stays**, and
    deliberately so — see principle 9. Moving it to a domain we control would
    trade away the one claim a visitor can check in thirty seconds.
