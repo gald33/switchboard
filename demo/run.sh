@@ -100,8 +100,8 @@ banner "SESSION 1 — alice, local laptop"
 # alice as present when beta checks the roster a few seconds from now in
 # this recording. Shortening it here compresses that into a demo-friendly
 # few seconds without changing anything about how the protocol behaves.
-step 'switchboard register --kind local -c build --ttl 5' \
-  switchboard register --kind local -c build --ttl 5
+step 'switchboard announce --kind local -c build --ttl 5' \
+  switchboard announce --kind local -c build --ttl 5
 
 step 'switchboard board list --prefix coord/' \
   switchboard board list --prefix coord/
@@ -122,8 +122,8 @@ banner "2 HOURS LATER — new session, new machine"
 
 # --- session 2: beta, cloud session, no memory of alice ---------------------
 export SWITCHBOARD_AGENT_ID=beta
-step 'switchboard register --kind cloud -c build' \
-  switchboard register --kind cloud -c build
+step 'switchboard announce --kind cloud -c build' \
+  switchboard announce --kind cloud -c build
 
 step 'switchboard agents' \
   switchboard agents
