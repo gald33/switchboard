@@ -30,3 +30,6 @@ uv.lock
 
 # repoctx: generated index + feedback state, per-machine.
 .repoctx/
+
+# Seeded design canvas — regenerated from site/design/*.dc.html by the design skill
+site/design/agentswitchboard-landing.html
