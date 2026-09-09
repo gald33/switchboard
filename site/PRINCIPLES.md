@@ -230,6 +230,34 @@ information, and nothing that reads as a SaaS template. Atmosphere in service
 of a dark terminal-adjacent aesthetic is not the costume this principle was
 written against.
 
+## 10a. Write plainly
+
+**Added 2026-09-09, after the copy was rewritten once for being tiring to
+read.** The problem was not length. It was that nearly every paragraph ended
+on a clever reversal — *"the release is the half that gets dropped"*, *"cheap
+to run, cheap to lose"*, *"the reply **is** the wake"*, *"neither trusted with
+both halves"*. Each one makes the reader do a small piece of work to recover a
+plain meaning, and a page of them is exhausting even when every individual
+line is good.
+
+The rules that came out of it:
+
+- **Say the thing, then stop.** Do not end a paragraph on an inversion, a
+  paradox, or a restatement that sounds wiser than the sentence before it.
+- **No analogies.** Describe the mechanism instead.
+- **Short sentences.** The rewrite averages 11 words and never exceeds 26.
+- **Explain our own vocabulary or drop it.** "Lease", "roster", "presence",
+  "primitive", "TTL" are internal words. Either say what they mean in ordinary
+  language ("a claim that expires on a timer") or use the ordinary word.
+- **Assume an ordinary reader, not a clever one.** The audience is still an
+  engineer with two agents colliding, but they are skimming a page in a spare
+  minute, not reading an essay.
+
+A useful test: read a sentence and ask whether a competent engineer who has
+never seen this project would have to pause. If yes, rewrite it. This is not
+about dumbing anything down — the arguments are unchanged. It is about not
+charging the reader for the pleasure of our phrasing.
+
 ## 11. Fast, static, accessible — and no build step
 
 No framework, no tracker, no cookie banner. Single page, hand-written HTML/CSS,

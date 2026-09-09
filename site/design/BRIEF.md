@@ -34,9 +34,16 @@ rest.
 
 ## 3. Voice
 
-Closer to a well-made protocol spec than a SaaS homepage. Plain, specific,
-unhurried, willing to say what does not work yet. Short declaratives. No
-exclamation marks.
+Plain, specific, unhurried, willing to say what does not work yet. Short
+declaratives — around 11 words on average, never past 26. No exclamation
+marks.
+
+**Say the thing, then stop.** Do not end a paragraph on a clever reversal or a
+paradox; do not reach for an analogy where the mechanism can just be
+described. Explain our own vocabulary ("lease", "roster", "presence", "TTL")
+in ordinary words, or use the ordinary word instead. The reader is an engineer
+skimming in a spare minute, not someone reading an essay. If a sentence would
+make a competent stranger pause, rewrite it.
 
 **Never**: "supercharge", "seamless", "effortless", "unlock", "powerful",
 "revolutionize", "10x", "game-changing". No invented metrics, no fake logo
