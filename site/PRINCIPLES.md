@@ -63,8 +63,9 @@ text.
 `site/build-terminal.py` renders the cast into the block the page ships, so
 the transcript is the recording rather than a retyping of it and **each line
 carries the timestamp at which it actually appeared**. Playback is therefore
-the real rhythm of the run, and the `00:41` on the page is true rather than
-decorative. Regenerate it whenever the cast changes; the page and the cast
+the real rhythm of the run, and the duration on the page is true rather than
+decorative — it moved from `00:41` to `00:39` when the demo changed, because
+both come from the same cast. Regenerate it whenever the cast changes; the page and the cast
 must never drift.
 
 Hidden lines are hidden by a class the script adds, never by CSS alone, so
@@ -72,8 +73,8 @@ with JS off — or if any of it throws — the whole transcript is simply there.
 It also does nothing under `prefers-reduced-motion`, and reveals everything
 after 20 seconds for a reader who never scrolls that far.
 
-The cast is [`site/demo.cast`](demo.cast): asciicast v2, 41.5s, 27 frames,
-3.5 KB, recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
+The cast is [`site/demo.cast`](demo.cast): asciicast v2, 39.0s, 40 frames,
+recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
 
 ```bash
 python3 site/record-demo.py demo/run.sh site/demo.cast
@@ -82,7 +83,8 @@ python3 site/record-demo.py demo/run.sh site/demo.cast
 and verify it still matches reality by diffing against a fresh real-pace run
 (`bash demo/run.sh`), normalizing only the three things that legitimately
 differ between runs: agent ids, TTL clocks, and the random hub port. At
-capture time that diff was 39 lines against 39 lines, zero mismatches. Re-run
+capture time that diff was 39 lines against 39 lines, zero mismatches
+(re-verified after `demo/run.sh` moved to `announce`). Re-run
 that check whenever the CLI's output changes — a stale cast is exactly the
 kind of quiet lie principle 4 exists to prevent. (Note that `DEMO_FAST=1` is
 not a valid comparison: it skips the pauses, so alice's presence has not

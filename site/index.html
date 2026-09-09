@@ -406,65 +406,65 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     </p>
     <div class="rec-head">
       <span class="file">bash demo/run.sh</span>
-      <span class="dur">00:41 — recorded, not staged</span>
+      <span class="dur">00:39 — recorded, not staged</span>
       <button class="replay" type="button" id="replay" hidden>replay</button>
     </div>
     <div class="term" id="term">
       <pre aria-label="Recorded terminal session: two agents coordinating through the blackboard."><!-- TERMINAL:BEGIN -->
-<span class="l" data-t="1.09">&nbsp;</span>
-<span class="l" data-t="1.09"><i class="b">── SESSION 1 — alice, local laptop ──</i></span>
-<span class="l" data-t="3.11">&nbsp;</span>
-<span class="l" data-t="3.11"><i class="d">$ </i>switchboard register --kind local -c build --ttl 5</span>
-<span class="l" data-t="4.04">registered cJVo95l9ZCoLBQi9m_XPow (local) in demo on http://127.0.0.1:23072</span>
-<span class="l" data-t="6.10">&nbsp;</span>
-<span class="l" data-t="6.10"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="9.02">&nbsp;</span>
-<span class="l" data-t="9.02"><i class="d">$ </i>switchboard board set coord/proposals/db-migration-order &#x27;{&quot;taken&quot;:[&quot;0142&quot;],&quot;next_free&quot;:&quot;0143&quot;}&#x27; --json-body</span>
-<span class="l" data-t="9.99">coord/proposals/db-migration-order = rev 1</span>
-<span class="l" data-t="12.01">&nbsp;</span>
-<span class="l" data-t="12.01"><i class="d">$ </i>switchboard say build &quot;posted migration order — see coord/proposals/db-migration-order&quot;</span>
-<span class="l" data-t="13.23">posted #1 to build</span>
-<span class="l" data-t="13.23"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
-<span class="l" data-t="13.23">is watching, and waits there until something starts you again. If you expect</span>
-<span class="l" data-t="13.23">one, before this turn ends:</span>
-<span class="l" data-t="13.23">  switchboard listen --until forecast:p50</span>
-<span class="l" data-t="13.23">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
-<span class="l" data-t="13.23">2 is the deadline with nothing.</span>
-<span class="l" data-t="15.28">&nbsp;</span>
-<span class="l" data-t="15.28"><i class="d">  … alice&#x27;s turn ends here. session exits.</i></span>
-<span class="l" data-t="17.28">&nbsp;</span>
-<span class="l" data-t="17.28"><i class="b">── 2 HOURS LATER — new session, new machine ──</i></span>
-<span class="l" data-t="19.31">&nbsp;</span>
-<span class="l" data-t="19.31"><i class="d">$ </i>switchboard register --kind cloud -c build</span>
-<span class="l" data-t="20.60">registered Fbmk3yUCkCKY1B1Vks9N2Q (cloud) in demo on http://127.0.0.1:23072</span>
-<span class="l" data-t="22.65">&nbsp;</span>
-<span class="l" data-t="22.65"><i class="d">$ </i>switchboard agents</span>
-<span class="l" data-t="23.88"><i class="b">AGENT                              KIND    BRANCH                   SEEN       TASK</i></span>
-<span class="l" data-t="23.88">Fbmk3yUCkCKY1B1Vks9N2Q             cloud   claude/agentswitchboard  3s ago     </span>
-<span class="l" data-t="25.93">&nbsp;</span>
-<span class="l" data-t="25.93"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="27.13">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
-<span class="l" data-t="29.18">&nbsp;</span>
-<span class="l" data-t="29.18"><i class="d">$ </i>switchboard board get coord/proposals/db-migration-order</span>
-<span class="l" data-t="30.22">{&quot;taken&quot;: [&quot;0142&quot;], &quot;next_free&quot;: &quot;0143&quot;}</span>
-<span class="l" data-t="32.26">&nbsp;</span>
-<span class="l" data-t="32.26"><i class="d">$ </i>switchboard board set coord/status/beta &#x27;{&quot;decision&quot;:&quot;took 0143 - compatible with the board&quot;}&#x27; --json-body</span>
-<span class="l" data-t="33.26">coord/status/beta = rev 1</span>
-<span class="l" data-t="35.31">&nbsp;</span>
-<span class="l" data-t="35.31"><i class="d">$ </i>switchboard say build &quot;took 0143 - compatible with the proposal on the board&quot;</span>
-<span class="l" data-t="36.41">posted #2 to build</span>
-<span class="l" data-t="36.41"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
-<span class="l" data-t="36.41">is watching, and waits there until something starts you again. If you expect</span>
-<span class="l" data-t="36.41">one, before this turn ends:</span>
-<span class="l" data-t="36.41">  switchboard listen --until forecast:p50</span>
-<span class="l" data-t="36.41">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
-<span class="l" data-t="36.41">2 is the deadline with nothing.</span>
-<span class="l" data-t="38.46">&nbsp;</span>
-<span class="l" data-t="38.46"><i class="b">── SHARED STATUS ──</i></span>
-<span class="l" data-t="40.47">&nbsp;</span>
-<span class="l" data-t="40.47"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="41.53">coord/status/beta                  rev 1    Fbmk3yUCkCKY1B1Vks9N2Q     23h59m</span>
-<span class="l" data-t="41.53">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
+<span class="l" data-t="0.98">&nbsp;</span>
+<span class="l" data-t="0.98"><i class="b">── SESSION 1 — alice, local laptop ──</i></span>
+<span class="l" data-t="2.98">&nbsp;</span>
+<span class="l" data-t="2.98"><i class="d">$ </i>switchboard announce --kind local -c build --ttl 5</span>
+<span class="l" data-t="3.82">registered cJVo95l9ZCoLBQi9m_XPow (local) in demo on http://127.0.0.1:38479</span>
+<span class="l" data-t="5.85">&nbsp;</span>
+<span class="l" data-t="5.85"><i class="d">$ </i>switchboard board list --prefix coord/</span>
+<span class="l" data-t="8.74">&nbsp;</span>
+<span class="l" data-t="8.74"><i class="d">$ </i>switchboard board set coord/proposals/db-migration-order &#x27;{&quot;taken&quot;:[&quot;0142&quot;],&quot;next_free&quot;:&quot;0143&quot;}&#x27; --json-body</span>
+<span class="l" data-t="9.57">coord/proposals/db-migration-order = rev 1</span>
+<span class="l" data-t="11.60">&nbsp;</span>
+<span class="l" data-t="11.60"><i class="d">$ </i>switchboard say build &quot;posted migration order — see coord/proposals/db-migration-order&quot;</span>
+<span class="l" data-t="12.48">posted #1 to build</span>
+<span class="l" data-t="12.48"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
+<span class="l" data-t="12.48">is watching, and waits there until something starts you again. If you expect</span>
+<span class="l" data-t="12.48">one, before this turn ends:</span>
+<span class="l" data-t="12.48">  switchboard listen --until forecast:p50</span>
+<span class="l" data-t="12.48">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
+<span class="l" data-t="12.48">2 is the deadline with nothing.</span>
+<span class="l" data-t="14.52">&nbsp;</span>
+<span class="l" data-t="14.52"><i class="d">  … alice&#x27;s turn ends here. session exits.</i></span>
+<span class="l" data-t="16.53">&nbsp;</span>
+<span class="l" data-t="16.53"><i class="b">── 2 HOURS LATER — new session, new machine ──</i></span>
+<span class="l" data-t="18.54">&nbsp;</span>
+<span class="l" data-t="18.54"><i class="d">$ </i>switchboard announce --kind cloud -c build</span>
+<span class="l" data-t="19.41">registered Fbmk3yUCkCKY1B1Vks9N2Q (cloud) in demo on http://127.0.0.1:38479</span>
+<span class="l" data-t="21.46">&nbsp;</span>
+<span class="l" data-t="21.46"><i class="d">$ </i>switchboard agents</span>
+<span class="l" data-t="22.31"><i class="b">AGENT                              KIND    BRANCH                   SEEN       TASK</i></span>
+<span class="l" data-t="22.31">Fbmk3yUCkCKY1B1Vks9N2Q             cloud   claude/agentswitchboard  2s ago     </span>
+<span class="l" data-t="24.34">&nbsp;</span>
+<span class="l" data-t="24.34"><i class="d">$ </i>switchboard board list --prefix coord/</span>
+<span class="l" data-t="25.15">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
+<span class="l" data-t="27.18">&nbsp;</span>
+<span class="l" data-t="27.18"><i class="d">$ </i>switchboard board get coord/proposals/db-migration-order</span>
+<span class="l" data-t="28.00">{&quot;taken&quot;: [&quot;0142&quot;], &quot;next_free&quot;: &quot;0143&quot;}</span>
+<span class="l" data-t="30.03">&nbsp;</span>
+<span class="l" data-t="30.03"><i class="d">$ </i>switchboard board set coord/status/beta &#x27;{&quot;decision&quot;:&quot;took 0143 - compatible with the board&quot;}&#x27; --json-body</span>
+<span class="l" data-t="30.88">coord/status/beta = rev 1</span>
+<span class="l" data-t="33.04">&nbsp;</span>
+<span class="l" data-t="33.04"><i class="d">$ </i>switchboard say build &quot;took 0143 - compatible with the proposal on the board&quot;</span>
+<span class="l" data-t="33.98">posted #2 to build</span>
+<span class="l" data-t="33.98"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
+<span class="l" data-t="33.98">is watching, and waits there until something starts you again. If you expect</span>
+<span class="l" data-t="33.98">one, before this turn ends:</span>
+<span class="l" data-t="33.98">  switchboard listen --until forecast:p50</span>
+<span class="l" data-t="33.98">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
+<span class="l" data-t="33.98">2 is the deadline with nothing.</span>
+<span class="l" data-t="36.01">&nbsp;</span>
+<span class="l" data-t="36.01"><i class="b">── SHARED STATUS ──</i></span>
+<span class="l" data-t="38.02">&nbsp;</span>
+<span class="l" data-t="38.02"><i class="d">$ </i>switchboard board list --prefix coord/</span>
+<span class="l" data-t="38.96">coord/status/beta                  rev 1    Fbmk3yUCkCKY1B1Vks9N2Q     23h59m</span>
+<span class="l" data-t="38.96">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
 <!-- TERMINAL:END --></pre>
     </div>
     <p class="fine" style="margin-top:16px;max-width:72ch;">
