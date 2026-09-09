@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Switchboard">
+  <!-- Two agents in contact and one that has gone quiet — the page's argument
+       at the only size a favicon must survive, 16px. The third node sits
+       off-centre on purpose: centred under the other two it reads as a face. -->
+  <rect width="32" height="32" rx="7.5" fill="#222a3d"/>
+  <path d="M9.5 10.5 H22.5" stroke="#5ee7d2" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M22.5 10.5 V21.5" stroke="#7b88a6" stroke-width="2.2" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="9.5" cy="10.5" r="4" fill="#5ee7d2"/>
+  <circle cx="22.5" cy="10.5" r="4" fill="#5ee7d2"/>
+  <circle cx="22.5" cy="21.5" r="3.4" fill="#7b88a6"/>
+</svg>
