@@ -311,10 +311,11 @@ Three traps already hit once in this design, all fixed — do not reintroduce:
 
 ## 10. Open — do not resolve these by inventing an answer
 
-1. **The version contradiction.** `pyproject.toml` says `2.3.0`; the README
-   says "pre-1.0, the shape is still settling". The design currently prints
-   both, four inches apart. Someone has to decide which is true before ship;
-   until then keep both as-is rather than picking one.
+1. ~~**The version contradiction.**~~ **Resolved: 2.3.0 everywhere.** The
+   README's "pre-1.0" is gone; PyPI, `pyproject.toml` and the page all agree,
+   and `site/stamp-version.py` is what keeps them agreeing. "Early release —
+   the shape is still settling" stays, because that is a claim about maturity
+   rather than about a version number, and it is still true.
 2. **Link targets.** Nav, footer and the two "verify it yourself" links are
    placeholders and need real URLs.
 3. **The terminal player.** The artboards draw the transcript as static text.

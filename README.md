@@ -2,7 +2,7 @@
 
 **An ephemeral orchestration hub for AI coding agents.**
 
-*Early release — pre-1.0, the shape is still settling. Two minutes in:
+*Early release — the shape is still settling. Two minutes in:
 [watch two agents coordinate](demo/README.md) before installing anything.*
 
 When several coding agents work the same repo — one on your laptop, one in a

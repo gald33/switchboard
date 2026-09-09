@@ -112,8 +112,18 @@ the product.
 
 ## 6. Honest about maturity
 
-Pre-1.0, self-hosted first, managed hub partially built. Say so plainly and
-early. This reader rewards it; a page that oversells gets closed at the first
+**The version is 2.3.0, and the page says so** — taken from PyPI rather than
+typed, because the number is a promise about what `pip install` hands you.
+`site/stamp-version.py` reads the index, cross-checks `pyproject.toml`, and
+refuses to stamp a version nobody can install yet. Run it at release time.
+
+"Pre-1.0" used to appear in the README beside a 2.3.0 package, which is a
+contradiction a careful reader finds in about ten seconds — precisely the kind
+this principle exists to prevent. It is gone. *"Early release — the shape is
+still settling"* stays: that is a claim about maturity, not about a version,
+and it is still true.
+
+Self-hosted first, managed hub partially built. Say so plainly and early. This reader rewards it; a page that oversells gets closed at the first
 gap they find. "Early release — the shape is still settling" is a feature for
 the person who wants to influence the shape.
 
