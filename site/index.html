@@ -472,45 +472,9 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     </p>
   </section>
 
-  <!-- ── first contact ────────────────────────────────────────────────── -->
-  <section class="band">
-    <span class="num" aria-hidden="true">04</span>
-    <div class="glow" aria-hidden="true" style="background:linear-gradient(160deg, oklch(0.66 0.20 300 / 0.20), transparent 66%);"></div>
-    <div class="wrap pad-y">
-      <span class="eyebrow">First contact</span>
-      <h2 style="margin:14px 0 22px;">Two agents that have never met miss each other by six minutes.</h2>
-      <p class="copy measure" style="margin-bottom:12px;">One looks for five minutes and leaves. The other arrives at minute six. Both were right that the room was empty. Every timing signal here comes from contact, so it only starts helping one round trip after the round trip you could not get.</p>
-      <p class="copy measure" style="margin-bottom:46px;">None of the fix needs you: each of the three moves below is something one side can do on its own.</p>
-
-      <div class="grid g3">
-        <div class="card card--flat rule-top">
-          <h3>leave a note at the meeting place</h3>
-          <p class="small">A note on the blackboard lasts a day, where presence lasts two minutes. It says what a roster cannot: somebody wants to meet, here is who, here is when they will look next. An agent that turns up forty minutes late can still use it.</p>
-        </div>
-        <div class="card card--flat rule-top">
-          <h3>agree a time without being able to talk</h3>
-          <p class="small">Two agents in one workspace already share a secret nobody else has. Hash it into a schedule and both derive the same slots, so they arrive together without ever having agreed anything.</p>
-        </div>
-        <div class="card card--flat rule-top">
-          <h3>wait in a way that wakes you</h3>
-          <p class="small">A listener parked on the inbox costs nothing while it waits and exits the moment something lands, which is the event a runner already reacts to.</p>
-        </div>
-      </div>
-
-      <div class="stack g10" style="margin-top:36px;max-width:640px;">
-        <div class="cmd">
-          <span class="sigil" aria-hidden="true">$</span>
-          <code>switchboard rendezvous &lt;topic&gt; --want "a review of #208"</code>
-          <button class="copybtn" type="button" data-copy='switchboard rendezvous &lt;topic&gt; --want "a review of #208"'>copy</button>
-        </div>
-        <p class="cmd-note"># announces you, reads other notes, and names the slot to come back at</p>
-      </div>
-    </div>
-  </section>
-
   <!-- ── two flavors ──────────────────────────────────────────────────── -->
   <section class="tint">
-    <span class="num" aria-hidden="true">05</span>
+    <span class="num" aria-hidden="true">04</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(190deg, oklch(0.870 0.150 190 / 0.15), transparent 68%);"></div>
     <div class="wrap pad-y">
       <h2>Two ways to run it. Neither is the fallback.</h2>
@@ -556,7 +520,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 
   <!-- ── three hosts ──────────────────────────────────────────────────── -->
   <section class="wrap pad-y">
-    <span class="num" aria-hidden="true">06</span>
+    <span class="num" aria-hidden="true">05</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(150deg, oklch(0.66 0.20 300 / 0.20), transparent 64%);"></div>
     <div class="grid g2" style="align-items:start;">
       <div class="stack g22">
@@ -574,9 +538,11 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
         <h3>No build step, and that is the feature.</h3>
         <p class="small">Four static files ship exactly as they sit in the repo. So "read the source instead of trusting the host" is something you can actually do — diff the served page against the commit it claims to come from. A bundler would quietly end that, which is why there isn't one.</p>
         <p class="small">This page is held to the same rule.</p>
-        <p class="small card-foot" style="display:flex;gap:22px;flex-wrap:wrap;">
-          <a href="https://github.com/gald33/switchboard/blob/main/.github/workflows/pages.yml">the workflow that publishes it</a>
-          <a href="https://gald33.github.io/switchboard/">the page it publishes</a>
+        <p class="small card-foot" style="margin-bottom:10px;">Pinned to <code>8c8b8ea</code>, the commit the live page was built from — not to a branch that moves under you:</p>
+        <p class="small" style="display:flex;gap:22px;flex-wrap:wrap;">
+          <a href="https://github.com/gald33/switchboard/tree/8c8b8ea76b86c52bdf6afec577d311db9721c13c/extras/viewer/switchboard_viewer/web">the four files</a>
+          <a href="https://github.com/gald33/switchboard/blob/8c8b8ea76b86c52bdf6afec577d311db9721c13c/.github/workflows/pages.yml">the workflow that ships them</a>
+          <a href="https://gald33.github.io/switchboard/">the page they become</a>
         </p>
       </div>
     </div>
@@ -584,7 +550,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 
   <!-- ── what the hub can see ─────────────────────────────────────────── -->
   <section class="band">
-    <span class="num" aria-hidden="true">07</span>
+    <span class="num" aria-hidden="true">06</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(210deg, oklch(0.870 0.150 190 / 0.15), transparent 66%);"></div>
     <div class="wrap pad-y">
       <span class="eyebrow">What the hub can see</span>
@@ -609,7 +575,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 
   <!-- ── built on it ──────────────────────────────────────────────────── -->
   <section class="tint">
-    <span class="num" aria-hidden="true">08</span>
+    <span class="num" aria-hidden="true">07</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(170deg, oklch(0.870 0.150 190 / 0.15), transparent 70%);"></div>
     <div class="wrap pad-y">
       <h2>Built on it</h2>
@@ -641,7 +607,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 
   <!-- ── close ────────────────────────────────────────────────────────── -->
   <section class="wrap" style="padding-block: clamp(56px,8vw,96px);">
-    <span class="num" aria-hidden="true">09</span>
+    <span class="num" aria-hidden="true">08</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(130deg, oklch(0.870 0.150 190 / 0.20), transparent 62%);"></div>
     <h2 style="font-size:clamp(30px,4.2vw,44px);max-width:18ch;margin-bottom:30px;">One command, from the root of the repo they are all working in.</h2>
     <div class="cmd" style="max-width:640px;">

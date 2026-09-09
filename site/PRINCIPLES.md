@@ -112,6 +112,13 @@ of a message — not a fifth box. The smallness of the model is the pitch. Any
 layout that grows to six or eight cards to fill space is actively lying about
 the product.
 
+**This applies to sections too, and it was enforced once.** The page reached
+nine, and the rendezvous section came out: it described a coordination *gap*
+rather than a capability, which is the hardest kind of section for a skeptical
+reader to evaluate and the easiest to mistake for a weakness. Eight is not a
+target either — the question for any new section is whether the page argues
+better with it than without.
+
 ## 6. Honest about maturity
 
 **The version is 2.3.0, and the page says so** — taken from PyPI rather than
@@ -181,8 +188,17 @@ anyone who opens it:
 This is the most persuasive thing on the page for the reader who is deciding
 whether the encryption story is real, because it is the rare security claim
 that costs the reader thirty seconds to verify rather than requiring trust.
-Give it room, and make the verification an invitation — link the workflow and
-the served page side by side.
+Give it room, and make the verification an invitation — link the files, the
+workflow and the served page side by side.
+
+**Pin those links to a commit, never to a branch.** An invitation to diff the
+served page against `main` is not one: `main` moves, so the reader checks the
+page against a tree it was never built from and finds a difference that means
+nothing. The page links `8c8b8ea` — the last commit to touch
+`extras/viewer/switchboard_viewer/web/`, which is what `pages.yml` deploys on,
+so it is genuinely the tree behind the live page. **Repin whenever those four
+files change**, or the invitation quietly rots into the branch problem it was
+written to avoid.
 
 It also binds the landing page itself: `agentswitchboard.org` is static, and
 whatever serves it is never a hub. If the viewer ever does move onto this
