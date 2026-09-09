@@ -9,6 +9,7 @@ anyone can regenerate it and diff the result against what the page serves.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import pty
@@ -19,7 +20,6 @@ import struct
 import sys
 import termios
 import time
-import fcntl
 
 COLS, ROWS = 100, 34
 
