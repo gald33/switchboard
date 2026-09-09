@@ -1,0 +1,81 @@
+name: Deploy site (Cloudflare Pages)
+
+# Publishes `site/` — the agentswitchboard.org landing page — to Cloudflare
+# Pages. There is no build step and there is not supposed to be one: what is
+# served is what is in the repo, so a reader can diff the served page against
+# the commit it claims to come from. That is the same property the page itself
+# argues for, one section down. See site/PRINCIPLES.md, principles 9 and 11.
+#
+# Two one-time manual steps, and neither can be automated from here:
+#
+#   1. Create the Pages project once. Either in the dashboard (Workers & Pages
+#      -> Create -> Pages -> Direct Upload, named `agentswitchboard`), or by
+#      letting the first run of this workflow create it — wrangler will, given
+#      a token with Pages:Edit. Do NOT connect it to Git in the dashboard:
+#      this workflow uploads, and a project doing both fights itself.
+#
+#   2. Add two repository secrets (Settings -> Secrets and variables ->
+#      Actions):
+#        CLOUDFLARE_API_TOKEN    a token with `Cloudflare Pages: Edit` on the
+#                                account. Not a Global API Key.
+#        CLOUDFLARE_ACCOUNT_ID   Workers & Pages -> right-hand sidebar.
+#
+# Attaching agentswitchboard.org is also a dashboard step, once, after the
+# first successful deploy: Pages project -> Custom domains -> Set up a custom
+# domain. Cloudflare rewrites the apex record itself; if it refuses, an old
+# proxied A record on `@` is in the way and has to be deleted first. A dead
+# record there is what serves a 522 rather than a page.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - .github/workflows/site.yml
+  workflow_dispatch:
+
+# One live site, and a superseded deploy is worth cancelling: only the newest
+# commit's page matters.
+concurrency:
+  group: site-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: agentswitchboard.org
+      url: https://agentswitchboard.org
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version on the page is a promise about what `pip install` hands
+      # you, so a page claiming a version PyPI does not serve should not ship.
+      # Exit 1 is a real mismatch and fails the deploy; exit 2 is PyPI being
+      # unreachable, which is not this page's fault and must not block it.
+      - name: The version on the page matches the one on PyPI
+        run: |
+          set +e
+          python3 site/stamp-version.py
+          status=$?
+          set -e
+          if [ "$status" = "1" ]; then
+            echo "::error::the page states a version PyPI does not serve — run: python3 site/stamp-version.py --write"
+            exit 1
+          fi
+          if [ "$status" = "2" ]; then
+            echo "::warning::could not reach PyPI; deploying without the version check"
+          fi
+
+      # Nothing is built, compiled or bundled. The directory is uploaded as
+      # it sits in the commit.
+      - name: Upload site/ as it is in the repo
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name=agentswitchboard --branch=main --commit-dirty=true

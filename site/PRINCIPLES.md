@@ -286,9 +286,22 @@ Constraints on this section:
    and the hub keeps its own hostname — three hosts on purpose, and the page
    says why (principle 9).
 2. ~~**Hosting for the landing page.**~~ **Decided: Cloudflare Pages**,
-   serving hand-written files from this repo on push. No Workers: those are
-   for server-side compute at the edge, and this page has none — principle 8
-   rules out the forms and capture that would be the only reason to want it.
+   serving hand-written files from this repo on push, via
+   [`.github/workflows/site.yml`](../.github/workflows/site.yml). No Workers:
+   those are for server-side compute at the edge, and this page has none —
+   principle 8 rules out the forms and capture that would be the only reason
+   to want it.
+
+   The workflow **uploads** rather than being Git-connected in the dashboard;
+   a project doing both fights itself. It needs `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` as repository secrets, and it refuses to ship a
+   page whose stated version PyPI does not serve — though it will not block on
+   PyPI merely being unreachable, since that is not the page's fault.
+
+   **A 522 on the apex is not a missing page.** It means a proxied DNS record
+   is pointing at an origin that never answers, so nothing is being served at
+   all — delete the stale record on `@` and let the Pages custom-domain setup
+   write its own.
 3. ~~**Does the GitHub Pages viewer move?**~~ **Decided: it stays**, and
    deliberately so — see principle 9. Moving it to a domain we control would
    trade away the one claim a visitor can check in thirty seconds.
