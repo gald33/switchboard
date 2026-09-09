@@ -143,13 +143,19 @@ jobs:
   # success is the failure being fixed.
   browser:
     runs-on: ubuntu-latest
-    # The only job here that installs system packages, and the only one that
-    # has hung. On #138 `playwright install --with-deps` sat in apt for 71
-    # minutes; GitHub's default job timeout is six HOURS, so nothing would have
-    # said so until the afternoon was gone, and the PR reads as `unstable` —
-    # not red, not green — the whole time. Ten minutes is roughly five times
-    # the step's normal cost, so it bounds the hang without failing a slow
-    # mirror.
+    # This job used to install system packages, and it was the only one that
+    # ever hung or failed on something outside the repo. On #138
+    # `playwright install --with-deps` sat in apt for 71 minutes; on #251 the
+    # same step failed twice with a Hash Sum mismatch fetching Google's Chrome
+    # index, because `--with-deps` adds apt — and therefore dl.google.com — to
+    # the critical path of a job that only needs a browser binary.
+    #
+    # ubuntu-latest already ships the shared libraries Chromium links against,
+    # so the deps step is gone. If that ever stops being true, Chromium fails
+    # to launch and the tests below go red — loudly, and without a skip, which
+    # the last step enforces.
+    #
+    # The timeout stays: it bounded the hang before and costs nothing.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -157,7 +163,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e '.[dev]' playwright
-      - run: playwright install --with-deps chromium
+      - run: playwright install chromium
       - name: the page, in a browser — and nothing may skip
         # `-p no:randomly` keeps the summary line stable to grep. The skip
         # check is the whole point of the job: if the browser fixture ever
