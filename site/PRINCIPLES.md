@@ -147,11 +147,18 @@ Two things this must not become:
 
 - Plug-and-play must never read as the *price of entry*. Nothing in Switchboard
   requires an account, and the page must leave the reader certain of that.
-- Plug-and-play must not oversell what ships. Multi-tenancy is built; rooms are
-  sealed by a key the hub never sees; **quotas, billing and operational
-  visibility do not ship yet.** Say so on the page, at the point of the offer —
-  principle 6 applies hardest here, because this is the claim a reader is most
-  likely to test.
+- Plug-and-play must not oversell what ships. Multi-tenancy is built and rooms
+  are sealed by a key the hub never sees; quotas, billing and operational
+  visibility do not.
+
+  **Revised 2026-09-09.** This principle used to require saying that on the
+  page, at the point of the offer. Gal cut that line, and the requirement goes
+  with it rather than sitting here contradicted. The maturity claim is not lost
+  — the hero opens with *"Early release — the shape is still settling"*, which
+  is the honest signal principle 6 actually asks for, and a caveat about
+  billing is answering a question nobody reading a pre-release coordination
+  library has asked yet. What stays non-negotiable is the other half: the page
+  must never *claim* quotas or billing exist.
 
 The on-prem side gets the argument that only it can make: the hub holds no
 source code and no credentials — only who is awake and what they are saying —
@@ -223,6 +230,34 @@ information, and nothing that reads as a SaaS template. Atmosphere in service
 of a dark terminal-adjacent aesthetic is not the costume this principle was
 written against.
 
+## 10a. Write plainly
+
+**Added 2026-09-09, after the copy was rewritten once for being tiring to
+read.** The problem was not length. It was that nearly every paragraph ended
+on a clever reversal — *"the release is the half that gets dropped"*, *"cheap
+to run, cheap to lose"*, *"the reply **is** the wake"*, *"neither trusted with
+both halves"*. Each one makes the reader do a small piece of work to recover a
+plain meaning, and a page of them is exhausting even when every individual
+line is good.
+
+The rules that came out of it:
+
+- **Say the thing, then stop.** Do not end a paragraph on an inversion, a
+  paradox, or a restatement that sounds wiser than the sentence before it.
+- **No analogies.** Describe the mechanism instead.
+- **Short sentences.** The rewrite averages 11 words and never exceeds 26.
+- **Explain our own vocabulary or drop it.** "Lease", "roster", "presence",
+  "primitive", "TTL" are internal words. Either say what they mean in ordinary
+  language ("a claim that expires on a timer") or use the ordinary word.
+- **Assume an ordinary reader, not a clever one.** The audience is still an
+  engineer with two agents colliding, but they are skimming a page in a spare
+  minute, not reading an essay.
+
+A useful test: read a sentence and ask whether a competent engineer who has
+never seen this project would have to pause. If yes, rewrite it. This is not
+about dumbing anything down — the arguments are unchanged. It is about not
+charging the reader for the pleasure of our phrasing.
+
 ## 11. Fast, static, accessible — and no build step
 
 No framework, no tracker, no cookie banner. Single page, hand-written HTML/CSS,
@@ -230,7 +265,8 @@ loads on a plane. Real text (not images) for all code. WCAG AA contrast in both
 light and dark.
 
 **No bundler, no framework build, nothing between the repo and the served
-bytes.** This is not taste, it is principle 9 applied to ourselves: the page
+bytes.** Vercel is configured with a null `buildCommand` for exactly this
+reason: it uploads `site/` as it stands in the commit. This is not taste, it is principle 9 applied to ourselves: the page
 argues that the viewer can be diffed against the commit it claims to come
 from. A landing page whose served HTML is hashed-classname bundle output
 cannot be diffed against anything, and asking the reader to verify one page
@@ -285,10 +321,29 @@ Constraints on this section:
    page and nothing else. The viewer stays on `gald33.github.io/switchboard`
    and the hub keeps its own hostname — three hosts on purpose, and the page
    says why (principle 9).
-2. ~~**Hosting for the landing page.**~~ **Decided: Cloudflare Pages**,
-   serving hand-written files from this repo on push. No Workers: those are
-   for server-side compute at the edge, and this page has none — principle 8
-   rules out the forms and capture that would be the only reason to want it.
+2. ~~**Hosting for the landing page.**~~ **Decided: Vercel**, serving `site/`
+   from this repo with no build command
+   ([`site/vercel.json`](vercel.json)).
+
+   **Correcting the record.** An earlier revision of this document said
+   "Decided: Cloudflare Pages". That was never decided — Cloudflare was named
+   only for *nameservers*, and Pages was a recommendation of mine that got
+   written down as a decision a couple of turns later. The house pattern is
+   GitHub Pages for trusted static pages, otherwise Vercel.
+
+   **GitHub Pages cannot take this one**, which is the whole reason Vercel
+   wins: a repository gets exactly one Pages site, and this repository already
+   spends it on the viewer at `gald33.github.io/switchboard`. Attaching the
+   apex here would move the viewer onto it and break every invite that
+   `switchboard invite --link` has already minted. Serving the page from a
+   second repository would work and need no credentials at all, but it would
+   separate `record-demo.py` from the `demo/run.sh` it records, so the cast
+   could not be regenerated from one checkout.
+
+   Vercel keeps the page beside the demo it records, needs no build, and needs
+   no secret in this repository — its GitHub app holds the auth. Cloudflare
+   stays what it always was here: DNS.
+
 3. ~~**Does the GitHub Pages viewer move?**~~ **Decided: it stays**, and
    deliberately so — see principle 9. Moving it to a domain we control would
    trade away the one claim a visitor can check in thirty seconds.
