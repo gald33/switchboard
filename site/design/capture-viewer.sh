@@ -62,6 +62,8 @@ with sync_playwright() as p:
     pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
     pg.goto(sys.argv[1], wait_until="networkidle")
     pg.get_by_role("button", name="Add room").first.click()   # the dialog, not the room, without this
+    pg.wait_for_timeout(3000)
+    pg.get_by_role("button", name="Awake").first.click()      # Talk is empty once the 1h message TTL has run
     pg.wait_for_timeout(3500)
     pg.screenshot(path=os.environ["OUT"])
     b.close()
