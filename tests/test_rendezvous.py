@@ -328,6 +328,250 @@ def test_a_requester_is_not_matched_with_another_requester(
     assert out["notes"] == []
 
 
+# --- what you read, as against who can answer you ----------------------------
+#
+# The matching rule and the reading rule were one rule, and that is how an
+# agent parked with capacity came to be unable to so much as look at the topic
+# it was parked on: `notes: []` whether nobody needed anything or the topic was
+# full of other offers, which are opposite facts. Splitting them is `--show`.
+# Matching does not move — reading more never makes more of it yours to answer.
+
+
+def test_reading_and_matching_are_different_questions():
+    """The rule in isolation, because both surfaces derive from it and a second
+    copy of it is a second answer that can drift from the first."""
+    seek = {"role": rendezvous.SEEKING, "topic": rendezvous.OPEN_TOPIC}
+    assert rendezvous.roles_shown(None, **seek) == {rendezvous.OFFERING}
+    assert rendezvous.roles_shown(rendezvous.SHOW_MATCHES, **seek) == {
+        rendezvous.OFFERING
+    }
+    assert rendezvous.roles_shown(rendezvous.SHOW_ALL, **seek) is None
+    assert rendezvous.roles_shown(rendezvous.SHOW_WANTS, **seek) == {
+        rendezvous.SEEKING
+    }
+    assert rendezvous.roles_shown(rendezvous.SHOW_OFFERS, **seek) == {
+        rendezvous.OFFERING
+    }
+
+
+def test_an_explicit_side_ignores_which_side_you_are_on():
+    """`--show offers` means offers. An agent asking to read the capacity in a
+    room is not thereby claiming to be looking for it."""
+    for role in (rendezvous.SEEKING, rendezvous.OFFERING):
+        assert rendezvous.roles_shown(
+            rendezvous.SHOW_OFFERS, role=role, topic=rendezvous.OPEN_TOPIC
+        ) == {rendezvous.OFFERING}
+
+
+def test_a_named_topic_filters_nothing_by_default():
+    """Roles are a reserved-topic device, and `matches` respects that."""
+    assert rendezvous.roles_shown(
+        rendezvous.SHOW_MATCHES, role=rendezvous.SEEKING, topic="design-review"
+    ) is None
+
+
+def test_a_helper_can_read_the_topic_it_is_parked_on(cli_hub, capsys, monkeypatch):
+    """The complaint this exists for: an agent with capacity could not see the
+    room it was sitting in, so it had no way to tell a quiet topic from one
+    where the matching rule had hidden everything."""
+    for name in ("helper-a", "helper-b"):
+        monkeypatch.setenv("SWITCHBOARD_AGENT_ID", name)
+        _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-c")
+    out = _run(["--offer", "ci debugging", "--wait", "0", "--show", "all"], capsys)
+    assert len(out["notes"]) == 2
+    assert out["hidden"]["count"] == 0
+
+
+def test_reading_a_note_is_not_meeting_its_author(cli_hub, capsys, monkeypatch):
+    """The false positive arriving by a door the caller opened itself. Asking
+    to see every note must not turn a room of helpers into a meeting — that is
+    the same error as matching your own role, one layer along."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-a")
+    _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-b")
+    out = _run(["--offer", "ci debugging", "--wait", "0", "--show", "all"], capsys)
+    assert [n["matches"] for n in out["notes"]] == [False]
+    assert out["met"] is False, "capacity reading capacity is still not a meeting"
+
+
+def test_reading_widely_does_not_end_the_search_early(cli_hub, capsys, monkeypatch):
+    """`--show all` widens what comes back. Letting it also end the look would
+    spend the whole budget on a crowd and call it done — the failure the role
+    split exists to prevent, bought back with the flag meant to help."""
+    import switchboard.cli as cli_module
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-a")
+    _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    naps: list[float] = []
+    monkeypatch.setattr(cli_module.time, "sleep", naps.append)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-b")
+    out = _run(["--offer", "x", "--wait", "60", "--show", "all"], capsys)
+    assert len(out["notes"]) == 1, "the note it read must still be reported"
+    assert naps, "a note that cannot answer you is not a reason to stop looking"
+
+
+def test_a_filtered_empty_answer_is_not_an_empty_room(cli_hub, capsys, monkeypatch):
+    """`notes: []` has two causes that look identical from the caller's side,
+    and they point opposite ways: come back later, or look again without the
+    filter. The count is what tells them apart."""
+    for name in ("helper-a", "helper-b"):
+        monkeypatch.setenv("SWITCHBOARD_AGENT_ID", name)
+        _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-c")
+    out = _run(["--offer", "more ci debugging", "--wait", "0"], capsys)
+    assert out["notes"] == []
+    assert out["hidden"] == {"count": 2, "offers": 2, "wants": 0}
+    assert out["show"] == rendezvous.SHOW_MATCHES
+
+
+def test_nothing_hidden_is_reported_as_nothing_hidden(cli_hub, capsys, monkeypatch):
+    """The other half of the same claim: the count must be a count, not a
+    constant that happens to be right in the interesting case."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "solo")
+    out = _run(["--want", "a reviewer", "--wait", "0"], capsys)
+    assert out["hidden"] == {"count": 0, "offers": 0, "wants": 0}
+
+
+def test_show_wants_reads_the_requests_and_hides_the_rest(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "releases", "--wait", "0"], capsys)
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "asker")
+    _run(["--want", "a release", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "reader")
+    out = _run(["--want", "anything", "--wait", "0", "--show", "wants"], capsys)
+    assert [n["want"] for n in out["notes"]] == ["a release"]
+    assert out["hidden"] == {"count": 1, "offers": 1, "wants": 0}
+    # A seeker reading other seekers has read the room, not found a peer.
+    assert [n["matches"] for n in out["notes"]] == [False]
+
+
+def test_the_default_is_unchanged_by_any_of_this(cli_hub, capsys, monkeypatch):
+    """The regression guard for the whole change: an agent that passes no
+    `--show` sees exactly what it saw before."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "pypi releases", "--wait", "0"], capsys)
+
+    cli_hub.advance(600)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    out = _run(["--want", "need a package published", "--wait", "0"], capsys)
+    assert [n["want"] for n in out["notes"]] == ["pypi releases"]
+    assert [n["matches"] for n in out["notes"]] == [True]
+    assert out["met"] is True
+
+
+def test_the_human_output_names_the_flag_that_would_show_them(
+    cli_hub, capsys, monkeypatch
+):
+    """A filter nobody is told about is a silent failure wearing the name of a
+    feature. Saying the number is half of it; saying the flag is the half that
+    lets the agent act."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-a")
+    _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-b")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--offer", "x", "--wait", "0"])
+    out = capsys.readouterr().out
+    assert "1 more live note" in out
+    assert "--show all" in out
+
+
+def test_a_note_you_asked_to_see_is_not_offered_as_a_peer(
+    cli_hub, capsys, monkeypatch
+):
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-a")
+    _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-b")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--offer", "x",
+          "--wait", "0", "--show", "all"])
+    out = capsys.readouterr().out
+    assert "not a match for you" in out
+    assert "reading the topic, not meeting on it" in out
+    assert "switchboard dm " not in out, "a crowd must not be handed out as a peer"
+
+
+def test_a_note_is_labelled_by_what_it_is(cli_hub, capsys, monkeypatch):
+    """Never by what the reader assumed it would be. Printing another helper's
+    offer as `needs` because the reader was offering is how an agent comes to
+    address a peer as though it had asked for something."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-a")
+    _run(["--offer", "ci debugging", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper-b")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--offer", "x",
+          "--wait", "0", "--show", "all"])
+    out = capsys.readouterr().out
+    assert "offer " in out and "needs " not in out
+
+
+def test_the_opening_line_is_told_to_quote_the_note(cli_hub, capsys, monkeypatch):
+    """The other half of reaching the wrong agent: a peer reached by mistake
+    can only recognise the mistake if the message says what it is answering."""
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "helper")
+    _run(["--offer", "pypi releases", "--wait", "0"], capsys)
+
+    monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "requester")
+    main(["--url", BASE_URL, "-w", WS, "rendezvous", "--want", "x", "--wait", "0"])
+    out = capsys.readouterr().out
+    assert "quoting the note you are answering" in out
+    assert '"pypi releases"' in out
+
+
+def test_a_note_with_no_description_still_quotes_something_sayable(cli_hub):
+    """A blurb that is empty must not produce an opening line that quotes an
+    empty string at somebody."""
+    from switchboard.cli import _quoted
+
+    assert _quoted("") == "the note you are answering"
+    assert _quoted("  ") == "the note you are answering"
+    assert _quoted("releases") == '"releases"'
+
+
+# --- the convention, which is the half no flag can enforce -------------------
+#
+# Targeting decides which agent is reached. What the reached agent does about
+# it is protocol, and the protocol is the packaged SKILL.md — so the rules that
+# stop a mistaken contact becoming two confused agents are gated here rather
+# than left to whoever edits the prose next.
+
+
+def test_the_protocol_says_how_to_open_a_first_contact():
+    from switchboard.guidance import skill_text
+
+    text = skill_text()
+    assert "Open with where you got them" in text
+    assert "quoted in the peer's own words" in text
+
+
+def test_the_protocol_gives_a_mis_reached_agent_something_to_say():
+    """The half that is usually skipped. Attempting a request you cannot serve
+    confuses two agents; ignoring it leaves the sender waiting out a slot on an
+    answer that is never coming. Declining in one line costs neither."""
+    from switchboard.guidance import skill_text
+
+    text = skill_text()
+    assert "not me" in text
+    assert "Do not silently absorb a request you" in text
+
+
+def test_the_protocol_says_a_filtered_answer_is_not_an_empty_room():
+    from switchboard.guidance import skill_text
+
+    text = skill_text()
+    assert "--show" in text
+    assert "may be the filter rather than the room" in text
+
+
 def test_a_named_topic_stays_symmetric(cli_hub, capsys, monkeypatch):
     """The regression guard. Roles are a reserved-topic device; on a topic both
     sides agreed, two seekers are the ordinary case and must still meet."""

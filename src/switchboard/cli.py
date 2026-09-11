@@ -1376,6 +1376,7 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
     blurb = args.offer if args.offer else (args.want or "")
     key = rendezvous.key_for(topic)
     look = args.wait if args.wait is not None else rendezvous.DEFAULT_LOOK_SECONDS
+    show = args.show or rendezvous.SHOW_MATCHES
 
     with _make_client(args) as hub:
         agent = hub.register(
@@ -1393,15 +1394,17 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         found: list[dict[str, Any]] = []
         strangers: list[dict[str, Any]] = []
         peers: list[rendezvous.Intent] = []
+        others: list[rendezvous.Intent] = []
+        matched: list[rendezvous.Intent] = []
         everyone: list[dict[str, Any]] = []
-        # Only the reserved topic needs the roles kept apart. Two agents who
-        # agreed a topic out of band have already established that they are
-        # about the same thing, and are usually both seeking — filtering there
-        # would hide each from the other, which is the very meeting the named
-        # topic was agreed to arrange.
-        want_role = (
-            rendezvous.complement(role) if topic == rendezvous.OPEN_TOPIC else None
+        # Two questions, deliberately answered by two rules. `matching` is who
+        # can help you and never changes; `reading` is what you asked to see
+        # and is yours to set. They were one rule once, and that is how an
+        # agent came to be unable to look at the topic it was parked on.
+        matching = rendezvous.roles_shown(
+            rendezvous.SHOW_MATCHES, role=role, topic=topic
         )
+        reading = rendezvous.roles_shown(show, role=role, topic=topic)
         for gap in rendezvous.schedule(look):
             if gap:
                 time.sleep(gap)
@@ -1410,10 +1413,16 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             # the room it is parked in may be full of other helpers, and
             # breaking on the first live body would end the search before the
             # one seeker it exists to serve had written anything down.
-            peers = _rendezvous_notes(
-                hub, topic, now, exclude=hub.agent_id, role=want_role,
+            peers, others = _rendezvous_notes(
+                hub, topic, now, exclude=hub.agent_id, roles=reading,
             )
-            if peers:
+            # Stop on a note that can answer you, never merely on one you
+            # asked to read. `--show all` widens what comes back; letting it
+            # also end the search would spend the budget on a crowd and call
+            # it done — the failure the role split exists to prevent, bought
+            # back with the flag that was meant to help.
+            matched = [n for n in peers if matching is None or n.role in matching]
+            if matched:
                 break
             everyone = hub.agents()
             # A peer whose name will not open is on a different key, which is
@@ -1476,15 +1485,27 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
             "topic": topic, "agent_id": mine.agent_id, "role": role,
             "elsewhere": elsewhere,
             "roster": found,
+            "show": show,
             "notes": [
-                {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
+                {**n.as_json(), "reachable": n.agent_id in parked,
+                 "matches": n in matched}
+                for n in peers
             ],
+            # What the filter removed, as a count and its roles only: enough to
+            # know an empty answer was a filter rather than an empty room, and
+            # not so much that asking for `matches` quietly returns everything.
+            "hidden": {
+                "count": len(others),
+                "offers": sum(1 for n in others if n.role == rendezvous.OFFERING),
+                "wants": sum(1 for n in others if n.role == rendezvous.SEEKING),
+            },
             "next_slot_in": round(slot - now, 1),
             # For a seeker, anyone present is someone to ask, so presence
             # counts. For an agent offering capacity it does not: the others in
             # the room are usually more helpers, and calling that a meeting is
             # the same false positive as matching your own role.
-            "met": bool(peers) if role == rendezvous.OFFERING else bool(found or peers),
+            "met": bool(matched) if role == rendezvous.OFFERING
+                   else bool(found or matched),
             # Separate from `roster` on purpose: a caller that treats these as
             # peers has reintroduced the bug. They are here so the mismatch is
             # actionable rather than invisible.
@@ -1497,20 +1518,30 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
         for a in found:
             state = "here" if a in awake else f"away {_dur(a.get('back_in') or 0)}"
             print(f"{fmt.green('found')}  {a['agent_id'][:33]:<34} {state}")
-    label = "offer" if role == rendezvous.SEEKING else "needs"
+    # Each note labelled by what it *is*, never by what the reader assumed it
+    # would be. With `--show` the two can differ, and a note printed as an
+    # offer because the reader was seeking is how a helper ends up addressing
+    # another helper as though it had asked for something.
     for note in peers:
         state = "parked" if note.agent_id in parked else "between turns"
+        label = "offer" if note.role == rendezvous.OFFERING else "needs"
+        mark = "" if note in matched else fmt.dim(" (not a match for you)")
         print(f"{fmt.green(label)}  {note.agent_id[:33]:<34} "
-              f"{note.want[:48] or '(no description)':<49} {fmt.dim(state)}")
-    if peers:
+              f"{note.want[:48] or '(no description)':<49} {fmt.dim(state)}{mark}")
+    if matched:
         # The note is the introduction, not the conversation. Say the next move
         # explicitly: an agent that has found a peer and does not know it may
         # now simply address it will go back to waiting on the board.
-        first = peers[0]
+        first = matched[0]
         print(
             f"\nThat is a peer, not a thread. DM the id with what you actually "
             f"need —\n`switchboard dm {first.agent_id[:33]} \"…\"` — and take the "
             f"work off this topic;\nthe reserved one is everybody's."
+        )
+        print(
+            f"Open by quoting the note you are answering — "
+            f"{_quoted(first.want)} — so a peer\nreached by mistake can say so "
+            f"in one line instead of guessing what you meant."
         )
         if first.agent_id in parked:
             # Worth saying explicitly: a parked listener wakes on delivery, so
@@ -1521,6 +1552,30 @@ def cmd_rendezvous(args: argparse.Namespace) -> int:
                 "No listener is parked for it, so a DM is correct but silent "
                 "until its\nnext turn — do not wait on a reply this turn."
             )
+    elif peers:
+        # Shown because they were asked for, and then said plainly not to be
+        # answers. Reading the room is a good reason to look; it is not a
+        # licence to hand one of these agents a task it never offered to take.
+        print(
+            f"\nNone of those {'answers' if len(peers) == 1 else 'answer'} what you "
+            f"asked for — you are reading the topic, not meeting on it.\n"
+            f"DM one only if its own note says it wants what you are about to send."
+        )
+    if others:
+        # An empty answer that was really a filter is the failure this command
+        # exists to remove, reappearing one layer in. Say the number, say the
+        # flag, and let the agent decide.
+        counts = ", ".join(
+            f"{n} {word}" for n, word in (
+                (sum(1 for x in others if x.role == rendezvous.OFFERING), "offering"),
+                (sum(1 for x in others if x.role == rendezvous.SEEKING), "seeking"),
+            ) if n
+        )
+        print(
+            f"\n{fmt.dim('filtered')}  {len(others)} more live note(s) here ({counts}), "
+            f"not shown because you asked\nfor `--show {show}`. `--show all` reads "
+            f"every one; `--show wants` or `--show offers`\npicks a side."
+        )
     if strangers:
         # Never presented as a near miss. This is the forty-minute failure
         # exactly: same hub, same workspace, different key, both listed. The
@@ -1765,32 +1820,51 @@ def hub_id_hint(intent: rendezvous.Intent) -> str:
     return intent.agent_id[:33]
 
 
+def _quoted(blurb: str) -> str:
+    """A peer's own words, to be printed back at the agent that found them.
+
+    The opening line of a first contact is the whole of what the recipient has
+    to judge it by. Quoting the note being answered is what lets an agent
+    reached in error recognise the error, rather than reading a task addressed
+    to nobody in particular and trying to do it.
+    """
+    text = (blurb or "").strip()
+    return f'"{text[:48]}"' if text else "the note you are answering"
+
+
 def _rendezvous_notes(
-    hub: Client, topic: str, now: float, *, exclude: str, role: str | None = None
-) -> list[rendezvous.Intent]:
-    """Live intent left by anyone else on this topic.
+    hub: Client, topic: str, now: float, *, exclude: str,
+    roles: set[str] | None = None,
+) -> tuple[list[rendezvous.Intent], list[rendezvous.Intent]]:
+    """Live intent left by anyone else on this topic, as ``(shown, hidden)``.
 
     Notes whose author has given up are dropped rather than shown: sending a
     newcomer to wait on somebody who stopped hours ago is the same wasted turn
-    this command exists to prevent.
+    this command exists to prevent. Those are gone from both lists — nobody
+    asked to read litter.
 
-    ``role`` keeps an unequal meeting unequal. On the reserved topic every
+    ``roles`` keeps an unequal meeting unequal. On the reserved topic every
     agent holding the key writes here, and most of them are the same kind as
     you — a helper reading other helpers' offers has found a crowd, not a
-    peer. Ask for the complement of your own role and the crowd resolves into
+    peer. Filtering to the complement of your own role resolves the crowd into
     the few notes you can actually act on.
+
+    The filtered-out notes come back rather than vanishing, because a filter
+    nobody is told about is a silent failure wearing the name of a feature:
+    "no notes" and "no notes *of the kind you asked for*" are opposite facts,
+    and only the caller can tell which one it wanted.
     """
-    out = []
+    shown: list[rendezvous.Intent] = []
+    hidden: list[rendezvous.Intent] = []
     for entry in hub.board_list(prefix=rendezvous.key_for(topic)):
         if entry.get("unreadable"):
             continue
         note = rendezvous.Intent.from_json(entry.get("value"))
         if not note or note.agent_id == exclude or not note.still_looking(now):
             continue
-        if role is not None and note.role != role:
-            continue
-        out.append(note)
-    return sorted(out, key=lambda n: n.since)
+        (shown if roles is None or note.role in roles else hidden).append(note)
+    return (sorted(shown, key=lambda n: n.since),
+            sorted(hidden, key=lambda n: n.since))
 
 
 
@@ -6603,6 +6677,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="you have capacity rather than a task: one line on what you can do. "
              "Offers match seekers and never other offers, so a room full of idle "
              "helpers does not report itself as a meeting.",
+    )
+    p.add_argument(
+        "--show", choices=list(rendezvous.SHOW_CHOICES),
+        help="which notes to read back, as opposed to which ones match you (default "
+             "`matches`: the complement of your own role on the reserved topic, "
+             "everything on a named one). `all` reads the topic as it stands, `offers` "
+             "and `wants` pick a side. Matching is unaffected — a note you asked to see "
+             "but cannot answer is printed as one, never as a peer. Whatever the filter "
+             "removed is counted either way, so an empty answer never passes for an "
+             "empty room.",
     )
     p.add_argument(
         "--wait", type=float, metavar="SECONDS",

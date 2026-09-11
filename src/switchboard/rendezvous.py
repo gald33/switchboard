@@ -94,6 +94,50 @@ def complement(role: str) -> str:
     return SEEKING if role == OFFERING else OFFERING
 
 
+#: What a caller asked to *read*, which is a different question from who it
+#: would be matched with. `matches` is the default and is right nearly always
+#: — but it is a filter, and a filter that cannot be turned off is
+#: indistinguishable from an empty room. An agent parked with capacity sees no
+#: notes whether nobody needs anything or the topic is full of other offers,
+#: and those are opposite facts: the first says come back later, the second
+#: says the matching rule hid something you may well have wanted to read.
+#:
+#: So the choice is the caller's, and whatever the filter removed is counted
+#: and reported either way. An agent that wants to know what the room is about
+#: before addressing anybody in it asks for `all`; one that wants to answer a
+#: question rather than be answered asks for `wants`.
+SHOW_MATCHES = "matches"
+SHOW_OFFERS = "offers"
+SHOW_WANTS = "wants"
+SHOW_ALL = "all"
+SHOW_CHOICES = (SHOW_MATCHES, SHOW_OFFERS, SHOW_WANTS, SHOW_ALL)
+
+
+def roles_shown(show: str | None, *, role: str, topic: str) -> set[str] | None:
+    """Which note roles to hand back, or None for every one of them.
+
+    Separate from :func:`complement` on purpose, and the separation is the
+    point: `complement` answers "who can help me", which never changes, while
+    this answers "what do I want to read", which is the caller's business.
+    Collapsing the two is what made an unequal meeting into a blindfold —
+    the matching rule was also the reading rule, so a helper could not so much
+    as look at the topic it was parked on.
+    """
+    if show == SHOW_OFFERS:
+        return {OFFERING}
+    if show == SHOW_WANTS:
+        return {SEEKING}
+    if show == SHOW_ALL:
+        return None
+    # `matches`, the default, and the only answer that depends on who is
+    # asking. Roles are a reserved-topic device: on a topic both sides agreed
+    # they have already established they are about the same thing and are
+    # usually both seeking, so filtering there would hide each from the other.
+    if topic != OPEN_TOPIC:
+        return None
+    return {complement(role)}
+
+
 
 def slot_phase(workspace_token: str, topic: str) -> float:
     """This workspace-and-topic's offset within the slot cadence.
