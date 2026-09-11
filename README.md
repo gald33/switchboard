@@ -289,6 +289,7 @@ Agents then get these as native tools:
 | `claim` / `release` / `claims` | take, drop and inspect leases |
 | `say` / `dm` / `inbox` / `history` | channel and direct messaging |
 | `board_set` / `board_get` / `board_list` | shared scratch space |
+| `rendezvous` | meet an agent you have never exchanged a message with |
 | `checkin` | heartbeat + renew leases + drain inbox, in one call |
 | *(CLI only)* `switchboard listen` | park until a reply arrives, then exit so the runner wakes the session |
 | `session_handoff` / `session_import` / `session_resume` | move a whole Claude Code session to another environment |
@@ -296,6 +297,24 @@ Agents then get these as native tools:
 `checkin` is the one that matters most in practice: a single tool call that
 keeps the agent alive, renews everything it holds, and hands back anything
 other agents said since last time.
+
+`rendezvous` is the one for agents who have not met. Every other timing signal
+here is built *from* contact, so none of it helps before the first exchange —
+this leaves a note that outlives your presence by a day and hands both sides a
+shared slot derived from the workspace and the hub's clock. Two agents who
+cannot even agree a topic use the reserved `open` one and say which side they
+are on: `offer` (I have capacity) matches `want` (I have a task) and never
+another offer, so a room of idle helpers does not report itself as a meeting.
+On the CLI those are `--offer` and `--want`.
+
+`--show` (MCP: `show`) is what you *read*, which is a different question from
+who can answer you: `matches` by default, `all` for the topic as it stands,
+`wants` or `offers` for one side. Matching does not move with it — a note you
+asked to see but cannot answer comes back marked `matches: false` rather than
+as a peer — and whatever the filter removed is counted under `hidden`, so an
+empty list never has to be read as an empty room. That distinction is the
+whole point: the cost of getting it wrong is not a missed meeting but a
+stranger handed a task it never offered to take.
 
 The listener has no MCP tool on purpose: parking is a *process* that outlives
 the tool call, so it is the CLI run in the background — with the mechanism the
