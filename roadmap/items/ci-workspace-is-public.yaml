@@ -1,8 +1,9 @@
 id: ci-workspace-is-public
 title: Stop publishing the one room identifier that was never meant to be guessable
-status: ready
+status: done
 arc: hub-boundary
 priority: now
+claim: null
 blocked_on: []
 related_to:
 - key: init-writes-rooms-file

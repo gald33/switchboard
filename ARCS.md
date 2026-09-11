@@ -41,7 +41,7 @@ issue — read off a line in the README rather than reported by anyone.
 
 ### 🟠 What protects a room once the hub stops authorizing anyone
 
-`hub-boundary` · 10 item(s), 7 startable
+`hub-boundary` · 10 item(s), 6 startable
 
 `https://github.com/gald33/switchboard/issues/61` · `https://github.com/gald33/switchboard/issues/73` · `docs/model.md` · `docs/encryption.md`
 
@@ -68,7 +68,7 @@ under pressure.
 | item | status | priority |
 |---|---|---|
 | `a-drain-that-retries-forever-never-escalates` | ready | now |
-| `ci-workspace-is-public` | ready | now |
+| `ci-workspace-is-public` | done | now |
 | `stale-resolver-references` | ready | now |
 | `seal-agent-meta` | ready | next |
 | `abuse-control-after-authorization` | deferred | — |
