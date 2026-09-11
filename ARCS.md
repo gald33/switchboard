@@ -80,7 +80,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 22 item(s), 17 startable
+`setup-and-first-run` · 22 item(s), 16 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -123,7 +123,7 @@ wrong says so.
 | `timing-cold-start-in-ephemeral-environments` | deferred | — |
 | `unread-dms-not-shown-outside-mcp` | ready | — |
 | `write-parity-across-surfaces` | ready | — |
-| `hooks-warning-false-positive` | ready | later |
+| `hooks-warning-false-positive` | done | later |
 
 ### 🟠 Ceilings that are honest about themselves
 
