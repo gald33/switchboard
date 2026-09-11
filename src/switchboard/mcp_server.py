@@ -671,8 +671,18 @@ TOOLS: list[dict[str, Any]] = [
             "are on with 'offer' or 'want'. On that reserved topic offers match seekers "
             "and never other offers, so a room of idle helpers does not report itself as "
             "a meeting. Reach it across repos with room='lobby'.\n\n"
+            "'show' decides what you READ, which is a different question from who can "
+            "answer you. The default reads only the notes that match you; 'all' reads "
+            "the topic as it stands, 'wants' and 'offers' pick a side. Matching does "
+            "not move: a note you asked to see but cannot answer comes back with "
+            "matches:false, and DMing one of those is how an agent that never offered "
+            "anything is handed a task. Whatever the filter removed is counted under "
+            "'hidden' either way, so 'notes': [] never has to be read as an empty "
+            "room.\n\n"
             "The note is an introduction, not a conversation: once a peer comes back in "
-            "'notes', DM the agent_id there and take the work to a room of its own."
+            "'notes', DM the agent_id there and take the work to a room of its own — "
+            "and open by quoting the note you are answering, so a peer you reached by "
+            "mistake can say so in a line rather than guess what you meant."
         ),
         "inputSchema": _schema({
             "topic": {**_STR, "description": (
@@ -686,6 +696,15 @@ TOOLS: list[dict[str, Any]] = [
                 "one line on what you can do, if you have capacity rather than a task. "
                 "Matches seekers only."
             )},
+            "show": {
+                "type": "string",
+                "enum": list(rendezvous.SHOW_CHOICES),
+                "description": (
+                    "which notes to read back (default 'matches'). 'all' reads every "
+                    "live note on the topic, 'wants' only requests, 'offers' only "
+                    "capacity. Changes what you see, never who matches you."
+                ),
+            },
         }),
     },
     {
@@ -753,7 +772,7 @@ class Bridge:
 
     def rendezvous(
         self, topic: str | None = None, want: str | None = None,
-        offer: str | None = None,
+        offer: str | None = None, show: str | None = None,
     ) -> dict[str, Any]:
         """First contact, for the surface that had no way to make it.
 
@@ -772,6 +791,12 @@ class Bridge:
         topic = topic or rendezvous.OPEN_TOPIC
         role = rendezvous.OFFERING if offer else rendezvous.SEEKING
         blurb = offer or want or ""
+        show = show or rendezvous.SHOW_MATCHES
+        if show not in rendezvous.SHOW_CHOICES:
+            raise ValueError(
+                f"show must be one of {', '.join(rendezvous.SHOW_CHOICES)}; "
+                f"got {show!r}"
+            )
 
         agent = self.client.register(
             name=self.identity.name, kind=self.identity.kind,
@@ -788,27 +813,33 @@ class Bridge:
         workspace = getattr(self.client.config, "workspace", self.config.workspace)
         slot = rendezvous.next_slot(workspace, topic, now)
 
-        # Roles are a reserved-topic device. On a topic both sides agreed,
-        # they have already established they are about the same thing and are
-        # usually both seeking — filtering there would hide each from the
-        # other, which is the meeting the topic was agreed to arrange.
-        want_role = (
-            rendezvous.complement(role) if topic == rendezvous.OPEN_TOPIC else None
+        # Two rules, kept apart on purpose. `matching` is who can answer you
+        # and is not the caller's to set; `reading` is what the caller asked to
+        # see. They were the same rule once, which is why an agent could not
+        # look at the topic it was parked on without changing what it claimed
+        # to be.
+        matching = rendezvous.roles_shown(
+            rendezvous.SHOW_MATCHES, role=role, topic=topic
         )
+        reading = rendezvous.roles_shown(show, role=role, topic=topic)
         key = rendezvous.key_for(topic)
-        peers = []
+        peers: list[rendezvous.Intent] = []
+        hidden: list[rendezvous.Intent] = []
         for entry in self.client.board_list(prefix=key):
             if entry.get("unreadable"):
                 continue
             note = rendezvous.Intent.from_json(entry.get("value"))
             if not note or note.agent_id == self.client.agent_id:
                 continue
-            if not note.still_looking(now) or (
-                want_role is not None and note.role != want_role
-            ):
+            if not note.still_looking(now):
                 continue
-            peers.append(note)
+            (peers if reading is None or note.role in reading
+             else hidden).append(note)
         peers.sort(key=lambda n: n.since)
+        # Reading is not meeting: a note the caller asked to see and cannot
+        # answer is still not a peer, and saying so is the whole of what stops
+        # a task being handed to an agent that never offered to take one.
+        matched = [n for n in peers if matching is None or n.role in matching]
 
         # Whether each peer can actually be woken, rather than merely intends
         # to look: a note is a plan, a live `listener/<id>` is a process saying
@@ -835,27 +866,50 @@ class Bridge:
         out = {
             "topic": topic,
             "role": role,
+            "show": show,
             "note": key + "/" + self.client.agent_id,
             "notes": [
-                {**n.as_json(), "reachable": n.agent_id in parked} for n in peers
+                {**n.as_json(), "reachable": n.agent_id in parked,
+                 "matches": n in matched}
+                for n in peers
             ],
+            # What the filter removed, as a count and its roles: enough that
+            # an empty 'notes' is never mistaken for an empty topic, and not
+            # so much that the default quietly returns everything anyway.
+            "hidden": {
+                "count": len(hidden),
+                "offers": sum(1 for n in hidden if n.role == rendezvous.OFFERING),
+                "wants": sum(1 for n in hidden if n.role == rendezvous.SEEKING),
+            },
             "elsewhere": [
                 {k: v for k, v in r.items() if k != "url"} for r in elsewhere
             ],
             "next_slot_in": round(slot - now, 1),
-            "met": bool(peers) or any(r["roster"] or r["notes"] for r in elsewhere),
+            "met": bool(matched) or any(r["roster"] or r["notes"] for r in elsewhere),
             "unread_dms": unread_dms,
         }
-        if peers:
-            first = peers[0]
+        if matched:
+            first = matched[0]
             woken = first.agent_id in parked
             out["next"] = (
                 f"That is a peer, not a thread — dm {first.agent_id} with what "
-                f"you actually need, and take the work off this topic. "
+                f"you actually need, and take the work off this topic. Open by "
+                f"quoting the note you are answering ({first.want or 'no description'!r}) "
+                f"so a peer reached by mistake can say so in a line. "
                 + ("A listener is parked for it, so the dm wakes it within seconds."
                    if woken else
                    "No listener is parked for it, so the dm is correct but silent "
                    "until its next turn — do not wait on a reply this turn.")
+            )
+        elif peers:
+            # Asked for, shown, and then said plainly not to be answers. An
+            # agent reading the topic is welcome to; handing one of these a
+            # task it never offered to take is the thing being prevented.
+            out["next"] = (
+                f"{len(peers)} note(s) here, none of them a match for you — you are "
+                f"reading the topic, not meeting on it. DM one only if its own note "
+                f"asks for what you are about to send. Your note is written; come "
+                f"back at the slot."
             )
         else:
             # Must not read as failure. An agent told "nobody is here" stops,
@@ -865,6 +919,13 @@ class Bridge:
                 "Nobody yet, which is not the same as nobody coming: your note "
                 "outlives your presence by a day. Come back at the slot."
             )
+            if hidden:
+                # An empty answer that was really a filter is the miss this
+                # tool exists to remove, reappearing one layer in.
+                out["next"] += (
+                    f" {len(hidden)} live note(s) here were filtered out by "
+                    f"show='{show}' — show='all' reads them."
+                )
         return out
 
     def _lobby(self) -> Client:

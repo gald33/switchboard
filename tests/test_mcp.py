@@ -1166,6 +1166,61 @@ def test_offers_do_not_match_other_offers(hub):
     assert out["met"] is False
 
 
+def test_a_helper_can_read_the_topic_it_is_parked_on(hub):
+    """What you read and who can answer you are different questions, and they
+    were one rule: an agent with capacity saw an empty list whether nobody
+    needed anything or the topic was full of other offers."""
+    call(make_bridge(hub, "helper-a"), "rendezvous", offer="ci debugging")
+    out, err = call(make_bridge(hub, "helper-b"), "rendezvous",
+                    offer="ci debugging", show="all")
+    assert not err
+    assert [n["want"] for n in out["notes"]] == ["ci debugging"]
+    assert [n["matches"] for n in out["notes"]] == [False]
+    # Reading a crowd is not meeting one. The same false positive as matching
+    # your own role, arriving by a door the caller opened itself.
+    assert out["met"] is False
+    assert "none of them a match for you" in out["next"]
+    assert "dm " not in out["next"]
+
+
+def test_a_filtered_empty_answer_is_not_an_empty_room(hub):
+    """`notes: []` has two causes that point opposite ways. The count beside
+    it is what tells 'come back later' from 'look again without the filter'."""
+    call(make_bridge(hub, "helper-a"), "rendezvous", offer="ci debugging")
+    out, _ = call(make_bridge(hub, "helper-b"), "rendezvous", offer="more of it")
+    assert out["notes"] == []
+    assert out["hidden"] == {"count": 1, "offers": 1, "wants": 0}
+    assert out["show"] == "matches"
+    assert "show='all'" in out["next"]
+
+
+def test_show_picks_a_side_without_changing_who_you_are(hub):
+    call(make_bridge(hub, "helper"), "rendezvous", offer="releases")
+    call(make_bridge(hub, "asker"), "rendezvous", want="a release")
+
+    out, _ = call(make_bridge(hub, "reader"), "rendezvous",
+                  want="anything", show="wants")
+    assert [n["want"] for n in out["notes"]] == ["a release"]
+    assert out["hidden"] == {"count": 1, "offers": 1, "wants": 0}
+    assert out["role"] == "seek", "reading the requests is not making one"
+
+
+def test_an_unknown_show_is_refused_rather_than_guessed(hub):
+    """Silently falling back to the default would hand back a filtered list to
+    a caller that believed it had asked for everything."""
+    out, err = call(make_bridge(hub, "solo"), "rendezvous", want="x", show="everything")
+    assert err, out
+
+
+def test_the_opening_line_is_told_to_quote_the_note(hub):
+    """A peer reached by mistake can only recognise the mistake if the message
+    says which note it is answering."""
+    call(make_bridge(hub, "helper"), "rendezvous", offer="pypi releases")
+    out, _ = call(make_bridge(hub, "requester"), "rendezvous", want="a release")
+    assert "quoting the note you are answering" in out["next"]
+    assert "pypi releases" in out["next"]
+
+
 def test_a_named_topic_stays_symmetric(hub):
     """Roles are a reserved-topic device. Two agents who agreed a topic are
     usually both seeking, and must still find each other."""
