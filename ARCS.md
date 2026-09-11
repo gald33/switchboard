@@ -41,7 +41,7 @@ issue — read off a line in the README rather than reported by anyone.
 
 ### 🟠 What protects a room once the hub stops authorizing anyone
 
-`hub-boundary` · 10 item(s), 7 startable
+`hub-boundary` · 10 item(s), 6 startable
 
 `https://github.com/gald33/switchboard/issues/61` · `https://github.com/gald33/switchboard/issues/73` · `docs/model.md` · `docs/encryption.md`
 
@@ -68,7 +68,7 @@ under pressure.
 | item | status | priority |
 |---|---|---|
 | `a-drain-that-retries-forever-never-escalates` | ready | now |
-| `ci-workspace-is-public` | ready | now |
+| `ci-workspace-is-public` | done | now |
 | `stale-resolver-references` | ready | now |
 | `seal-agent-meta` | ready | next |
 | `abuse-control-after-authorization` | deferred | — |
@@ -80,7 +80,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 22 item(s), 16 startable
+`setup-and-first-run` · 22 item(s), 17 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -123,7 +123,7 @@ wrong says so.
 | `timing-cold-start-in-ephemeral-environments` | deferred | — |
 | `unread-dms-not-shown-outside-mcp` | ready | — |
 | `write-parity-across-surfaces` | ready | — |
-| `hooks-warning-false-positive` | done | later |
+| `hooks-warning-false-positive` | ready | later |
 
 ### 🟠 Ceilings that are honest about themselves
 

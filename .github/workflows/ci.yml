@@ -214,11 +214,30 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .
+      # The room is a secret, not a constant. Since #73 the hub does no
+      # authorization: reaching a room IS knowing its identifier, so the whole
+      # model rests on identifiers being unguessable. This one used to sit in
+      # the file in plain text — the single published room in a repository
+      # whose own .gitignore refuses to commit .mcp.json for exactly this
+      # reason. Anyone could read what CI announced and post as CI.
+      #
+      # SWITCHBOARD_KEY seals the announcement too, so knowing the identifier
+      # would not be enough even if it leaked again.
+      #
+      # Both are absent for a pull request from a fork — GitHub withholds
+      # secrets there — so the step says so and exits green rather than
+      # failing somebody's first contribution.
       - name: Announce this CI run to the hub
         env:
           SWITCHBOARD_URL: https://switchboard.lucille-ai.com
-          SWITCHBOARD_WORKSPACE: w_gAbpTxVh-Jl0pjx0Hnqupw
+          SWITCHBOARD_WORKSPACE: ${{ secrets.SWITCHBOARD_CI_WORKSPACE }}
+          SWITCHBOARD_KEY: ${{ secrets.SWITCHBOARD_CI_KEY }}
         run: |
+          if [ -z "$SWITCHBOARD_WORKSPACE" ] || [ -z "$SWITCHBOARD_KEY" ]; then
+            echo "::notice title=switchboard::no CI room configured for this" \
+              "run (a fork, or the secrets are unset) — not announced"
+            exit 0
+          fi
           SWITCHBOARD_TOKEN="$(sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' \
             src/switchboard/config.py | head -1)"
           export SWITCHBOARD_TOKEN
@@ -227,7 +246,7 @@ jobs:
               "src/switchboard/config.py — this CI run was not announced"
             exit 0
           fi
-          if ! out="$(switchboard -q register --kind ci -c build \
+          if ! out="$(switchboard -q announce --kind ci -c build \
               --task "${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}" 2>&1)"; then
             # Last line only: an auth failure is one line, but a connection
             # failure is a whole httpx traceback (#88), and a warning is a

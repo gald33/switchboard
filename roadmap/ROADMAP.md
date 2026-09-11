@@ -15,10 +15,6 @@ Claim before starting: `roadmap claim <key>`
 - `now` **`a-drain-that-retries-forever-never-escalates`** — A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads
   - ↔ related: **`discovery-is-uneven-and-delivery-is-unknowable`** — Both are the same missing distinction — nothing happening versus nothing working. There it is a send whose fate the sender cannot learn; here it is a read loop whose failure its own operator cannot learn.
   - ↔ related: **`standing-checks-that-nothing-runs`** — The same silent decay from the other end. That item is about checks nobody schedules; this is about a condition no check could have caught, because the only place it was ever stated was a journal on one host. A degraded client that says so on the board is what would make a standing check possible at all.
-- `now` **`ci-workspace-is-public`** — Stop publishing the one room identifier that was never meant to be guessable
-  - ↔ related: **`abuse-control-after-authorization`** — The worked example of this item's new exposure — a room whose identifier is known can have its quota burned specifically. Read that one first: it is the concrete instance, this is the general policy, and fixing the instance does not discharge the policy.
-  - ↔ related: **`init-writes-rooms-file`** — Both decide where a room identifier is allowed to live. This one is about an identifier that should not have been committed; that one proposes that `init` start committing a rooms record carrying a workspace token by default. Settle the rule here first, or `init` ships the same mistake as the default for every adopter.
-  - ↔ related: **`read-only-rooms`** — Half of that item — anyone who can read the repo can post as CI — is closed by minting the CI room write-protected: the identifier can stay committed, since knowing it no longer lets anyone write into it. The other half, sealing what CI announces, is unchanged.
 - `now` **`first-contact-needs-a-key-it-cannot-have`** — The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
   - ↔ related: **`cross-key-rendezvous`** — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - ↔ related: **`discovery-is-uneven-and-delivery-is-unknowable`** — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
@@ -99,6 +95,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The mirror image: there, MCP is the surface that tells you something the others do not. Together they are one question — what is a surface obliged to offer? — and the two items are cheap to do as one change.
 - `later` **`board-ttl-ceiling`** — Decide whether a board value has earned seven times a lease's lifetime
   - ↔ related: **`ttl-clamped-silently`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- `later` **`hooks-warning-false-positive`** — Stop warning about uncommitted hooks in repos that commit none of their wiring
 - `later` **`publish-hub-container-image`** — Publish the hub image, so running a hub is not a clone and a build
 
 ## ⏸ Deferred — startable, deliberately not now
@@ -513,7 +510,7 @@ graph TD
 ### `ci-workspace-is-public`
 
 - **title:** Stop publishing the one room identifier that was never meant to be guessable
-- **status:** ready
+- **status:** done
 - **arc:** hub-boundary
 - **priority:** now
 - **related to** (not a dependency — both are startable):
@@ -1070,7 +1067,7 @@ graph TD
 ### `hooks-warning-false-positive`
 
 - **title:** Stop warning about uncommitted hooks in repos that commit none of their wiring
-- **status:** done
+- **status:** ready
 - **arc:** setup-and-first-run
 - **priority:** later
 - **refs:**
