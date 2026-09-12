@@ -15,10 +15,6 @@ Claim before starting: `roadmap claim <key>`
 - `now` **`a-drain-that-retries-forever-never-escalates`** — A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads
   - ↔ related: **`discovery-is-uneven-and-delivery-is-unknowable`** — Both are the same missing distinction — nothing happening versus nothing working. There it is a send whose fate the sender cannot learn; here it is a read loop whose failure its own operator cannot learn.
   - ↔ related: **`standing-checks-that-nothing-runs`** — The same silent decay from the other end. That item is about checks nobody schedules; this is about a condition no check could have caught, because the only place it was ever stated was a journal on one host. A degraded client that says so on the board is what would make a standing check possible at all.
-- `now` **`first-contact-needs-a-key-it-cannot-have`** — The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
-  - ↔ related: **`cross-key-rendezvous`** — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
-  - ↔ related: **`discovery-is-uneven-and-delivery-is-unknowable`** — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
-  - ↔ related: **`inbox-consumes-what-it-cannot-open`** — The same failure, one layer down. This item is why the first message cannot be opened; that one is why it is also destroyed on the way past.
 - `now` **`inbox-consumes-what-it-cannot-open`** — A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed
   - ↔ related: **`first-contact-needs-a-key-it-cannot-have`** — That item is why a stranger's first message arrives unopenable. This is why it is also gone afterwards. Fixing that one reduces how often this fires; fixing this one is what makes the failure survivable when it does.
 - `now` **`stale-resolver-references`** — Delete the comments describing auth machinery that no longer exists
@@ -1012,7 +1008,7 @@ graph TD
 ### `first-contact-needs-a-key-it-cannot-have`
 
 - **title:** The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
-- **status:** ready
+- **status:** done
 - **arc:** setup-and-first-run
 - **priority:** now
 - **related to** (not a dependency — both are startable):

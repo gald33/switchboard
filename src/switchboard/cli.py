@@ -49,6 +49,7 @@ from .client import (
     LeaseHeld,
     ReadOnlyRoom,
     SwitchboardError,
+    UnknownPeerExchangeKey,
     detect_identity,
     rootless_warning,
 )
@@ -2479,16 +2480,39 @@ def cmd_whisper(args: argparse.Namespace) -> int:
     timing.note_speak()
     forecast = timing.declare()
     timing.close()
+    downgraded = False
     with _make_client(args) as hub:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
-        msg = hub.whisper(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
+        try:
+            msg = hub.whisper(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
+        except UnknownPeerExchangeKey as exc:
+            # Refusing here is what made first contact impossible: the one
+            # moment a caller is guaranteed to lack a peer's key is that
+            # peer's first message. `whisper` has already re-read the roster
+            # by this point, so the peer genuinely is not there to seal to.
+            #
+            # An unreachable peer and a peer you cannot seal TO are different
+            # answers, and the caller needs to know which one it got. So this
+            # sends, room-sealed, and says plainly that the sealing was
+            # weakened — never silently, which is the case the client library
+            # refuses outright and rightly.
+            if args.strict:
+                raise SystemExit(str(exc)) from exc
+            downgraded = True
+            print(f"note: {exc}", file=sys.stderr)
+            print("note: sent room-sealed instead — readable by anyone holding "
+                  "this workspace's key, not by this peer alone. "
+                  "`--strict` refuses rather than downgrading.", file=sys.stderr)
+            msg = hub.send(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
         unread = hub.unread_dms
         listener = {} if args.quiet else _listener_state(hub, peer=target)
     if args.json:
-        _print_json({**msg, "unread_dms": unread, **({"listener": listener} if listener else {}),
+        _print_json({**msg, "unread_dms": unread, "sealed_to_peer": not downgraded,
+                     **({"listener": listener} if listener else {}),
                      **({"timing_forecast": sender_forecast(forecast)} if forecast else {})})
     elif not args.quiet:
-        print(f"whispered #{msg['seq']} to {args.to} (sealed to them alone)")
+        how = "room-sealed, NOT to them alone" if downgraded else "sealed to them alone"
+        print(f"whispered #{msg['seq']} to {args.to} ({how})")
         _print_unread(unread)
         if forecast:
             print(_forecast_line(Fmt(_use_color(sys.stdout)),
@@ -6812,6 +6836,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", default=WHISPER_TYPE)
     p.add_argument("--ttl", type=float)
     p.add_argument("--json-body", action="store_true")
+    p.add_argument(
+        "--strict", action="store_true",
+        help="refuse rather than fall back to room-sealed when the peer's "
+             "exchange key is unknown — for a secret that must not be "
+             "readable by the rest of the room even once")
     _add_timing_args(p)
     p.set_defaults(func=cmd_whisper)
 

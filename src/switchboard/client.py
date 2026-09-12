@@ -742,6 +742,10 @@ class _Base:
         #: already seen, and no security property rides on it persisting —
         #: it is a convenience cache, not a trust store.
         self._peer_exchange_keys: dict[str, str] = {}
+        #: One roster read per client when a whisper misses, not one per call.
+        self._refreshed_for_whisper = False
+        #: Same, for the receive side — see `_learn_peers_before_reading`.
+        self._refreshed_for_read = False
 
     def _writer_for(self, workspace: str, seed: str | None) -> RoomWriteKey | None:
         """Adopt a write key for one workspace, if it is that workspace's.
@@ -1060,22 +1064,45 @@ class _Base:
         return self.signing.exchange_key if self.signing else None
 
     def _peer_exchange_key_for(self, to_agent: str) -> str:
-        """The cached exchange key `whisper(to_agent, ...)` would seal to, or a
-        clear, actionable error.
+        """The exchange key `whisper(to_agent, ...)` would seal to, or a clear,
+        actionable error.
 
-        Never falls back to an unsealed `send` — a caller that reached for
-        `whisper` explicitly wanted the peer-only property, and silently handing
-        back something weaker would be the one failure mode worse than
-        raising.
+        **Reads the roster itself before giving up.** The error this used to
+        raise told the caller to "call agents() ... before whispering", which
+        is a remedy the method can perform in one request and could not
+        previously be bothered to. Observed 2026-09-07: the documented path for
+        first contact needed a key that only exists after first contact, and
+        four sealed messages — one of them an authorisation to act on a
+        production host — were accepted by the hub and openable by nobody.
+
+        The refresh is attempted once per miss, not per call, so a loop over
+        unknown peers costs one roster read rather than one each.
+
+        Still never falls back to an unsealed `send`. A caller that reached for
+        `whisper` explicitly wanted the peer-only property, and silently
+        handing back something weaker is the one failure mode worse than
+        raising. Announcing the downgrade is a different act, and it belongs to
+        the surface with somebody to tell — see `cmd_whisper`.
         """
         hub_id = self.peer_id(to_agent)
         key = self._peer_exchange_keys.get(hub_id)
+        if key is None and not self._refreshed_for_whisper:
+            # Do the thing the error message asks for. Best effort: a roster
+            # that will not load leaves the raise below saying so, which is
+            # the same answer the caller got before.
+            self._refreshed_for_whisper = True
+            try:
+                self.agents()
+            except Exception:      # noqa: BLE001 -- a worse error, not a new one
+                pass
+            key = self._peer_exchange_keys.get(hub_id)
         if key is None:
             raise UnknownPeerExchangeKey(
                 f"no exchange key known for {to_agent!r} ({hub_id[:22]}…). "
-                "Call agents() to read this peer's exchange key from the "
-                "roster before whispering to them — a peer you have never "
-                "seen there cannot be whispered to yet; `say`/`dm` them first."
+                "The roster was read and this peer is not on it, so there is "
+                "nothing to seal to yet — they have not announced, or their "
+                "presence has expired. `say`/`dm` them instead, or leave a "
+                "`listener/` note on the board that outlives a roster entry."
             )
         return key
 
@@ -1597,8 +1624,37 @@ class Client(_Base):
         }
         if channels:
             params["channel"] = list(channels)
+        self._learn_peers_before_reading()
         messages = self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
         return self._open_whispers(messages)
+
+    def _learn_peers_before_reading(self) -> None:
+        """Read the roster once, so an arriving whisper can be opened at all.
+
+        The other half of the send-side refresh in `_peer_exchange_key_for`.
+        Opening a pairwise whisper needs the *sender's* exchange key, and the
+        only thing that puts it in `_peer_exchange_keys` is a roster call — so
+        a client that has never made one cannot open the first message anybody
+        whispers to it. Which is precisely the message most worth opening.
+
+        The CLI already did this (`_learn_senders`, found the hard way in
+        island game `g5`, where it hit both traders at once and they played
+        eight episodes blind to their own tastes). The MCP server got away
+        without it by holding one long-lived client whose cache some earlier
+        call had filled. The library itself did neither, so anyone building on
+        it inherited the bug.
+
+        Once per client and only while the cache is empty, so an ordinary
+        polling loop pays nothing. Never raises: a roster that will not load
+        is a worse inbox, not a failed one.
+        """
+        if self._refreshed_for_read or self._peer_exchange_keys:
+            return
+        self._refreshed_for_read = True
+        try:
+            self.agents()
+        except Exception:      # noqa: BLE001 -- see the docstring
+            pass
 
     def history(self, channel: str, *, limit: int = 50,
                 workspace: str | None = None) -> list[dict[str, Any]]:
