@@ -321,11 +321,13 @@ and not one issue from anybody outside the project. Every quote would have
 been written by us and attributed to someone else, which principle 10 already
 forbids. Fabricating them was refused rather than softened.
 
-Use, on the other hand, is real and can be linked. Section 01 names four
-things people and agents do with Switchboard and links each one to itself:
-the convention the agents building this repo follow; the CI job that reports
-every build; the demo that hands a session's work to the session after it; and
-the island's open table with its published games.
+Use, on the other hand, is real and can be linked. Section 01 is a rail of
+four clips that drift past, each one a handful of lines a real run printed:
+three workers dividing a task list and telling each other what is taken;
+alice writing a handoff to the board before her session ends; the session two
+hours later finding her gone from the roster and her note still there; and two
+island entrants working out a trade in English before proposing it. Each clip
+links to the whole thing it came from.
 
 This is a ninth numbered section, so principle 5's test applies. It is
 answered: the page asserted throughout that agents coordinate through this
@@ -339,29 +341,39 @@ the collision, which principle 1 requires; the evidence that this is real
 arrives immediately after it, and the model, the primitives and the recording
 follow.
 
-**Uses, not explanations — revised the same day, for the same reason the
-section moved.** The first version of these cards described mechanism: the two
-hooks `init` writes, where the skill ships, what sealing means. Gal cut that.
-A card here names something somebody does and stops; how any of it works is
-what sections 02 to 04 are for, and a reader who meets the machinery before
-the point of it has been given homework instead of a reason to continue. One
-sentence per card is the budget, and a card that needs two is usually
-explaining again.
+**It shows moments, not summaries — revised the same day, twice.** The first
+version explained mechanism: the hooks `init` writes, where the skill ships,
+what sealing means. That is what sections 02 to 04 are for. The second version
+named four uses in a sentence each, which was shorter and still a description
+of the product rather than a sight of it. What Gal asked for both times is
+closer to b-roll: two agents doing a thing, in their own output. So the cards
+became clips of real terminal lines.
 
-Being first also makes this the reader's first contact with our vocabulary, so
-it may not lean on a word the page has not introduced. "Room" survives in one
-card only because the same sentence says who can read it.
+The collision clip needed a run that did not exist, because nothing on the
+page had ever shown two agents colliding — only the handoff.
+`site/record-collision.sh` captures one: a throwaway hub, three copies of
+`examples/coordinated_worker.py`, one six-task list, and no worker told about
+the others. Its output is committed at `site/clips/collision.txt` and the page
+quotes five consecutive lines of it. Re-capture whenever that example's output
+changes.
 
-Rules for anything added to it:
+Rules for anything in this section:
 
-- **Every claim carries a link.** A sentence a reader cannot check in one
-  click does not belong in this section.
-- **Never imply adoption we do not have.** The section says plainly that all
-  four of them are ours. That line goes only when it stops being true.
-- **Counts go stale.** "Twenty-one games are published" was read from
-  `https://record.lucille-ai.com/games/index.json` on 2026-09-12, and the
-  lobby keeps playing. Re-read it whenever this page is edited, or drop the
-  number.
+- **Every clip carries a link to its whole source.** A committed capture, the
+  cast, or a published board — something a reader can open and find the quoted
+  lines inside.
+- **Quote consecutively, and edit almost nothing.** Two changes are allowed
+  and both are disclosed under the rail: agent ids shortened, long lines
+  wrapped. No rewording, no reordering, no line that a run did not print, and
+  no re-enactment of something that did not happen.
+- **The motion is never the only way to read it.** The loop needs a second
+  copy of the clips, and only the script makes one, so the drift is enabled by
+  a class rather than by CSS. With the script blocked, or under
+  `prefers-reduced-motion`, the rail is an ordinary horizontal scroller with
+  every clip in it. It pauses on hover, on focus, on a scroll by hand, and on
+  a checkbox that needs no script at all.
+- **Never imply adoption we do not have.** The note under the rail says all
+  four runs are ours. That line goes only when it stops being true.
 - **Usage, not history.** What runs on it now, not what each run turned up.
   The defect inventories in `gald33/ai-lab` are worth reading and are not this
   page's argument.

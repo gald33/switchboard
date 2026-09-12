@@ -1,0 +1,43 @@
+# captured by site/record-collision.sh on 2026-09-12, against a throwaway hub.
+# three copies of examples/coordinated_worker.py, one six-task list, and no
+# worker told about the others. Times are UTC, to the second.
+
+10:52:32 [carol] joined; 6 tasks on the list
+10:52:32 [bob] joined; 6 tasks on the list
+10:52:32 [alice] joined; 6 tasks on the list
+10:52:32 [bob] migrate/orders -> claimed, working
+10:52:32 [carol] migrate/orders -> in progress by _e333FU6uJWJvYrPzaj7og, skipping
+10:52:32 [alice] migrate/orders -> in progress by _e333FU6uJWJvYrPzaj7og, skipping
+10:52:32 [alice] migrate/customers -> in progress by SHYCxdfySOfXvkjlCbDxUg, skipping
+10:52:32 [carol] migrate/customers -> claimed, working
+10:52:32 [alice] migrate/invoices -> claimed, working
+10:52:34 [alice] migrate/invoices -> done (took 2.2s), holding 1 lease(s)
+10:52:34 [alice] migrate/payments -> claimed, working
+10:52:35 [carol]   <- cJVo95l9ZCoLBQi9m_XPow: {'task': 'migrate/invoices', 'by': 'alice', 'detail': 'took 2.2s'}
+10:52:35 [carol] migrate/customers -> done (took 2.4s), holding 1 lease(s)
+10:52:35 [carol] migrate/payments -> in progress by cJVo95l9ZCoLBQi9m_XPow, skipping
+10:52:35 [carol] migrate/shipping -> claimed, working
+10:52:36 [bob]   <- cJVo95l9ZCoLBQi9m_XPow: {'task': 'migrate/invoices', 'by': 'alice', 'detail': 'took 2.2s'}
+10:52:36 [bob]   <- SHYCxdfySOfXvkjlCbDxUg: {'task': 'migrate/customers', 'by': 'carol', 'detail': 'took 2.4s'}
+10:52:36 [bob] migrate/orders -> done (took 3.9s), holding 1 lease(s)
+10:52:36 [bob] migrate/payments -> in progress by cJVo95l9ZCoLBQi9m_XPow, skipping
+10:52:36 [bob] migrate/shipping -> in progress by SHYCxdfySOfXvkjlCbDxUg, skipping
+10:52:36 [bob] migrate/inventory -> claimed, working
+10:52:36 [alice]   <- SHYCxdfySOfXvkjlCbDxUg: {'task': 'migrate/customers', 'by': 'carol', 'detail': 'took 2.4s'}
+10:52:36 [alice]   <- _e333FU6uJWJvYrPzaj7og: {'task': 'migrate/orders', 'by': 'bob', 'detail': 'took 3.9s'}
+10:52:36 [alice] migrate/payments -> done (took 1.7s), holding 1 lease(s)
+10:52:36 [alice] migrate/shipping -> in progress by SHYCxdfySOfXvkjlCbDxUg, skipping
+10:52:36 [alice] migrate/inventory -> in progress by _e333FU6uJWJvYrPzaj7og, skipping
+10:52:36 [alice] finished 2, skipped 0 already-done: migrate/invoices, migrate/payments
+10:52:36 [carol]   <- _e333FU6uJWJvYrPzaj7og: {'task': 'migrate/orders', 'by': 'bob', 'detail': 'took 3.9s'}
+10:52:36 [carol]   <- cJVo95l9ZCoLBQi9m_XPow: {'task': 'migrate/payments', 'by': 'alice', 'detail': 'took 1.7s'}
+10:52:36 [carol]   <- cJVo95l9ZCoLBQi9m_XPow: alice finished: 2 task(s)
+10:52:36 [carol] migrate/shipping -> done (took 1.9s), holding 1 lease(s)
+10:52:36 [carol] migrate/inventory -> in progress by _e333FU6uJWJvYrPzaj7og, skipping
+10:52:36 [carol] finished 2, skipped 1 already-done: migrate/customers, migrate/shipping
+10:52:38 [bob]   <- cJVo95l9ZCoLBQi9m_XPow: {'task': 'migrate/payments', 'by': 'alice', 'detail': 'took 1.7s'}
+10:52:38 [bob]   <- cJVo95l9ZCoLBQi9m_XPow: alice finished: 2 task(s)
+10:52:38 [bob]   <- SHYCxdfySOfXvkjlCbDxUg: {'task': 'migrate/shipping', 'by': 'carol', 'detail': 'took 1.9s'}
+10:52:38 [bob]   <- SHYCxdfySOfXvkjlCbDxUg: carol finished: 2 task(s)
+10:52:38 [bob] migrate/inventory -> done (took 1.5s), holding 1 lease(s)
+10:52:38 [bob] finished 2, skipped 2 already-done: migrate/orders, migrate/inventory
