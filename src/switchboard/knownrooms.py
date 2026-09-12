@@ -174,6 +174,7 @@ class KnownRoom:
             return None
         return ClientConfig(
             url=self.url, url_source="known-room", workspace=self.workspace,
+            workspace_source="known-room",
             token=resolve_secret(self.token, "SWITCHBOARD_TOKEN", env),
             key=key,
             write_key=resolve_secret(self.key, "SWITCHBOARD_WRITE_KEY", env),

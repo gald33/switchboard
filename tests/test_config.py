@@ -457,6 +457,99 @@ def test_the_rootless_warning_fires_only_when_it_can_bite(monkeypatch, tmp_path)
     assert rootless_warning(detect_identity()) is None
 
 
+def test_the_rootless_warning_is_silent_when_the_caller_named_the_room(monkeypatch, tmp_path):
+    """The false positive this warning shipped with, from both sides.
+
+    The condition was "am I in a checkout?", asked without reference to
+    whether anything was derived. So an agent that exported
+    `SWITCHBOARD_WORKSPACE`, and whose room the hub then honoured, was told
+    its workspace had been derived from the directory and advised to set
+    `SWITCHBOARD_WORKSPACE` — the one thing it had already done. A warning
+    whose remedy is the caller's own last action is worse than no warning:
+    the reader who follows it changes nothing, and learns to skip the line
+    next time, including the time it is right.
+    """
+    from switchboard.client import detect_identity, rootless_warning
+
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    for var in ("SWITCHBOARD_AGENT_ID", "SWITCHBOARD_WORKSPACE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.chdir(elsewhere)
+
+    derived = ClientConfig.from_env(elsewhere)
+    assert derived.workspace_source == "derived"
+    assert rootless_warning(detect_identity(), derived) is not None, (
+        "nobody named a room, so the directory chose one — this is the case"
+    )
+
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "ws-the-caller-named")
+    named = ClientConfig.from_env(elsewhere)
+    assert named.workspace == "ws-the-caller-named"
+    assert named.workspace_source == "env"
+    assert rootless_warning(detect_identity(), named) is None, (
+        "the room was named, not derived; there is nothing here to warn about"
+    )
+
+    # Still the honest answer without a config: a caller that cannot say where
+    # the workspace came from cannot rule the derivation out either.
+    assert rootless_warning(detect_identity()) is not None
+
+
+def test_workspace_source_names_the_tier_that_chose_the_room(monkeypatch, tmp_path):
+    """Every tier that supplies a workspace says so, for the reason
+    `url_source` does: once the derived default is substituted, a room
+    somebody chose and a room nobody chose are the same string."""
+    from switchboard import rooms as rooms_mod
+
+    for var in ("SWITCHBOARD_WORKSPACE", "SWITCHBOARD_WRITE_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    project = tmp_path / "p"
+    project.mkdir()
+
+    assert ClientConfig.from_env(project).workspace_source == "derived"
+
+    (project / ".mcp.json").write_text(json.dumps({"mcpServers": {"switchboard": {
+        "command": "switchboard-mcp", "env": {"SWITCHBOARD_WORKSPACE": "ws-committed"}}}}))
+    from_repo = ClientConfig.from_repo(project)
+    assert (from_repo.workspace, from_repo.workspace_source) == ("ws-committed", "mcp.json")
+
+    declared_file = project / rooms_mod.ROOMS_FILE
+    declared_file.parent.mkdir(parents=True, exist_ok=True)
+    declared_file.write_text(json.dumps({"rooms": [
+        {"name": "main", "key_id": "default", "workspace_token": "tok-main"},
+    ]}))
+    monkeypatch.setenv("SWITCHBOARD_KEY", "k" * 43)
+    declared = ClientConfig.from_env(project)
+    assert declared.workspace == rooms_mod.workspace_for("tok-main")
+    assert declared.workspace_source == "rooms"
+
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "ws-exported")
+    exported = ClientConfig.from_env(project)
+    assert (exported.workspace, exported.workspace_source) == ("ws-exported", "env")
+
+
+def test_a_write_key_names_the_room_it_carries(monkeypatch, tmp_path):
+    """The checkout-less case the warning was loudest in and most wrong about:
+    an environment holding a write key has been told which room it is in by
+    the secret it must hold anyway."""
+    from switchboard.client import detect_identity, rootless_warning
+    from switchboard.writekey import RoomWriteKey, generate_write_key
+
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    for var in ("SWITCHBOARD_AGENT_ID", "SWITCHBOARD_WORKSPACE"):
+        monkeypatch.delenv(var, raising=False)
+    seed = generate_write_key()
+    writer = RoomWriteKey.from_seed(seed)
+    monkeypatch.setenv("SWITCHBOARD_WRITE_KEY", seed)
+    monkeypatch.chdir(elsewhere)
+
+    config = ClientConfig.from_env(elsewhere)
+    assert (config.workspace, config.workspace_source) == (writer.workspace, "write-key")
+    assert rootless_warning(detect_identity(), config) is None
+
+
 def test_the_agent_id_survives_a_branch_switch(monkeypatch, tmp_path):
     # The id is what the signer socket is keyed on, what the roster holds a
     # pubkey against, what owns a lease and a read cursor. Checking out a

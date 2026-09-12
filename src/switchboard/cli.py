@@ -384,7 +384,7 @@ def _make_config(args: argparse.Namespace) -> ClientConfig:
     if args.token:
         config.token, config.token_source = args.token, "flag"
     if args.workspace:
-        config.workspace = args.workspace
+        config.workspace, config.workspace_source = args.workspace, "flag"
     if getattr(args, "key", None):
         config.key = args.key
     if getattr(args, "write_key", None):
@@ -423,7 +423,7 @@ def _apply_lobby(config: ClientConfig, args: argparse.Namespace) -> ClientConfig
             "--new-key` to mint one."
         )
     config.key = key
-    config.workspace = rooms.lobby(key).workspace
+    config.workspace, config.workspace_source = rooms.lobby(key).workspace, "lobby"
     return config
 
 
@@ -497,6 +497,7 @@ def _apply_known_room(config: ClientConfig, args: argparse.Namespace) -> ClientC
     book.remember(room)
     return replace(
         config, url=resolved.url, url_source="known-room", workspace=resolved.workspace,
+        workspace_source="known-room",
         token=resolved.token or config.token, key=resolved.key,
         write_key=resolved.write_key,
     )
@@ -544,7 +545,7 @@ def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfi
     _remember_invited(room, blob, learned="invite")
     return replace(
         config, url=room.url.rstrip("/"), url_source="invite",
-        workspace=room.workspace,
+        workspace=room.workspace, workspace_source="invite",
         # A field the invite omits means "you already hold this" — that is
         # what `invite --no-key` and `--no-token` are *for* — so it falls back
         # rather than clearing. Wiping a key the environment has would send an
@@ -571,7 +572,7 @@ def _make_client(args: argparse.Namespace) -> Client:
     # to speak under. Wiring it into the handful of commands that publish would
     # leave the ones that only read — `agents`, `inbox` — silently reading a
     # second identity's cursor.
-    _warn_identity_drift(args, identity)
+    _warn_identity_drift(args, identity, config)
     _warn_unresolved_room(args, config)
     _remember_repo_room(args, config)
     return Client(config, agent_id=identity.agent_id)
@@ -655,7 +656,8 @@ def _warn_isolated(
         print(note, file=sys.stderr)
 
 
-def _warn_identity_drift(args: argparse.Namespace, identity: Identity | None = None) -> None:
+def _warn_identity_drift(args: argparse.Namespace, identity: Identity | None = None,
+                         config: ClientConfig | None = None) -> None:
     """Say, on stderr, that this command is publishing under a second identity.
 
     Rides alongside `_warn_isolated` because it is the same class of failure:
@@ -663,13 +665,21 @@ def _warn_identity_drift(args: argparse.Namespace, identity: Identity | None = N
     are to everybody else. Stderr and exit 0 for the same reason — running a
     command from outside a checkout is legitimate, it just should not be
     silent when it changes who you are.
+
+    The config rides along because the directory alone cannot answer the
+    question. A command run outside a checkout with the room named — exported,
+    passed as a flag, carried by an invite — derived nothing and has nothing to
+    hear about, least of all an instruction to export the variable it is
+    already honouring. See `rootless_warning`.
     """
     global _DRIFT_WARNED
     if getattr(args, "quiet", False) or _DRIFT_WARNED:
         return
     if identity is None:
         identity = detect_identity(agent_id=getattr(args, "agent_id", None))
-    note = rootless_warning(identity)
+    if config is None:
+        config = _make_config(args)
+    note = rootless_warning(identity, config)
     if note:
         _DRIFT_WARNED = True
         print(note, file=sys.stderr)
@@ -920,7 +930,8 @@ def _keygen_invite(args: argparse.Namespace, key: str, workspace_token: str,
     before anything is registered.
     """
     workspace = rooms.workspace_for(workspace_token)
-    config = replace(_make_config(args), workspace=workspace, key=key, write_key=write_key)
+    config = replace(_make_config(args), workspace=workspace, workspace_source="keygen",
+                     key=key, write_key=write_key)
     fmt = Fmt(_use_color(sys.stdout))
     probe, unproven = f"coord/join-probe/{secrets.token_urlsafe(8)}", ""
     try:
@@ -2043,7 +2054,12 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "argument": "pinned (--agent-id)",
         "SWITCHBOARD_AGENT_ID": "pinned (SWITCHBOARD_AGENT_ID)",
     }.get(identity.id_source, "derived from repo + branch + session")
-    if identity.id_source == "derived" and not identity.in_repo:
+    # Gated on the warning having actually been printed rather than on the
+    # directory alone, the same way the `hub` line above is gated on
+    # `isolation_warning`: an annotation pointing at a note nobody printed is
+    # the false positive again, one line further down the same screen. A room
+    # named explicitly derived nothing, so there is no stderr line to see.
+    if not args.quiet and rootless_warning(identity, resolved):
         source += fmt.yellow("  ← no git checkout here; see warning on stderr")
     print(f"{fmt.dim('identity'.rjust(10))}  {source}")
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
@@ -2861,7 +2877,8 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     if lobby_workspace == primary.config.workspace:
         return posts
     lobby = Client(
-        replace(primary.config, workspace=lobby_workspace, key=key, write_key=None),
+        replace(primary.config, workspace=lobby_workspace, workspace_source="lobby",
+                key=key, write_key=None),
         agent_id=identity.agent_id,
     )
     posts.append(_Post("lobby", lobby, None))

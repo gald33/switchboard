@@ -1,0 +1,81 @@
+id: rootless-warning-false-positive
+title: Stop telling a caller who named the room that their workspace was derived from the directory
+status: done
+arc: setup-and-first-run
+priority: later
+claim: null
+blocked_on: []
+related_to:
+- key: hooks-warning-false-positive
+  note: 'The same defect in a different warning, and the same fix. Both asked a question
+    adjacent to the one they warned about — "are the hooks gitignored?", "am I in a
+    checkout?" — when the condition that matters is narrower. Read that one first
+    for why a warning on a correct configuration is worse than no warning.'
+- key: every-silent-failure-looks-like-a-quiet-room
+  note: 'The inverse failure, and the reason this one is not cosmetic. That item is
+    about seven real faults that say nothing; this is a correct setup that says
+    something, which is what trains a reader to skip the line that would have named
+    one of the seven.'
+- key: connect-failure-message
+  note: 'Where `url_source` and `token_source` came from, and the precedent followed
+    here: the tier that supplied a value is carried on the config rather than
+    re-derived, because once the fallback is substituted, chosen and defaulted are
+    the same string.'
+evidence: |
+  **Not a filed issue.** Reported from a session dogfooding the CI announce path
+  on 2026-09-12, reproduced outside a checkout against the managed hub:
+
+      export SWITCHBOARD_URL=https://switchboard.lucille-ai.com
+      export SWITCHBOARD_TOKEN=…
+      eval "$(switchboard keygen --no-input | sed 's/^/export /')"
+      switchboard announce --kind ci -c build --task marker
+
+  `keygen` exports `SWITCHBOARD_WORKSPACE`. Every command then printed:
+
+      warning: this ran outside a git checkout, so the workspace was derived
+      from the directory rather than from the repo's remote.
+      …
+      Run from the checkout, or set SWITCHBOARD_WORKSPACE to the room you mean.
+
+  Both halves of that are false. Nothing was derived — the exported workspace won
+  at the top tier of `ClientConfig.from_env`, and the hub confirmed it: `switchboard
+  --json agents` reported the same `ws_…` `keygen` had printed. And the remedy
+  offered is the caller's own previous command. **A warning whose fix is the thing
+  you just did is the most confusing possible advice**: the reader who follows it
+  changes nothing, concludes the tool is wrong about its own state, and learns to
+  skip the line — including the time it is right, which is the time it is the only
+  thing standing between them and a room with nobody in it.
+
+  The mechanism is that `client.rootless_warning` tested `identity.in_repo`, a fact
+  about the *directory*, and warned about the *workspace*. Those coincide only when
+  nobody named a room. Four tiers name one without a checkout in sight — an
+  exported `SWITCHBOARD_WORKSPACE`, `--workspace`, an invite, and a write key whose
+  public half *is* the room — and each is the documented way to coordinate from a
+  container, a CI job or a cloud session, which is precisely where there is no
+  remote to read and this warning fires.
+
+  The signal needed was already half-built. `ClientConfig` carries `url_source` and
+  `token_source` for exactly this reason (see [[connect-failure-message]]), and
+  `Identity.id_source` does the same job for the agent id. The workspace — the one
+  value that decides who you coordinate with — was the field with no such record.
+
+  **How you know it worked.** Outside a checkout with a room named, by any tier:
+  silence, and the hub puts the agent in the named room. Outside a checkout with
+  nothing named: the warning, unchanged, because that is the case it is for.
+resolution: |
+  Done 2026-09-12. `ClientConfig.workspace_source` now records which tier supplied
+  the workspace — `env`, `flag`, `rooms`, `write-key`, `mcp.json`, `invite`,
+  `known-room`, `lobby`, `explicit`, `keygen`, or `derived` — kept in step by every
+  tier that sets the value, the way `url_source` already was.
+  `client.rootless_warning` takes the config and returns None unless the source is
+  `derived`. Omitting the config keeps the old behaviour, because a caller that
+  cannot say where the workspace came from cannot rule the derivation out either.
+
+  `whoami`'s `identity` line lost its `← no git checkout here; see warning on
+  stderr` annotation in the same cases, and for the same reason the `hub` line is
+  already gated on `isolation_warning`: pointing a reader at a note nobody printed
+  is the same defect one line further down the screen.
+
+  Regression tests in `tests/test_config.py` (the four naming tiers, and the
+  derived case still warning) and `tests/test_cli_config.py` (the reported
+  reproduction, end to end through `main`).

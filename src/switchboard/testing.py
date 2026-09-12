@@ -169,6 +169,7 @@ class Hub:
             url_source="explicit",
             token=self.token,
             workspace=workspace or self.workspace,
+            workspace_source="explicit",
             agent_id=agent_id,
             key=self.key if key is None else key,
             write_key=(self.write_key if write_key is None else write_key) or None,

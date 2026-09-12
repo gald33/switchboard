@@ -950,7 +950,8 @@ class Bridge:
                 "from it — there is no lobby to compute without one. Set "
                 "SWITCHBOARD_KEY in this server's environment."
             )
-        config = replace(self.config, workspace=rooms.lobby(key).workspace)
+        config = replace(self.config, workspace=rooms.lobby(key).workspace,
+                         workspace_source="lobby")
         client = Client(config, agent_id=self.identity.agent_id)
         self._rooms[LOBBY_ROOM] = client
         return client

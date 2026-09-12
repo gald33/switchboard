@@ -247,8 +247,8 @@ def detect_identity(
                     id_source=id_source, in_repo=repo is not None)
 
 
-def rootless_warning(identity: Identity) -> str | None:
-    """Text warning that this command ran outside a git checkout.
+def rootless_warning(identity: Identity, config: ClientConfig | None = None) -> str | None:
+    """Text warning that the workspace was derived from a directory.
 
     A repo decides which room its agents are in: the workspace is derived
     from the remote. Outside a checkout there is no remote to read, so one is
@@ -267,8 +267,26 @@ def rootless_warning(identity: Identity) -> str | None:
     does (see `detect_identity`), so pinning `SWITCHBOARD_AGENT_ID` — which
     is what this warning used to advise — would leave the real problem in
     place: the same agent, correctly identified, in the wrong room.
+
+    Being outside a checkout is only half the condition, and on its own it is
+    the wrong half. A room named by `SWITCHBOARD_WORKSPACE`, by `--workspace`,
+    by an invite or by a write key is the room this client is in, checkout or
+    no checkout — nothing was derived, and there is nothing to warn about. The
+    warning fired there anyway, and its remedy was *set
+    `SWITCHBOARD_WORKSPACE`*: told to do the thing you have already done, with
+    the hub honouring it the whole time. That is the failure this file exists
+    to prevent, inverted — a correct setup reported as broken, which teaches a
+    reader to skip the one line that would have told them about a real one.
+
+    So the derivation is asked about directly rather than inferred from the
+    directory: `config.workspace_source` says which tier supplied the room,
+    and only `"derived"` is this warning's case. Omitting `config` keeps the
+    old behaviour, because a caller that cannot say where the workspace came
+    from cannot rule the derivation out either.
     """
     if identity.id_source != "derived" or identity.in_repo:
+        return None
+    if config is not None and config.workspace_source != "derived":
         return None
     return (
         "warning: this ran outside a git checkout, so the workspace was "
