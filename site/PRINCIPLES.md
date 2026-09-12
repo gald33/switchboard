@@ -349,13 +349,21 @@ of the product rather than a sight of it. What Gal asked for both times is
 closer to b-roll: two agents doing a thing, in their own output. So the cards
 became clips of real terminal lines.
 
-The collision clip needed a run that did not exist, because nothing on the
-page had ever shown two agents colliding — only the handoff.
-`site/record-collision.sh` captures one: a throwaway hub, three copies of
-`examples/coordinated_worker.py`, one six-task list, and no worker told about
-the others. Its output is committed at `site/clips/collision.txt` and the page
-quotes five consecutive lines of it. Re-capture whenever that example's output
-changes.
+Two clips needed runs that did not exist. Nothing on the page had ever shown
+two agents colliding, and nothing had shown the expiry that principle 2 calls
+the whole product — only the handoff. So two scripts capture them, both
+against a throwaway hub, both committed with their output:
+
+- `site/record-collision.sh` → `site/clips/collision.txt`. Three copies of
+  `examples/coordinated_worker.py`, one six-task list, no worker told about
+  the others.
+- `site/record-crash.sh` → `site/clips/crash.txt`. One worker killed with
+  `-9` while holding a job, so nothing runs on its way out; the claim sits
+  there for its minute, lapses, and the next worker takes the same job. It
+  takes about ninety seconds to run, because the lease really is 60s.
+
+Re-capture whenever that example's output changes. The rail holds eight clips
+and the heading counts them, so adding a ninth means editing both.
 
 **The clips needed words — revised the same day, after a newcomer test
 failed.** Gal read the rail as a stranger would and could not follow it:
