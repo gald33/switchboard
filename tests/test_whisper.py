@@ -107,14 +107,58 @@ def test_a_third_member_with_the_workspace_key_cannot_read_a_whisper(key):
 # --- failure modes, each with its own clear error ----------------------------
 
 
-def test_whispering_to_a_peer_whose_exchange_key_is_unknown_raises(key):
+def test_whispering_to_a_peer_never_seen_reads_the_roster_rather_than_refusing(key):
+    """First contact is the one moment the key is guaranteed to be missing.
+
+    This used to raise, and its own error told the caller to "call agents()
+    ... before whispering" — a remedy the method can perform in one request.
+    Observed 2026-09-07: the documented path for meeting a stranger needed a
+    key that only exists after meeting them, and four sealed messages were
+    accepted by the hub and openable by nobody.
+    """
     with make_hub(workspace=WS, key=key) as h:
         alice, bob = h.client("alice"), h.client("bob")
         alice.register(name="alice")
         bob.register(name="bob")
-        # alice never called agents(), so she has not learned bob's key.
-        with pytest.raises(UnknownPeerExchangeKey):
-            alice.whisper(bob.agent_id, "hello")
+        assert alice._peer_exchange_keys == {}, "precondition: alice knows nobody"
+        alice.whisper(bob.agent_id, "hello")            # no agents() call
+        # And bob opens it without one either — the receive side learns the
+        # sender's key the same way. Neither end read the roster explicitly.
+        assert bob._peer_exchange_keys == {}, "precondition: bob knows nobody"
+        assert bob.inbox()[0]["body"] == "hello"
+
+
+def test_whispering_to_a_peer_who_is_not_there_still_raises(key):
+    """A downgrade is the surface's call to announce, never the library's.
+
+    The roster is read first, so this fires only when the peer genuinely is
+    not on it — never announced, or presence expired.
+    """
+    with make_hub(workspace=WS, key=key) as h:
+        alice = h.client("alice")
+        alice.register(name="alice")
+        with pytest.raises(UnknownPeerExchangeKey) as caught:
+            alice.whisper("nobody-was-ever-here", "hello")
+        assert "roster was read" in str(caught.value)
+
+
+def test_the_roster_is_read_once_per_client_not_once_per_miss(key):
+    """A loop over unknown peers costs one roster read, not one each."""
+    with make_hub(workspace=WS, key=key) as h:
+        alice = h.client("alice")
+        alice.register(name="alice")
+        calls = {"n": 0}
+        inner = alice.agents
+
+        def counted(*a, **kw):
+            calls["n"] += 1
+            return inner(*a, **kw)
+
+        alice.agents = counted                          # type: ignore[method-assign]
+        for peer in ("ghost-one", "ghost-two", "ghost-three"):
+            with pytest.raises(UnknownPeerExchangeKey):
+                alice.whisper(peer, "hello")
+        assert calls["n"] == 1, f"read the roster {calls['n']} times for 3 misses"
 
 
 def test_a_wrong_peer_exchange_key_fails_to_open_rather_than_decoding_wrong():
@@ -304,12 +348,21 @@ def test_the_cli_reads_the_roster_before_draining_so_a_whisper_opens(key):
         mgr.whisper(trader.agent_id, "your capacities: salt 1.5894 per labour")
 
         trader._peer_exchange_keys.clear()          # a new process starts here
+        trader._refreshed_for_read = False
 
-        # `--peek`, so asserting on the failure does not also destroy it --
-        # which is precisely the trap `#172` warns about.
+        # `--peek`, so asserting on this does not also destroy the message --
+        # precisely the trap `#172` warns about.
+        #
+        # This used to come back `unreadable` — what both g5 traders saw, every
+        # time — and the CLI worked around it with `_learn_senders`. The client
+        # now reads the roster itself before draining, so the workaround is no
+        # longer what stands between a fresh process and the message.
         [blind] = trader.inbox(peek=True)
-        assert blind.get("unreadable"), "what both g5 traders saw, every time"
+        assert not blind.get("unreadable"), "a fresh process must open it unaided"
+        assert blind["body"] == "your capacities: salt 1.5894 per labour"
 
+        # And `_learn_senders` is still safe to call: the CLI does, and calling
+        # it twice must not cost a second roster read or change the answer.
         from switchboard import cli
 
         cli._learn_senders(trader)
@@ -371,3 +424,49 @@ def test_that_socket_path_still_fits_in_a_unix_socket():
     # A realistic worst case: agent ids are derived and long.
     longest = socket_path("a" * 96)
     assert len(str(longest)) < 104, f"{len(str(longest))} bytes: {longest}"
+
+
+def test_the_cli_downgrades_loudly_rather_than_refusing(key, capsys, monkeypatch):
+    """An unreachable peer and an unsealable one are different answers.
+
+    The library refuses rather than quietly sending something weaker, and it
+    is right to: a caller that reached for `whisper` wanted the peer-only
+    property. But refusing was what made first contact impossible, so the
+    surface with somebody to tell downgrades and says so — on stderr, in the
+    JSON as `sealed_to_peer`, and in the success line itself.
+
+    `--strict` is the way back to a refusal, for a secret that must not be
+    readable by the rest of the room even once.
+    """
+    from switchboard import cli
+    from switchboard.cli import build_parser
+
+    with make_hub(workspace=WS, key=key) as h:
+        alice = h.client("alice")
+        alice.register(name="alice")
+        monkeypatch.setattr(cli, "_make_client", lambda args: _NoClose(alice))
+
+        parser = build_parser()
+        args = parser.parse_args(["-q", "whisper", "never-announced", "hello?"])
+        assert cli.cmd_whisper(args) == cli.EXIT_OK
+        err = capsys.readouterr().err
+        assert "room-sealed instead" in err, "the downgrade must be said out loud"
+        assert "--strict" in err, "and it must name the way to refuse instead"
+
+        strict = parser.parse_args(
+            ["-q", "whisper", "--strict", "never-announced", "hello?"])
+        with pytest.raises(SystemExit):
+            cli.cmd_whisper(strict)
+
+
+class _NoClose:
+    """`cmd_whisper` uses the client as a context manager; the fixture owns it."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def __enter__(self):
+        return self._client
+
+    def __exit__(self, *exc):
+        return False

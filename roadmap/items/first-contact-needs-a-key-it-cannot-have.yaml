@@ -1,8 +1,9 @@
 id: first-contact-needs-a-key-it-cannot-have
 title: The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger
-status: ready
+status: done
 arc: setup-and-first-run
 priority: now
+claim: null
 blocked_on: []
 related_to:
 - key: cross-key-rendezvous

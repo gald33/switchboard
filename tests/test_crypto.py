@@ -767,10 +767,21 @@ def test_an_impersonator_is_caught(hub, key):
 def test_an_unknown_sender_is_not_called_a_forgery(hub, key):
     # No key for a sender usually means a roster we have not read. Reporting
     # that as a bad signature would train people to ignore the warning.
+    #
+    # Reaching that state now takes a second act. `inbox` reads the roster once
+    # per client, so the FIRST sender is verified rather than unknown — the
+    # point of that change. Somebody who announces afterwards is the honest
+    # remaining case: there is no second read, so their key is genuinely not
+    # held, and they must still not be called a forger for it.
     alice, bob = hub.client("alice"), hub.client("bob")
     alice.register(name="alice")
     bob.register(name="bob")
     alice.post("build", "hello")
+    assert bob.inbox(channels=["build"], include_own=True)[0]["signature"]["status"] == "verified"
+
+    carol = hub.client("carol")
+    carol.register(name="carol")
+    carol.post("build", "and hello from me")
     got = bob.inbox(channels=["build"], include_own=True)
     assert got[0]["signature"]["status"] == "unknown"
 
