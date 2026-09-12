@@ -398,8 +398,14 @@ Rules for anything in this section:
   `prefers-reduced-motion`, the rail is an ordinary horizontal scroller with
   every clip in it. It pauses on hover, on focus, on a scroll by hand, and on
   a checkbox that needs no script at all.
-- **Never imply adoption we do not have.** The note under the rail says all
-  four runs are ours. That line goes only when it stops being true.
+- **Never claim adoption we do not have — and do not announce its absence
+  either.** The note under the rail used to end "we are not claiming outside
+  users we do not have", which is a sentence that volunteers a weakness to a
+  reader who had not asked and could not otherwise tell. Gal cut it, and the
+  rule that replaces it is the useful half: the page may never state or imply
+  outside use while there is none. It does not owe anyone an inventory of what
+  it lacks. Every clip links to the run it came from, so whose run it was is
+  one click away for anybody who wants to know.
 - **Usage, not history.** What runs on it now, not what each run turned up.
   The defect inventories in `gald33/ai-lab` are worth reading and are not this
   page's argument.
