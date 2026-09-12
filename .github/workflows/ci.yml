@@ -217,6 +217,15 @@ jobs:
   # caller and scopes nothing, so a secret copy protects nothing the published
   # one does not.
   register-switchboard:
+    # Never on a pull request. This is the one job that talks to a server
+    # somebody has to keep up, and a hub reboot must not turn a contributor's
+    # PR red for a reason that has nothing to do with their change — red for
+    # no reason is how people learn to ignore red.
+    #
+    # On main it gates, which is the point: a check that cannot fail is not a
+    # check, and the old one warned and exited green even when the client
+    # could not reach the hub at all.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -260,7 +269,7 @@ jobs:
           if ! switchboard --json agents | grep -qF "$MARK"; then
             echo "::error title=switchboard::announced \"$MARK\" but it did" \
               "not come back from the roster"
-            switchboard --json agents || true
+            switchboard --json agents
             exit 1
           fi
           echo "hub round trip ok — announced and read back: $MARK"

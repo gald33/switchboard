@@ -65,11 +65,35 @@ def test_the_announce_reports_its_own_failure() -> None:
     text = CI.read_text()
     announce = text[text.index("register-switchboard:") :]
     assert "|| true" not in announce, (
-        "a swallowed failure is how the announce broke unnoticed; warn instead"
+        "a swallowed failure is how the announce broke unnoticed; report instead"
     )
-    assert "::warning" in announce
-    # Still non-gating: nothing in the step may exit non-zero on a failed hub.
-    assert "exit 1" not in announce
+    assert "::error" in announce or "::warning" in announce, (
+        "a failure the run does not mention is the thing #96 was about"
+    )
+
+
+def test_the_announce_cannot_redden_a_pull_request() -> None:
+    """It gates, but only where the hub going down is the maintainer's problem.
+
+    This step used to be forbidden from exiting non-zero at all, which made it
+    a check that could not fail: it warned and went green even when the client
+    could not reach the hub. Now it asserts a real round trip and exits 1 when
+    that round trip does not come home.
+
+    The old rule was protecting something real, though. This is the only job
+    that depends on a server somebody has to keep running, and a hub reboot
+    turning a contributor's pull request red — for a reason that has nothing
+    to do with their change — is how a team learns to ignore a red tick.
+
+    So the gate moved rather than went away: on `main` it fails the run, and on
+    a pull request it does not run at all.
+    """
+    text = CI.read_text()
+    announce = text[text.index("register-switchboard:") :]
+    assert "exit 1" in announce, "the round trip must be able to fail the run"
+    assert "if: github.event_name != 'pull_request'" in announce, (
+        "a hub outage must not be able to fail somebody's pull request"
+    )
 
 
 def test_ci_announces_to_the_hub_the_token_belongs_to() -> None:
