@@ -313,6 +313,38 @@ Constraints on this section:
 - **Two is the right number.** Do not pad to a grid of six with roadmap items
   or the barter experiment. An honest two beats a speculative six.
 
+## 12a. Usage is shown with receipts, not testimonials
+
+**Added 2026-09-12.** The page was asked for testimonials. There are none to
+be had: on the day this was written the repository had two stars, no forks,
+and not one issue from anybody outside the project. Every quote would have
+been written by us and attributed to someone else, which principle 10 already
+forbids. Fabricating them was refused rather than softened.
+
+Use, on the other hand, is real and can be linked. Section 08 names three
+things running on Switchboard and gives each a receipt the reader can open in
+one click: the two hooks and the skill `switchboard init` installs, plus the
+CI job that announces every run; the island's open table and its published
+games; and the demo that replays a handoff on the reader's own machine.
+
+This is the ninth numbered section, so principle 5's test applies. It is
+answered: the page asserted throughout that agents coordinate through this
+thing, and showed nowhere that any of them do.
+
+Rules for anything added to it:
+
+- **Every claim carries a link.** A sentence a reader cannot check in one
+  click does not belong in this section.
+- **Never imply adoption we do not have.** The section says plainly that all
+  three systems are ours. That line goes only when it stops being true.
+- **Counts go stale.** "Twenty-one finished games" was read from
+  `https://record.lucille-ai.com/games/index.json` on 2026-09-12, and the
+  lobby keeps playing. Re-read it whenever this page is edited, or drop the
+  number.
+- **Usage, not history.** What runs on it now, not what each run turned up.
+  The defect inventories in `gald33/ai-lab` are worth reading and are not this
+  page's argument.
+
 ---
 
 ## Open decisions (not principles — Gal's call)
