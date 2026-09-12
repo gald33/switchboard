@@ -357,8 +357,22 @@ the others. Its output is committed at `site/clips/collision.txt` and the page
 quotes five consecutive lines of it. Re-capture whenever that example's output
 changes.
 
+**The clips needed words — revised the same day, after a newcomer test
+failed.** Gal read the rail as a stranger would and could not follow it:
+`_e333FU6…`, `PROPOSE to=T2 give=bread:0.19`, `coord/proposals/db-migration-order
+= rev 1`. All real, all opaque to somebody two screens into their first visit.
+Terminal output is evidence, and evidence does not explain itself. So every
+clip now opens with a sentence of ordinary language saying what happened, and
+the lines follow as proof of it. The sentence is the content; the transcript
+is the receipt.
+
 Rules for anything in this section:
 
+- **Words first, output second.** A clip that is only a transcript is a wall
+  of identifiers to the reader this page is for. Say what happened in a
+  sentence a person could say out loud, then show the lines. Where one
+  identifier still carries weight, gloss it underneath — "`_e333FU6…` is
+  bob's id" — rather than leaving the reader to infer it.
 - **Every clip carries a link to its whole source.** A committed capture, the
   cast, or a published board — something a reader can open and find the quoted
   lines inside.
