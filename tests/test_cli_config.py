@@ -250,3 +250,67 @@ def test_help_still_works_with_a_rooms_file_too_broken_to_read(tmp_path, monkeyp
     with pytest.raises(SystemExit) as exit_info:
         cli_module.main(["--help"])
     assert exit_info.value.code == 0
+
+
+# --- the room you named is not a room anybody derived ------------------------
+#
+# The rootless warning asked one question — am I in a git checkout? — and
+# answered a different one, about where the workspace came from. Run outside a
+# checkout with `SWITCHBOARD_WORKSPACE` exported, every command printed that
+# the workspace "was derived from the directory" and advised setting the
+# variable that was, at that moment, deciding the room the hub put it in.
+
+
+def _outside_a_checkout(tmp_path, monkeypatch):
+    """A directory with no git in it and no repo anywhere above it."""
+    elsewhere = tmp_path / "not-a-repo"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    return elsewhere
+
+
+def test_a_named_room_gets_no_rootless_warning(clean_env, tmp_path, monkeypatch, capsys):
+    import switchboard.cli as cli_module
+
+    _outside_a_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "_DRIFT_WARNED", False)
+
+    assert cli_module.main(["--url", "http://testserver", "-w", "ws-named", "whoami"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "", "nothing was derived, so there is nothing to say"
+    # And the annotation that points at the note goes with it: pointing a
+    # reader at a warning nobody printed is the same defect, one line later.
+    assert "no git checkout here" not in captured.out
+    assert "ws-named" in captured.out
+
+
+def test_an_exported_room_gets_no_rootless_warning(clean_env, tmp_path, monkeypatch, capsys):
+    """The reported reproduction, which is the exported half of the same
+    thing: `eval $(switchboard keygen)` sets `SWITCHBOARD_WORKSPACE`, and the
+    advice offered was to set `SWITCHBOARD_WORKSPACE`."""
+    import switchboard.cli as cli_module
+
+    _outside_a_checkout(tmp_path, monkeypatch)
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "ws-exported")
+    monkeypatch.setattr(cli_module, "_DRIFT_WARNED", False)
+
+    assert cli_module.main(["--url", "http://testserver", "whoami"]) == 0
+    captured = capsys.readouterr()
+    assert "SWITCHBOARD_WORKSPACE" not in captured.err
+    assert "ws-exported" in captured.out
+
+
+def test_a_derived_room_outside_a_checkout_still_warns(clean_env, tmp_path, monkeypatch,
+                                                       capsys):
+    """The case the warning is for, kept: nobody named a room, so the
+    directory chose one, and it is not the room this repo's agents are in."""
+    import switchboard.cli as cli_module
+
+    _outside_a_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_module, "_DRIFT_WARNED", False)
+
+    assert cli_module.main(["--url", "http://testserver", "whoami"]) == 0
+    captured = capsys.readouterr()
+    assert "outside a git checkout" in captured.err
+    assert "SWITCHBOARD_WORKSPACE" in captured.err
+    assert "no git checkout here" in captured.out

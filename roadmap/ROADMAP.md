@@ -54,6 +54,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
+  - ↔ related: **`rootless-warning-false-positive`** — The inverse failure, and the reason this one is not cosmetic. That item is about seven real faults that say nothing; this is a correct setup that says something, which is what trains a reader to skip the line that would have named one of the seven.
   - ↔ related: **`selective-wake-for-the-listener`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
 - **`hub-origin-reachable-bypassing-the-edge`** — The hub's origin answers directly by IP, so its Cloudflare edge is optional
   - ↔ related: **`identity-rebinds-on-branch-change`** — Found in the same engagement, and the same lesson underneath: a signal that keeps reporting after the thing behind it stopped being true. There it was an agent id; here it was a firewall counter reading zero because the rule could not be reached.
@@ -151,6 +152,7 @@ graph TD
   read_only_rooms["A room a viewer can read and nothing else, refused by the hub rather than by good behaviour"]
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
   roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
+  rootless_warning_false_positive["Stop telling a caller who named the room that their workspace was derived from the directory"]
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
@@ -176,6 +178,7 @@ graph TD
   clients_that_cannot_post -.- read_only_rooms
   clients_that_cannot_post -.- robots_policy_for_public_hosts
   connect_failure_message -.- joining_agent_sees_empty_inbox
+  connect_failure_message -.- rootless_warning_false_positive
   connect_failure_message -.- stale_token_in_session_env
   cross_key_rendezvous -.- first_contact_needs_a_key_it_cannot_have
   cross_key_rendezvous -.- known_rooms_address_book
@@ -185,8 +188,10 @@ graph TD
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
+  every_silent_failure_looks_like_a_quiet_room -.- rootless_warning_false_positive
   every_silent_failure_looks_like_a_quiet_room -.- selective_wake_for_the_listener
   first_contact_needs_a_key_it_cannot_have -.- inbox_consumes_what_it_cannot_open
+  hooks_warning_false_positive -.- rootless_warning_false_positive
   hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
@@ -629,6 +634,7 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `joining-agent-sees-empty-inbox` — The same failure shape one layer down: there, a connection that never worked looks like a room with nothing in it; here, a connection that works perfectly looks the same way. Read that one first — it establishes that "silence is the ambiguous signal" is a recurring bug class in this surface, not a one-off.
+  - `rootless-warning-false-positive` — Where `url_source` and `token_source` came from, and the precedent followed here: the tier that supplied a value is carried on the config rather than re-derived, because once the fallback is substituted, chosen and defaulted are the same string.
   - `stale-token-in-session-env` — That one made the 401 say which tier the token came from. This is the case the message cannot yet explain: it reports "a token from SWITCHBOARD_TOKEN in this shell" and the shell was given it by the harness, from a source nothing on disk names.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/88`
@@ -842,6 +848,7 @@ graph TD
   - `identity-rebinds-on-branch-change` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `joining-agent-sees-empty-inbox` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - `provisioned-token-is-stale-and-nothing-says-so` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
+  - `rootless-warning-false-positive` — The inverse failure, and the reason this one is not cosmetic. That item is about seven real faults that say nothing; this is a correct setup that says something, which is what trains a reader to skip the line that would have named one of the seven.
   - `selective-wake-for-the-listener` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
 
 <details><summary>evidence</summary>
@@ -1069,6 +1076,8 @@ graph TD
 - **status:** done
 - **arc:** setup-and-first-run
 - **priority:** later
+- **related to** (not a dependency — both are startable):
+  - `rootless-warning-false-positive` — The same defect in a different warning, and the same fix. Both asked a question adjacent to the one they warned about — "are the hooks gitignored?", "am I in a checkout?" — when the condition that matters is narrower. Read that one first for why a warning on a correct configuration is worse than no warning.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/89`
   - `.gitignore`
@@ -2096,6 +2105,62 @@ graph TD
 > the question stops being organisational and becomes trust, and no amount of
 > declared stance helps because the stance is self-asserted too. Do not let the
 > first quietly become an argument for building the second.
+
+</details>
+
+### `rootless-warning-false-positive`
+
+- **title:** Stop telling a caller who named the room that their workspace was derived from the directory
+- **status:** done
+- **arc:** setup-and-first-run
+- **priority:** later
+- **related to** (not a dependency — both are startable):
+  - `connect-failure-message` — Where `url_source` and `token_source` came from, and the precedent followed here: the tier that supplied a value is carried on the config rather than re-derived, because once the fallback is substituted, chosen and defaulted are the same string.
+  - `every-silent-failure-looks-like-a-quiet-room` — The inverse failure, and the reason this one is not cosmetic. That item is about seven real faults that say nothing; this is a correct setup that says something, which is what trains a reader to skip the line that would have named one of the seven.
+  - `hooks-warning-false-positive` — The same defect in a different warning, and the same fix. Both asked a question adjacent to the one they warned about — "are the hooks gitignored?", "am I in a checkout?" — when the condition that matters is narrower. Read that one first for why a warning on a correct configuration is worse than no warning.
+
+<details><summary>evidence</summary>
+
+> **Not a filed issue.** Reported from a session dogfooding the CI announce path
+> on 2026-09-12, reproduced outside a checkout against the managed hub:
+>
+>     export SWITCHBOARD_URL=https://switchboard.lucille-ai.com
+>     export SWITCHBOARD_TOKEN=…
+>     eval "$(switchboard keygen --no-input | sed 's/^/export /')"
+>     switchboard announce --kind ci -c build --task marker
+>
+> `keygen` exports `SWITCHBOARD_WORKSPACE`. Every command then printed:
+>
+>     warning: this ran outside a git checkout, so the workspace was derived
+>     from the directory rather than from the repo's remote.
+>     …
+>     Run from the checkout, or set SWITCHBOARD_WORKSPACE to the room you mean.
+>
+> Both halves of that are false. Nothing was derived — the exported workspace won
+> at the top tier of `ClientConfig.from_env`, and the hub confirmed it: `switchboard
+> --json agents` reported the same `ws_…` `keygen` had printed. And the remedy
+> offered is the caller's own previous command. **A warning whose fix is the thing
+> you just did is the most confusing possible advice**: the reader who follows it
+> changes nothing, concludes the tool is wrong about its own state, and learns to
+> skip the line — including the time it is right, which is the time it is the only
+> thing standing between them and a room with nobody in it.
+>
+> The mechanism is that `client.rootless_warning` tested `identity.in_repo`, a fact
+> about the *directory*, and warned about the *workspace*. Those coincide only when
+> nobody named a room. Four tiers name one without a checkout in sight — an
+> exported `SWITCHBOARD_WORKSPACE`, `--workspace`, an invite, and a write key whose
+> public half *is* the room — and each is the documented way to coordinate from a
+> container, a CI job or a cloud session, which is precisely where there is no
+> remote to read and this warning fires.
+>
+> The signal needed was already half-built. `ClientConfig` carries `url_source` and
+> `token_source` for exactly this reason (see [[connect-failure-message]]), and
+> `Identity.id_source` does the same job for the agent id. The workspace — the one
+> value that decides who you coordinate with — was the field with no such record.
+>
+> **How you know it worked.** Outside a checkout with a room named, by any tier:
+> silence, and the hub puts the agent in the named room. Outside a checkout with
+> nothing named: the warning, unchanged, because that is the case it is for.
 
 </details>
 

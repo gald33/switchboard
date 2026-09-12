@@ -523,6 +523,18 @@ class ClientConfig:
     #: both opaque strings. See the CLI's 401 handler.
     token_source: str = "none"
     workspace: str = field(default_factory=default_workspace)
+    #: Which tier supplied `workspace`: `"env"`, `"flag"`, `"rooms"`,
+    #: `"write-key"`, `"mcp.json"`, `"invite"`, `"known-room"`, `"lobby"`,
+    #: `"explicit"`, `"keygen"` — or `"derived"`, meaning nobody named a room
+    #: and one was computed from the directory. Carried for the reason
+    #: `url_source` is, and with the same failure behind it in mirror image:
+    #: once the fallback is substituted, a room somebody chose and a room
+    #: nobody chose are both just a string, so anything wanting to say "this
+    #: one was derived" has to be told rather than guess.
+    #: `client.rootless_warning` is the caller that cares — advising someone
+    #: to set `SWITCHBOARD_WORKSPACE` when they already did is worse than
+    #: saying nothing at all.
+    workspace_source: str = "derived"
     agent_id: str | None = None
     #: Workspace key for end-to-end encryption. When set, payloads are sealed
     #: and identifiers blinded before anything leaves this process. It is never
@@ -582,6 +594,7 @@ class ClientConfig:
         url = os.environ.get("SWITCHBOARD_URL", "").rstrip("/") or None
         url_source = "env" if url else None
         workspace = os.environ.get("SWITCHBOARD_WORKSPACE") or None
+        workspace_source = "env" if workspace else None
         key = os.environ.get("SWITCHBOARD_KEY") or None
         write_key = os.environ.get("SWITCHBOARD_WRITE_KEY") or None
 
@@ -590,7 +603,8 @@ class ClientConfig:
         if room is not None:
             if url is None and room.hub_url:
                 url, url_source = room.hub_url, "rooms"
-            workspace = workspace or room.workspace
+            if not workspace and room.workspace:
+                workspace, workspace_source = room.workspace, "rooms"
             key = key or rooms.key_for(room.key_id)
             write_key = write_key or rooms.write_key_for(room.key_id)
         if workspace is None and write_key:
@@ -601,6 +615,8 @@ class ClientConfig:
             # identifier. A malformed key is left for the client to report,
             # where the message can say what to do about it.
             workspace = workspace_of_write_key(write_key)
+            if workspace:
+                workspace_source = "write-key"
 
         return cls(
             url=url or MANAGED_HUB_URL,
@@ -611,6 +627,7 @@ class ClientConfig:
             # process's cwd: a hook or a bridge asking about a checkout it is
             # not sitting inside would otherwise derive somebody else's repo.
             workspace=workspace or default_workspace(where),
+            workspace_source=workspace_source or "derived",
             # Only when nothing else supplied the workspace. An exported
             # `SWITCHBOARD_WORKSPACE` settles the question the rooms file
             # could not, so the file's ambiguity is no longer anybody's
@@ -669,7 +686,9 @@ class ClientConfig:
         if not os.environ.get("SWITCHBOARD_WORKSPACE"):
             # `workspace` falls back to a derived default that can never be
             # None, so it would otherwise mask the repo's real room.
-            config.workspace = mcp_env(where, "SWITCHBOARD_WORKSPACE") or config.workspace
+            from_mcp_workspace = mcp_env(where, "SWITCHBOARD_WORKSPACE")
+            if from_mcp_workspace:
+                config.workspace, config.workspace_source = from_mcp_workspace, "mcp.json"
         if not config.token:
             # This machine's token before the one the checkout ships with: a
             # personal token should win over a shared repo default.
