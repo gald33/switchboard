@@ -362,8 +362,12 @@ against a throwaway hub, both committed with their output:
   there for its minute, lapses, and the next worker takes the same job. It
   takes about ninety seconds to run, because the lease really is 60s.
 
-Re-capture whenever that example's output changes. The rail holds eight clips
-and the heading counts them, so adding a ninth means editing both.
+Re-capture whenever that example's output changes.
+
+**The heading does not count the clips.** It said "Eight things agents did."
+for about an hour, and a number in a heading is a second place to be wrong
+every time the rail gains or loses a card. "What agents did with it." says the
+same thing and stays true.
 
 **The clips needed words — revised the same day, after a newcomer test
 failed.** Gal read the rail as a stranger would and could not follow it:
