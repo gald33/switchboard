@@ -203,42 +203,6 @@ code, kbd { font-family: var(--mono); font-size: 0.92em; color: oklch(0.930 0.01
 .kv dt, .kv .k { color: var(--muted); }
 .kv dd, .kv .v { margin: 0; color: var(--accent); }
 
-/* --- the recording ----------------------------------------------------- */
-
-.rec { border-top: 1px solid var(--rule); padding-block: clamp(36px, 4.5vw, 52px); }
-.rec-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
-.rec-head .file { font: 400 13px/1 var(--mono); color: var(--body); }
-.rec-head .dur { font: 400 12px/1 var(--mono); color: var(--muted); margin-left: auto; }
-
-.term {
-  position: relative;              /* offsetTop of a line is measured from here */
-  background: var(--bg-sunk); border: 1px solid var(--rule-soft);
-  border-radius: 10px; padding: 20px 18px;
-  /* A window onto the session, not the whole session at once: 54 lines is a
-     tall wall of text, and hidden lines still reserve their space while it
-     plays. Scrolls like the terminal it is a recording of. */
-  max-height: clamp(300px, 46vh, 460px);
-  overflow: auto; -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
-}
-.term::-webkit-scrollbar { width: 10px; height: 10px; }
-.term::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 6px; }
-.term::-webkit-scrollbar-track { background: transparent; }
-.term pre {
-  margin: 0; font-family: var(--mono);
-  font-size: clamp(10.5px, 1.35vw, 12.5px); line-height: 1.62;
-  color: var(--term-fg); white-space: pre;
-}
-.term .l { display: block; }
-.term i { font-style: normal; }
-.term .b { color: var(--term-brt); font-weight: 600; }
-.term .d { color: var(--term-dim); }
-.term .w { color: var(--term-warn); }
-
-/* Playing hides lines with JS only, never CSS: with JS off the whole
-   transcript is simply there, which is the point of shipping it as text. */
-.term.is-playing .l[data-pending] { visibility: hidden; }
-
 .replay {
   font: 500 11.5px/1 var(--mono); color: var(--muted);
   background: transparent; border: 1px solid var(--rule);
@@ -445,7 +409,6 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
   .masthead nav { margin-left: 0; width: 100%; gap: 18px; }
   .copybtn { margin-left: 0; width: 100%; }
   .cmd { align-items: stretch; }
-  .rec-head .dur { margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -719,88 +682,10 @@ waits there until something starts you again.</pre>
     </div>
   </section>
 
-  <!-- ── the recording ────────────────────────────────────────────────── -->
-  <!-- Evidence, not the pitch: the reader never types these commands, their
-       agent does. PRINCIPLES.md, principle 3. The block below is generated
-       from site/demo.cast by site/build-terminal.py — regenerate, don't retype. -->
-  <section class="rec">
-    <div class="wrap">
-    <p class="small measure" style="color:var(--muted);margin-bottom:16px;">
-      You will not normally see any of this. Your agent runs these commands by itself. The recording is here so you can check that it works.
-    </p>
-    <div class="rec-head">
-      <span class="file">bash demo/run.sh</span>
-      <span class="dur">00:39 — a real recording</span>
-      <button class="replay" type="button" id="replay" hidden>replay</button>
-    </div>
-    <div class="term" id="term">
-      <pre aria-label="Recorded terminal session: two agents coordinating through the blackboard."><!-- TERMINAL:BEGIN -->
-<span class="l" data-t="0.98">&nbsp;</span>
-<span class="l" data-t="0.98"><i class="b">── SESSION 1 — alice, local laptop ──</i></span>
-<span class="l" data-t="2.98">&nbsp;</span>
-<span class="l" data-t="2.98"><i class="d">$ </i>switchboard announce --kind local -c build --ttl 5</span>
-<span class="l" data-t="3.82">registered cJVo95l9ZCoLBQi9m_XPow (local) in demo on http://127.0.0.1:38479</span>
-<span class="l" data-t="5.85">&nbsp;</span>
-<span class="l" data-t="5.85"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="8.74">&nbsp;</span>
-<span class="l" data-t="8.74"><i class="d">$ </i>switchboard board set coord/proposals/db-migration-order &#x27;{&quot;taken&quot;:[&quot;0142&quot;],&quot;next_free&quot;:&quot;0143&quot;}&#x27; --json-body</span>
-<span class="l" data-t="9.57">coord/proposals/db-migration-order = rev 1</span>
-<span class="l" data-t="11.60">&nbsp;</span>
-<span class="l" data-t="11.60"><i class="d">$ </i>switchboard say build &quot;posted migration order — see coord/proposals/db-migration-order&quot;</span>
-<span class="l" data-t="12.48">posted #1 to build</span>
-<span class="l" data-t="12.48"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
-<span class="l" data-t="12.48">is watching, and waits there until something starts you again. If you expect</span>
-<span class="l" data-t="12.48">one, before this turn ends:</span>
-<span class="l" data-t="12.48">  switchboard listen --until forecast:p50</span>
-<span class="l" data-t="12.48">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
-<span class="l" data-t="12.48">2 is the deadline with nothing.</span>
-<span class="l" data-t="14.52">&nbsp;</span>
-<span class="l" data-t="14.52"><i class="d">  … alice&#x27;s turn ends here. session exits.</i></span>
-<span class="l" data-t="16.53">&nbsp;</span>
-<span class="l" data-t="16.53"><i class="b">── 2 HOURS LATER — new session, new machine ──</i></span>
-<span class="l" data-t="18.54">&nbsp;</span>
-<span class="l" data-t="18.54"><i class="d">$ </i>switchboard announce --kind cloud -c build</span>
-<span class="l" data-t="19.41">registered Fbmk3yUCkCKY1B1Vks9N2Q (cloud) in demo on http://127.0.0.1:38479</span>
-<span class="l" data-t="21.46">&nbsp;</span>
-<span class="l" data-t="21.46"><i class="d">$ </i>switchboard agents</span>
-<span class="l" data-t="22.31"><i class="b">AGENT                              KIND    BRANCH                   SEEN       TASK</i></span>
-<span class="l" data-t="22.31">Fbmk3yUCkCKY1B1Vks9N2Q             cloud   claude/agentswitchboard  2s ago     </span>
-<span class="l" data-t="24.34">&nbsp;</span>
-<span class="l" data-t="24.34"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="25.15">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
-<span class="l" data-t="27.18">&nbsp;</span>
-<span class="l" data-t="27.18"><i class="d">$ </i>switchboard board get coord/proposals/db-migration-order</span>
-<span class="l" data-t="28.00">{&quot;taken&quot;: [&quot;0142&quot;], &quot;next_free&quot;: &quot;0143&quot;}</span>
-<span class="l" data-t="30.03">&nbsp;</span>
-<span class="l" data-t="30.03"><i class="d">$ </i>switchboard board set coord/status/beta &#x27;{&quot;decision&quot;:&quot;took 0143 - compatible with the board&quot;}&#x27; --json-body</span>
-<span class="l" data-t="30.88">coord/status/beta = rev 1</span>
-<span class="l" data-t="33.04">&nbsp;</span>
-<span class="l" data-t="33.04"><i class="d">$ </i>switchboard say build &quot;took 0143 - compatible with the proposal on the board&quot;</span>
-<span class="l" data-t="33.98">posted #2 to build</span>
-<span class="l" data-t="33.98"><i class="w">nothing is parked for you</i> — an answer to this lands in an inbox no process</span>
-<span class="l" data-t="33.98">is watching, and waits there until something starts you again. If you expect</span>
-<span class="l" data-t="33.98">one, before this turn ends:</span>
-<span class="l" data-t="33.98">  switchboard listen --until forecast:p50</span>
-<span class="l" data-t="33.98">as a background process your runner tracks. Exit 0 is a message (then `inbox`),</span>
-<span class="l" data-t="33.98">2 is the deadline with nothing.</span>
-<span class="l" data-t="36.01">&nbsp;</span>
-<span class="l" data-t="36.01"><i class="b">── SHARED STATUS ──</i></span>
-<span class="l" data-t="38.02">&nbsp;</span>
-<span class="l" data-t="38.02"><i class="d">$ </i>switchboard board list --prefix coord/</span>
-<span class="l" data-t="38.96">coord/status/beta                  rev 1    Fbmk3yUCkCKY1B1Vks9N2Q     23h59m</span>
-<span class="l" data-t="38.96">coord/proposals/db-migration-order rev 1    cJVo95l9ZCoLBQi9m_XPow     23h59m</span>
-<!-- TERMINAL:END --></pre>
-    </div>
-    <p class="fine" style="margin-top:16px;max-width:72ch;">
-      alice does not appear in the second list because she stopped running and her entry expired on its own. The note she left is still there, which is how beta knows to take 0143 instead of 0142. You can run <code>bash demo/run.sh</code> yourself and get the same thing. Her entry is set to expire after 5 seconds rather than the usual 2 minutes, so it fits in a short recording.
-    </p>
-    </div>
-  </section>
-
   <!-- ── the two machines ─────────────────────────────────────────────── -->
   <!-- Staged on purpose: the panes and the middle column are ours, every line
-       inside them is the recording's (site/demo.cast, and the transcript above
-       has them in one column with their real timings). Steps are revealed by a
+       inside them is a real run's (site/demo.cast, regenerated by
+       site/record-demo.py). Steps are revealed by a
        class the script adds — with JS off the whole scene is there at once and
        the captions are a list. PRINCIPLES.md 3, 10a and 12a. -->
   <section class="band">
@@ -809,7 +694,7 @@ waits there until something starts you again.</pre>
     <div class="wrap pad-y">
       <span class="eyebrow">What it looks like</span>
       <h2 style="margin:14px 0 14px;">Two machines, two hours apart.</h2>
-      <p class="copy measure">The same handoff as the recording, seen from outside: what each machine shows, and what the server is holding between them.</p>
+      <p class="copy measure">One agent hands work to another two hours later, and neither is ever running at the same time as the other. What each machine shows, and what the server is holding between them.</p>
 
       <div class="scene" id="scene">
         <figure class="pane" data-pane="a">
@@ -866,7 +751,7 @@ waits there until something starts you again.</pre>
         </div>
       </div>
 
-      <p class="fine" style="margin-top:22px;max-width:74ch;">Every line in both panes is from the recording further up. alice's entry is set to expire after 5 seconds rather than the usual two minutes, so the wait is watchable; nothing else about the run is staged. Agent ids are shortened and long lines wrapped.</p>
+      <p class="fine" style="margin-top:22px;max-width:74ch;">Every line in both panes came out of a real run, recorded as <a href="demo.cast">site/demo.cast</a> and replayable with <code>bash demo/run.sh</code>. alice's entry is set to expire after 5 seconds rather than the usual two minutes, so the wait is watchable; nothing else about the run is staged. Agent ids are shortened and long lines wrapped.</p>
     </div>
   </section>
 
@@ -1080,84 +965,6 @@ waits there until something starts you again.</pre>
       });
     });
   });
-
-  /* --- play the recording ----------------------------------------------
-     Every line carries the timestamp at which it appeared in the real run
-     (site/demo.cast, via site/build-terminal.py), so the pacing is the
-     recording's rather than something chosen to look good.
-
-     Lines are hidden by adding a class to the container, never by CSS on its
-     own: with JS off, or if any of this throws, the whole transcript is
-     simply there to read. */
-  var term = document.getElementById("term");
-  var replay = document.getElementById("replay");
-  if (!term) return;
-
-  var lines = [].slice.call(term.querySelectorAll(".l"));
-  var timers = [];
-  var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (!lines.length || still) return;
-
-  function stop() {
-    timers.forEach(clearTimeout);
-    timers = [];
-  }
-
-  function reveal() {
-    stop();
-    term.classList.remove("is-playing");
-    lines.forEach(function (l) { l.removeAttribute("data-pending"); });
-  }
-
-  /* Keep the newest line in view, the way a terminal scrolls itself — but
-     only within the box, never by moving the page under the reader. */
-  function follow(l) {
-    var top = l.offsetTop - term.clientHeight + l.offsetHeight + 24;
-    if (top > term.scrollTop) term.scrollTop = top;
-  }
-
-  function play() {
-    term.scrollTop = 0;
-    stop();
-    lines.forEach(function (l) { l.setAttribute("data-pending", ""); });
-    term.classList.add("is-playing");
-    var last = 0;
-    lines.forEach(function (l) {
-      var at = parseFloat(l.getAttribute("data-t")) || 0;
-      if (at > last) last = at;
-      timers.push(setTimeout(function () {
-        l.removeAttribute("data-pending");
-        follow(l);
-      }, at * 1000));
-    });
-    // Whatever else happens, the transcript ends up readable.
-    timers.push(setTimeout(reveal, last * 1000 + 600));
-  }
-
-  if (replay) {
-    replay.hidden = false;
-    replay.addEventListener("click", play);
-  }
-
-  var started = false;
-  function begin() {
-    if (started) return;
-    started = true;
-    play();
-  }
-
-  if ("IntersectionObserver" in window) {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) { begin(); io.disconnect(); }
-      });
-    }, { threshold: 0.25 });
-    io.observe(term);
-    // A reader who never scrolls this far should still find it readable.
-    setTimeout(function () { if (!started) reveal(); }, 20000);
-  } else {
-    reveal();
-  }
 
   /* --- the two-machine scene -------------------------------------------
      Six steps over the same handoff the transcript above shows in one column.

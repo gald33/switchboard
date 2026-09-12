@@ -42,10 +42,27 @@ Their agent runs them, on its own, in a session the human is not sitting in
 front of. A terminal recording in the hero slot implicitly casts the reader as
 the operator, which is the one thing they are not.
 
-So the recording stays — the argument still needs evidence that this runs —
-but as evidence rather than as the pitch: below the four primitives, where it
-proves the model works, at a size that does not compete with the hero. Its
-caption says so outright.
+**The recording is gone — 2026-09-12.** It shipped for four days below the
+four primitives: 39 seconds of `demo/run.sh` replayed at the pace it really
+ran, each line carrying its own timestamp. It was the honest form of "show it
+running" and it is not needed any more, because section 05 shows the same
+handoff with the lines split across the two machines that produced them and a
+caption saying what each step means. Two blocks arguing one thing is one block
+too many, and of the two the transcript was the one a stranger could not read.
+
+What went with it: the `.rec` section, its playback script, its stylesheet,
+and `site/build-terminal.py`, whose only output was the block. What stayed,
+and why:
+
+- **`site/demo.cast`** is still shipped and still linked — twice from the clip
+  rail, and from the scene, which quotes it. It is the evidence now; the page
+  just no longer replays it in place.
+- **`site/record-demo.py`** still regenerates it from `demo/run.sh`.
+
+Nothing about verification changes. The cast has to keep matching what the CLI
+really prints, and the scene's panes have to keep matching the cast — which is
+now a human check rather than a generated one, since no script renders those
+lines any more. Check it when the CLI's output changes.
 
 The human's actual job on this page is one command, once: `switchboard init`.
 Everything after that is the agents' surface, not theirs.
@@ -55,26 +72,8 @@ the thing they *will* look at is the viewer — the one surface built for them
 rather than for an agent. That argues for the viewer earning more room than
 it currently has. Left as a suggestion rather than done unilaterally.
 
-**Captured, and shipped.** `demo/run.sh` — the reproducible async handoff:
-alice posts a migration proposal and expires, beta arrives with no memory of
-her and reads the board — recorded as real terminal output and replayed as
-text.
-
-`site/build-terminal.py` renders the cast into the block the page ships, so
-the transcript is the recording rather than a retyping of it and **each line
-carries the timestamp at which it actually appeared**. Playback is therefore
-the real rhythm of the run, and the duration on the page is true rather than
-decorative — it moved from `00:41` to `00:39` when the demo changed, because
-both come from the same cast. Regenerate it whenever the cast changes; the page and the cast
-must never drift.
-
-Hidden lines are hidden by a class the script adds, never by CSS alone, so
-with JS off — or if any of it throws — the whole transcript is simply there.
-It also does nothing under `prefers-reduced-motion`, and reveals everything
-after 20 seconds for a reader who never scrolls that far.
-
-The cast is [`site/demo.cast`](demo.cast): asciicast v2, 39.0s, 40 frames,
-recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
+**The cast itself.** [`site/demo.cast`](demo.cast): asciicast v2, 39.0s, 40
+frames, recorded by [`site/record-demo.py`](record-demo.py). Regenerate with
 
 ```bash
 python3 site/record-demo.py demo/run.sh site/demo.cast
@@ -84,34 +83,30 @@ and verify it still matches reality by diffing against a fresh real-pace run
 (`bash demo/run.sh`), normalizing only the three things that legitimately
 differ between runs: agent ids, TTL clocks, and the random hub port. At
 capture time that diff was 39 lines against 39 lines, zero mismatches
-(re-verified after `demo/run.sh` moved to `announce`). Re-run
-that check whenever the CLI's output changes — a stale cast is exactly the
-kind of quiet lie principle 4 exists to prevent. (Note that `DEMO_FAST=1` is
-not a valid comparison: it skips the pauses, so alice's presence has not
-expired by the time the roster prints, and the recording's central beat is
-missing.)
+(re-verified after `demo/run.sh` moved to `announce`). Re-run that check
+whenever the CLI's output changes — a stale cast is exactly the kind of quiet
+lie principle 4 exists to prevent. (Note that `DEMO_FAST=1` is not a valid
+comparison: it skips the pauses, so alice's presence has not expired by the
+time the roster prints, and the run's central beat is missing.)
 
-Real output, not a dramatization: a visitor can run the same script and get the
-same thing. That is the whole reason this form was chosen over an animation.
-The one liberty the demo itself takes — alice's presence TTL shortened to 5s so
-the expiry is watchable — is disclosed on the page, not hidden. The viewer
-screenshot can still appear later on the page; it shows a state, while this
-shows the mechanism.
+Real output, not a dramatization: a visitor can run the same script and get
+the same thing. That is the whole reason this form was chosen over an
+animation. The one liberty the demo takes — alice's presence TTL shortened to
+5s so the expiry is watchable — is disclosed on the page, not hidden.
 
-**And a staged view of it, added 2026-09-12.** The transcript is one column
-of output, which is what a session looks like to the process running it and
-not what the arrangement looks like to a person. Section 05 is that second
-view: two panes, `your laptop · alice` and `cloud runner · beta`, with what
+**What shows it now, added 2026-09-12.** A transcript is one column of
+output: what a session looks like to the process running it, and not what the
+arrangement looks like to a person. Section 05 is the view that replaced it: two panes, `your laptop · alice` and `cloud runner · beta`, with what
 the server is holding between them, stepping through the same handoff in six
 captions of ordinary language.
 
 It is marketing, and it is allowed to be, on three conditions that hold in
 the shipped version:
 
-- **Every line inside the panes is the recording's.** The staging is ours —
-  the panes, the middle column, the order of the captions. The words in the
+- **Every line inside the panes came out of a real run.** The staging is ours
+  — the panes, the middle column, the order of the captions. The words in the
   monospace are `site/demo.cast`, ids shortened and long lines wrapped, and
-  the note under the scene says so.
+  the note under the scene says so and links the cast.
 - **The one liberty is disclosed in place.** alice's entry expires after five
   seconds rather than two minutes, because a two-minute wait cannot be
   watched. That is the same liberty the recording takes and it is stated
@@ -122,7 +117,9 @@ the shipped version:
   controls are `hidden` until script un-hides them, so nothing on the page is
   a button that does nothing.
 
-The middle column is the part worth keeping if the section is ever cut down:
+Now that the transcript is gone, this section carries the whole "show it
+running" argument, so it may not become decoration. The middle column is the
+part worth keeping if it is ever cut down:
 `awake: nobody · notes: coord/proposals/db-migration-order` is the product in
 one frame. Alice is gone, nobody removed her, and what she wrote is still
 there.
