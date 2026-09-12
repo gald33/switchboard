@@ -1,0 +1,31 @@
+# captured by site/record-crash.sh on 2026-09-12, against a throwaway hub.
+# alice is killed with -9 while holding a job, so nothing runs on her way
+# out and nothing is released. Lines beginning # are the script's; every
+# other line is output. Times are UTC.
+
+11:17:37 [alice] joined; 6 tasks on the list
+11:17:37 [alice] migrate/orders -> claimed, working
+# alice is working. kill -9, so nothing runs on her way out.
+
+RESOURCE and HOLDER are blinded: this workspace is encrypted, so identifiers
+leave as opaque tokens. They will not match the strings you passed — compare
+the NOTE, or run `switchboard claims --json` and match on your own records.
+11:17:39 RESOURCE                               HOLDER                         EXPIRES  NOTE
+11:17:39 PQVzwirn3qUUoeQ15K730w                 cJVo95l9ZCoLBQi9m_XPow         57s      working migrate/orders
+# the lease in this example is 60s. waiting it out.
+11:18:41 nothing claimed
+# bob starts, and asks for the same list.
+11:18:41 [bob] joined; 6 tasks on the list
+11:18:41 [bob] migrate/orders -> claimed, working
+11:18:44 [bob] migrate/orders -> done (took 2.6s), holding 1 lease(s)
+11:18:44 [bob] migrate/customers -> claimed, working
+11:18:48 [bob] migrate/customers -> done (took 3.8s), holding 1 lease(s)
+11:18:48 [bob] migrate/invoices -> claimed, working
+11:18:50 [bob] migrate/invoices -> done (took 1.7s), holding 1 lease(s)
+11:18:50 [bob] migrate/payments -> claimed, working
+11:18:52 [bob] migrate/payments -> done (took 2.0s), holding 1 lease(s)
+11:18:52 [bob] migrate/shipping -> claimed, working
+11:18:53 [bob] migrate/shipping -> done (took 1.8s), holding 1 lease(s)
+11:18:53 [bob] migrate/inventory -> claimed, working
+11:18:55 [bob] migrate/inventory -> done (took 1.5s), holding 1 lease(s)
+11:18:55 [bob] finished 6, skipped 0 already-done: migrate/orders, migrate/customers, migrate/invoices, migrate/payments, migrate/shipping, migrate/inventory
