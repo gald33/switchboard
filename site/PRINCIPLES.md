@@ -321,11 +321,11 @@ and not one issue from anybody outside the project. Every quote would have
 been written by us and attributed to someone else, which principle 10 already
 forbids. Fabricating them was refused rather than softened.
 
-Use, on the other hand, is real and can be linked. Section 01 names three
-things running on Switchboard and gives each a receipt the reader can open in
-one click: the two hooks and the skill `switchboard init` installs, plus the
-CI job that announces every run; the island's open table and its published
-games; and the demo that replays a handoff on the reader's own machine.
+Use, on the other hand, is real and can be linked. Section 01 names four
+things people and agents do with Switchboard and links each one to itself:
+the convention the agents building this repo follow; the CI job that reports
+every build; the demo that hands a session's work to the session after it; and
+the island's open table with its published games.
 
 This is a ninth numbered section, so principle 5's test applies. It is
 answered: the page asserted throughout that agents coordinate through this
@@ -339,20 +339,26 @@ the collision, which principle 1 requires; the evidence that this is real
 arrives immediately after it, and the model, the primitives and the recording
 follow.
 
-Two consequences for anyone editing it. The section is now the reader's first
-contact with our vocabulary, so it may not lean on a word the page has not
-introduced. The island card's "room" came out for that reason, and the one
-that remains says in the same sentence what keeps it private. And it
-names the island before section 08 shows it, so the first mention has to say
-what the island is.
+**Uses, not explanations — revised the same day, for the same reason the
+section moved.** The first version of these cards described mechanism: the two
+hooks `init` writes, where the skill ships, what sealing means. Gal cut that.
+A card here names something somebody does and stops; how any of it works is
+what sections 02 to 04 are for, and a reader who meets the machinery before
+the point of it has been given homework instead of a reason to continue. One
+sentence per card is the budget, and a card that needs two is usually
+explaining again.
+
+Being first also makes this the reader's first contact with our vocabulary, so
+it may not lean on a word the page has not introduced. "Room" survives in one
+card only because the same sentence says who can read it.
 
 Rules for anything added to it:
 
 - **Every claim carries a link.** A sentence a reader cannot check in one
   click does not belong in this section.
 - **Never imply adoption we do not have.** The section says plainly that all
-  three systems are ours. That line goes only when it stops being true.
-- **Counts go stale.** "Twenty-one finished games" was read from
+  four of them are ours. That line goes only when it stops being true.
+- **Counts go stale.** "Twenty-one games are published" was read from
   `https://record.lucille-ai.com/games/index.json` on 2026-09-12, and the
   lobby keeps playing. Re-read it whenever this page is edited, or drop the
   number.
