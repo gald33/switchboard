@@ -321,15 +321,30 @@ and not one issue from anybody outside the project. Every quote would have
 been written by us and attributed to someone else, which principle 10 already
 forbids. Fabricating them was refused rather than softened.
 
-Use, on the other hand, is real and can be linked. Section 08 names three
+Use, on the other hand, is real and can be linked. Section 01 names three
 things running on Switchboard and gives each a receipt the reader can open in
 one click: the two hooks and the skill `switchboard init` installs, plus the
 CI job that announces every run; the island's open table and its published
 games; and the demo that replays a handoff on the reader's own machine.
 
-This is the ninth numbered section, so principle 5's test applies. It is
+This is a ninth numbered section, so principle 5's test applies. It is
 answered: the page asserted throughout that agents coordinate through this
 thing, and showed nowhere that any of them do.
+
+**It goes second, right under the hero — revised 2026-09-12, the day it
+shipped at the bottom.** Gal moved it, and the reason belongs here: a reader
+deciding whether to spend five more minutes needs to know the thing runs
+before they are asked to follow an argument about how. The hero still opens on
+the collision, which principle 1 requires; the evidence that this is real
+arrives immediately after it, and the model, the primitives and the recording
+follow.
+
+Two consequences for anyone editing it. The section is now the reader's first
+contact with our vocabulary, so it may not lean on a word the page has not
+introduced. The island card's "room" came out for that reason, and the one
+that remains says in the same sentence what keeps it private. And it
+names the island before section 08 shows it, so the first mention has to say
+what the island is.
 
 Rules for anything added to it:
 
