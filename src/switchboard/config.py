@@ -554,6 +554,19 @@ class ClientConfig:
     #: only the ability to notice a key swap that happened in an earlier
     #: process — every other behaviour is unchanged.
     peer_log: str = "~/.switchboard/peers.db"
+    #: Path to the local store of messages this agent was sent but could not
+    #: decrypt yet (see stash.py). Local like the two above, and holding
+    #: ciphertext it cannot read. Empty disables it, which costs the ability to
+    #: recover a first message from a peer whose key arrived too late.
+    #: Read from the environment at construction, not just by `from_env`. A
+    #: literal default here is invisible to anyone building a `ClientConfig`
+    #: directly — which the test suite and several internals do — so
+    #: `SWITCHBOARD_STASH_DB` would be honoured on the CLI and ignored
+    #: everywhere else. That is how a test run wrote sealed messages into the
+    #: developer's own ~/.switchboard while this was being added.
+    stash_db: str = field(
+        default_factory=lambda: os.environ.get(
+            "SWITCHBOARD_STASH_DB", "~/.switchboard/stash.db"))
 
     def effective_token(self) -> str | None:
         """The token to actually send, once the URL is finally known.
@@ -638,6 +651,7 @@ class ClientConfig:
             write_key=write_key,
             timing_db=os.environ.get("SWITCHBOARD_TIMING_DB", "~/.switchboard/timing.db"),
             peer_log=os.environ.get("SWITCHBOARD_PEER_DB", "~/.switchboard/peers.db"),
+            stash_db=os.environ.get("SWITCHBOARD_STASH_DB", "~/.switchboard/stash.db"),
         )
 
     @classmethod

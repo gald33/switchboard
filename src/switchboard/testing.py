@@ -105,7 +105,7 @@ class Hub:
 
     def __init__(self, *, app: Any, store: Store, clock: Clock, http: Any,
                  config: ServerConfig, workspace: str, token: str | None,
-                 key: str | None, peer_log: str = "",
+                 key: str | None, peer_log: str = "", stash_db: str = "",
                  write_key: str | None = None) -> None:
         #: The FastAPI application, for anything that wants the app object.
         self.app = app
@@ -133,6 +133,7 @@ class Hub:
         #: default so tests do not write to the real one in ``~/.switchboard``
         #: or inherit each other's witnessing; pass a tmp path to exercise it.
         self.peer_log = peer_log
+        self.stash_db = stash_db
         self.url = BASE_URL
         self._clients: list[Client] = []
 
@@ -178,6 +179,11 @@ class Hub:
             # witnessing between test cases and make a swap assertion depend on
             # what ran before it. Tests that want it point it at a tmp path.
             peer_log=self.peer_log,
+            # Off by default for the same reason, and a sharper one: the stash
+            # is keyed by (workspace, agent_id, seq), and test workspaces
+            # repeat. A shared one would hand a case somebody else's sealed
+            # message. Tests that want it point it at a tmp path.
+            stash_db=self.stash_db,
         )
 
     def client(self, name: str | None = None, *, agent_id: str | None = None,
@@ -361,7 +367,7 @@ def _auth_headers(token: str | None) -> dict[str, str]:
 def hub(*, workspace: str | None = None, token: str | None = None,
         key: str | None = None, db: str | None = None, start: float = EPOCH,
         store: Store | None = None, server_config: ServerConfig | None = None,
-        peer_log: str = "", write_key: str | None = None,
+        peer_log: str = "", stash_db: str = "", write_key: str | None = None,
         **config_kwargs: Any) -> Iterator[Hub]:
     """Run a hub for the duration of the block.
 
@@ -417,6 +423,7 @@ def hub(*, workspace: str | None = None, token: str | None = None,
         handle = Hub(
             app=app, store=store, clock=clock, http=http, config=config,
             workspace=workspace, token=token, key=key, peer_log=peer_log,
+            stash_db=stash_db,
             write_key=write_key,
         )
         try:

@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import httpx
 
-from . import peers, rooms, signing
+from . import peers, rooms, signing, stash
 from .config import ClientConfig
 from .crypto import (
     WHISPER_CONTEXT,
@@ -736,6 +736,12 @@ class _Base:
         #: caller who wants no on-disk footprint pass.
         peer_db = getattr(config, "peer_log", peers.DEFAULT_PATH)
         self._peer_log = peers.PeerKeyLog(peer_db) if peer_db else None
+        stash_db = getattr(config, "stash_db", stash.DEFAULT_PATH)
+        #: Sealed messages this agent was handed but could not open yet. The
+        #: cursor moves whether or not a body opened, so without this the first
+        #: message from an unknown peer is destroyed on the way past — see
+        #: `stash.py`.
+        self._stash = stash.UnopenedStash(stash_db) if stash_db else None
         #: Peer exchange keys learned from a roster read, keyed by hub-form
         #: agent id. Per-process only, unlike `_peer_log` above: this exists
         #: purely so `whisper()` and inbox's auto-open can find a key they have
@@ -1162,6 +1168,7 @@ class _Base:
             )
             if peer_key is None:
                 message["unreadable"] = True
+                self._stash_unopened(message)
                 continue
             try:
                 message["body"] = unseal_from_peer(
@@ -1170,7 +1177,43 @@ class _Base:
                 )
             except DecryptionError:
                 message["unreadable"] = True
+                self._stash_unopened(message)
         return messages
+
+    def _stash_unopened(self, message: dict[str, Any]) -> None:
+        """Keep a message the cursor is about to step over."""
+        if self._stash is None or not self.agent_id:
+            return
+        self._stash.put(self.workspace, self.agent_id, message)
+
+    def _try_open_whisper(self, message: dict[str, Any]) -> bool:
+        """Open one stashed whisper with the keys known now. Never raises."""
+        sender = message.get("from")
+        peer_key = (
+            self._peer_exchange_keys.get(sender)
+            if self.signing is not None and sender else None
+        )
+        if peer_key is None:
+            return False
+        try:
+            message["body"] = unseal_from_peer(
+                message["body"], my_identity=self.signing,
+                peer_exchange_key=peer_key, context=WHISPER_CONTEXT,
+            )
+        except DecryptionError:
+            return False
+        return True
+
+    def _recover_stashed(self) -> list[dict[str, Any]]:
+        """Whatever the stash can open now, oldest first.
+
+        Tried on every read rather than on demand: the caller cannot know when
+        a key arrived, and by the time they could ask, the reason to ask has
+        usually been forgotten. One indexed query when the stash is empty.
+        """
+        if self._stash is None or not self.agent_id:
+            return []
+        return self._stash.recover(self.workspace, self.agent_id, self._try_open_whisper)
 
     def _seal_request(
         self, path: str, kwargs: dict[str, Any], cipher: WorkspaceCipher | None,
@@ -1626,7 +1669,10 @@ class Client(_Base):
             params["channel"] = list(channels)
         self._learn_peers_before_reading()
         messages = self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
-        return self._open_whispers(messages)
+        fresh = self._open_whispers(messages)
+        # Anything the stash can open now goes first: it arrived first, and a
+        # reader that stops at the newest thing would miss it twice.
+        return self._recover_stashed() + fresh
 
     def _learn_peers_before_reading(self) -> None:
         """Read the roster once, so an arriving whisper can be opened at all.

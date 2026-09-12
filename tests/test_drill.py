@@ -308,7 +308,11 @@ def test_workers_join_the_coordinators_workspace_not_one_they_derive(hub_url, tm
     the workers here names a hub and no workspace, which is precisely the
     case where they used to go and invent their own.
     """
-    env = {k: v for k, v in os.environ.items() if k in ("PATH", "PYTHONPATH", "SYSTEMROOT")}
+    # SWITCHBOARD_STASH_DB rides along deliberately: conftest points it at a
+    # tmp path, and a worker that does not inherit it writes sealed messages
+    # into the developer's own ~/.switchboard during a test run.
+    env = {k: v for k, v in os.environ.items()
+           if k in ("PATH", "PYTHONPATH", "SYSTEMROOT", "SWITCHBOARD_STASH_DB")}
     env["SWITCHBOARD_URL"] = hub_url
     assert "SWITCHBOARD_WORKSPACE" not in env
 
@@ -327,7 +331,11 @@ def test_a_sealed_coordinator_hands_its_key_to_its_own_workers(hub_url, tmp_path
     from switchboard.crypto import generate_key
 
     key = generate_key()
-    env = {k: v for k, v in os.environ.items() if k in ("PATH", "PYTHONPATH", "SYSTEMROOT")}
+    # SWITCHBOARD_STASH_DB rides along deliberately: conftest points it at a
+    # tmp path, and a worker that does not inherit it writes sealed messages
+    # into the developer's own ~/.switchboard during a test run.
+    env = {k: v for k, v in os.environ.items()
+           if k in ("PATH", "PYTHONPATH", "SYSTEMROOT", "SWITCHBOARD_STASH_DB")}
     env["SWITCHBOARD_URL"] = hub_url
     assert "SWITCHBOARD_KEY" not in env
 

@@ -72,6 +72,34 @@ def no_outbound_http(monkeypatch):
     monkeypatch.setattr(httpx, "post", refuse)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _stash_never_in_the_home_directory(tmp_path_factory):
+    """Redirect the message stash for the whole session, not just per test.
+
+    `clean_switchboard_env` below sets this per test, which is right for
+    isolation and too late for a *module*-scoped fixture: those run first, and
+    several spawn real subprocesses (`test_wake_listener`'s hub,
+    `test_drill`'s workers) that inherit whatever the environment held at the
+    time. Without this they inherited nothing and fell back to
+    `~/.switchboard/stash.db` — the developer's own undelivered mail.
+
+    Session scope covers the gap; the per-test setting still wins inside a
+    test, so nothing loses its isolation.
+    """
+    import os
+
+    path = tmp_path_factory.mktemp("stash-session") / "stash.db"
+    previous = os.environ.get("SWITCHBOARD_STASH_DB")
+    os.environ["SWITCHBOARD_STASH_DB"] = str(path)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("SWITCHBOARD_STASH_DB", None)
+        else:
+            os.environ["SWITCHBOARD_STASH_DB"] = previous
+
+
 @pytest.fixture(autouse=True)
 def clean_switchboard_env(monkeypatch, tmp_path):
     for name in _SWITCHBOARD_ENV + _SESSION_ENV:
@@ -81,6 +109,12 @@ def clean_switchboard_env(monkeypatch, tmp_path):
     # its throwaway rooms in the developer's own ~/.switchboard. One file per
     # test; subprocesses inherit it through the environment.
     monkeypatch.setenv("SWITCHBOARD_KNOWN_ROOMS", str(tmp_path / "known-rooms.json"))
+    # Same hazard, sharper: the stash holds sealed messages keyed by
+    # (workspace, agent_id, seq), and test workspaces repeat. Sharing the
+    # developer's would hand a case somebody else's ciphertext to retry, and
+    # leave rows behind in a store that is supposed to be that machine's own
+    # undelivered mail. Caught by writing one there while adding the feature.
+    monkeypatch.setenv("SWITCHBOARD_STASH_DB", str(tmp_path / "stash.db"))
     # Desktop registration writes into the Claude app's own session store. Point
     # every test at an empty directory that does not exist, so a test which
     # reaches for it finds nothing rather than the developer's real sidebar —
