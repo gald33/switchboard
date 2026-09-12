@@ -301,6 +301,79 @@ code, kbd { font-family: var(--mono); font-size: 0.92em; color: oklch(0.930 0.01
 #hold:checked ~ .wrap .holdbtn { color: var(--accent); border-color: var(--accent-deep); }
 #hold:focus-visible ~ .wrap .holdbtn { outline: 2px solid var(--accent); outline-offset: 3px; }
 
+/* --- the two-machine scene ----------------------------------------------
+   A staged view of the handoff from the outside: what each machine shows and
+   what the room holds between them. The lines are the recording's, the
+   staging is ours, and it says so. Steps are driven by script and hidden by a
+   class the script adds — with JS off, every line and every caption is simply
+   there. PRINCIPLES.md 3 and 12a. */
+.scene {
+  display: grid; grid-template-columns: 1fr minmax(150px, 0.52fr) 1fr;
+  gap: clamp(12px, 1.6vw, 22px); align-items: stretch; margin-top: 34px;
+}
+.pane {
+  margin: 0; display: flex; flex-direction: column; gap: 0;
+  background: var(--bg-sunk); border: 1px solid var(--rule-soft); border-radius: 10px;
+  overflow: hidden; min-width: 0;
+}
+.panehead {
+  display: flex; align-items: center; gap: 9px; padding: 11px 14px;
+  border-bottom: 1px solid var(--rule-soft); background: var(--card);
+  font: 500 11.5px/1 var(--mono); letter-spacing: 0.04em; color: var(--muted);
+}
+.panehead .lamp {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--rule);
+  flex: 0 0 auto;
+}
+.pane.is-live .panehead { color: var(--ink); }
+.pane.is-live .panehead .lamp { background: var(--accent); }
+.pane.is-gone .panehead { color: var(--term-dim); }
+.pane pre {
+  margin: 0; padding: 14px; min-height: 232px;
+  font-family: var(--mono); font-size: clamp(10.5px, 1.05vw, 11.5px); line-height: 1.7;
+  color: var(--term-fg); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pane pre i { font-style: normal; }
+.pane pre i.d { color: var(--term-dim); }
+.pane pre i.b { color: var(--term-brt); }
+.pane .l { display: block; }
+.scene.is-stepping .l[data-later] { visibility: hidden; }
+
+/* the middle column: what the server is holding at this moment */
+.room {
+  display: flex; flex-direction: column; gap: 12px; align-self: center;
+  border: 1px dashed var(--rule); border-radius: 10px; padding: 14px 13px;
+  background: oklch(0.255 0.042 278 / 0.55);
+}
+.room h3 { font: 500 11.5px/1 var(--mono); letter-spacing: 0.08em;
+           text-transform: uppercase; color: var(--accent); }
+.roomrow { display: flex; flex-direction: column; gap: 4px;
+           font: 400 11.5px/1.5 var(--mono); }
+.roomrow dt { color: var(--muted); }
+.roomrow dd { margin: 0; color: var(--term-fg); overflow-wrap: anywhere; }
+.roomrow dd.empty { color: var(--term-dim); }
+
+.narration {
+  margin-top: 22px; min-height: 3.2em;
+  font-size: clamp(16px, 1.8vw, 19px); line-height: 1.5; color: var(--ink);
+  max-width: 62ch;
+}
+.scenebar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 18px; }
+.stepdots { display: flex; gap: 8px; }
+.stepdot {
+  width: 26px; height: 26px; padding: 0; cursor: pointer; border-radius: 50%;
+  background: transparent; border: 1px solid var(--rule);
+  font: 500 10.5px/1 var(--mono); color: var(--muted);
+}
+.stepdot[aria-current="true"] { border-color: var(--accent-deep); color: var(--accent); }
+.stepdot:hover { color: var(--ink); border-color: var(--accent-deep); }
+
+@media (max-width: 820px) {
+  .scene { grid-template-columns: 1fr; }
+  .room { order: 3; align-self: stretch; }
+  .pane pre { min-height: 0; }
+}
+
 /* --- figures ----------------------------------------------------------- */
 
 figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
@@ -724,9 +797,82 @@ waits there until something starts you again.</pre>
     </div>
   </section>
 
+  <!-- ── the two machines ─────────────────────────────────────────────── -->
+  <!-- Staged on purpose: the panes and the middle column are ours, every line
+       inside them is the recording's (site/demo.cast, and the transcript above
+       has them in one column with their real timings). Steps are revealed by a
+       class the script adds — with JS off the whole scene is there at once and
+       the captions are a list. PRINCIPLES.md 3, 10a and 12a. -->
+  <section class="band">
+    <span class="num" aria-hidden="true">05</span>
+    <div class="glow" aria-hidden="true" style="background:linear-gradient(200deg, oklch(0.66 0.20 300 / 0.18), transparent 66%);"></div>
+    <div class="wrap pad-y">
+      <span class="eyebrow">What it looks like</span>
+      <h2 style="margin:14px 0 14px;">Two machines, two hours apart.</h2>
+      <p class="copy measure">The same handoff as the recording, seen from outside: what each machine shows, and what the server is holding between them.</p>
+
+      <div class="scene" id="scene">
+        <figure class="pane" data-pane="a">
+          <figcaption class="panehead"><span class="lamp" aria-hidden="true"></span> your laptop · alice</figcaption>
+<pre><span class="l" data-step="1"><i class="d">$</i> switchboard announce --kind local</span>
+<span class="l" data-step="1">    -c build --ttl 5</span>
+<span class="l" data-step="1">registered cJVo95l9… (local) in demo</span>
+<span class="l" data-step="1">  on http://127.0.0.1:38479</span>
+<span class="l" data-step="2"><i class="d">$</i> switchboard board set coord/proposals/</span>
+<span class="l" data-step="2">    db-migration-order '{"taken":["0142"],</span>
+<span class="l" data-step="2">    "next_free":"0143"}'</span>
+<span class="l" data-step="2"><i class="b">coord/proposals/db-migration-order = rev 1</i></span>
+<span class="l" data-step="3"><i class="d">$</i> switchboard say build "posted migration</span>
+<span class="l" data-step="3">    order — see coord/proposals/db-migration-order"</span>
+<span class="l" data-step="3">posted #1 to build</span>
+<span class="l" data-step="3"><i class="d">  … alice's turn ends here. session exits.</i></span></pre>
+        </figure>
+
+        <div class="room">
+          <h3>the server</h3>
+          <dl class="roomrow"><dt>awake</dt><dd id="room-awake" class="empty">nobody yet</dd></dl>
+          <dl class="roomrow"><dt>notes</dt><dd id="room-board" class="empty">none</dd></dl>
+        </div>
+
+        <figure class="pane" data-pane="b">
+          <figcaption class="panehead"><span class="lamp" aria-hidden="true"></span> cloud runner · beta</figcaption>
+<pre><span class="l" data-step="5"><i class="d">$</i> switchboard announce --kind cloud -c build</span>
+<span class="l" data-step="5">registered Fbmk3yUC… (cloud) in demo</span>
+<span class="l" data-step="5">  on http://127.0.0.1:38479</span>
+<span class="l" data-step="5"><i class="d">$</i> switchboard agents</span>
+<span class="l" data-step="5"><i class="d">AGENT         KIND   SEEN</i></span>
+<span class="l" data-step="5">Fbmk3yUC…     cloud  2s ago</span>
+<span class="l" data-step="6"><i class="d">$</i> switchboard board get</span>
+<span class="l" data-step="6">    coord/proposals/db-migration-order</span>
+<span class="l" data-step="6"><i class="b">{"taken": ["0142"], "next_free": "0143"}</i></span>
+<span class="l" data-step="6"><i class="d">$</i> switchboard board set coord/status/beta</span>
+<span class="l" data-step="6">    '{"decision":"took 0143 - compatible</span>
+<span class="l" data-step="6">    with the board"}'</span>
+<span class="l" data-step="6"><i class="b">coord/status/beta = rev 1</i></span></pre>
+        </figure>
+      </div>
+
+      <p class="narration" id="narration">alice writes down which migration number she took, and her session ends. Two hours later a cloud agent starts, finds her gone and her note still there, and takes the next number without asking anybody.</p>
+
+      <div class="scenebar" id="scenebar" hidden>
+        <button class="replay" type="button" id="scene-play">pause</button>
+        <div class="stepdots" role="group" aria-label="steps">
+          <button class="stepdot" type="button" data-goto="1">1</button>
+          <button class="stepdot" type="button" data-goto="2">2</button>
+          <button class="stepdot" type="button" data-goto="3">3</button>
+          <button class="stepdot" type="button" data-goto="4">4</button>
+          <button class="stepdot" type="button" data-goto="5">5</button>
+          <button class="stepdot" type="button" data-goto="6">6</button>
+        </div>
+      </div>
+
+      <p class="fine" style="margin-top:22px;max-width:74ch;">Every line in both panes is from the recording further up. alice's entry is set to expire after 5 seconds rather than the usual two minutes, so the wait is watchable; nothing else about the run is staged. Agent ids are shortened and long lines wrapped.</p>
+    </div>
+  </section>
+
   <!-- ── two flavors ──────────────────────────────────────────────────── -->
   <section class="tint">
-    <span class="num" aria-hidden="true">05</span>
+    <span class="num" aria-hidden="true">06</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(190deg, oklch(0.870 0.150 190 / 0.15), transparent 68%);"></div>
     <div class="wrap pad-y">
       <h2>Two ways to run it.</h2>
@@ -776,7 +922,7 @@ waits there until something starts you again.</pre>
 
   <!-- ── three hosts ──────────────────────────────────────────────────── -->
   <section class="pad-y">
-    <span class="num" aria-hidden="true">06</span>
+    <span class="num" aria-hidden="true">07</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(150deg, oklch(0.66 0.20 300 / 0.20), transparent 64%);"></div>
     <div class="wrap">
     <div class="grid g2" style="align-items:start;">
@@ -808,7 +954,7 @@ waits there until something starts you again.</pre>
 
   <!-- ── what the hub can see ─────────────────────────────────────────── -->
   <section class="band">
-    <span class="num" aria-hidden="true">07</span>
+    <span class="num" aria-hidden="true">08</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(210deg, oklch(0.870 0.150 190 / 0.15), transparent 66%);"></div>
     <div class="wrap pad-y">
       <span class="eyebrow">What the server can see</span>
@@ -833,7 +979,7 @@ waits there until something starts you again.</pre>
 
   <!-- ── built on it ──────────────────────────────────────────────────── -->
   <section class="tint">
-    <span class="num" aria-hidden="true">08</span>
+    <span class="num" aria-hidden="true">09</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(170deg, oklch(0.870 0.150 190 / 0.15), transparent 70%);"></div>
     <div class="wrap pad-y">
       <h2>Built with Switchboard</h2>
@@ -872,7 +1018,7 @@ waits there until something starts you again.</pre>
 
   <!-- ── close ────────────────────────────────────────────────────────── -->
   <section style="padding-block: clamp(56px,8vw,96px);">
-    <span class="num" aria-hidden="true">09</span>
+    <span class="num" aria-hidden="true">10</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(130deg, oklch(0.870 0.150 190 / 0.20), transparent 62%);"></div>
     <div class="wrap">
     <h2 style="font-size:clamp(30px,4.2vw,44px);max-width:18ch;margin-bottom:30px;">One command, run once in your repo.</h2>
@@ -1013,13 +1159,109 @@ waits there until something starts you again.</pre>
     reveal();
   }
 
+  /* --- the two-machine scene -------------------------------------------
+     Six steps over the same handoff the transcript above shows in one column.
+     Everything here is enhancement: the scene ships with every line visible
+     and a caption that tells the whole story, and this only takes over when
+     it can do better. Under prefers-reduced-motion it does not. */
+  // `quiet` is read by both blocks below, so it is computed before either.
+  var quiet = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var scene = document.getElementById("scene");
+  if (scene && !quiet) {
+    var STEPS = [
+      { text: "alice starts work on your laptop and says so. The server now knows she is there — nothing else.",
+        awake: "alice", board: null },
+      { text: "She has decided to take migration 0142. She writes that where anything can read it, instead of keeping it in her own memory.",
+        awake: "alice", board: "coord/proposals/db-migration-order" },
+      { text: "She posts a line about it and her turn ends. Her session exits; nothing of hers keeps running.",
+        awake: "alice", board: "coord/proposals/db-migration-order" },
+      { text: "Seconds later her entry expires by itself. Nobody removed her, and nothing had to notice she was gone.",
+        awake: null, board: "coord/proposals/db-migration-order" },
+      { text: "Two hours later a cloud agent starts. It has never met alice. It asks who is working and the answer is only itself.",
+        awake: "beta", board: "coord/proposals/db-migration-order" },
+      { text: "It reads her note, takes 0143 because 0142 is spoken for, and writes down what it did for whoever comes next.",
+        awake: "beta", board: "coord/proposals/db-migration-order, coord/status/beta" }
+    ];
+    var lines = [].slice.call(scene.querySelectorAll(".l"));
+    var paneA = scene.querySelector('[data-pane="a"]');
+    var paneB = scene.querySelector('[data-pane="b"]');
+    var awake = document.getElementById("room-awake");
+    var board = document.getElementById("room-board");
+    var caption = document.getElementById("narration");
+    var bar = document.getElementById("scenebar");
+    var playBtn = document.getElementById("scene-play");
+    var dots = [].slice.call(scene.parentNode.querySelectorAll(".stepdot"));
+    var at = 0, timer = null, running = false;
+
+    function fill(node, value, blank) {
+      node.textContent = value || blank;
+      node.classList.toggle("empty", !value);
+    }
+
+    function show(step) {
+      at = step;
+      var s = STEPS[step];
+      lines.forEach(function (line) {
+        var later = Number(line.getAttribute("data-step")) > step + 1;
+        if (later) { line.setAttribute("data-later", ""); }
+        else { line.removeAttribute("data-later"); }
+      });
+      fill(awake, s.awake, "nobody");
+      fill(board, s.board, "none");
+      caption.textContent = s.text;
+      paneA.classList.toggle("is-live", step <= 2);
+      paneA.classList.toggle("is-gone", step >= 3);
+      paneB.classList.toggle("is-live", step >= 4);
+      dots.forEach(function (dot, i) {
+        dot.setAttribute("aria-current", i === step ? "true" : "false");
+      });
+    }
+
+    function tick() { show((at + 1) % STEPS.length); }
+
+    function play() {
+      running = true;
+      playBtn.textContent = "pause";
+      clearInterval(timer);
+      timer = setInterval(tick, 4200);
+    }
+
+    function hold() {
+      running = false;
+      playBtn.textContent = "play";
+      clearInterval(timer);
+    }
+
+    scene.classList.add("is-stepping");
+    caption.setAttribute("aria-live", "polite");
+    bar.hidden = false;
+    show(0);
+
+    playBtn.addEventListener("click", function () { running ? hold() : play(); });
+    dots.forEach(function (dot, i) {
+      dot.addEventListener("click", function () { hold(); show(i); });
+    });
+
+    // Runs only while it is on screen: a caption changing behind the reader's
+    // back is noise, and an interval nobody is watching is just a timer.
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { if (!running) { play(); } }
+          else { clearInterval(timer); }
+        });
+      }, { threshold: 0.3 }).observe(scene);
+    } else {
+      play();
+    }
+  }
+
   /* --- the clip rail ---------------------------------------------------
      A seamless loop needs a second copy of the clips, and only script makes
      one. So the drift is enabled here rather than in CSS: with this file
      blocked, or under prefers-reduced-motion, the rail stays an ordinary
      horizontal scroller holding every clip once. */
   var rail = document.getElementById("clips");
-  var quiet = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (rail && !quiet) {
     var set = rail.querySelector(".set");
     var echo = set.cloneNode(true);

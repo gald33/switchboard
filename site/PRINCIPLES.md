@@ -98,6 +98,35 @@ the expiry is watchable — is disclosed on the page, not hidden. The viewer
 screenshot can still appear later on the page; it shows a state, while this
 shows the mechanism.
 
+**And a staged view of it, added 2026-09-12.** The transcript is one column
+of output, which is what a session looks like to the process running it and
+not what the arrangement looks like to a person. Section 05 is that second
+view: two panes, `your laptop · alice` and `cloud runner · beta`, with what
+the server is holding between them, stepping through the same handoff in six
+captions of ordinary language.
+
+It is marketing, and it is allowed to be, on three conditions that hold in
+the shipped version:
+
+- **Every line inside the panes is the recording's.** The staging is ours —
+  the panes, the middle column, the order of the captions. The words in the
+  monospace are `site/demo.cast`, ids shortened and long lines wrapped, and
+  the note under the scene says so.
+- **The one liberty is disclosed in place.** alice's entry expires after five
+  seconds rather than two minutes, because a two-minute wait cannot be
+  watched. That is the same liberty the recording takes and it is stated
+  under the scene as well, not only further down the page.
+- **It degrades to the whole story.** The steps are a class the script adds.
+  With JS off, or under `prefers-reduced-motion`, every line is visible at
+  once and the caption is a sentence that tells the whole handoff. The
+  controls are `hidden` until script un-hides them, so nothing on the page is
+  a button that does nothing.
+
+The middle column is the part worth keeping if the section is ever cut down:
+`awake: nobody · notes: coord/proposals/db-migration-order` is the product in
+one frame. Alice is gone, nobody removed her, and what she wrote is still
+there.
+
 ## 4. Terminal-true
 
 Every command shown must be one that actually works today against the current
