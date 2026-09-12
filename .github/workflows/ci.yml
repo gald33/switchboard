@@ -190,67 +190,86 @@ jobs:
           curl -sf http://127.0.0.1:8787/health | grep -q '"ok":true'
           docker rm -f swb
 
-  # Dogfooding: this CI run announces itself on the same hub the rest of
-  # this project coordinates over, same as local/cloud agents do via the
-  # SessionStart hook `init` installs (see cli.py's _SESSION_START_CMD).
-  # It announces into its own workspace rather than the interactive one, so a
-  # CI run never shows up in the middle of a human session's peers.
+  # A smoke test against the real hub, not a notice board.
   #
-  # The token is read from MANAGED_HUB_TOKEN in the checkout, the same way
-  # deploy.yml reads the value it starts the hub with. That is the whole point:
-  # a private second copy in `secrets.SWITCHBOARD_TOKEN` drifted from the hub's
-  # own token and locked this job out for a day without failing a build (#96).
-  # Since #76 a token admits a caller to the hub and scopes nothing, so there
-  # is nothing for a secret copy to protect that the published one does not.
+  # This used to announce into a fixed room so a CI run appeared beside the
+  # human sessions. That room's identifier sat in this file in plain text, and
+  # since #73 the hub does no authorization — reaching a room IS knowing its
+  # identifier — so it was the one published room in a repository whose own
+  # .gitignore refuses to commit .mcp.json for the same reason.
   #
-  # Never gates the rest of CI, and never fails silently either: the announce
-  # cannot break a build, but a failure is reported as a warning on the run
-  # instead of one line of stderr in a green job.
+  # The fix is not a secret. Nobody was reading what CI announced, so the room
+  # does not need to persist: the job mints its own, uses it, and drops it. No
+  # identifier to leak, no key to rotate, no secret withheld from a fork's pull
+  # request — and the job now behaves identically for a contributor as it does
+  # on main.
+  #
+  # What it buys beyond safety: the old job could not fail. It warned and
+  # exited green, so a client that could not reach the hub at all still showed
+  # a passing check. This one mints, announces, and reads the roster back,
+  # asserting the agent it just created is there. That is the whole client
+  # path — keygen, seal, POST, GET, decrypt — against the live hub on every
+  # run, and it goes red when any of it breaks.
+  #
+  # The token still comes from MANAGED_HUB_TOKEN in the checkout rather than a
+  # secret: a private copy drifted from the hub's own token and locked this job
+  # out for a day without failing a build (#96). Since #76 a token admits a
+  # caller and scopes nothing, so a secret copy protects nothing the published
+  # one does not.
   register-switchboard:
+    # Never on a pull request. This is the one job that talks to a server
+    # somebody has to keep up, and a hub reboot must not turn a contributor's
+    # PR red for a reason that has nothing to do with their change — red for
+    # no reason is how people learn to ignore red.
+    #
+    # On main it gates, which is the point: a check that cannot fail is not a
+    # check, and the old one warned and exited green even when the client
+    # could not reach the hub at all.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -e .
-      # The room is a secret, not a constant. Since #73 the hub does no
-      # authorization: reaching a room IS knowing its identifier, so the whole
-      # model rests on identifiers being unguessable. This one used to sit in
-      # the file in plain text — the single published room in a repository
-      # whose own .gitignore refuses to commit .mcp.json for exactly this
-      # reason. Anyone could read what CI announced and post as CI.
-      #
-      # SWITCHBOARD_KEY seals the announcement too, so knowing the identifier
-      # would not be enough even if it leaked again.
-      #
-      # Both are absent for a pull request from a fork — GitHub withholds
-      # secrets there — so the step says so and exits green rather than
-      # failing somebody's first contribution.
-      - name: Announce this CI run to the hub
+      - name: Mint a room, announce into it, and read it back
         env:
           SWITCHBOARD_URL: https://switchboard.lucille-ai.com
-          SWITCHBOARD_WORKSPACE: ${{ secrets.SWITCHBOARD_CI_WORKSPACE }}
-          SWITCHBOARD_KEY: ${{ secrets.SWITCHBOARD_CI_KEY }}
+          SWITCHBOARD_AGENT_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          if [ -z "$SWITCHBOARD_WORKSPACE" ] || [ -z "$SWITCHBOARD_KEY" ]; then
-            echo "::notice title=switchboard::no CI room configured for this" \
-              "run (a fork, or the secrets are unset) — not announced"
-            exit 0
-          fi
+          set -euo pipefail
+
           SWITCHBOARD_TOKEN="$(sed -n 's/^MANAGED_HUB_TOKEN = "\([^"]*\)".*/\1/p' \
             src/switchboard/config.py | head -1)"
-          export SWITCHBOARD_TOKEN
           if [ -z "$SWITCHBOARD_TOKEN" ]; then
-            echo "::warning title=switchboard::MANAGED_HUB_TOKEN not found in" \
-              "src/switchboard/config.py — this CI run was not announced"
-            exit 0
+            echo "::error title=switchboard::MANAGED_HUB_TOKEN not found in" \
+              "src/switchboard/config.py"
+            exit 1
           fi
-          if ! out="$(switchboard -q announce --kind ci -c build \
-              --task "${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}" 2>&1)"; then
-            # Last line only: an auth failure is one line, but a connection
-            # failure is a whole httpx traceback (#88), and a warning is a
-            # one-line surface. The last line is the diagnosis in both cases.
-            echo "::warning title=switchboard::announce failed:" \
-              "$(printf '%s' "${out:-no output}" | tail -n 1)"
+          export SWITCHBOARD_TOKEN
+
+          # A room of its own, thrown away when the job ends. Everything in it
+          # expires on its own anyway — presence in two minutes.
+          eval "$(switchboard keygen --no-input | sed 's/^/export /')"
+
+          MARK="${{ github.event_name }} ${{ github.ref_name }}@${{ github.sha }}"
+          switchboard -q announce --kind ci -c build --task "$MARK"
+
+          # The assertion, and it is deliberately on the task rather than on
+          # the agent id. Ids are scrambled before they reach the hub, so the
+          # one in SWITCHBOARD_AGENT_ID never appears in a roster — an
+          # assertion against it fails every time, which is how this was
+          # written the first time and caught by rehearsing it.
+          #
+          # The task is sealed on the way out and opened on the way back, so
+          # finding it here proves the whole path: mint, seal, POST, GET,
+          # decrypt. Announcing alone would only prove a write was accepted.
+          if ! switchboard --json agents | grep -qF "$MARK"; then
+            echo "::error title=switchboard::announced \"$MARK\" but it did" \
+              "not come back from the roster"
+            switchboard --json agents
+            exit 1
           fi
+          echo "hub round trip ok — announced and read back: $MARK"
