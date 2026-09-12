@@ -1,8 +1,9 @@
 id: inbox-consumes-what-it-cannot-open
 title: A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed
-status: ready
+status: done
 arc: setup-and-first-run
 priority: now
+claim: null
 blocked_on: []
 related_to:
 - key: first-contact-needs-a-key-it-cannot-have
