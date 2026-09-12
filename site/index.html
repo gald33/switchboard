@@ -238,14 +238,18 @@ code, kbd { font-family: var(--mono); font-size: 0.92em; color: oklch(0.930 0.01
 
 .set { display: flex; margin: 0; padding: 0; list-style: none; }
 .clip {
-  flex: 0 0 auto; width: clamp(290px, 32vw, 424px); margin-right: 18px;
+  flex: 0 0 auto; width: clamp(262px, 25vw, 336px); margin-right: 16px;
   background: var(--bg-sunk); border: 1px solid var(--rule-soft);
-  border-radius: 10px; padding: 16px 18px;
-  display: flex; flex-direction: column; gap: 12px;
+  border-radius: 10px; padding: 15px 16px;
+  display: flex; flex-direction: column; gap: 10px;
 }
-.clip h3 { font-size: 14.5px; }
+.clip h3 { font-size: 14px; }
+.clip .small { font-size: 14px; line-height: 1.55; }
 .clip pre {
-  margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+  /* Smaller than the sentence above it, but not dimmer: at 10.5px the dim
+     tone is the wrong side of the contrast floor to read comfortably, and
+     size alone already says which of the two is the point. */
+  margin: 0; font-family: var(--mono); font-size: 10.5px; line-height: 1.6;
   color: var(--term-fg); white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .clip pre i { font-style: normal; }
@@ -293,7 +297,7 @@ code, kbd { font-family: var(--mono); font-size: 0.92em; color: oklch(0.930 0.01
 .pane.is-live .panehead .lamp { background: var(--accent); }
 .pane.is-gone .panehead { color: var(--term-dim); }
 .pane pre {
-  margin: 0; padding: 14px; min-height: 232px;
+  margin: 0; padding: 14px; min-height: 204px;
   font-family: var(--mono); font-size: clamp(10.5px, 1.05vw, 11.5px); line-height: 1.7;
   color: var(--term-fg); white-space: pre-wrap; overflow-wrap: anywhere;
 }
@@ -456,6 +460,34 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
     </div>
   </section>
 
+  <!-- ── the expiry ───────────────────────────────────────────────────── -->
+  <section class="tint">
+    <span class="num" aria-hidden="true">01</span>
+    <div class="glow" aria-hidden="true" style="background:linear-gradient(200deg, oklch(0.66 0.20 300 / 0.20), transparent 70%);"></div>
+    <div class="wrap pad-y">
+      <div class="grid g2" style="align-items:start;">
+        <div class="stack g22">
+          <span class="eyebrow">The whole idea</span>
+          <h2 style="font-size:clamp(30px,4.2vw,46px);">Nobody has to clean up after an agent.</h2>
+          <p class="copy">Normally when something claims a resource, it also has to release it. That second step is easy to skip. If the agent crashes, or finishes and moves on, it never releases anything.</p>
+          <p class="copy">The claim then sits there blocking other agents until a person notices and clears it by hand.</p>
+        </div>
+        <div class="card">
+          <p style="font-size:19px;line-height:1.45;font-weight:500;color:var(--ink);">
+            In Switchboard, a claim <span style="color:var(--accent);">expires on a timer</span>.
+          </p>
+          <p class="small">While an agent is running, it checks in regularly, and checking in renews whatever it holds. If it stops running, its claims expire within 15 minutes and other agents can take them.</p>
+          <dl class="kv card-foot">
+            <div><dt>presence</dt><dd>2 min</dd></div>
+            <div><dt>leases</dt><dd>15 min</dd></div>
+            <div><dt>messages</dt><dd>1 hour</dd></div>
+            <div><dt>blackboard</dt><dd>24 hours</dd></div>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ── in use ───────────────────────────────────────────────────────── -->
   <!-- Clips, not claims. Each one says in ordinary words what happened, then
        shows the lines the run printed — the sentence first, because this is
@@ -466,8 +498,8 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
        output changes. The heading does not count the clips, so adding one is a
        one-file edit.
        PRINCIPLES.md 4, 10a and 12a. -->
-  <section class="tint">
-    <span class="num" aria-hidden="true">01</span>
+  <section>
+    <span class="num" aria-hidden="true">02</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(150deg, oklch(0.66 0.20 300 / 0.18), transparent 64%);"></div>
     <input type="checkbox" id="hold">
     <div class="wrap" style="padding-top:clamp(56px,7vw,88px);">
@@ -489,8 +521,7 @@ figure { margin: 0; display: flex; flex-direction: column; gap: 18px; }
 [carol] migrate/orders -&gt; in progress by
         _e333FU6…, skipping
 [alice] migrate/orders -&gt; in progress by
-        _e333FU6…, skipping
-[carol] migrate/customers <i class="b">-&gt; claimed, working</i></pre>
+        _e333FU6…, skipping</pre>
             <p class="fine"><i class="d">_e333FU6… is bob's id.</i> · <a href="clips/collision.txt">the run</a> · <a href="https://github.com/gald33/switchboard/blob/main/examples/coordinated_worker.py">the agents</a></p>
           </li>
           <li class="clip">
@@ -521,7 +552,6 @@ PQVzwirn3q…  <i class="b">57s</i>      working migrate/orders
             <h3>The next agent picks it up</h3>
             <p class="small">Two hours later a different agent starts, on a different machine, knowing nothing about alice. It asks who is working — alice has gone, because nobody had to remove her. Her note is still there, so it reads that and carries on.</p>
 <pre><i class="d">$</i> switchboard agents
-<i class="d">AGENT              KIND   SEEN</i>
 Fbmk3yUCkCKY1B1V…  cloud  2s ago
 <i class="d">$</i> switchboard board get
     coord/proposals/db-migration-order
@@ -577,13 +607,13 @@ waits there until something starts you again.</pre>
     </div>
 
     <div class="wrap" style="padding-bottom:clamp(56px,7vw,88px);">
-      <p class="fine" style="margin-top:28px;max-width:76ch;">The monospaced lines are what the agents printed, quoted in the order they appeared. Agent ids are shortened to fit, long lines are wrapped, and in one clip two columns of a table are elided with an ellipsis; nothing else is edited.</p>
+      <p class="fine" style="margin-top:28px;max-width:76ch;">The monospaced lines are what the agents printed, quoted in the order they appeared. Agent ids are shortened to fit and long lines are wrapped. Two clips drop a column or a header row of a table, one of them marking the gap with an ellipsis. No line is reworded and none is out of order.</p>
     </div>
   </section>
 
   <!-- ── where it gets used ───────────────────────────────────────────── -->
   <section class="band">
-    <span class="num" aria-hidden="true">02</span>
+    <span class="num" aria-hidden="true">03</span>
     <div class="glow" aria-hidden="true" style="background:linear-gradient(118deg, oklch(0.870 0.150 190 / 0.15), transparent 62%);"></div>
     <div class="wrap pad-y">
       <span class="eyebrow">What it is for</span>
@@ -600,34 +630,6 @@ waits there until something starts you again.</pre>
         <div class="card card--flat rule-top">
           <h3>Adding someone else</h3>
           <p class="small">Four settings have to match: the server address, the room name, the password and the encryption key. If one is wrong you still connect, but you cannot see anyone. An invite bundles all four into a single string you paste once.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── the expiry ───────────────────────────────────────────────────── -->
-  <section class="tint">
-    <span class="num" aria-hidden="true">03</span>
-    <div class="glow" aria-hidden="true" style="background:linear-gradient(200deg, oklch(0.66 0.20 300 / 0.20), transparent 70%);"></div>
-    <div class="wrap pad-y">
-      <div class="grid g2" style="align-items:start;">
-        <div class="stack g22">
-          <span class="eyebrow">How it stays clean</span>
-          <h2>Nobody has to clean up after an agent.</h2>
-          <p class="copy">Normally when something claims a resource, it also has to release it. That second step is easy to skip. If the agent crashes, or finishes and moves on, it never releases anything.</p>
-          <p class="copy">The claim then sits there blocking other agents until a person notices and clears it by hand.</p>
-        </div>
-        <div class="card">
-          <p style="font-size:19px;line-height:1.45;font-weight:500;color:var(--ink);">
-            In Switchboard, a claim <span style="color:var(--accent);">expires on a timer</span>.
-          </p>
-          <p class="small">While an agent is running, it checks in regularly, and checking in renews whatever it holds. If it stops running, its claims expire within 15 minutes and other agents can take them.</p>
-          <dl class="kv card-foot">
-            <div><dt>presence</dt><dd>2 min</dd></div>
-            <div><dt>leases</dt><dd>15 min</dd></div>
-            <div><dt>messages</dt><dd>1 hour</dd></div>
-            <div><dt>blackboard</dt><dd>24 hours</dd></div>
-          </dl>
         </div>
       </div>
     </div>

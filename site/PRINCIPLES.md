@@ -33,6 +33,26 @@ that gets dropped**. Switchboard's one idea is that coordination state expires
 on its own. If a visitor leaves remembering exactly one sentence, it is that
 one. Give it a whole section; do not bury it in a feature grid.
 
+**And it goes first — 2026-09-12.** It sat third for a day, behind the clip
+rail, on the argument that evidence earns the reader's attention before an
+idea can use it. Gal's verdict on the result: too much room for the technical,
+too little for the gist. He was right, and the numbers say so — the first two
+screens after the hero were a wall of monospace, and the sentence the whole
+product rests on was below them.
+
+So section 01 is now *"Nobody has to clean up after an agent."*, with the four
+expiry times beside it, and the clips follow as 02. Evidence still arrives
+early — second, not first, and now it is answering a question the reader has
+rather than posing one. The clips were also made to weigh less: narrower
+cards, the plain sentence at 14px and the output at 10.5px, and two of them
+trimmed to fewer lines. Between them the two output-heavy sections are a
+quarter of the page rather than the front of it.
+
+The transcript keeps full contrast, though. Subordinating it by dimming as
+well as shrinking put 10.5px text under the 4.5:1 floor, which is principle 11
+and not negotiable against a layout preference. Size alone says which half is
+the point.
+
 ## 3. Show it running — but the reader is not the operator
 
 **Revised 2026-09-08.** This principle used to put the recording above the
