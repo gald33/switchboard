@@ -1,0 +1,57 @@
+id: web-page-tests-fail-under-load
+title: Two web-page tests fail on a loaded full run and pass on every rerun
+status: ready
+priority: next
+blocked_on: []
+related_to:
+- key: intermittent-suite-failure
+  note: 'Read that one first, then do NOT assume this is it. That was tests/test_whisper.py,
+    root-caused to signing.socket_path() deriving one socket per agent id so two pytest
+    processes adopted each other''s signing identity, and it reproduced only with two
+    suites in parallel. This is a different file on a single suite, so the fixture that
+    closed it does not apply. The shared lead is wall-clock sensitivity, not the cause.'
+refs:
+- 'Inferred from this project''s own runs on 2026-09-13, not a filed issue — see the first line of evidence.'
+evidence: |
+  **Observed directly rather than reported.** During verification of #282, one
+  full local run reported `2 failed, 1559 passed` in **671s**:
+
+  * `tests/test_web_page.py::test_a_tab_can_be_closed_and_the_room_is_forgotten`
+  * `tests/test_web_page.py::test_a_panel_folded_away_stays_folded`
+
+  Two reruns were clean: `tests/test_web_page.py` alone gave 49 passed in 55.7s,
+  and the whole suite gave `1561 passed` in **259.4s**. Twelve CI checks on the
+  same commit were green across 3.10–3.13.
+
+  **The failing run took 2.6x the wall time of the clean one.** That is the
+  whole finding, and it is the same shape the previous suite flake left behind:
+  something wall-clock sensitive — a TTL, a heartbeat deadline, a `wait=` bound,
+  an expiry compared against `time.time()` rather than an injected clock — where
+  a margin that normally holds gets missed under load. The machine was running
+  CI waiters and a second suite at the time.
+
+  What distinguishes it from `intermittent-suite-failure`, which is `done`:
+  that one was `tests/test_whisper.py`, root-caused to `signing.socket_path()`
+  deriving the signing socket from the agent id alone, and it reproduced only
+  by running **two suites in parallel**. This was a single suite, a different
+  file, and the per-process `XDG_RUNTIME_DIR` fixture that closed it was already
+  in place. Filing it separately rather than reopening that one, so a solved
+  problem is not buried under an unsolved one.
+
+  Both named tests concern *remembered UI state* — a closed tab whose room is
+  forgotten, a folded panel that stays folded — which is where a timing-
+  sensitive assertion about persistence would surface first. A hypothesis, not
+  a finding.
+
+  Why it earns a slot rather than a shrug: the argument the previous item made
+  and proved. An intermittent failure nobody can name is indistinguishable from
+  a real regression the next time it fires, so it costs a full investigation on
+  every sighting, and it trains whoever sees it to rerun and move on — the exact
+  habit that lets a flake-shaped bug through. That item took a load experiment to
+  crack after six clean sequential runs said nothing; the same will be true here,
+  so reproduce under load rather than by repetition.
+
+  How it will be known to have worked: the mechanism is **named** — captured
+  with `-rf` per-test output under deliberate load, not from a summary line —
+  and then either fixed or shown to be a genuine bug in what those two tests
+  assert.

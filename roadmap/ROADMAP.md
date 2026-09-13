@@ -35,6 +35,8 @@ Claim before starting: `roadmap claim <key>`
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
+- `next` **`web-page-tests-fail-under-load`** — Two web-page tests fail on a loaded full run and pass on every rerun
+  - ↔ related: **`intermittent-suite-failure`** — Read that one first, then do NOT assume this is it. That was tests/test_whisper.py, root-caused to signing.socket_path() deriving one socket per agent id so two pytest processes adopted each other's signing identity, and it reproduced only with two suites in parallel. This is a different file on a single suite, so the fixture that closed it does not apply. The shared lead is wall-clock sensitivity, not the cause.
 - **`a-lobby-derived-from-the-key`** — Give every key a lobby, so agents that share one can find each other without naming a room
   - ↔ related: **`cross-key-rendezvous`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - ↔ related: **`init-writes-rooms-file`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
@@ -155,6 +157,7 @@ graph TD
   timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]
   ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
   unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
+  web_page_tests_fail_under_load["Two web-page tests fail on a loaded full run and pass on every rerun"]
   write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
   a_drain_that_retries_forever_never_escalates -.- discovery_is_uneven_and_delivery_is_unknowable
   a_drain_that_retries_forever_never_escalates -.- standing_checks_that_nothing_runs
@@ -189,6 +192,7 @@ graph TD
   hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
+  intermittent_suite_failure -.- web_page_tests_fail_under_load
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   known_rooms_address_book -.- selective_wake_for_the_listener
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
@@ -1368,6 +1372,8 @@ graph TD
 - **title:** Two pytest processes shared one signing socket, so a whisper opened with the wrong key
 - **status:** done
 - **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `web-page-tests-fail-under-load` — Read that one first, then do NOT assume this is it. That was tests/test_whisper.py, root-caused to signing.socket_path() deriving one socket per agent id so two pytest processes adopted each other's signing identity, and it reproduced only with two suites in parallel. This is a different file on a single suite, so the fixture that closed it does not apply. The shared lead is wall-clock sensitivity, not the cause.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/204`
 
@@ -2768,6 +2774,63 @@ graph TD
 > count does not change after posting, because reading it did not consume it;
 > `inbox` still returns the message afterwards with unread state intact; and a
 > held claim is still held after an unrelated command.
+
+</details>
+
+### `web-page-tests-fail-under-load`
+
+- **title:** Two web-page tests fail on a loaded full run and pass on every rerun
+- **status:** ready
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `intermittent-suite-failure` — Read that one first, then do NOT assume this is it. That was tests/test_whisper.py, root-caused to signing.socket_path() deriving one socket per agent id so two pytest processes adopted each other's signing identity, and it reproduced only with two suites in parallel. This is a different file on a single suite, so the fixture that closed it does not apply. The shared lead is wall-clock sensitivity, not the cause.
+- **refs:**
+  - `Inferred from this project's own runs on 2026-09-13, not a filed issue — see the first line of evidence.`
+
+<details><summary>evidence</summary>
+
+> **Observed directly rather than reported.** During verification of #282, one
+> full local run reported `2 failed, 1559 passed` in **671s**:
+>
+> * `tests/test_web_page.py::test_a_tab_can_be_closed_and_the_room_is_forgotten`
+> * `tests/test_web_page.py::test_a_panel_folded_away_stays_folded`
+>
+> Two reruns were clean: `tests/test_web_page.py` alone gave 49 passed in 55.7s,
+> and the whole suite gave `1561 passed` in **259.4s**. Twelve CI checks on the
+> same commit were green across 3.10–3.13.
+>
+> **The failing run took 2.6x the wall time of the clean one.** That is the
+> whole finding, and it is the same shape the previous suite flake left behind:
+> something wall-clock sensitive — a TTL, a heartbeat deadline, a `wait=` bound,
+> an expiry compared against `time.time()` rather than an injected clock — where
+> a margin that normally holds gets missed under load. The machine was running
+> CI waiters and a second suite at the time.
+>
+> What distinguishes it from `intermittent-suite-failure`, which is `done`:
+> that one was `tests/test_whisper.py`, root-caused to `signing.socket_path()`
+> deriving the signing socket from the agent id alone, and it reproduced only
+> by running **two suites in parallel**. This was a single suite, a different
+> file, and the per-process `XDG_RUNTIME_DIR` fixture that closed it was already
+> in place. Filing it separately rather than reopening that one, so a solved
+> problem is not buried under an unsolved one.
+>
+> Both named tests concern *remembered UI state* — a closed tab whose room is
+> forgotten, a folded panel that stays folded — which is where a timing-
+> sensitive assertion about persistence would surface first. A hypothesis, not
+> a finding.
+>
+> Why it earns a slot rather than a shrug: the argument the previous item made
+> and proved. An intermittent failure nobody can name is indistinguishable from
+> a real regression the next time it fires, so it costs a full investigation on
+> every sighting, and it trains whoever sees it to rerun and move on — the exact
+> habit that lets a flake-shaped bug through. That item took a load experiment to
+> crack after six clean sequential runs said nothing; the same will be true here,
+> so reproduce under load rather than by repetition.
+>
+> How it will be known to have worked: the mechanism is **named** — captured
+> with `-rf` per-test output under deliberate load, not from a summary line —
+> and then either fixed or shown to be a genuine bug in what those two tests
+> assert.
 
 </details>
 
