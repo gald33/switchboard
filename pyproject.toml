@@ -54,7 +54,8 @@ swb = "switchboard.cli:main"
 switchboard-mcp = "switchboard.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/gald33/switchboard"
+Homepage = "https://agentswitchboard.org"
+Source = "https://github.com/gald33/switchboard"
 Issues = "https://github.com/gald33/switchboard/issues"
 
 [build-system]
