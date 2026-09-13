@@ -176,6 +176,27 @@ jobs:
             exit 1
           fi
 
+  # The landing page quotes real terminal output. Until #277 the largest of
+  # those blocks was generated from site/demo.cast, so it could not drift;
+  # that generator is gone and the quotes are now placed by hand, which means
+  # a change to the CLI's output can leave the page showing a line no run
+  # prints any more. site/PRINCIPLES.md principle 4 is the whole reason this
+  # page is worth anything, so it is checked rather than trusted.
+  #
+  # Offline on purpose: it reads only files in this repository. The island
+  # boards are quoted from another host and are checked by hand with
+  # `python3 site/check-quotes.py --online`, because a CI run should not go
+  # red over somebody else's uptime. Stdlib only, so there is nothing to
+  # install.
+  site-quotes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 site/check-quotes.py
+
   docker:
     runs-on: ubuntu-latest
     steps:
