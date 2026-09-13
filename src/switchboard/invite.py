@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from dataclasses import dataclass
 
 from . import rooms
@@ -311,3 +312,79 @@ class Invite:
         if rooms.is_write_protected(self.workspace):
             text += f" write_key={'set' if self.write_key else 'none (read-only)'}"
         return text
+
+
+#: The team default, as one string. Set this and an agent needs nothing else:
+#: hub, token, workspace and key arrive together or not at all.
+ENV_VAR = "SWITCHBOARD_INVITE"
+
+
+def from_env(env: dict[str, str] | None = None) -> Invite | None:
+    """The invite this environment carries, if it carries one.
+
+    Deliberately raises on a malformed value rather than returning `None`. An
+    unreadable invite is somebody's default that is not working, and treating
+    it as absence would drop them into a derived room — the silent landing
+    this module exists to prevent, reintroduced at the one tier that was
+    supposed to remove it.
+    """
+    source = os.environ if env is None else env
+    blob = (source.get(ENV_VAR) or "").strip()
+    if not blob:
+        return None
+    try:
+        return Invite.decode(blob)
+    except InviteError as exc:
+        raise InviteError(f"{ENV_VAR} is not a usable invite: {exc}") from exc
+
+
+def overlay(room: Invite) -> dict[str, str]:
+    """The discrete variables this invite stands in for.
+
+    Only what it actually carries: an invite made with `--no-key` says "you
+    already hold this", and turning that into an empty `SWITCHBOARD_KEY` would
+    answer a question it deliberately left open.
+    """
+    values: dict[str, str] = {"SWITCHBOARD_URL": room.url.rstrip("/"),
+                              "SWITCHBOARD_WORKSPACE": room.workspace}
+    if room.token:
+        values["SWITCHBOARD_TOKEN"] = room.token
+    if room.key:
+        values[rooms.env_var_for(room.key_id or rooms.DEFAULT_KEY_ID)] = room.key
+    if room.write_key:
+        values[rooms.write_key_env_var_for(
+            room.key_id or rooms.DEFAULT_KEY_ID)] = room.write_key
+    return values
+
+
+def refuse_disagreement(room: Invite, env: dict[str, str] | None = None) -> None:
+    """Fail when a discrete variable contradicts the invite.
+
+    The same rule `--invite` applies to flags, for the same reason, at the tier
+    where it matters more. A flag and an invite on one command line are at
+    least both visible in that line; a stale `SWITCHBOARD_TOKEN` exported into
+    a process an hour ago is visible nowhere, and it wins quietly — which is
+    how a session ends up alone in a room nobody named, reporting success.
+
+    Agreement is not a conflict: a wrapper that exports both the invite and
+    what it expands to is redundant, not wrong, and saying so would be nagging.
+
+    Only *ambient* values are refused. A committed rooms file that names a
+    different room is an override somebody wrote down and reviewed, and it is
+    meant to win — see `config.ClientConfig.from_env`.
+    """
+    source = os.environ if env is None else env
+    expected = overlay(room)
+    clashes = sorted(
+        name for name, value in expected.items()
+        if (source.get(name) or "").strip() and source[name].strip() != value
+    )
+    if not clashes:
+        return
+    raise InviteError(
+        f"{', '.join(clashes)} disagree(s) with {ENV_VAR}. An invite is a whole "
+        "room, so a variable that contradicts it would put you somewhere the "
+        "invite does not name — quietly, which is the failure invites exist to "
+        f"remove. Unset {'it' if len(clashes) == 1 else 'them'}, or drop "
+        f"{ENV_VAR} and configure the room by hand."
+    )
