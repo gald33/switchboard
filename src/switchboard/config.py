@@ -17,6 +17,16 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_WRITE_KEY    write key for a write-protected room (client only). Its
                              public half names the room, so with it set the
                              workspace need not be — see writekey.py
+    SWITCHBOARD_INVITE       one invite carrying hub, token, workspace and key
+                             together (client). The team default: set this and
+                             none of the four above need setting. A discrete
+                             variable that *disagrees* with it is refused rather
+                             than merged, because an ambient value that wins
+                             quietly is how a session lands in a room nobody
+                             named. A committed `.switchboard/rooms.json` does
+                             override it — that override is reviewable, and the
+                             invite is what supplies the key making the repo's
+                             own rooms joinable at all. See invite.py
 
 
 """
@@ -35,7 +45,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import rooms
+from . import invite, rooms
 
 # --- TTL defaults (seconds) -------------------------------------------------
 # Every record in Switchboard expires. These are the defaults applied when a
@@ -470,7 +480,8 @@ def default_workspace(directory: Path | str | None = None) -> str:
     return f"default-{machine_suffix(root)}"
 
 
-def _selected_room(directory: Path) -> tuple[rooms.Room | None, str | None]:
+def _selected_room(directory: Path, env: dict[str, str] | None = None,
+                   ) -> tuple[rooms.Room | None, str | None]:
     """The room this repo and this environment agree on, and why not if not.
 
     Still swallows the failure rather than raising: `from_env` is on the path
@@ -492,7 +503,7 @@ def _selected_room(directory: Path) -> tuple[rooms.Room | None, str | None]:
         declared = rooms.load(directory)
         if not declared:
             return None, None
-        return rooms.select(declared), None
+        return rooms.select(declared, env), None
     except rooms.RoomsError as exc:
         return None, str(exc)
 
@@ -604,6 +615,13 @@ class ClientConfig:
         default is applied last and labelled, so a caller can still ask whether
         anyone chose this hub — see `url_source`.
         """
+        # One string carrying hub, token, workspace and key. Read before
+        # anything else so a discrete variable that contradicts it fails here,
+        # loudly, rather than an hour later in a room nobody named.
+        default = invite.from_env()
+        if default is not None:
+            invite.refuse_disagreement(default)
+
         url = os.environ.get("SWITCHBOARD_URL", "").rstrip("/") or None
         url_source = "env" if url else None
         workspace = os.environ.get("SWITCHBOARD_WORKSPACE") or None
@@ -611,8 +629,19 @@ class ClientConfig:
         key = os.environ.get("SWITCHBOARD_KEY") or None
         write_key = os.environ.get("SWITCHBOARD_WRITE_KEY") or None
 
+        # The invite's key has to be in view *before* room selection, not
+        # after. A committed rooms file lists rooms by key id and `joinable`
+        # keeps only the ones this environment holds a key for, so an
+        # environment whose only key arrives by invite would see an empty repo
+        # and the override below could never fire.
+        env_view = dict(os.environ)
+        if default is not None:
+            env_view.update(invite.overlay(default))
+            key = key or default.key
+            write_key = write_key or default.write_key
+
         where = Path.cwd() if directory is None else directory
-        room, room_problem = _selected_room(where)
+        room, room_problem = _selected_room(where, env_view)
         if room is not None:
             if url is None and room.hub_url:
                 url, url_source = room.hub_url, "rooms"
@@ -620,6 +649,16 @@ class ClientConfig:
                 workspace, workspace_source = room.workspace, "rooms"
             key = key or rooms.key_for(room.key_id)
             write_key = write_key or rooms.write_key_for(room.key_id)
+        # Below the rooms file on purpose. The invite is the *team* default;
+        # a committed rooms file is this repo saying "not here", written down
+        # where a reviewer saw it. Ambient config is refused when it disagrees
+        # (above); reviewable config is allowed to win.
+        if default is not None:
+            if url is None:
+                url, url_source = default.url.rstrip("/"), "invite"
+            if not workspace:
+                workspace, workspace_source = default.workspace, "invite"
+
         if workspace is None and write_key:
             # A write key names its room — its public half is the room's
             # token — so an environment holding one has nothing else to be
@@ -634,8 +673,10 @@ class ClientConfig:
         return cls(
             url=url or MANAGED_HUB_URL,
             url_source=url_source or "default",
-            token=os.environ.get("SWITCHBOARD_TOKEN") or None,
-            token_source="env" if os.environ.get("SWITCHBOARD_TOKEN") else "none",
+            token=(os.environ.get("SWITCHBOARD_TOKEN")
+                   or (default.token if default else None) or None),
+            token_source=("env" if os.environ.get("SWITCHBOARD_TOKEN")
+                          else "invite" if default and default.token else "none"),
             # Resolved against the directory this config is *for*, not the
             # process's cwd: a hook or a bridge asking about a checkout it is
             # not sitting inside would otherwise derive somebody else's repo.

@@ -30,6 +30,10 @@ if _SRC.is_dir():
 _SWITCHBOARD_ENV = (
     "SWITCHBOARD_URL",
     "SWITCHBOARD_TOKEN",
+    # The team default, and the one variable that would rewrite every other
+    # value in this tuple at once. A developer who exports it would otherwise
+    # run the whole suite against their real room.
+    "SWITCHBOARD_INVITE",
     "SWITCHBOARD_WORKSPACE",
     "SWITCHBOARD_KEY",
     "SWITCHBOARD_DB",
