@@ -25,6 +25,22 @@ hub for AI coding agents" is an accurate second sentence and a terrible first
 one — it asks the reader to accept a category before they have accepted a
 problem.
 
+**The hero was clever, and stopped being — 2026-09-13.** It read *"Your agent
+just claimed the migration file. So did the other one."* — a setup and a
+punchline, which is the exact shape principle 10a was written to stop, sitting
+in the largest type on the page. It also said `claimed`, a word the reader has
+not been taught yet in the one place they have read nothing else.
+
+It now says **"Two of your agents just edited the same file."** Same event, no
+turn, no vocabulary, and two lines instead of four — the command and the first
+section now fit on the opening screen with it.
+
+The social card carries the hero line, so it moved too. That is why
+`site/design/og-card.html` and `site/design/render-og.py` exist: the card used
+to be an ad-hoc render nobody could reproduce, and a preview showing a
+sentence the page no longer contains is the same quiet lie `check-quotes.py`
+guards against, one layer further out.
+
 ## 2. The product is the expiry
 
 Every competing answer (a lock file, a label, a PR comment, a row in a table)

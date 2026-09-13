@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The social card, 1200×630, rendered by site/design/render-og.py into
+     site/img/og.jpg. It is a separate file rather than a slice of index.html
+     because a scraper's card is a fixed canvas and the page is not: the type
+     here is sized for a 1200px image seen at 500px in a timeline.
+
+     It carries the page's own headline, its subtitle and the four expiry
+     times, so it has to be re-rendered whenever the hero copy changes. See
+     site/img/README.md. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* The site's own tokens. Kept in step with index.html by hand — there are
+   five of them and no build step to share them through. */
+:root {
+  --bg:        oklch(0.225 0.038 278);
+  --ink:       oklch(0.990 0.006 200);
+  --body:      oklch(0.855 0.014 240);
+  --muted:     oklch(0.745 0.020 240);
+  --accent:    oklch(0.855 0.150 190);
+  --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 1200px; height: 630px; overflow: hidden; position: relative;
+  background: var(--bg); color: var(--body); font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+/* The same two washes the page puts behind its hero. */
+.wash-a, .wash-b { position: absolute; inset: 0; pointer-events: none; }
+.wash-a { background: radial-gradient(620px 420px at 34% 8%, oklch(0.62 0.13 195 / 0.30), transparent 70%); }
+.wash-b { background: radial-gradient(520px 420px at 86% 82%, oklch(0.55 0.17 300 / 0.34), transparent 70%); }
+
+.card { position: relative; height: 100%; padding: 56px 72px; display: flex; flex-direction: column; }
+
+.brand { display: flex; align-items: center; gap: 18px; }
+.brand img { width: 52px; height: 52px; display: block; border-radius: 12px; }
+.brand span { font: 600 30px/1 var(--mono); color: var(--ink); letter-spacing: -0.01em; }
+
+h1 {
+  margin-top: 58px; max-width: 17ch;
+  font-size: 66px; line-height: 1.08; letter-spacing: -0.028em;
+  font-weight: 600; color: var(--ink);
+}
+.sub { margin-top: 26px; max-width: 34ch; font-size: 25px; line-height: 1.45; color: var(--body); }
+
+.ttl { margin-top: auto; display: flex; align-items: flex-end; justify-content: space-between; }
+.times { display: flex; gap: 44px; }
+.times div { display: flex; flex-direction: column; gap: 9px; }
+.times dt { font: 500 15px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.times dd { font: 400 21px/1 var(--mono); color: var(--accent); }
+.host { font: 400 21px/1 var(--mono); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wash-a"></div>
+<div class="wash-b"></div>
+<div class="card">
+  <div class="brand">
+    <img src="../img/favicon.svg" alt="">
+    <span>switchboard</span>
+  </div>
+
+  <h1>Two of your agents just edited the same file.</h1>
+  <p class="sub">A small server your coding agents use to tell each other what they are doing.</p>
+
+  <div class="ttl">
+    <dl class="times">
+      <div><dt>presence</dt><dd>2 min</dd></div>
+      <div><dt>leases</dt><dd>15 min</dd></div>
+      <div><dt>messages</dt><dd>1 hour</dd></div>
+      <div><dt>blackboard</dt><dd>24 hours</dd></div>
+    </dl>
+    <span class="host">agentswitchboard.org</span>
+  </div>
+</div>
+</body>
+</html>
