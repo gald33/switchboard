@@ -217,10 +217,55 @@ def env_var_for(key_id: str) -> str:
     return "SWITCHBOARD_KEY_" + re.sub(r"[^A-Z0-9]+", "_", key_id.upper()).strip("_")
 
 
+def _invite_secret(key_id: str, source: dict[str, str], which: str) -> str | None:
+    """The key an environment holds *as an invite*, for `key_id`.
+
+    Resolved here rather than by the one caller that happened to need it
+    first. `joinable`, `select`, `switchboard rooms` and `ClientConfig` all ask
+    this module which keys an environment holds, and an invite understood in
+    only one of them produces the worst available answer: `rooms` reporting
+    `have_key: false` for a room every other command opens happily. A
+    configuration reported by a command nothing else agrees with is a failure
+    this repo has already had twice.
+
+    Imported inside the function because `invite` imports this module for the
+    workspace derivation, and a module-level import would close the cycle.
+    """
+    blob = (source.get(invite_env_var()) or "").strip()
+    if not blob:
+        return None
+    from . import invite as _invite
+
+    try:
+        room = _invite.Invite.decode(blob)
+    except _invite.InviteError:
+        # Not this function's failure to report: `ClientConfig.from_env` reads
+        # the same variable and raises with a message that can say what to do.
+        return None
+    if (room.key_id or DEFAULT_KEY_ID) != key_id:
+        return None
+    return room.key if which == "key" else room.write_key
+
+
+def invite_env_var() -> str:
+    """`SWITCHBOARD_INVITE`, spelled once.
+
+    A function rather than an import of `invite.ENV_VAR`, for the same cycle
+    `_invite_secret` works around.
+    """
+    return "SWITCHBOARD_INVITE"
+
+
 def key_for(key_id: str, env: dict[str, str] | None = None) -> str | None:
-    """The key this environment holds for `key_id`, if any."""
+    """The key this environment holds for `key_id`, if any.
+
+    Directly, or inside an invite — which is the environment holding it just
+    as much, and the tier `docs/model.md` means by "the environment holds
+    keys".
+    """
     source = os.environ if env is None else env
-    return source.get(env_var_for(key_id)) or None
+    return (source.get(env_var_for(key_id))
+            or _invite_secret(key_id, source, "key") or None)
 
 
 def write_key_env_var_for(key_id: str) -> str:
@@ -237,9 +282,14 @@ def write_key_env_var_for(key_id: str) -> str:
 
 
 def write_key_for(key_id: str, env: dict[str, str] | None = None) -> str | None:
-    """The write key this environment holds for `key_id`, if any."""
+    """The write key this environment holds for `key_id`, if any.
+
+    Directly or by invite, on the same rule as `key_for`: an invite that
+    carries a write key is an environment that holds one.
+    """
     source = os.environ if env is None else env
-    return source.get(write_key_env_var_for(key_id)) or None
+    return (source.get(write_key_env_var_for(key_id))
+            or _invite_secret(key_id, source, "write_key") or None)
 
 
 def _parse(path: Path, private: bool) -> list[Room]:

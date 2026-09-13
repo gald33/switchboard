@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from switchboard import rooms
 from switchboard.cli import main
 from switchboard.config import PUBLISHED_PAGE_URL, ClientConfig
 from switchboard.crypto import generate_key
@@ -814,9 +815,12 @@ def test_a_room_kept_from_an_invite_resolves_without_the_invite(
 
 # --- The invite as the team default -------------------------------------
 #
-# One string in the environment instead of four variables. The point is not
-# brevity: it is that four variables can disagree, and when they do the loser
-# is silent. Every test below is about a disagreement being *heard*.
+# One string in the environment instead of four. It carries the environment's
+# half and only that: `docs/model.md` says the repo declares rooms and the
+# environment holds keys, so an invite supplies keys, token and hub, and never
+# a room. The two are not competing defaults — an agent is in its repo's room
+# and its key's lobby at once — and the tests that matter most below are the
+# ones pinning that they do not compete.
 
 
 def _team_invite(key: str, workspace: str = "team-lobby") -> str:
@@ -824,15 +828,15 @@ def _team_invite(key: str, workspace: str = "team-lobby") -> str:
                   token="sb_team", key=key, note="team lobby").encode()
 
 
-def _rooms_file(directory, token: str, key_id: str = "default") -> None:
+def _rooms_file(directory, *names: str) -> None:
     (directory / ".switchboard").mkdir(exist_ok=True)
     (directory / ".switchboard" / "rooms.json").write_text(json.dumps(
-        {"rooms": [{"name": "repo", "workspace_token": token, "key_id": key_id}]}))
+        {"rooms": [{"name": n, "workspace_token": f"tok-{n}", "key_id": "default"}
+                   for n in names]}))
 
 
-def test_an_invite_in_the_environment_supplies_every_other_variable(
-        tmp_path, monkeypatch):
-    """The whole point: set one thing, and the other four are answered."""
+def test_an_invite_supplies_the_credentials(tmp_path, monkeypatch):
+    """Set one thing, and the environment's half is answered."""
     key = generate_key()
     monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(key))
 
@@ -841,70 +845,91 @@ def test_an_invite_in_the_environment_supplies_every_other_variable(
     assert config.url == "https://hub.example"
     assert config.token == "sb_team"
     assert config.key == key
-    assert config.workspace_source == "invite"
 
 
-def test_a_stale_variable_that_disagrees_with_the_invite_is_refused(
+def test_with_no_repo_to_declare_one_the_invite_may_supply_the_room(
         tmp_path, monkeypatch):
-    """The failure this exists to remove, at the tier where it actually bites.
+    """`docs/environments.md` carves this out: the one case where a room
+    belongs in the environment, because nothing else will supply it."""
+    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
 
-    A token exported into a long-lived process wins quietly over a repo's
-    config and puts the agent in a room nobody named, with every command
-    exiting 0. Refusing is the only outcome that is not silent.
+    assert ClientConfig.from_env(tmp_path).workspace_source == "invite"
+
+
+def test_a_key_that_contradicts_the_invite_is_refused(tmp_path, monkeypatch):
+    """Two spellings of one tier disagreeing about one secret.
+
+    Whichever loses, it loses silently: same hub, same room, wrong key, a
+    roster listing agents none of whom can read each other.
     """
     monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "left-over-from-another-project")
+    monkeypatch.setenv("SWITCHBOARD_KEY", generate_key())
 
     with pytest.raises(InviteError) as caught:
         ClientConfig.from_env(tmp_path)
 
-    assert "SWITCHBOARD_TOKEN" in str(caught.value)
+    assert "SWITCHBOARD_KEY" in str(caught.value)
 
 
-def test_a_variable_that_agrees_with_the_invite_is_not_a_conflict(
-        tmp_path, monkeypatch):
-    """A wrapper exporting both is redundant, not wrong. Nagging about it
-    would train people to ignore the message that matters."""
-    key = generate_key()
-    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(key))
-    monkeypatch.setenv("SWITCHBOARD_TOKEN", "sb_team")
-    monkeypatch.setenv("SWITCHBOARD_KEY", key)
+def test_a_repo_keeping_its_own_room_is_not_a_conflict(tmp_path, monkeypatch):
+    """The documented multi-repo setup, which an earlier version broke.
 
-    assert ClientConfig.from_env(tmp_path).token == "sb_team"
-
-
-def test_a_committed_rooms_file_overrides_the_team_default(tmp_path, monkeypatch):
-    """Ambient config is refused when it disagrees; reviewable config wins.
-
-    A rooms file is in a diff somebody approved, so a repo saying "not the
-    team room, this one" is an intent rather than a leftover.
+    One key adopted across several checkouts, each deriving its own workspace
+    — `docs/environments.md`, "mint once, adopt everywhere". The repo's room
+    and the environment's key are different axes, so this must simply work.
     """
     monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
-    _rooms_file(tmp_path, "this-repos-own-room")
+    monkeypatch.setenv("SWITCHBOARD_WORKSPACE", "w_this_repos_own_room")
+
+    config = ClientConfig.from_env(tmp_path)
+
+    assert config.workspace == "w_this_repos_own_room"
+    assert config.key is not None
+
+
+def test_a_declared_room_is_not_displaced_by_the_invite(tmp_path, monkeypatch):
+    """The repo declares the room; the invite only unlocks it."""
+    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
+    _rooms_file(tmp_path, "build")
 
     config = ClientConfig.from_env(tmp_path)
 
     assert config.workspace_source == "rooms"
-    assert config.workspace != "team-lobby"
+    assert config.key is not None
 
 
-def test_the_invites_key_is_what_makes_the_repos_own_rooms_joinable(
+def test_an_ambiguous_rooms_file_is_not_quietly_answered_by_the_invite(
         tmp_path, monkeypatch):
-    """The ordering the override depends on.
+    """The regression that mattered most, because it was silent.
 
-    `rooms.joinable` keeps only rooms this environment holds a key for, so if
-    the invite were folded in *after* room selection the repo's rooms would be
-    invisible and the override above could never fire. Asserting the key
-    survives alongside the repo's workspace is what pins that order.
+    A repo declaring two joinable rooms is asking a question. Filling that gap
+    with the invite's own room answers it by landing the agent somewhere
+    neither declared room is, with every command exiting 0 — the exact failure
+    `_selected_room` returns its reason for, produced by the mechanism meant
+    to remove it.
     """
-    key = generate_key()
-    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(key))
-    _rooms_file(tmp_path, "this-repos-own-room")
+    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
+    _rooms_file(tmp_path, "build", "design")
 
     config = ClientConfig.from_env(tmp_path)
 
-    assert config.key == key
-    assert config.workspace_source == "rooms"
+    assert config.workspace_source != "invite"
+    assert config.room_problem is not None
+    assert "more than one room" in config.room_problem
+
+
+def test_every_caller_sees_the_key_the_invite_carries(tmp_path, monkeypatch):
+    """`switchboard rooms` asks `rooms.key_for` directly, not through
+    `ClientConfig`. An invite understood in only one of them makes `rooms`
+    report `have_key: false` for a room every other command opens — a
+    configuration reported by a command nothing else agrees with."""
+    monkeypatch.setenv("SWITCHBOARD_INVITE", _team_invite(generate_key()))
+    _rooms_file(tmp_path, "build")
+
+    declared = rooms.load(tmp_path)
+
+    assert [r.name for r in rooms.joinable(declared)] == ["build"]
+    assert rooms.key_for("default") is not None
 
 
 def test_a_malformed_invite_is_refused_rather_than_ignored(tmp_path, monkeypatch):
