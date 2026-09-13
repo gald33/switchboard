@@ -151,6 +151,34 @@ release. No invented flags, no aspirational output, no prettified fake shell.
 The audience will paste it within a minute. A single wrong command costs more
 credibility than the whole page buys.
 
+**And it is checked, not trusted — 2026-09-13.** Deleting
+`site/build-terminal.py` with the transcript (#277) removed the one thing that
+made drift impossible: the biggest block on the page used to be *generated*
+from the cast. What replaced it is quoting by hand, which is exactly the
+arrangement where a CLI change quietly turns a page into a claim about output
+nobody prints any more.
+
+`site/check-quotes.py` closes that. It pulls every `<pre>` off the page, finds
+the source each block links to, and requires every fragment to appear in that
+source — whitespace collapsed, because the page wraps at a card's width and
+the terminal wrapped at its own, and elisions honoured only where an ellipsis
+marks them. CI runs it offline on every pull request; `--online` adds the two
+island boards, which live on a host this repository does not control.
+
+**It found two undisclosed edits the first time it ran**, both mine, both
+from placing quotes by eye:
+
+- the roster lines in the scene and in a clip dropped the `BRANCH` and `TASK`
+  columns with nothing marking the gap;
+- the island clip began mid-line, cutting `ACK T2 Atlas ready.` off the front
+  of a message without saying so.
+
+Neither changed a word, and both are the kind of thing that is invisible to
+the person who made it and obvious to anyone diffing against the source. They
+are marked with an ellipsis now, and the notes under both blocks say what the
+ellipsis means. That is the argument for the checker in one paragraph: the
+rule was already written down, and it was already being broken.
+
 ## 5. Four primitives, no more
 
 Presence, leases, messages, blackboard. Plus the listener as the *other half*
