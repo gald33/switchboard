@@ -17,16 +17,20 @@ Everything is environment-driven so a hub can be stood up with no config file:
     SWITCHBOARD_WRITE_KEY    write key for a write-protected room (client only). Its
                              public half names the room, so with it set the
                              workspace need not be — see writekey.py
-    SWITCHBOARD_INVITE       one invite carrying hub, token, workspace and key
-                             together (client). The team default: set this and
-                             none of the four above need setting. A discrete
-                             variable that *disagrees* with it is refused rather
-                             than merged, because an ambient value that wins
-                             quietly is how a session lands in a room nobody
-                             named. A committed `.switchboard/rooms.json` does
-                             override it — that override is reviewable, and the
-                             invite is what supplies the key making the repo's
-                             own rooms joinable at all. See invite.py
+    SWITCHBOARD_INVITE       one invite carrying the environment's whole half —
+                             key, write key, token and hub (client). The team
+                             default: set this and none of the secrets above
+                             need setting. It supplies **no room**: the repo
+                             declares rooms and the environment holds keys, and
+                             an agent joins the intersection (docs/model.md), so
+                             a repo keeping its own workspace under a shared key
+                             is the design rather than a conflict. The one
+                             exception is a setup with no repo to declare a
+                             room, where the invite's own room is used because
+                             nothing else will supply one. A SWITCHBOARD_KEY
+                             that *disagrees* with it is refused — one tier
+                             contradicting itself about one secret is the quiet
+                             room this exists to remove. See invite.py
 
 
 """
@@ -615,9 +619,14 @@ class ClientConfig:
         default is applied last and labelled, so a caller can still ask whether
         anyone chose this hub — see `url_source`.
         """
-        # One string carrying hub, token, workspace and key. Read before
-        # anything else so a discrete variable that contradicts it fails here,
-        # loudly, rather than an hour later in a room nobody named.
+        # Credentials, never a room. `docs/model.md`: the repo declares
+        # which rooms it takes part in, the environment holds keys, an agent
+        # joins the intersection. An invite is the environment's half arriving
+        # as one string, so it supplies the key, the write key, the token and
+        # the hub — and competes for no workspace, because a tier and a room
+        # are not the same axis. An agent is in its repo's room and its key's
+        # lobby at the same time; which of them a call targets is chosen per
+        # call, by `--room`/`--invite`/`room=`, not resolved here.
         default = invite.from_env()
         if default is not None:
             invite.refuse_disagreement(default)
@@ -629,19 +638,11 @@ class ClientConfig:
         key = os.environ.get("SWITCHBOARD_KEY") or None
         write_key = os.environ.get("SWITCHBOARD_WRITE_KEY") or None
 
-        # The invite's key has to be in view *before* room selection, not
-        # after. A committed rooms file lists rooms by key id and `joinable`
-        # keeps only the ones this environment holds a key for, so an
-        # environment whose only key arrives by invite would see an empty repo
-        # and the override below could never fire.
-        env_view = dict(os.environ)
-        if default is not None:
-            env_view.update(invite.overlay(default))
-            key = key or default.key
-            write_key = write_key or default.write_key
-
         where = Path.cwd() if directory is None else directory
-        room, room_problem = _selected_room(where, env_view)
+        # Nothing to overlay: `rooms.key_for` reads the invite itself, so room
+        # selection here sees exactly the keys `switchboard rooms` and every
+        # other caller see. One expansion, one answer.
+        room, room_problem = _selected_room(where)
         if room is not None:
             if url is None and room.hub_url:
                 url, url_source = room.hub_url, "rooms"
@@ -649,15 +650,11 @@ class ClientConfig:
                 workspace, workspace_source = room.workspace, "rooms"
             key = key or rooms.key_for(room.key_id)
             write_key = write_key or rooms.write_key_for(room.key_id)
-        # Below the rooms file on purpose. The invite is the *team* default;
-        # a committed rooms file is this repo saying "not here", written down
-        # where a reviewer saw it. Ambient config is refused when it disagrees
-        # (above); reviewable config is allowed to win.
         if default is not None:
+            key = key or default.key
+            write_key = write_key or default.write_key
             if url is None:
                 url, url_source = default.url.rstrip("/"), "invite"
-            if not workspace:
-                workspace, workspace_source = default.workspace, "invite"
 
         if workspace is None and write_key:
             # A write key names its room — its public half is the room's
@@ -669,6 +666,19 @@ class ClientConfig:
             workspace = workspace_of_write_key(write_key)
             if workspace:
                 workspace_source = "write-key"
+
+        # The one case where a room may come from the environment: nothing
+        # else supplied one at all. `docs/environments.md` carves it out for
+        # the setup with no repo to declare rooms, "because nothing else will
+        # supply them".
+        #
+        # Never when the rooms file failed to resolve. A repo declaring two
+        # rooms is asking a question, and filling the gap with the invite's
+        # room would answer it silently — landing the agent somewhere neither
+        # declared room is, with every command exiting 0, which is the exact
+        # failure `_selected_room` returns its reason for.
+        if workspace is None and default is not None and room_problem is None:
+            workspace, workspace_source = default.workspace, "invite"
 
         return cls(
             url=url or MANAGED_HUB_URL,

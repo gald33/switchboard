@@ -338,43 +338,51 @@ def from_env(env: dict[str, str] | None = None) -> Invite | None:
         raise InviteError(f"{ENV_VAR} is not a usable invite: {exc}") from exc
 
 
-def overlay(room: Invite) -> dict[str, str]:
-    """The discrete variables this invite stands in for.
+def key_overlay(room: Invite) -> dict[str, str]:
+    """The key variables this invite stands in for.
 
-    Only what it actually carries: an invite made with `--no-key` says "you
-    already hold this", and turning that into an empty `SWITCHBOARD_KEY` would
-    answer a question it deliberately left open.
+    Only the keys. `docs/model.md` puts the hub token in a committed
+    `.mcp.json` when it is public and the hub URL in whatever the repo
+    declares, so those two are values a repo may legitimately state for
+    itself; the workspace is the repo's outright. The read and write keys are
+    the environment's alone — a repo file must never contain one — so they are
+    the only variables where a disagreement cannot be somebody exercising a
+    lower tier's right.
+
+    Only what the invite actually carries: `invite --no-key` means "you
+    already hold this", and turning that into an empty variable would answer a
+    question it deliberately left open.
     """
-    values: dict[str, str] = {"SWITCHBOARD_URL": room.url.rstrip("/"),
-                              "SWITCHBOARD_WORKSPACE": room.workspace}
-    if room.token:
-        values["SWITCHBOARD_TOKEN"] = room.token
+    values: dict[str, str] = {}
+    key_id = room.key_id or rooms.DEFAULT_KEY_ID
     if room.key:
-        values[rooms.env_var_for(room.key_id or rooms.DEFAULT_KEY_ID)] = room.key
+        values[rooms.env_var_for(key_id)] = room.key
     if room.write_key:
-        values[rooms.write_key_env_var_for(
-            room.key_id or rooms.DEFAULT_KEY_ID)] = room.write_key
+        values[rooms.write_key_env_var_for(key_id)] = room.write_key
     return values
 
 
 def refuse_disagreement(room: Invite, env: dict[str, str] | None = None) -> None:
-    """Fail when a discrete variable contradicts the invite.
+    """Fail when an environment contradicts its own invite about a key.
 
-    The same rule `--invite` applies to flags, for the same reason, at the tier
-    where it matters more. A flag and an invite on one command line are at
-    least both visible in that line; a stale `SWITCHBOARD_TOKEN` exported into
-    a process an hour ago is visible nowhere, and it wins quietly — which is
-    how a session ends up alone in a room nobody named, reporting success.
+    Two spellings of the same tier disagreeing about the same secret is not a
+    preference to resolve. Whichever loses, it loses silently: same hub, same
+    room, wrong key, and a roster that lists everyone while nobody can read
+    anybody — the forty minutes this module's docstring opens with.
 
-    Agreement is not a conflict: a wrapper that exports both the invite and
+    Scoped to keys on purpose, and the scope is the whole correction. A repo
+    naming its own workspace or hub while the environment holds an invite is
+    not a conflict at all — it is `docs/model.md` working as written, "the
+    repo declares rooms, the environment holds keys, an agent joins the
+    intersection". Refusing that refused the intersection, and broke the
+    documented multi-repo setup where one key is adopted across several
+    checkouts that each keep their own room.
+
+    Agreement is never a conflict: a wrapper that exports both the invite and
     what it expands to is redundant, not wrong, and saying so would be nagging.
-
-    Only *ambient* values are refused. A committed rooms file that names a
-    different room is an override somebody wrote down and reviewed, and it is
-    meant to win — see `config.ClientConfig.from_env`.
     """
     source = os.environ if env is None else env
-    expected = overlay(room)
+    expected = key_overlay(room)
     clashes = sorted(
         name for name, value in expected.items()
         if (source.get(name) or "").strip() and source[name].strip() != value
@@ -382,9 +390,9 @@ def refuse_disagreement(room: Invite, env: dict[str, str] | None = None) -> None
     if not clashes:
         return
     raise InviteError(
-        f"{', '.join(clashes)} disagree(s) with {ENV_VAR}. An invite is a whole "
-        "room, so a variable that contradicts it would put you somewhere the "
-        "invite does not name — quietly, which is the failure invites exist to "
-        f"remove. Unset {'it' if len(clashes) == 1 else 'them'}, or drop "
-        f"{ENV_VAR} and configure the room by hand."
+        f"{', '.join(clashes)} disagree(s) with {ENV_VAR} about the key. Same "
+        "hub, same room, different key reads as a room full of agents none of "
+        "whom can read each other — and nothing errors. Unset "
+        f"{'it' if len(clashes) == 1 else 'them'}, or drop {ENV_VAR} and "
+        "configure the key by hand."
     )
