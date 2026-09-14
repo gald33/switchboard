@@ -33,6 +33,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`a-lobby-derived-from-the-key`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`ci-workspace-is-public`** — Decide that one first. It rules on whether a room identifier may live in a committed file; this one proposes committing a rooms record that carries a workspace token by default. Building this while that is open risks shipping the published-identifier mistake as the default for every adopter.
 - `next` **`seal-agent-meta`** — Seal agent meta, so the hub stops reading the repo name off every announcement
+  - ↔ related: **`capsule-sealed-out-of-the-workspace`** — The same category at the other end of the scale. That one is a `meta` field handing the hub a repo name; this is a whole transcript handing every workspace-key holder whatever the session printed. Same rule — a payload must not carry more than the model says it does — and the fixes differ only because a capsule cannot be sealed field by field.
 - `next` **`ttl-clamped-silently`** — Say when a ttl was clamped, instead of returning a number nobody agreed to
   - ↔ related: **`board-ttl-ceiling`** — Adjacent, and explicitly NOT the same question — do not conflate them or fix one believing it settles the other. That item argues about what the ceilings should be; this one says that whatever they are, hitting one must not look like success. Landing new ceilings without this leaves the silence intact at a different number.
 - `next` **`web-page-tests-fail-under-load`** — Two web-page tests fail on a loaded full run and pass on every rerun
@@ -126,6 +127,7 @@ graph TD
   abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
   automatic_session_checkpoints["A session that ends anywhere is collectable everywhere, without anyone running a command"]
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
+  capsule_sealed_out_of_the_workspace["A session capsule is sealed into a minted room, so the workspace never holds a transcript it can read"]
   ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
   clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
   connect_failure_message["Name the URL a failed connection actually tried, and where its token came from"]
@@ -169,6 +171,8 @@ graph TD
   automatic_session_checkpoints -.- cross_key_rendezvous
   automatic_session_checkpoints -.- selective_wake_for_the_listener
   board_ttl_ceiling -.- ttl_clamped_silently
+  capsule_sealed_out_of_the_workspace -.- first_contact_needs_a_key_it_cannot_have
+  capsule_sealed_out_of_the_workspace -.- seal_agent_meta
   ci_workspace_is_public -.- init_writes_rooms_file
   ci_workspace_is_public -.- read_only_rooms
   clients_that_cannot_post -.- joining_agent_sees_empty_inbox
@@ -506,6 +510,81 @@ graph TD
 > is a judgement about what a handoff legitimately needs, not a bug. But it should
 > be decided rather than inherited, and written down where the encryption doc's
 > one-day claim can point at it.
+
+</details>
+
+### `capsule-sealed-out-of-the-workspace`
+
+- **title:** A session capsule is sealed into a minted room, so the workspace never holds a transcript it can read
+- **status:** done
+- **arc:** hub-boundary
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `first-contact-needs-a-key-it-cannot-have` — Both answer "how does a secret reach exactly one peer". That one is about reaching a stranger; this is about reaching a successor. Both land on the same artifact: a minted room handed over as an invite, out of band.
+  - `seal-agent-meta` — The same category at the other end of the scale. That one is a `meta` field handing the hub a repo name; this is a whole transcript handing every workspace-key holder whatever the session printed. Same rule — a payload must not carry more than the model says it does — and the fixes differ only because a capsule cannot be sealed field by field.
+- **refs:**
+  - `Built 2026-09-14 from a design conversation with Gal, after a publish was refused — see the first line of evidence.`
+
+<details><summary>evidence</summary>
+
+> **Found by trying it.** A session that had just released 2.4.0 and 2.4.1 was
+> asked to hand itself to a successor, and `switchboard session publish` was
+> refused by the harness's permission classifier as sensitive-source content
+> leaving the machine. The refusal was *correct*: that transcript contained the
+> workspace key in plaintext, because the agent had printed it while debugging
+> an unrelated problem an hour earlier. Published, it would have put the
+> workspace key on the board for every holder of the workspace key — a circular
+> leak, and a silent one.
+>
+> The first instinct was a warning: scan the transcript, name what it carries,
+> refuse without acknowledgement. Gal rejected it, and rightly — a warning makes
+> the leak audible rather than absent, and the whole thesis of this project is
+> that a failure you can hear is only halfway fixed.
+>
+> Redaction is not available either. `claude_session` carries the transcript
+> **byte for byte and never interpreted**, and that is not incidental: it is why
+> `claude --resume` works at all, established empirically rather than assumed.
+> Altering bytes to protect them would trade the feature for the fix.
+>
+> **So the room moves instead of the bytes.** `session publish --as-invite`
+> mints a key and a room exactly as `keygen --as-invite` does — hub and token
+> from wherever the invocation was pointed, because a side room is a room on
+> your own hub; only the workspace and the key are new — seals the capsule
+> there, and prints the one string that opens it. Everyone holding the
+> workspace key now sees a room they are not in. The hub sees a blob.
+>
+> The key travels out of band, and the inconvenience is the feature: moving a
+> transcript into somewhere that can read it is a decision a person should
+> make, so a person hands over the string. Where the sender is a session
+> spawning its successor, that handover has a natural home — the spawn prompt —
+> which is why this is not merely a manual fallback.
+>
+> It is also exactly the case the invite rules already permit. A temporary-room
+> invite may be shown to a model *because it is ephemeral*: it opens one room,
+> expiring with the capsule, and nothing else.
+>
+> **The receiving half needed no code.** `--invite` is already a global flag —
+> "run this one command in the room an invite describes" — so
+> `switchboard --invite <blob> session receive <id> --resume` worked the day
+> before this item existed. The whole gap was one flag on the publishing side.
+>
+> **Not offered on `handoff`.** That verb names a recipient from the roster, and
+> a room minted a moment ago has no roster. Under an invite the recipient *is*
+> whoever holds the string, so the two ways of addressing a capsule do not
+> combine, and passing both is refused rather than resolved.
+>
+> **What this does not fix, recorded so it is not mistaken for solved.** The
+> successor's transcript ends up holding a key that opens a capsule containing
+> the predecessor's transcript, which holds the workspace key. One collection
+> and a short TTL bound it, but the chain is real. The root cause is upstream of
+> this item entirely: agents print secrets into transcripts, and every mechanism
+> here is handling for transcripts that already contain them.
+>
+> How it is known to have worked: a capsule published with the flag is **not**
+> collectable by a holder of the workspace key, and **is** collectable by the
+> holder of the invite. Both are asserted, and paired with the control — the
+> same receive after a plain publish, which must still install — so the
+> negative cannot quietly become vacuous.
 
 </details>
 
@@ -1014,6 +1093,7 @@ graph TD
 - **arc:** setup-and-first-run
 - **priority:** now
 - **related to** (not a dependency — both are startable):
+  - `capsule-sealed-out-of-the-workspace` — Both answer "how does a secret reach exactly one peer". That one is about reaching a stranger; this is about reaching a successor. Both land on the same artifact: a minted room handed over as an invite, out of band.
   - `cross-key-rendezvous` — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - `discovery-is-uneven-and-delivery-is-unknowable` — Same evening, same pair of agents. That item is the sealing gap; this is the finding-and-confirming gap around it. Either alone is survivable.
   - `inbox-consumes-what-it-cannot-open` — The same failure, one layer down. This item is why the first message cannot be opened; that one is why it is also destroyed on the way past.
@@ -2170,6 +2250,8 @@ graph TD
 - **status:** ready
 - **arc:** hub-boundary
 - **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `capsule-sealed-out-of-the-workspace` — The same category at the other end of the scale. That one is a `meta` field handing the hub a repo name; this is a whole transcript handing every workspace-key holder whatever the session printed. Same rule — a payload must not carry more than the model says it does — and the fixes differ only because a capsule cannot be sealed field by field.
 - **refs:**
   - `https://github.com/gald33/switchboard/issues/83`
   - `https://github.com/gald33/switchboard/issues/63`

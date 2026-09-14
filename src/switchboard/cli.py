@@ -3535,8 +3535,56 @@ def _session_import(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _minted_capsule_room(args: argparse.Namespace) -> tuple[Client, invite.Invite]:
+    """A client for a room that did not exist a moment ago, and its invite.
+
+    A capsule is the least bounded thing this tool moves: the transcript is
+    carried byte for byte and never interpreted (`claude_session`), so it
+    carries whatever the session printed — including a key an agent echoed
+    while debugging. Sealed with the *workspace* key that is readable by
+    everyone holding it, which is the whole workspace.
+
+    `docs/model.md` says the environment holds keys and the hub holds only
+    what it is told; `roadmap/arcs/hub-boundary.yaml` calls the gap "payloads
+    that are not sealed — every field that skips `_SEAL_BODY` hands the hub
+    something it claims not to hold". A capsule is the largest instance of
+    that class here, and warning about it would only make the leak audible.
+
+    So the room is minted instead, exactly as `keygen --as-invite` mints one:
+    the hub and the token come from wherever this invocation was pointed,
+    because a side room is a room on *your* hub; only the workspace and the
+    key are new. The invite then travels out of band — a spawn prompt, a
+    paste — and the key never reaches the workspace at all. Nobody who was not
+    handed it can open the capsule, including the hub.
+
+    That the handover is manual is the point rather than the cost: moving a
+    transcript into somewhere that can read it is a decision a person should
+    make. It is also why the invite may be shown to a model — it opens one
+    ephemeral room, expiring with the capsule, and nothing else.
+    """
+    key = generate_key()
+    write_key = generate_write_key()
+    writer = RoomWriteKey.from_seed(write_key)
+    base = _make_config(args)
+    room = invite.Invite(
+        url=base.url, workspace_token=writer.workspace_token, token=base.token,
+        key=key, write_key=write_key,
+        note="session capsule — one room, one collection",
+    )
+    config = replace(base, workspace=room.workspace, workspace_source="invite",
+                     key=key, write_key=write_key)
+    _remember_invited(room, room.encode(), learned="keygen",
+                      label=f"capsule-{room.workspace[-8:]}")
+    return Client(config, agent_id=f"handoff-{secrets.token_hex(4)}"), room
+
+
 def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
-    with _make_client(args) as hub:
+    minted: invite.Invite | None = None
+    if getattr(args, "as_invite", False):
+        client, minted = _minted_capsule_room(args)
+    else:
+        client = _make_client(args)
+    with client as hub:
         to = None
         if args.session_action == "handoff":
             to = _resolve_recipient(hub, args.to, fmt)
@@ -3547,11 +3595,17 @@ def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
         )
         unread = hub.unread_dms
     if args.json:
-        _print_json({**result, "unread_dms": unread})
+        _print_json({**result, "unread_dms": unread,
+                     **({"invite": minted.encode(),
+                         "describes": minted.redacted()} if minted else {})})
         return EXIT_OK
+    if minted is not None:
+        # Stdout, because this is the artifact: without it the capsule is
+        # unreadable by anyone, including whoever just published it.
+        print(minted.encode())
     if not args.quiet:
         sid = result["session_id"]
-        where = f"to {args.to}" if to else "as a checkpoint"
+        where = "into a minted room" if minted else (f"to {args.to}" if to else "as a checkpoint")
         print(f"handed off {sid} {where}: {result['bytes']} bytes at {result['key']}, "
               f"expires in {_dur(result['expires_in'])}")
         if result.get("omitted_subagent_files"):
@@ -3567,6 +3621,19 @@ def _session_publish(args: argparse.Namespace, fmt: Fmt) -> int:
         if not result["encrypted"]:
             print(f"{fmt.yellow('warning')}: this room is not encrypted; the hub holds the "
                   f"transcript in the clear until it expires", file=sys.stderr)
+        if minted is not None:
+            # Stderr: the invite on stdout is the artifact, and this is the
+            # note for whoever is reading rather than piping.
+            print(
+                f"\n{minted.redacted()}\n\n"
+                + fmt.yellow("This is a credential, and it is the only copy.")
+                + " Nobody is in this room;\nthe capsule is unreadable until you hand "
+                  "the invite to whoever should\nresume it, and to nobody else. It "
+                  f"expires with the capsule, in {_dur(result['expires_in'])}.\n\n"
+                  "They run:  switchboard --invite <the string above> session receive "
+                  f"{result['session_id']} --resume",
+                file=sys.stderr,
+            )
         _print_unread(unread)
     return EXIT_OK
 
@@ -7021,6 +7088,17 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--allow-plaintext", action="store_true",
                        help="publish even in an unencrypted room")
         s.add_argument("--no-subagents", action="store_true", help=_NO_SUBAGENTS_HELP)
+        if verb == "publish":
+            # Not on `handoff`: that one names a recipient from the roster, and
+            # nobody is on the roster of a room that did not exist a moment
+            # ago. Here the recipient *is* whoever was handed the invite.
+            s.add_argument("--as-invite", action="store_true",
+                           help="seal into a freshly minted room instead of this one "
+                                "and print the invite that opens it. A transcript "
+                                "carries whatever was printed into it, including "
+                                "secrets; under this flag the key that opens it never "
+                                "goes near the workspace, so everyone who was not "
+                                "handed the invite sees an unreadable blob")
     s = ssub.add_parser("receive", help="collect sessions handed to you, or one by id")
     s.add_argument("session_id", nargs="?", metavar="session-id",
                    help="collect this capsule on your own say-so (no pointer needed)")
