@@ -2945,6 +2945,111 @@ graph TD
 > measurement and a stall instead, and the same instrument is what the next
 > attempt on this half should carry: name the assertion that fails from a
 > captured `-rf` run, do not infer it from the summary.
+>
+> ---
+>
+> **Second pass. One claim above is wrong and is corrected here; the mechanism
+> it was arguing for is now measured directly instead of inferred.**
+>
+> **Correction.** The line above — "the file has to run 2.36x slow before that
+> test crosses, and the failing run was 2.6x" — treated a *whole-suite*
+> slowdown ratio as if it were the *file's* internal one. It is not, and the
+> prediction it implies is false. Twelve pre-fix suites run in parallel at
+> **3.15x–3.18x**, comfortably past that supposed line, and
+> `test_a_panel_folded_away_stays_folded` **passed in all twelve**. The 2.36x
+> figure should not be used; it was arithmetic on the wrong quantity.
+>
+> What the right quantity says, measured rather than derived. Instrumenting one
+> suite inside a twelve-way parallel run and reading the age of the `room`
+> registration at each test:
+>
+>     suite wall time 827s = 3.19x
+>
+>      19.8s  test_the_page_decrypts_in_the_browser_and_shows_it
+>      24.3s  test_a_tab_can_be_closed_and_the_room_is_forgotten
+>     115.1s  test_a_panel_folded_away_stays_folded   <-- ttl is 120s
+>     ...     nine later tests ran past the 120s mark
+>
+> **115.1s against a 120s ttl — a 4.9 second margin, and it held by that
+> much.** Nine tests after it really were reading an expired roster, and passed
+> only because they do not read the roster. That is the cliff, measured at the
+> edge, on unmodified code: not a theory about what load would do, but the
+> actual distance to the mark on the worst run this box can produce.
+>
+> It also shows why the suite ratio was the wrong lever: between a 1.1x run and
+> a 3.19x run the panel test's age went 50.9s → 115.1s, a 2.3x stretch against
+> a 2.9x suite stretch. The file's own timeline slows **less** than the suite
+> around it, so "the suite ran 2.6x slow" cannot be converted into "the roster
+> had expired" — on this box it would not have. What the original 671s run did
+> to *this file* was never recorded, and cannot be recovered.
+>
+> So the mechanism stands on the deterministic evidence, which is unaffected:
+> stalling the module past the ttl reproduces `assert '' == '1'` exactly, and
+> aging the fixtures picks out precisely the two roster-dependent tests of 49.
+> What is no longer claimed is the quantitative bridge from that run's summary
+> line to that run's failure. The fix is still right, and now has a measured
+> worst case behind it — 4.9s of headroom without it.
+>
+> **On the other half — `test_a_tab_can_be_closed_and_the_room_is_forgotten`.**
+> It ran at 24.3s in that same 3.19x run, nowhere near the cliff, and it has
+> passed in every one of the ~200 runs below. The hypothesis the first pass
+> left on the table is now **falsified**, not merely untested.
+>
+> Timing every wait in it on an idle box:
+>
+>     step                 median    budget   slowdown needed to fail
+>     wait .room===2        0.042s      10s        227x
+>     wait .room===0        0.044s      10s        165x
+>     wait .msg>0           0.021s      10s        367x
+>     reload networkidle    0.546s      30s         53x
+>
+> Nothing in it is within reach of any load this repo will ever see. And the
+> reason is structural: the tab strip is drawn from the `rooms` array in
+> **localStorage**, not from the hub, so closing a tab is a synchronous local
+> write and the strip repaints regardless of the network.
+>
+> The suspected race is real and does **not** break the test. `refresh()` opens
+> with `clearTimeout(timer)`, which cancels the *scheduled* poll but cannot
+> cancel an *in-flight* one, so two refreshes can overlap. Injecting 250ms per
+> fetch and stalling the test 3.2s before the × — so the click provably lands
+> inside a running refresh — was instrumented directly:
+>
+>     strip transitions: [2, 2, 0]   peak fetch concurrency: 2
+>     cycles: [[1117,1371],...,[5429,5682],[5685,6998]]
+>                                       ^ the × lands inside this one
+>
+> The strip goes to 0 and stays. `readHere()` rebuilds `state.rooms` from the
+> module-level `rooms` *after* its await, so a late refresh reads the
+> post-`forget()` value, and `save()` has already written localStorage
+> synchronously. The ordering that would make it a bug is not the ordering the
+> code has.
+>
+> Nor does the hub going away break it: a **total** 12s network outage imposed
+> before the strip reaches two, before the ×, after the ×, and before the
+> reload leaves it passing at all four points, for the same reason. Only an
+> outage spanning `reload()` fails it, as `net::ERR_INTERNET_DISCONNECTED` —
+> a signature a slow machine cannot produce.
+>
+> Attempts, all clean: a CPU/latency sweep (1x-6x throttle x 0-250ms), a delay
+> sweep across the 3s poll boundary, 112 randomised-interleaving fuzz
+> iterations under burners, 40 isolated runs under 16 burners, and the parallel
+> suites above. Also corrected from the first pass: four suites on a four-core
+> box is **not** contention — each gets a core, which is why it only bought
+> 1.11x, and that was misread as the suite being sleep-bound.
+>
+> So this half is no longer "unreproduced under the conditions we could reach".
+> **The page cannot lose this test on timing**, and the next attempt should
+> stop looking for a margin. What is still missing is the one thing the first
+> sighting did not record: the **assertion text**. Four lines in that test can
+> fail for four unrelated reasons, and the measurements above rule out only the
+> timeouts. Capture the full `-rf` block, not the summary line.
+>
+> One sibling found while checking whether the roster cliff had others:
+> `tests/test_web_snapshot.py:89` is the same shape — a module-scoped `room`
+> registering once with no heartbeat, feeding `set(from_node[panel][0])`, which
+> is an `IndexError` the moment the roster empties. Its roster-dependent test
+> runs **1.4s** into a 2.4s file, so it is far from the mark and is recorded
+> rather than fixed.
 
 </details>
 
