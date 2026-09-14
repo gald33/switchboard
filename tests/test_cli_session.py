@@ -316,3 +316,88 @@ def test_receive_keep_and_unverified_are_plumbed(room, sender_cfg, tmp_path, cap
     code, got, err = _run(capsys, "session", "receive", SID, "--cwd", "/w", "--unverified",
                           agent="bob")
     assert code == 0 and got["installed"][0]["verified"] is None and h.board() == []
+
+
+# --- a capsule sealed out of the workspace ----------------------------------
+#
+# A transcript is carried byte for byte and never interpreted, so it carries
+# whatever the session printed into it — including a key an agent echoed while
+# debugging. Published into the workspace, that is readable by everyone holding
+# the workspace key. `--as-invite` mints a room instead and hands back the only
+# string that opens it.
+
+
+def test_publish_as_invite_hands_back_an_invite(sender_cfg, room, capsys):
+    code, result, _ = _run(capsys, "session", "publish", "--as-invite")
+
+    assert code == 0
+    assert result["invite"].startswith("swb1_")
+    # The redaction is what a person is shown; it must not be the credential.
+    assert result["invite"] not in result["describes"]
+
+
+def test_the_workspace_cannot_collect_a_capsule_sealed_out_of_it(
+        sender_cfg, room, tmp_path, capsys, monkeypatch):
+    """The point of the flag, stated as the thing that must not happen.
+
+    Everyone holding the workspace key can read everything published into the
+    workspace. A capsule is the least bounded payload here, so this is the one
+    that must land somewhere else.
+    """
+    code, published, _ = _run(capsys, "session", "publish", "--as-invite")
+    assert code == 0
+
+    other = tmp_path / "receiver-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(other))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+    # In the workspace, holding the workspace key: nothing to collect.
+    code, result, _ = _run(capsys, "session", "receive", SID, agent="nosy")
+    assert not result["installed"]
+
+
+def test_a_plain_publish_is_collectable_from_the_workspace(
+        sender_cfg, room, tmp_path, capsys, monkeypatch):
+    """The control for the test above, and it earns its place.
+
+    Without it, `installed == []` proves only that this particular receive
+    call returns nothing — which a fixture change could make true for reasons
+    having nothing to do with the room. The two differ in one flag, so the
+    pair is what shows the flag is doing the work.
+    """
+    assert _run(capsys, "session", "publish")[0] == 0
+
+    other = tmp_path / "receiver-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(other))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+    code, result, _ = _run(capsys, "session", "receive", SID, agent="nosy")
+    assert [i["session_id"] for i in result["installed"]] == [SID]
+
+
+def test_the_invite_collects_and_installs_it(sender_cfg, room, tmp_path,
+                                             capsys, monkeypatch):
+    code, published, _ = _run(capsys, "session", "publish", "--as-invite")
+    blob = published["invite"]
+
+    other = tmp_path / "receiver-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(other))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+    # No `-w`: the invite names the room, and a workspace that disagreed with
+    # it would be refused rather than merged.
+    assert main(["--url", BASE_URL, "--invite", blob, "--agent-id", "invited",
+                 "--json", "session", "receive", SID,
+                 "--cwd", "/workspace/switchboard"]) == 0
+    result = json.loads(capsys.readouterr().out)
+
+    assert [i["session_id"] for i in result["installed"]] == [SID]
+    assert Path(result["installed"][0]["transcript"]).is_file()
+
+
+def test_as_invite_is_not_offered_where_it_would_mean_nothing(sender_cfg, room, capsys):
+    """`handoff` names a recipient off the roster, and a room minted a moment
+    ago has no roster. The recipient of an invited capsule is whoever was
+    handed the string, so the two ways of addressing it do not combine."""
+    with pytest.raises(SystemExit):
+        main(["--url", BASE_URL, "-w", WS, "session", "handoff", "someone", "--as-invite"])
