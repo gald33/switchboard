@@ -19,7 +19,10 @@ import json
 import socket
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -114,20 +117,80 @@ def browser():
     manager.stop()
 
 
+# Presence in Switchboard expires like every other record in it: `DEFAULT_AGENT_TTL`
+# is 120 seconds, and the only thing that renews it is a heartbeat. The room
+# fixtures below are module-scoped — each registers its agent once, and every
+# test in this file then reads that one roster — so on a run slow enough for the
+# file to take longer than the TTL, a later test reads a roster its own fixture
+# has already aged off. Nothing about the page is wrong when that happens: the
+# agent really did lapse, and an empty count really is what the page draws for
+# it.
+#
+# What makes it worth guarding rather than shrugging at is that it is not a
+# rate, it is a cliff at a fixed wall-clock mark, so repetition can never find
+# it. `test_a_panel_folded_away_stays_folded` runs ~51s into this file on an
+# idle machine, so the file has to run ~2.4x slow before that test crosses 120s
+# — which is exactly why it fired once on a 671s suite run against a 259s norm
+# and on no rerun since. A real agent stays on a roster by heartbeating; so do
+# these.
+
+
+class _Presence:
+    """A fixture's agent, kept on the roster for as long as its module runs."""
+
+    def __init__(self, agent: Client, registration: dict[str, Any]):
+        self.agent = agent
+        self.registration = registration
+        agent.register(**registration)
+
+    def renew(self) -> None:
+        try:
+            self.agent.heartbeat()
+        except Exception:
+            # Only reachable if one test ran longer than the whole TTL, and the
+            # hub answers a lapsed heartbeat with "call /agents/register again".
+            # Put the room back the way the fixture promised it rather than
+            # failing every test that comes after it.
+            self.agent.register(**self.registration)
+
+
+_PRESENT: list[_Presence] = []
+
+
+@contextmanager
+def _on_the_roster(agent: Client, **registration):
+    """Register `agent`, hold it present while the module runs, close it after."""
+    presence = _Presence(agent, registration)
+    _PRESENT.append(presence)
+    try:
+        yield presence
+    finally:
+        _PRESENT.remove(presence)
+        agent.close()
+
+
+@pytest.fixture(autouse=True)
+def _the_fixture_rooms_stay_on_their_rosters():
+    """Renew every fixture room's presence before each test in this file."""
+    for presence in _PRESENT:
+        presence.renew()
+    yield
+
+
 @pytest.fixture(scope="module")
 def room(hub):
     """A room with something in every panel, written by an ordinary client."""
     config = ClientConfig(url=hub["url"], url_source="explicit",
                           workspace=WORKSPACE, key=KEY)
     agent = Client(config, agent_id="parser-agent", key=KEY)
-    agent.register(name="parser:feat/lexer", kind="local", branch="feat/lexer",
-                   task="wiring the tokenizer", channels=["build"])
-    agent.post("build", "parser.py is mine for ~20 minutes")
-    agent.post("build", {"suite": "pytest -q", "failed": 2})
-    agent.acquire("src/parser.py", note="rewriting the lexer")
-    agent.board_set("handoff/lexer", {"next": "escapes"})
-    yield config
-    agent.close()
+    with _on_the_roster(agent, name="parser:feat/lexer", kind="local",
+                        branch="feat/lexer", task="wiring the tokenizer",
+                        channels=["build"]):
+        agent.post("build", "parser.py is mine for ~20 minutes")
+        agent.post("build", {"suite": "pytest -q", "failed": 2})
+        agent.acquire("src/parser.py", note="rewriting the lexer")
+        agent.board_set("handoff/lexer", {"next": "escapes"})
+        yield config
 
 
 @pytest.fixture(scope="module")
@@ -137,12 +200,11 @@ def long_room(hub):
     config = ClientConfig(url=hub["url"], url_source="explicit",
                           workspace="w_browser-tail", key=KEY)
     agent = Client(config, agent_id="chatty-agent", key=KEY)
-    agent.register(name="chatty", kind="local", channels=["build"])
-    agent.post("asides", "an aside nobody followed up on")
-    for n in range(120):
-        agent.post("build", f"line {n}")
-    yield config
-    agent.close()
+    with _on_the_roster(agent, name="chatty", kind="local", channels=["build"]):
+        agent.post("asides", "an aside nobody followed up on")
+        for n in range(120):
+            agent.post("build", f"line {n}")
+        yield config
 
 
 def open_page(browser, page_url, room_config, *, key=KEY):
@@ -160,6 +222,37 @@ def open_page(browser, page_url, room_config, *, key=KEY):
     tab.click("#settings-save")
     tab.wait_for_function("document.querySelectorAll('.msg').length > 0", timeout=10_000)
     return tab, errors
+
+
+def test_a_fixture_room_is_still_on_its_roster_after_its_ttl(hub, room):
+    """The harness before the page: these rooms are built once per module and
+    then read by every test below, so their presence has to outlast the module.
+
+    Two web-page tests failed on one loaded suite run and on no rerun, and this
+    is why: presence expires after `DEFAULT_AGENT_TTL` and nothing renewed it,
+    so a test far enough into the file read a roster its own fixture had already
+    aged off. It is a cliff at a fixed wall-clock mark rather than a rate, which
+    is exactly why rerunning could never find it. Shown here with a two-second
+    ttl instead of the real 120, because the mechanism is the renewal and not
+    the number.
+    """
+    config = ClientConfig(url=hub["url"], url_source="explicit",
+                          workspace="w_browser-presence", key=KEY)
+    agent = Client(config, agent_id="fixture-agent", key=KEY)
+    with _on_the_roster(agent, name="fixture", kind="local", ttl=2) as presence:
+        with Client(config, agent_id="reader", key=KEY) as reader:
+            assert [a["name"] for a in reader.agents()] == ["fixture"]
+            time.sleep(2.5)
+            # The cliff, at 2s here and at 120s in the fixtures above.
+            assert reader.agents() == []
+            # And what the autouse fixture does before every test in this file.
+            presence.renew()
+            assert [a["name"] for a in reader.agents()] == ["fixture"]
+
+    # And the `room` this test asked for is enrolled in that same list, which is
+    # what makes the renewal happen without any test having to ask for it.
+    assert room.workspace == WORKSPACE
+    assert "parser:feat/lexer" in [p.registration["name"] for p in _PRESENT]
 
 
 def test_the_browser_builds_the_same_view_the_python_viewer_does(browser, page, room):
@@ -749,13 +842,12 @@ def busy_room(hub):
     config = ClientConfig(url=hub["url"], url_source="explicit",
                           workspace="w_browser-channels", key=KEY)
     agent = Client(config, agent_id="parser-agent", key=KEY)
-    agent.register(name="parser", kind="local", channels=["build"])
-    agent.post("plan", "the oldest channel here")
-    agent.post("review", "something in the middle")
-    agent.post("@tests", "a word meant for one agent")
-    agent.post("build", "the newest thing anybody said")
-    yield config
-    agent.close()
+    with _on_the_roster(agent, name="parser", kind="local", channels=["build"]):
+        agent.post("plan", "the oldest channel here")
+        agent.post("review", "something in the middle")
+        agent.post("@tests", "a word meant for one agent")
+        agent.post("build", "the newest thing anybody said")
+        yield config
 
 
 def test_the_page_says_which_channel_you_are_reading(browser, page, busy_room):
@@ -1551,17 +1643,16 @@ def deep_board(hub):
     config = ClientConfig(url=hub["url"], url_source="explicit",
                           workspace="w_browser-deep", key=KEY)
     agent = Client(config, agent_id="writer", key=KEY)
-    agent.register(name="writer", kind="local")
-    agent.post("build", "so the page has something to wait for")
-    agent.board_set("build/ci/unit/last-run", {
-        "suite": "pytest -q", "failed": 2, "duration_seconds": 412.5,
-        "failures": ["tests/test_lexer.py::test_escapes",
-                     "tests/test_lexer.py::test_unicode_identifiers"]})
-    agent.board_set("build/ci/lint", "green")
-    agent.board_set("handoff/lexer/state", {"phase": "escapes", "owner": "parser"})
-    agent.board_set("status", "the room is mid-rewrite")
-    yield config
-    agent.close()
+    with _on_the_roster(agent, name="writer", kind="local"):
+        agent.post("build", "so the page has something to wait for")
+        agent.board_set("build/ci/unit/last-run", {
+            "suite": "pytest -q", "failed": 2, "duration_seconds": 412.5,
+            "failures": ["tests/test_lexer.py::test_escapes",
+                         "tests/test_lexer.py::test_unicode_identifiers"]})
+        agent.board_set("build/ci/lint", "green")
+        agent.board_set("handoff/lexer/state", {"phase": "escapes", "owner": "parser"})
+        agent.board_set("status", "the room is mid-rewrite")
+        yield config
 
 
 def test_the_board_can_have_the_window_on_a_wide_one(browser, page, deep_board):

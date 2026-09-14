@@ -2831,6 +2831,120 @@ graph TD
 > with `-rf` per-test output under deliberate load, not from a summary line —
 > and then either fixed or shown to be a genuine bug in what those two tests
 > assert.
+>
+> ---
+>
+> **Half of it is named, reproduced deterministically, and fixed. The other
+> half is not, and the negative is recorded below rather than rounded up.**
+>
+> Method first, because the trap this item was filed to avoid is real: the
+> previous flake survived six clean sequential runs and cracked only under
+> parallel load. So nothing here was concluded from a rerun. Four full suites
+> at once on a four-core box, two full suites at once, then the file alone
+> under 8 and 32 CPU burners — all with `-rf`. **Every one of those was clean**,
+> and the reason turns out to be arithmetic rather than luck.
+>
+> **The mechanism: presence expires, and nothing renewed it.**
+>
+> `tests/test_web_page.py` builds its rooms in **module-scoped** fixtures.
+> `room` registers `parser-agent` once, and the 49 tests in the file then read
+> that one roster. `DEFAULT_AGENT_TTL` is **120 seconds**
+> (`src/switchboard/config.py:59`), a `register` with no explicit ttl gets
+> exactly that, and nothing in the file ever heartbeats. So the registration
+> lapses partway through a run that is slow enough, and every test after that
+> point is reading a roster its own fixture has already aged off.
+>
+> Instrumenting how old that registration is when each test runs, on a
+> four-way-parallel run:
+>
+>     3.8s  test_the_page_decrypts_in_the_browser_and_shows_it
+>     6.0s  test_a_tab_can_be_closed_and_the_room_is_forgotten
+>    50.9s  test_a_panel_folded_away_stays_folded
+>    62.7s  (end of file)
+>
+> `test_a_panel_folded_away_stays_folded` asserts `#n-agents == "1"` and sits
+> **50.9s** in, against a **120s** ttl. **The file therefore has to run 2.36x
+> slow before that test crosses the mark — and the failing run was 2.6x**
+> (671s against a 259s norm). 2.6 x 50.9s = 132s, which is past it. The only
+> other roster-dependent test in the file sits at 3.8s and would have needed a
+> 31x slowdown, which is precisely why it passed in the same run that this one
+> failed. The 2.6x figure was the lead recorded above; it turns out to have
+> been the whole answer, and to predict which two tests fail rather than merely
+> suggesting that something might.
+>
+> Shown deterministically rather than statistically, because a cliff at a fixed
+> wall-clock mark can never be found by repetition — only by being slow enough,
+> which is the thing a rerun on an idle machine is guaranteed not to be.
+> Stalling the module 125s between the fixture and the test, with no clock
+> mocked and no product code touched, reproduces it exactly:
+>
+>     >           assert tab.inner_text("#n-agents") == "1"
+>     E           AssertionError: assert '' == '1'
+>
+> `''` rather than `'0'` because `render.js` draws an empty count for zero on
+> purpose (`el.textContent = n || ""`). **Nothing about the page is wrong
+> here.** The agent really did lapse, and an empty roster really is what the
+> page should draw for it. What is wrong is a fixture that registers a presence
+> once and then assumes presence is permanent, in a system whose first rule is
+> that every record expires.
+>
+> Aging the whole module past the ttl before test 3 shows exactly which tests
+> depend on that roster — two of the 49, and the other is the one at 3.8s:
+>
+>     FAILED tests/test_web_page.py::test_the_page_decrypts_in_the_browser_and_shows_it
+>     FAILED tests/test_web_page.py::test_a_panel_folded_away_stays_folded
+>     2 failed, 47 passed in 186.77s
+>
+> **`intermittent-suite-failure` is ruled out rather than assumed away.** That
+> was `signing.socket_path()` deriving one signing socket per agent id, and it
+> needed two pytest processes to collide. Its per-process `XDG_RUNTIME_DIR`
+> fixture is in `conftest.py` and was in place for every run here. This
+> reproduces in **one** process with nothing else on the machine, so it cannot
+> be that.
+>
+> **Fixed in the fixtures, not in the product**, on the same reasoning that
+> item recorded. A real agent stays on a roster by heartbeating, so these do
+> now: an autouse fixture renews every module-scoped room's presence before
+> each test, and a heartbeat that comes back "unknown or expired agent" —
+> reachable only if one test outran the whole ttl — re-registers instead of
+> failing every test after it. Because `heartbeat` renews the agent's leases
+> too, the claims panel comes along for free; it was on a 900s version of the
+> same cliff. Verified against the condition that produced the failure: with
+> the module aged 125s past the ttl, the file was `2 failed, 47 passed` before
+> and `50 passed` after.
+>
+> There is a test for the mechanism rather than for the symptom —
+> `test_a_fixture_room_is_still_on_its_roster_after_its_ttl`, which shows the
+> cliff with a two-second ttl and then shows the renewal clearing it, in three
+> seconds instead of two minutes.
+>
+> **`test_a_tab_can_be_closed_and_the_room_is_forgotten` is NOT this, and stays
+> open.** It runs **6.0s** into the file, so the 120s roster cliff cannot reach
+> it — the file would have to run 20x slow — and aging the fixtures past the
+> ttl leaves it passing. Two tests failed together in one run for two different
+> reasons, which is the part that made this look like one flake.
+>
+> What it is instead is not named yet. Every margin in it is a 10s Playwright
+> wait against a page that repolls every 3s, and the one thing it does that no
+> other test does is add a second room in an empty workspace and then close it,
+> which crosses an in-flight `refresh()` — `readHere()` in `index.html` reads
+> the module-level `rooms` array on both sides of an `await`, so a poll that
+> started before the × can render the strip it was closing. That is a
+> hypothesis with a plausible shape and no capture behind it, which is exactly
+> the standard this item exists to refuse.
+>
+> **The negative, recorded so it bounds the rate rather than reassuring
+> anybody.** Under deliberate load the two-suite and four-suite rounds and the
+> 8- and 32-burner file runs were all clean, and 40 further runs of that test
+> alone under 16 CPU burners were clean. But the load achieved was **1.1x to
+> 1.7x**, against the **2.6x** of the run that failed: this box is I/O- and
+> sleep-bound, so starving it of CPU has sharply diminishing returns (8 burners
+> bought 1.41x, 32 bought 1.68x). So the honest statement is that the
+> conditions which produced the original failure were **not reached**, not that
+> the failure did not occur under them. The roster half was closed by
+> measurement and a stall instead, and the same instrument is what the next
+> attempt on this half should carry: name the assertion that fails from a
+> captured `-rf` run, do not infer it from the summary.
 
 </details>
 
