@@ -49,6 +49,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import uuid
 import zlib
 from pathlib import Path
 from typing import Any, Iterator
@@ -686,6 +687,93 @@ def resume_argv(session_id: str, *, background: bool = False) -> list[str]:
         argv.append("--bg")
     argv += ["--resume", valid_session_id(session_id)]
     return argv
+
+
+def fork(
+    session_id: str,
+    *,
+    config_dir: str | os.PathLike[str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+    new_id: str | None = None,
+) -> dict[str, Any]:
+    """Copy a session into a second one here, under an id of its own.
+
+    A session's environment is fixed when its process starts, so a variable
+    that turns out to be wrong is wrong for that session's whole life — no
+    amount of correcting the config reaches it. The only remedy is a new
+    process, and the only way to keep the conversation is to bring the
+    transcript along. That is this.
+
+    Deliberately not `install`. Installing this machine's own session over
+    itself is refused, and correctly: the id would collide with a transcript
+    Claude Code is still appending to, and two writers on one file is
+    corruption. A fork sidesteps the collision instead of forcing past it —
+    the original keeps its id and its process, and the copy gets a new one.
+
+    **The id is rewritten in the records, not only in the filename.** Records
+    carry ``sessionId`` themselves, so a rename alone would leave a file whose
+    name and contents disagree — and nothing here knows what Claude Code does
+    with that, which makes it a bet rather than a design. Rewriting both
+    removes the question. The substitution is textual, on the old id's exact
+    UUID, so every other byte survives: the transport fidelity the capsule
+    promises is kept everywhere except the one field a fork is *supposed* to
+    change.
+
+    Returns the new id and the line that starts it. Nothing is sent anywhere:
+    this reads and writes one config directory, which is what makes it safe to
+    run without asking anybody — there is no boundary for it to cross.
+    """
+    cfg = _resolve_config_dir(config_dir)
+    session_id = valid_session_id(session_id)
+    candidates = find_transcripts(cfg, session_id)
+    if cwd is not None:
+        preferred = cfg / "projects" / project_key(cwd) / f"{session_id}.jsonl"
+        candidates = [p for p in candidates if p == preferred] or candidates
+    if not candidates:
+        raise CapsuleError(f"session {session_id} not found under {cfg / 'projects'}")
+    if len(candidates) > 1:
+        raise CapsuleError(
+            f"session {session_id} exists under several project keys; pass the working "
+            f"directory to choose one"
+        )
+    source = candidates[0]
+    fresh = valid_session_id(new_id) if new_id else str(uuid.uuid4())
+    if fresh == session_id:
+        raise CapsuleError("a fork needs an id of its own")
+    if find_transcripts(cfg, fresh):
+        raise CapsuleError(f"session {fresh} already exists here")
+
+    old, new = session_id.encode(), fresh.encode()
+    target = source.parent / f"{fresh}.jsonl"
+    target.write_bytes(source.read_bytes().replace(old, new))
+    target.chmod(0o600)
+
+    # The subagent sidecar travels too, on the same substitution: its records
+    # name the parent session, and a fork that left them pointing at the
+    # original would hand the copy somebody else's lineage.
+    sidecar, copied = source.parent / session_id, 0
+    if sidecar.is_dir():
+        destination = source.parent / fresh
+        for path in sorted(sidecar.rglob("*")):
+            if not path.is_file():
+                continue
+            out = destination / path.relative_to(sidecar)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(path.read_bytes().replace(old, new))
+            out.chmod(0o600)
+            copied += 1
+        if destination.is_dir():
+            destination.chmod(0o700)
+
+    meta = transcript_metadata(target)
+    return {
+        "session_id": fresh,
+        "forked_from": session_id,
+        "transcript": str(target),
+        "records": meta["records"],
+        "subagent_files": copied,
+        "resume": shell_resume_command(fresh, cwd=meta["cwd"], config_dir=cfg),
+    }
 
 
 def shell_resume_command(

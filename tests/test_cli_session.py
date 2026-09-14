@@ -62,6 +62,13 @@ def room(monkeypatch):
         yield handle
 
 
+def _run_local(capsys, *argv):
+    """A command that touches no hub: no --url, no -w, nothing to reach."""
+    code = main(["--json", *argv])
+    out, err = capsys.readouterr()
+    return code, (json.loads(out) if out.strip() else None), err
+
+
 def _run(capsys, *argv, agent="cli-agent"):
     code = main(["--url", BASE_URL, "-w", WS, "--agent-id", agent, "--json", *argv])
     out, err = capsys.readouterr()
@@ -401,3 +408,67 @@ def test_as_invite_is_not_offered_where_it_would_mean_nothing(sender_cfg, room, 
     handed the string, so the two ways of addressing it do not combine."""
     with pytest.raises(SystemExit):
         main(["--url", BASE_URL, "-w", WS, "session", "handoff", "someone", "--as-invite"])
+
+
+# --- forking a session on the machine it is already on ----------------------
+#
+# A session's environment is decided when its process starts, so a variable
+# that turns out to be wrong stays wrong for that session's whole life. The
+# remedy is a new process with the same conversation — which `install` refuses
+# to provide, correctly, because reinstalling a live session over itself would
+# put two writers on one transcript.
+
+
+def test_fork_gives_the_copy_an_id_of_its_own(sender_cfg, capsys):
+    code, result, _ = _run_local(capsys, "session", "fork")
+
+    assert code == 0
+    assert result["forked_from"] == SID
+    assert result["session_id"] != SID
+    assert Path(result["transcript"]).is_file()
+    assert result["resume"].endswith(f"claude --resume {result['session_id']}")
+
+
+def test_the_fork_carries_the_conversation_and_none_of_the_old_id(sender_cfg, capsys):
+    """The rename-only version of this would leave a file whose name and
+    contents disagree, and nothing here knows what Claude Code does with
+    that. Rewriting both removes the question rather than betting on it."""
+    _, result, _ = _run_local(capsys, "session", "fork")
+    forked = Path(result["transcript"]).read_text()
+
+    assert SID not in forked
+    assert forked.count(result["session_id"]) == result["records"]
+    # Byte-for-byte everywhere else: same record count, same metadata.
+    original = (sender_cfg / "projects" / cs.project_key("/Users/gal/code/switchboard")
+                / f"{SID}.jsonl").read_text()
+    assert forked == original.replace(SID, result["session_id"])
+
+
+def test_the_original_is_left_exactly_as_it_was(sender_cfg, capsys):
+    """A fork is not a move. The session running right now keeps its id, its
+    transcript and its process — that is what makes this safe to run from
+    inside the session being forked."""
+    path = (sender_cfg / "projects" / cs.project_key("/Users/gal/code/switchboard")
+            / f"{SID}.jsonl")
+    before = path.read_bytes()
+
+    assert _run_local(capsys, "session", "fork")[0] == 0
+
+    assert path.read_bytes() == before
+
+
+def test_fork_refuses_an_id_that_is_already_here(sender_cfg, capsys):
+    assert main(["session", "fork", "--new-id", SID]) == 1
+    assert "id of its own" in capsys.readouterr().err
+
+
+def test_fork_needs_no_hub(sender_cfg, capsys, monkeypatch):
+    """No key, no room, no network — it reads and writes one config directory.
+    That is why it needs nobody's permission: there is no boundary to cross."""
+    monkeypatch.delenv("SWITCHBOARD_URL", raising=False)
+    monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+
+    code, result, err = _run_local(capsys, "session", "fork")
+
+    assert code == 0 and result["session_id"] != SID
+    assert "hub" not in err.lower()

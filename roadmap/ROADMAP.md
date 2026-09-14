@@ -135,6 +135,7 @@ graph TD
   discovery_is_uneven_and_delivery_is_unknowable["Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived"]
   every_silent_failure_looks_like_a_quiet_room["Seven distinct coordination failures all present as an empty room, so none of them can be searched for"]
   first_contact_needs_a_key_it_cannot_have["The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger"]
+  fork_a_session_on_the_machine_it_is_on["A session can be forked here, because an environment is decided once and a session cannot outlive being wrong about it"]
   hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
   hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
   identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
@@ -172,6 +173,7 @@ graph TD
   automatic_session_checkpoints -.- selective_wake_for_the_listener
   board_ttl_ceiling -.- ttl_clamped_silently
   capsule_sealed_out_of_the_workspace -.- first_contact_needs_a_key_it_cannot_have
+  capsule_sealed_out_of_the_workspace -.- fork_a_session_on_the_machine_it_is_on
   capsule_sealed_out_of_the_workspace -.- seal_agent_meta
   ci_workspace_is_public -.- init_writes_rooms_file
   ci_workspace_is_public -.- read_only_rooms
@@ -192,6 +194,7 @@ graph TD
   every_silent_failure_looks_like_a_quiet_room -.- rootless_warning_false_positive
   every_silent_failure_looks_like_a_quiet_room -.- selective_wake_for_the_listener
   first_contact_needs_a_key_it_cannot_have -.- inbox_consumes_what_it_cannot_open
+  fork_a_session_on_the_machine_it_is_on -.- one_resolved_context_across_surfaces
   hooks_warning_false_positive -.- rootless_warning_false_positive
   hub_origin_reachable_bypassing_the_edge -.- identity_rebinds_on_branch_change
   hub_origin_reachable_bypassing_the_edge -.- standing_checks_that_nothing_runs
@@ -521,6 +524,7 @@ graph TD
 - **priority:** next
 - **related to** (not a dependency — both are startable):
   - `first-contact-needs-a-key-it-cannot-have` — Both answer "how does a secret reach exactly one peer". That one is about reaching a stranger; this is about reaching a successor. Both land on the same artifact: a minted room handed over as an invite, out of band.
+  - `fork-a-session-on-the-machine-it-is-on` — The other half of the same question, answered oppositely because the boundary differs. That one crosses a trust boundary and therefore mints a room, seals the capsule and hands over a key by hand. This one crosses nothing — same machine, same user, same config directory — so it needs no key, no room and no permission. Which of the two applies is decided by where the copy lands, not by what it contains.
   - `seal-agent-meta` — The same category at the other end of the scale. That one is a `meta` field handing the hub a repo name; this is a whole transcript handing every workspace-key holder whatever the session printed. Same rule — a payload must not carry more than the model says it does — and the fixes differ only because a capsule cannot be sealed field by field.
 - **refs:**
   - `Built 2026-09-14 from a design conversation with Gal, after a publish was refused — see the first line of evidence.`
@@ -1148,6 +1152,76 @@ graph TD
 
 </details>
 
+### `fork-a-session-on-the-machine-it-is-on`
+
+- **title:** A session can be forked here, because an environment is decided once and a session cannot outlive being wrong about it
+- **status:** done
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `capsule-sealed-out-of-the-workspace` — The other half of the same question, answered oppositely because the boundary differs. That one crosses a trust boundary and therefore mints a room, seals the capsule and hands over a key by hand. This one crosses nothing — same machine, same user, same config directory — so it needs no key, no room and no permission. Which of the two applies is decided by where the copy lands, not by what it contains.
+  - `one-resolved-context-across-surfaces` — That item is deferred on the grounds that the explicit per-call route still works. It concerns a session changing room mid-life; this concerns the values a session cannot change at all, because its process already started with them.
+- **refs:**
+  - `Built 2026-09-14 after a session spent its whole life unable to reach the hub — see the first line of evidence.`
+
+<details><summary>evidence</summary>
+
+> **Paid for once already.** On 2026-09-13 a session ran for its entire life —
+> two releases, nine merged PRs — with a dead `SWITCHBOARD_TOKEN` pinned into
+> its environment at spawn. The value was corrected in Claude Code's local env
+> settings partway through, and it made no difference: a process's environment
+> is decided when the process starts. Every hub call in that session needed
+> `env -u SWITCHBOARD_TOKEN` as a workaround, to the end.
+>
+> The remedy for a wrong environment is a new process. The cost of a new
+> process is the conversation. So: keep the conversation, take a new process.
+>
+> **`install` cannot do it, and should not be made to.** Installing this
+> machine's own session over itself is refused because the id would collide
+> with a transcript Claude Code is still appending to, and two writers on one
+> file is corruption. `--force` exists for other reasons and is the wrong
+> instrument here. A fork sidesteps the collision instead of forcing past it:
+> the original keeps its id and its process, the copy gets its own.
+>
+> **The question that looked like a blocker, and how it was removed.** Records
+> carry `sessionId` themselves, not only the filename — so a fork that merely
+> renamed the file would produce one whose name and contents disagree, and
+> nothing in this repo knows what Claude Code does with that. That is a bet,
+> and `extras/session-capsule/README.md` records the capsule's behaviour as
+> established empirically precisely so that bets are not necessary.
+>
+> Rewriting the id in the records removes the question rather than answering
+> it: both agree, so there is nothing to find out. The substitution is textual,
+> on the old id's exact UUID, so every other byte survives — the transport
+> fidelity the capsule promises is kept everywhere except the one field a fork
+> is supposed to change. The subagent sidecar travels on the same rule, since
+> its records name the parent session and a fork that left them pointing at the
+> original would hand the copy somebody else's lineage.
+>
+> **Not a handoff, and the difference is the boundary.** This reads and writes
+> one config directory. Nothing is sealed because nothing is sent; no key, no
+> room, no permission, because there is no boundary to cross. A capsule that
+> *does* cross one is `session publish --as-invite`, and the two are siblings
+> rather than alternatives.
+>
+> **What is proven here, and what is not.** The tests assert the fork carries
+> every record, contains none of the old id, is byte-identical to the original
+> under that one substitution, and leaves the original untouched — that last
+> one being what makes it safe to run from inside the session being forked.
+>
+> What they do **not** prove is that `claude --resume <fork-id>` starts the
+> conversation: that needs a live Claude Code, not a fixture, and this was
+> built by a session that could not spawn one. The capsule's own behaviour was
+> settled by an experiment logged in `extras/session-capsule/`, and this owes
+> the same. Until somebody runs it, "the fork resumes" is the one claim here
+> standing on reasoning rather than observation.
+>
+> How it will be known to have worked: a session whose environment is wrong is
+> forked, the fork resumes with the conversation intact, and its first command
+> reaches the hub without `env -u` in front of it.
+
+</details>
+
 ### `hooks-warning-false-positive`
 
 - **title:** Stop warning about uncommitted hooks in repos that commit none of their wiring
@@ -1764,6 +1838,7 @@ graph TD
 - **deferred:** Filed on 2026-09-01 as a design question, not started, because the thing it fixes has a working explicit answer and the shape of the fix needs deciding before it is built rather than after. One correction to make first, because the obvious objection is wrong. The invariant in `docs/environments.md` — "the client reads all four from the environment and nowhere else" — is about the two **secrets**. Rooms already live in files: `switchboard join --save` writes a room record, and `docs/model.md` states the split as doctrine — "the repo declares rooms, the environment holds keys, the agent joins the intersection". So writing down a room is the existing design, not a departure from it. That is what makes the idea affordable: only the room has to travel between surfaces. The key stays exactly where it is. Un-defer on evidence that the explicit route is failing in practice: an agent that demonstrably split itself across two rooms while trying to do the right thing, or a task where passing the room on every call proved unworkable.
 - **related to** (not a dependency — both are startable):
   - `a-lobby-derived-from-the-key` — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
+  - `fork-a-session-on-the-machine-it-is-on` — That item is deferred on the grounds that the explicit per-call route still works. It concerns a session changing room mid-life; this concerns the values a session cannot change at all, because its process already started with them.
 - **refs:**
   - `docs/environments.md`
   - `docs/model.md`
