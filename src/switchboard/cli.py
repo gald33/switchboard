@@ -3352,6 +3352,8 @@ def cmd_session(args: argparse.Namespace) -> int:
             return _session_register(args)
         if action == "brief":
             return _session_brief(args)
+        if action == "fork":
+            return _session_fork(args, fmt)
         if action in ("handoff", "publish"):
             return _session_publish(args, fmt)
         return _session_receive(args, fmt)
@@ -3361,6 +3363,38 @@ def cmd_session(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
+
+
+def _session_fork(args: argparse.Namespace, fmt: Fmt) -> int:
+    """Copy this session into a second one here, and hand back the line.
+
+    No hub, like `export` and `import`: this reads and writes one config
+    directory and nothing leaves the machine, which is why it needs no key, no
+    room and nobody's permission. A handoff that crosses a boundary is
+    `session publish --as-invite`; this one crosses nothing.
+    """
+    session_id = args.session_id or claude_session.current_session_id()
+    if not session_id:
+        raise SystemExit(
+            "session fork needs a session: run it inside one, or pass --session-id"
+        )
+    result = claude_session.fork(session_id, cwd=args.cwd, new_id=args.new_id)
+    if args.json:
+        _print_json(result)
+        return EXIT_OK
+    if not args.quiet:
+        print(f"forked {result['forked_from']} into {result['session_id']}: "
+              f"{result['records']} records"
+              + (f", {result['subagent_files']} subagent file(s)"
+                 if result["subagent_files"] else ""))
+        print(f"resume with: {result['resume']}")
+        if session_id == claude_session.current_session_id():
+            # The reason anybody reaches for this: the fork starts a *new*
+            # process, and a process is where an environment is decided.
+            print(f"\n{fmt.yellow('note')}: this session keeps its own id and its own "
+                  "environment.\nThe fork is a new process, so it picks up whatever the "
+                  "environment says now.", file=sys.stderr)
+    return EXIT_OK
 
 
 def _session_export(args: argparse.Namespace) -> int:
@@ -7099,6 +7133,11 @@ def build_parser() -> argparse.ArgumentParser:
                                 "secrets; under this flag the key that opens it never "
                                 "goes near the workspace, so everyone who was not "
                                 "handed the invite sees an unreadable blob")
+    s = ssub.add_parser(
+        "fork", help="copy this session into a new one here, with an id of its own")
+    s.add_argument("--session-id", help="default: this session (CLAUDE_CODE_SESSION_ID)")
+    s.add_argument("--cwd", help="the session's working directory, if the id is ambiguous")
+    s.add_argument("--new-id", help="the fork's id (default: a fresh UUID)")
     s = ssub.add_parser("receive", help="collect sessions handed to you, or one by id")
     s.add_argument("session_id", nargs="?", metavar="session-id",
                    help="collect this capsule on your own say-so (no pointer needed)")

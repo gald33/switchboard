@@ -81,7 +81,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 23 item(s), 14 startable
+`setup-and-first-run` · 24 item(s), 14 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -109,6 +109,7 @@ wrong says so.
 | `connect-failure-message` | done | next |
 | `cross-key-rendezvous` | ready | next |
 | `discovery-is-uneven-and-delivery-is-unknowable` | ready | next |
+| `fork-a-session-on-the-machine-it-is-on` | done | next |
 | `init-writes-rooms-file` | ready | next |
 | `known-rooms-address-book` | done | next |
 | `a-lobby-derived-from-the-key` | ready | — |

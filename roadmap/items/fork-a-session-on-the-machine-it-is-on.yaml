@@ -1,0 +1,73 @@
+id: fork-a-session-on-the-machine-it-is-on
+title: A session can be forked here, because an environment is decided once and a session cannot outlive being wrong about it
+status: done
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: capsule-sealed-out-of-the-workspace
+  note: 'The other half of the same question, answered oppositely because the boundary
+    differs. That one crosses a trust boundary and therefore mints a room, seals the
+    capsule and hands over a key by hand. This one crosses nothing — same machine, same
+    user, same config directory — so it needs no key, no room and no permission. Which
+    of the two applies is decided by where the copy lands, not by what it contains.'
+- key: one-resolved-context-across-surfaces
+  note: 'That item is deferred on the grounds that the explicit per-call route still
+    works. It concerns a session changing room mid-life; this concerns the values a
+    session cannot change at all, because its process already started with them.'
+refs:
+- 'Built 2026-09-14 after a session spent its whole life unable to reach the hub — see the first line of evidence.'
+evidence: |
+  **Paid for once already.** On 2026-09-13 a session ran for its entire life —
+  two releases, nine merged PRs — with a dead `SWITCHBOARD_TOKEN` pinned into
+  its environment at spawn. The value was corrected in Claude Code's local env
+  settings partway through, and it made no difference: a process's environment
+  is decided when the process starts. Every hub call in that session needed
+  `env -u SWITCHBOARD_TOKEN` as a workaround, to the end.
+
+  The remedy for a wrong environment is a new process. The cost of a new
+  process is the conversation. So: keep the conversation, take a new process.
+
+  **`install` cannot do it, and should not be made to.** Installing this
+  machine's own session over itself is refused because the id would collide
+  with a transcript Claude Code is still appending to, and two writers on one
+  file is corruption. `--force` exists for other reasons and is the wrong
+  instrument here. A fork sidesteps the collision instead of forcing past it:
+  the original keeps its id and its process, the copy gets its own.
+
+  **The question that looked like a blocker, and how it was removed.** Records
+  carry `sessionId` themselves, not only the filename — so a fork that merely
+  renamed the file would produce one whose name and contents disagree, and
+  nothing in this repo knows what Claude Code does with that. That is a bet,
+  and `extras/session-capsule/README.md` records the capsule's behaviour as
+  established empirically precisely so that bets are not necessary.
+
+  Rewriting the id in the records removes the question rather than answering
+  it: both agree, so there is nothing to find out. The substitution is textual,
+  on the old id's exact UUID, so every other byte survives — the transport
+  fidelity the capsule promises is kept everywhere except the one field a fork
+  is supposed to change. The subagent sidecar travels on the same rule, since
+  its records name the parent session and a fork that left them pointing at the
+  original would hand the copy somebody else's lineage.
+
+  **Not a handoff, and the difference is the boundary.** This reads and writes
+  one config directory. Nothing is sealed because nothing is sent; no key, no
+  room, no permission, because there is no boundary to cross. A capsule that
+  *does* cross one is `session publish --as-invite`, and the two are siblings
+  rather than alternatives.
+
+  **What is proven here, and what is not.** The tests assert the fork carries
+  every record, contains none of the old id, is byte-identical to the original
+  under that one substitution, and leaves the original untouched — that last
+  one being what makes it safe to run from inside the session being forked.
+
+  What they do **not** prove is that `claude --resume <fork-id>` starts the
+  conversation: that needs a live Claude Code, not a fixture, and this was
+  built by a session that could not spawn one. The capsule's own behaviour was
+  settled by an experiment logged in `extras/session-capsule/`, and this owes
+  the same. Until somebody runs it, "the fork resumes" is the one claim here
+  standing on reasoning rather than observation.
+
+  How it will be known to have worked: a session whose environment is wrong is
+  forked, the fork resumes with the conversation intact, and its first command
+  reaches the hub without `env -u` in front of it.
