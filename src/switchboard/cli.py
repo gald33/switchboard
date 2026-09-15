@@ -5530,6 +5530,12 @@ _LOCAL_SECRETS = {
         "Replacing it silently would drop this agent's access to whatever the "
         "old one reached",
     ),
+    "SWITCHBOARD_INVITE": (
+        "invite",
+        "It carries the key and the token together, so replacing it silently "
+        "would change the room and the key at once — every way of ending up "
+        "alone, in one value",
+    ),
     "SWITCHBOARD_CHECKPOINT": (
         "checkpoint answer",
         "It records a yes or no you gave once about publishing this session's "
@@ -5684,6 +5690,39 @@ def _local_settings_env(directory: Path) -> dict[str, str]:
 
 def _init_key(directory: Path, key: str, *, force: bool) -> tuple[list[str], bool]:
     return _init_local_setting(directory, "SWITCHBOARD_KEY", key, force=force)
+
+
+def _init_key_as_invite(
+    directory: Path, *, url: str, workspace: str, token: str | None,
+    key: str, write_key: str | None, force: bool,
+) -> tuple[list[str], bool]:
+    """Write the environment's half as one string instead of a bare key.
+
+    Same file and same refusal as `_init_key` — the gitignored local settings,
+    replaced only with `--force` — because it is the same secret wearing a
+    shape that travels. What changes is how much of the setup one value
+    carries: `docs/environments.md` splits the four into a per-repo half that
+    rides in the committed `.mcp.json` and a per-environment half somebody has
+    to be told, and this is that second half, told once.
+
+    The workspace rides along and is *not* a claim on one. An invite in the
+    environment supplies keys, token and hub, and defers to whatever room the
+    repo declares — so writing the repo's current workspace in here duplicates
+    `.mcp.json` rather than competing with it, and a clone that repoints its
+    `.mcp.json` moves without this file being touched.
+
+    Opt-in rather than the default: `.mcp.json` already commits the hub and the
+    workspace, so for most setups the bare key is the smaller thing to write
+    and the split stays legible. This is for the environment that would rather
+    hold one string — a cloud secret store, a CI provider — where four values
+    set separately is four chances to set one wrong.
+    """
+    room = invite.Invite(
+        url=url, workspace=workspace, token=token, key=key, write_key=write_key,
+        note=f"{directory.resolve().name} — written by `init --as-invite`",
+    )
+    return _init_local_setting(
+        directory, "SWITCHBOARD_INVITE", room.encode(), force=force)
 
 
 _SKILL_NAME = SKILL_NAME
@@ -5956,7 +5995,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         steps.append(_init_skill(directory, force=args.force, confirm=confirm))
     key_ok = True
     if key:
-        key_steps, key_ok = _init_key(directory, key, force=args.force)
+        if getattr(args, "as_invite", False):
+            key_steps, key_ok = _init_key_as_invite(
+                directory, url=url, workspace=workspace, token=token, key=key,
+                write_key=write_key, force=args.force)
+        else:
+            key_steps, key_ok = _init_key(directory, key, force=args.force)
         steps.extend(key_steps)
     steps.extend(_init_desktop(directory, interactive=interactive, force=args.force))
     write_key_on_disk = False
@@ -6524,6 +6568,14 @@ def build_parser() -> argparse.ArgumentParser:
              "default, so bodies, board values, lease notes and branch names are "
              "sealed before they leave this machine. Use this only where the hub is "
              "already trusted with plaintext.",
+    )
+    p.add_argument(
+        "--as-invite", action="store_true",
+        help="write the key, token and hub into `.claude/settings.local.json` as "
+             "one invite string rather than a bare SWITCHBOARD_KEY — the same "
+             "secret in the shape that travels, for an environment that would "
+             "rather hold one value than four. It carries no claim on a room: the "
+             "repo's committed .mcp.json still decides the workspace.",
     )
     p.add_argument(
         "--new-key", action="store_true",

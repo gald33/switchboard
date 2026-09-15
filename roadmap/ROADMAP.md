@@ -123,47 +123,53 @@ _Nothing blocked._
 
 ```mermaid
 graph TD
-  a_drain_that_retries_forever_never_escalates["A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads"]
-  a_lobby_derived_from_the_key["Give every key a lobby, so agents that share one can find each other without naming a room"]
-  abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
-  an_empty_invite_is_not_no_invite["An invite that is set and empty is refused, because 'it did not load' and 'there was none' were the same outcome"]
-  automatic_session_checkpoints["A session that ends anywhere is collectable everywhere, without anyone running a command"]
-  board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
-  capsule_sealed_out_of_the_workspace["A session capsule is sealed into a minted room, so the workspace never holds a transcript it can read"]
-  ci_workspace_is_public["Stop publishing the one room identifier that was never meant to be guessable"]
-  clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]
-  connect_failure_message["Name the URL a failed connection actually tried, and where its token came from"]
-  cross_key_rendezvous["Two agents that share no key have no room to meet in, and a human had to carry the coordinates"]
-  discovery_is_uneven_and_delivery_is_unknowable["Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived"]
-  every_silent_failure_looks_like_a_quiet_room["Seven distinct coordination failures all present as an empty room, so none of them can be searched for"]
-  first_contact_needs_a_key_it_cannot_have["The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger"]
-  fork_a_session_on_the_machine_it_is_on["A session can be forked here, because an environment is decided once and a session cannot outlive being wrong about it"]
-  hooks_warning_false_positive["Stop warning about uncommitted hooks in repos that commit none of their wiring"]
-  hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]
-  identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]
-  inbox_consumes_what_it_cannot_open["A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed"]
-  init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]
-  intermittent_suite_failure["Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]
-  joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]
-  known_rooms_address_book["An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects"]
-  one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]
-  presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]
-  provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]
-  publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]
-  read_only_rooms["A room a viewer can read and nothing else, refused by the hub rather than by good behaviour"]
-  robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]
-  roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]
-  rootless_warning_false_positive["Stop telling a caller who named the room that their workspace was derived from the directory"]
-  seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]
-  selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]
-  stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]
-  stale_token_in_session_env["A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names"]
-  standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]
-  timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]
-  ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]
-  unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]
-  web_page_tests_fail_under_load["Two web-page tests fail on a loaded full run and pass on every rerun"]
-  write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]
+  classDef ready stroke:#2da44e,stroke-width:2px
+  classDef deferred stroke:#9a6700,stroke-width:1px,stroke-dasharray:4 3
+  classDef blocked stroke:#cf222e,stroke-width:2px
+  classDef claimed stroke:#8250df,stroke-width:2px
+  classDef verifying stroke:#0969da,stroke-width:2px,stroke-dasharray:6 3
+  classDef done stroke:#8c959f,stroke-width:1px,stroke-dasharray:5 4
+  a_drain_that_retries_forever_never_escalates["A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads"]:::ready
+  a_lobby_derived_from_the_key["Give every key a lobby, so agents that share one can find each other without naming a room"]:::ready
+  abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]:::deferred
+  an_empty_invite_is_not_no_invite["✓ An invite that is set and empty is refused, because 'it did not load' and 'there was none' were the same outcome"]:::done
+  automatic_session_checkpoints["A session that ends anywhere is collectable everywhere, without anyone running a command"]:::ready
+  board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]:::ready
+  capsule_sealed_out_of_the_workspace["✓ A session capsule is sealed into a minted room, so the workspace never holds a transcript it can read"]:::done
+  ci_workspace_is_public["✓ Stop publishing the one room identifier that was never meant to be guessable"]:::done
+  clients_that_cannot_post["Decide what a client that cannot hold a secret or issue arbitrary HTTP gets"]:::ready
+  connect_failure_message["✓ Name the URL a failed connection actually tried, and where its token came from"]:::done
+  cross_key_rendezvous["Two agents that share no key have no room to meet in, and a human had to carry the coordinates"]:::ready
+  discovery_is_uneven_and_delivery_is_unknowable["Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived"]:::ready
+  every_silent_failure_looks_like_a_quiet_room["Seven distinct coordination failures all present as an empty room, so none of them can be searched for"]:::ready
+  first_contact_needs_a_key_it_cannot_have["✓ The primitive the help table names for meeting a stranger is the one primitive that cannot meet a stranger"]:::done
+  fork_a_session_on_the_machine_it_is_on["✓ A session can be forked here, because an environment is decided once and a session cannot outlive being wrong about it"]:::done
+  hooks_warning_false_positive["✓ Stop warning about uncommitted hooks in repos that commit none of their wiring"]:::done
+  hub_origin_reachable_bypassing_the_edge["The hub's origin answers directly by IP, so its Cloudflare edge is optional"]:::ready
+  identity_rebinds_on_branch_change["A branch checkout silently mints a new agent identity, orphaning leases, DMs and status"]:::ready
+  inbox_consumes_what_it_cannot_open["✓ A message that cannot be decrypted is marked read anyway, so the first thing a stranger says is the thing most likely to be destroyed"]:::done
+  init_writes_rooms_file["Make init produce the rooms record the model says is authoritative"]:::ready
+  intermittent_suite_failure["✓ Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]:::done
+  joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]:::ready
+  known_rooms_address_book["✓ An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects"]:::done
+  one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]:::deferred
+  presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]:::ready
+  provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]:::ready
+  publish_hub_container_image["Publish the hub image, so running a hub is not a clone and a build"]:::ready
+  read_only_rooms["✓ A room a viewer can read and nothing else, refused by the hub rather than by good behaviour"]:::done
+  robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]:::deferred
+  roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]:::deferred
+  rootless_warning_false_positive["✓ Stop telling a caller who named the room that their workspace was derived from the directory"]:::done
+  seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]:::ready
+  selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]:::ready
+  stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]:::ready
+  stale_token_in_session_env["A stale SWITCHBOARD_TOKEN reaches every Claude Code session on this machine from somewhere no settings file names"]:::ready
+  standing_checks_that_nothing_runs["Three checks exist to catch silent decay, and nothing is scheduled to run any of them"]:::ready
+  timing_cold_start_in_ephemeral_environments["A disposable container relearns its own timing from scratch, every run"]:::deferred
+  ttl_clamped_silently["Say when a ttl was clamped, instead of returning a number nobody agreed to"]:::ready
+  unread_dms_not_shown_outside_mcp["Only MCP tells an agent something is waiting; CLI and library never do"]:::ready
+  web_page_tests_fail_under_load["Two web-page tests fail on a loaded full run and pass on every rerun"]:::ready
+  write_parity_across_surfaces["The three surfaces do not offer the same writes, and MCP is the thin one"]:::ready
   a_drain_that_retries_forever_never_escalates -.- discovery_is_uneven_and_delivery_is_unknowable
   a_drain_that_retries_forever_never_escalates -.- standing_checks_that_nothing_runs
   a_lobby_derived_from_the_key -.- cross_key_rendezvous

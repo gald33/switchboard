@@ -37,6 +37,7 @@ from switchboard.cli import (
     _wake_script,
     main,
 )
+from switchboard.invite import Invite
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -2071,3 +2072,56 @@ def test_saying_no_leaves_the_hook_as_it_was(monkeypatch, capsys, tmp_path):
     assert "session publish" not in hook
     # The lease release the hook has always done is untouched.
     assert "release" in hook
+
+
+# --- `init --as-invite`: the same secret, in the shape that travels ---------
+
+
+def _local_env(tmp_path):
+    return json.loads(
+        (tmp_path / ".claude" / "settings.local.json").read_text())["env"]
+
+
+def test_as_invite_writes_one_string_instead_of_a_bare_key(
+        monkeypatch, capsys, tmp_path):
+    code, _ = run_init(monkeypatch, capsys, tmp_path, "--local", "--as-invite")
+    assert code == 0
+
+    env = _local_env(tmp_path)
+    assert "SWITCHBOARD_KEY" not in env
+    blob = env["SWITCHBOARD_INVITE"]
+
+    room = Invite.decode(blob)
+    assert room.key and room.url
+    # The same room .mcp.json commits — duplicated, not competing. A repo that
+    # repoints its .mcp.json moves without this file being touched, because an
+    # invite in the environment defers to the room the repo declares.
+    mcp = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["switchboard"]
+    assert room.workspace == mcp["env"]["SWITCHBOARD_WORKSPACE"]
+
+
+def test_without_the_flag_init_still_writes_the_bare_key(
+        monkeypatch, capsys, tmp_path):
+    """Opt-in. `.mcp.json` already commits the hub and the workspace, so for
+    most setups the key is the smaller thing to write and the per-repo /
+    per-environment split stays legible."""
+    run_init(monkeypatch, capsys, tmp_path, "--local")
+
+    env = _local_env(tmp_path)
+    assert len(env["SWITCHBOARD_KEY"]) > 20
+    assert "SWITCHBOARD_INVITE" not in env
+
+
+def test_as_invite_refuses_to_replace_a_different_one_silently(
+        monkeypatch, capsys, tmp_path):
+    """The guard `_init_local_setting` already applies to every secret it
+    writes: an invite carries the key and the token together, so swapping one
+    unannounced changes the room and the key at once."""
+    run_init(monkeypatch, capsys, tmp_path, "--local", "--as-invite")
+    first = _local_env(tmp_path)["SWITCHBOARD_INVITE"]
+
+    code, out = run_init(monkeypatch, capsys, tmp_path, "--local", "--as-invite",
+                         "--new-key")
+
+    assert _local_env(tmp_path)["SWITCHBOARD_INVITE"] == first
+    assert "a different SWITCHBOARD_INVITE is already set" in out
