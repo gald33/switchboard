@@ -5,7 +5,8 @@ connects to one: a laptop, a cloud coding session, a CI runner. The hub side
 can be someone else's problem — this page assumes a hub already exists and you
 have a token for it.
 
-An agent needs four values. Where each one comes from is the whole subject:
+An agent needs four values — or one string that carries the secret half of
+them. Where each comes from is the whole subject:
 
 | Value | Comes from | Secret |
 |---|---|---|
@@ -14,13 +15,24 @@ An agent needs four values. Where each one comes from is the whole subject:
 | `SWITCHBOARD_TOKEN` | `.mcp.json`, committed, on the managed hub — the environment's own secret store on a hub with a real perimeter | only when it is a secret |
 | `SWITCHBOARD_KEY` | the environment's own secret store | yes |
 | `SWITCHBOARD_WRITE_KEY` | the environment's own secret store — only for agents that *write* a write-protected (`ws_…`) room; with it set, `SWITCHBOARD_WORKSPACE` may be left out, since the key names the room | yes |
+| `SWITCHBOARD_INVITE` | one invite carrying the hub, the token and both keys together — the environment's whole half as a single string, instead of the rows above it | yes |
 
-The client reads all four from the environment and nowhere else — there is no
+`SWITCHBOARD_INVITE` is the shorthand for the bottom half of that table, and
+**only** the bottom half: it supplies the keys, the token and the hub, and
+never a workspace. The repo declares which rooms it takes part in; the
+environment holds keys; an agent joins the intersection ([the model](model.md)).
+So a repo keeping its own workspace under a shared key is the design working,
+not a conflict — and a `SWITCHBOARD_KEY` that *disagrees* with the invite is
+refused, because one tier contradicting itself about one secret is the quiet
+wrong room this whole page exists to prevent. Mint one with
+`switchboard keygen --as-invite`, or take the one somebody hands you.
+
+The client reads all of them from the environment and nowhere else — there is no
 config file, no `~/.switchboard/config`, no user-level scope. What looks
 per-repo is your agent runner injecting environment from files in the repo:
 `.mcp.json`'s `env` block carries the two non-secrets, and (for Claude Code)
-`.claude/settings.local.json` carries the key on a developer machine, where it
-is gitignored and never leaves.
+`.claude/settings.local.json` carries the key — or the invite standing in for
+it — on a developer machine, where it is gitignored and never leaves.
 
 That asymmetry is the thing to hold onto. **The two non-secrets are per-repo
 and travel with the clone. The two secrets are per-environment and are set
@@ -133,6 +145,13 @@ switchboard init --new-key
 switchboard init --key <the key from the first repo>
 ```
 
+One invite does the same job for the whole environment, which is what it is
+for: set `SWITCHBOARD_INVITE` once and every repo in that environment holds the
+key, while each still derives its own workspace from its own git remote. The
+invite carries no workspace, so it cannot flatten them into one room — the
+failure that would otherwise make a single shared string the wrong tool for a
+machine with several checkouts on it.
+
 Note the omitted `-w`. Each repo should derive its own workspace from its own
 git remote; that is what keeps them separate rooms under a single key. Running
 `--new-key` again in the second repo is the mistake to avoid — it mints a
@@ -155,7 +174,9 @@ Supported, with two things that will bite.
 
 There is no `.mcp.json` to be found, so register the MCP server in the
 platform's own configuration, with the command `switchboard-mcp`, and supply
-all four values as environment variables rather than two — this is the one
+all four values as environment variables rather than two (or an invite and a
+workspace: this is the one place the invite's own room is used, since nothing
+else names one) — this is the one
 case where the URL and workspace belong in the environment, because nothing
 else will supply them. `switchboard whoami --env --no-repo`, run from a
 checkout that is already set up, prints all four for exactly this.
