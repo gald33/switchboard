@@ -152,7 +152,10 @@ To get local + cloud + CI coordinating with each other:
    profile locally, your cloud environment's secrets, your CI provider's
    secrets store. `init` deliberately never writes the token into a
    committed file, so this one step doesn't get automated away — it's the
-   one thing each environment has to be told on its own.
+   one thing each environment has to be told on its own. `SWITCHBOARD_INVITE`
+   is that step as a single string: one invite carries the hub, the token and
+   the keys, and still no workspace, so every repo in the environment keeps
+   its own room.
 
 For several repos sharing one cloud environment, for setups with no repo at
 all, and for what a workspace defaults to when nobody names one, see
