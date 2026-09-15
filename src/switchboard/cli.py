@@ -523,8 +523,21 @@ def _apply_invite(config: ClientConfig, args: argparse.Namespace) -> ClientConfi
     confused about which room it means.
     """
     blob = getattr(args, "invite", None)
-    if not blob:
+    if blob is None:
         return config
+    if not blob.strip():
+        # Passing the flag and passing nothing are different intentions, and
+        # the difference is the whole failure: `--invite "$BLOB"` with BLOB
+        # unset used to run against whatever room the invocation would have
+        # resolved to anyway, exit 0, and say nothing. "The invite did not
+        # load" and "there was no invite" must not look identical — that is
+        # the quiet wrong room this module exists to remove, reached through
+        # the flag that removes it.
+        raise invite.InviteError(
+            "--invite was given an empty string. If a variable should have "
+            "filled it, it is unset; check the wrapper rather than the room. "
+            "Drop the flag to use this environment's own room on purpose."
+        )
     room = invite.Invite.decode(blob)
     clashes = [
         flag

@@ -1,0 +1,59 @@
+id: an-empty-invite-is-not-no-invite
+title: An invite that is set and empty is refused, because "it did not load" and "there was none" were the same outcome
+status: done
+arc: setup-and-first-run
+priority: next
+blocked_on: []
+related_to:
+- key: every-silent-failure-looks-like-a-quiet-room
+  note: 'The same shape at the smallest possible scale. Every other silent failure on
+    this board is a room you are alone in; this one is the flag that exists to prevent
+    those, failing the same way. An empty `--invite` ran against whatever room the
+    invocation would have resolved to anyway and exited 0.'
+refs:
+- 'Found on 2026-09-15 by an agent breaking its own operator''s config with it — see the first line of evidence.'
+evidence: |
+  **Found by causing it.** An agent converting this repo's
+  `settings.local.json` from four variables to one invite wrote its safety
+  check as: mint the invite to a file, then `switchboard --invite "$BLOB"
+  agents`, and write the config only if that succeeded.
+
+  The mint failed — a shell assignment in the wrong position, so the file was
+  never written and `$BLOB` was empty. `--invite ""` then **ran against the
+  room the invocation already resolved to, listed the roster, and exited 0**,
+  because `_apply_invite` opened with `if not blob: return config`. The check
+  passed, and the agent deleted three working variables and wrote an empty
+  one, breaking every session that would start in that repo.
+
+  So the guard written specifically to prevent this could not fail. That is
+  the lesson worth more than the fix: a check whose passing condition is
+  reachable without the thing it checks is decoration. The same session had
+  spent the day adding control tests against exactly that — asserting a
+  capsule is *not* collectable only alongside a plain publish that *is* — and
+  still wrote one.
+
+  **The fix draws the line on presence, not truthiness.** `SWITCHBOARD_INVITE`
+  absent means an environment that never mentioned an invite, which is not
+  misconfigured. Set-and-empty means somebody's wrapper meant to put a room
+  there and put nothing, and falling back answers that by joining a room they
+  did not choose. `invite.from_env` already refused a *malformed* invite for
+  precisely that reason — "an unreadable invite is somebody's default that is
+  not working" — and an empty one is the same sentence with fewer characters.
+  The flag is simpler still: passing `--invite` and passing nothing are
+  different intentions, so the empty string is refused outright.
+
+  Both messages name the likely cause rather than the symptom, because the
+  symptom is indistinguishable from working: "if a variable should have filled
+  it, it is unset; check the wrapper rather than the room."
+
+  **It caught a real one immediately.** The session that shipped the fix was
+  itself carrying `SWITCHBOARD_INVITE=""` — captured by the harness during the
+  window the bad write was on disk, and frozen there for that session's life in
+  the same way a dead `SWITCHBOARD_TOKEN` had been frozen the day before. The
+  files were clean; the process was not. Nothing but the new refusal would have
+  said so.
+
+  How it is known to have worked: `--invite ""` and `SWITCHBOARD_INVITE=""` both
+  exit non-zero with a message naming the wrapper, an absent variable still
+  resolves the environment's own room, and a real invite is unaffected. All
+  three are asserted.

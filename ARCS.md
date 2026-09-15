@@ -81,7 +81,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 24 item(s), 14 startable
+`setup-and-first-run` · 25 item(s), 14 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -105,6 +105,7 @@ wrong says so.
 |---|---|---|
 | `first-contact-needs-a-key-it-cannot-have` | done | now |
 | `inbox-consumes-what-it-cannot-open` | done | now |
+| `an-empty-invite-is-not-no-invite` | done | next |
 | `automatic-session-checkpoints` | ready | next |
 | `connect-failure-message` | done | next |
 | `cross-key-rendezvous` | ready | next |

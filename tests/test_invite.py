@@ -939,3 +939,38 @@ def test_a_malformed_invite_is_refused_rather_than_ignored(tmp_path, monkeypatch
 
     with pytest.raises(InviteError):
         ClientConfig.from_env(tmp_path)
+
+
+def test_an_invite_variable_that_is_set_and_empty_is_refused(tmp_path, monkeypatch):
+    """Set-and-empty is not unset.
+
+    Found the hard way on 2026-09-15: a wrapper interpolated an unset variable,
+    the empty result was treated as absence, and the command ran against
+    whatever room it would have used anyway — reporting success. A check
+    written specifically to catch that passed, because the thing it checked
+    could not fail. "The invite did not load" and "there was no invite" must
+    not be the same outcome.
+    """
+    monkeypatch.setenv("SWITCHBOARD_INVITE", "")
+
+    with pytest.raises(InviteError) as caught:
+        ClientConfig.from_env(tmp_path)
+
+    assert "set but empty" in str(caught.value)
+
+
+def test_an_unset_invite_variable_is_simply_absent(tmp_path, monkeypatch):
+    """The other half, and the reason the distinction is drawn on presence
+    rather than on truthiness: an environment that never mentions an invite is
+    not misconfigured, it is just an environment without one."""
+    monkeypatch.delenv("SWITCHBOARD_INVITE", raising=False)
+
+    assert ClientConfig.from_env(tmp_path).workspace_source != "invite"
+
+
+def test_the_invite_flag_refuses_an_empty_string(tmp_path, monkeypatch):
+    """`--invite "$BLOB"` with BLOB unset used to be indistinguishable from
+    passing no flag at all: same room, exit 0, nothing said."""
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--invite", "", "whoami"]) == 1

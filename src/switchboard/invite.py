@@ -329,9 +329,18 @@ def from_env(env: dict[str, str] | None = None) -> Invite | None:
     supposed to remove it.
     """
     source = os.environ if env is None else env
+    if ENV_VAR not in source:
+        return None
     blob = (source.get(ENV_VAR) or "").strip()
     if not blob:
-        return None
+        # Set-and-empty is not unset. Somebody's wrapper meant to put a room
+        # here and put nothing, and falling back would answer that by joining
+        # a room they did not choose — the same silent landing a malformed
+        # invite is refused for, two characters earlier.
+        raise InviteError(
+            f"{ENV_VAR} is set but empty. Unset it to use this environment's "
+            f"own room, or give it an invite."
+        )
     try:
         return Invite.decode(blob)
     except InviteError as exc:
