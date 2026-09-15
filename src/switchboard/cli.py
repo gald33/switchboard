@@ -3379,6 +3379,14 @@ def _session_fork(args: argparse.Namespace, fmt: Fmt) -> int:
             "session fork needs a session: run it inside one, or pass --session-id"
         )
     result = claude_session.fork(session_id, cwd=args.cwd, new_id=args.new_id)
+    # `import` and `receive` both do this, and a fork that skipped it was the
+    # difference between a session a person can open and one only
+    # `claude --resume` can find. Reported on 2026-09-14 by the first fork ever
+    # taken, which resumed correctly in a terminal and appeared nowhere in the
+    # app. Same opt-in and same silence on failure as the other two: a fork
+    # whose transcript is right has succeeded, and a missing row is cosmetic.
+    result["desktop"] = _register_installed(
+        result, title=f"forked from {result['forked_from'][:8]}")
     if args.json:
         _print_json(result)
         return EXIT_OK

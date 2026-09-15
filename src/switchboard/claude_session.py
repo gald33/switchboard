@@ -772,6 +772,10 @@ def fork(
         "transcript": str(target),
         "records": meta["records"],
         "subagent_files": copied,
+        # Named as `install` names it, because the callers that put a session
+        # in front of a person — the desktop row, the resume line — take the
+        # same field from both and should not care which made the session.
+        "resume_cwd": meta["cwd"],
         "resume": shell_resume_command(fresh, cwd=meta["cwd"], config_dir=cfg),
     }
 

@@ -472,3 +472,42 @@ def test_fork_needs_no_hub(sender_cfg, capsys, monkeypatch):
 
     assert code == 0 and result["session_id"] != SID
     assert "hub" not in err.lower()
+
+
+def test_a_fork_is_offered_to_the_desktop_app_like_an_import(
+        sender_cfg, capsys, monkeypatch):
+    """The gap the first real fork found.
+
+    A fork taken on 2026-09-14 resumed correctly in a terminal and appeared
+    nowhere in the app, because `import` and `receive` both register what they
+    install and `fork` did not. The registration itself is opt-in and writes
+    into another program's store; what this pins is that a fork is *offered*
+    to it on the same terms, rather than skipped.
+    """
+    seen: dict[str, object] = {}
+
+    def _register(session_id, **kwargs):
+        seen.update({"session_id": session_id, **kwargs})
+        return {"registered": True}
+
+    monkeypatch.setenv("SWITCHBOARD_DESKTOP_REGISTER", "1")
+    monkeypatch.setattr("switchboard.desktop.register", _register)
+
+    _, result, _ = _run_local(capsys, "session", "fork")
+
+    assert seen["session_id"] == result["session_id"]
+    assert seen["title"] == f"forked from {SID[:8]}"
+    # The directory the fork resumes from, not the one this process happens
+    # to be in: a row that opens somewhere else is worse than no row.
+    assert str(seen["cwd"]) == "/Users/gal/code/switchboard"
+
+
+def test_a_fork_still_succeeds_where_the_app_is_not_wanted(sender_cfg, capsys):
+    """Opt-in, and silent when declined. `conftest` clears the enable var, so
+    this is the default path: the transcript is what matters and a missing
+    sidebar row must not fail it."""
+    code, result, _ = _run_local(capsys, "session", "fork")
+
+    assert code == 0
+    assert result["desktop"] is None
+    assert Path(result["transcript"]).is_file()

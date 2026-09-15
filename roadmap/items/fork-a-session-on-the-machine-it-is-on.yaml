@@ -61,12 +61,25 @@ evidence: |
   under that one substitution, and leaves the original untouched — that last
   one being what makes it safe to run from inside the session being forked.
 
-  What they do **not** prove is that `claude --resume <fork-id>` starts the
-  conversation: that needs a live Claude Code, not a fixture, and this was
-  built by a session that could not spawn one. The capsule's own behaviour was
-  settled by an experiment logged in `extras/session-capsule/`, and this owes
-  the same. Until somebody runs it, "the fork resumes" is the one claim here
-  standing on reasoning rather than observation.
+  **The experiment was run, on 2026-09-14, and it resumed.** The session that
+  built this forked itself: 2390 records, byte-identical to the original's
+  first 2390 under the id substitution, zero occurrences of the old id, the
+  original untouched and still being appended to by its live process. Gal ran
+  the resume line and the conversation came back. The one claim that stood on
+  reasoning rather than observation now has an observation, which is what
+  `extras/session-capsule/` established for the capsule and what this owed.
+
+  **And running it found what the tests could not.** The fork resumed *only*
+  as a terminal session: `import` and `receive` both hand the desktop app a row
+  for what they install, and `fork` did not, so a person had no way to open it.
+  Fixed on the same terms as the other two — opt-in via
+  `SWITCHBOARD_DESKTOP_REGISTER`, silent where declined, never fatal, because a
+  fork whose transcript is right has succeeded and a missing row is cosmetic.
+
+  That gap is the argument for the experiment rather than a footnote to it. The
+  tests assert everything about the file and nothing about whether a person can
+  reach it, and no amount of fixture work would have noticed: the transcript
+  was correct the whole time.
 
   How it will be known to have worked: a session whose environment is wrong is
   forked, the fork resumes with the conversation intact, and its first command
