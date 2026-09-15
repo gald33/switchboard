@@ -24,8 +24,13 @@ environment holds keys; an agent joins the intersection ([the model](model.md)).
 So a repo keeping its own workspace under a shared key is the design working,
 not a conflict — and a `SWITCHBOARD_KEY` that *disagrees* with the invite is
 refused, because one tier contradicting itself about one secret is the quiet
-wrong room this whole page exists to prevent. Mint one with
-`switchboard keygen --as-invite`, or take the one somebody hands you.
+wrong room this whole page exists to prevent.
+
+`switchboard init --as-invite` writes this repo's own setup in that shape —
+the same secret `init` would otherwise write as a bare `SWITCHBOARD_KEY`, in
+the form that travels to a cloud environment or a CI secret store as one
+value. `keygen --as-invite` mints a *new* room instead, and an invite somebody
+hands you is the third way in.
 
 The client reads all of them from the environment and nowhere else — there is no
 config file, no `~/.switchboard/config`, no user-level scope. What looks
