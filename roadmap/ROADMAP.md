@@ -48,6 +48,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`read-only-rooms`** — That one asks what a client that cannot POST gets. This one is the other direction: a client that could POST and must not. The mechanism here — a signature the hub verifies over sealed bytes, with a replay window — is the "signed-envelope GET" that item sketches, so read this before building that.
   - ↔ related: **`robots-policy-for-public-hosts`** — Where this was found. That item needs no answer here — its experiment failed for reasons no robots policy fixes — but it is the reason anybody looked.
 - **`every-silent-failure-looks-like-a-quiet-room`** — Seven distinct coordination failures all present as an empty room, so none of them can be searched for
+  - ↔ related: **`an-empty-invite-is-not-no-invite`** — The same shape at the smallest possible scale. Every other silent failure on this board is a room you are alone in; this one is the flag that exists to prevent those, failing the same way. An empty `--invite` ran against whatever room the invocation would have resolved to anyway and exited 0.
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
@@ -125,6 +126,7 @@ graph TD
   a_drain_that_retries_forever_never_escalates["A client that retries a broken drain forever is indistinguishable from a quiet room, and the only witness is a log nobody reads"]
   a_lobby_derived_from_the_key["Give every key a lobby, so agents that share one can find each other without naming a room"]
   abuse_control_after_authorization["Replace the abuse control that per-token authorization used to provide"]
+  an_empty_invite_is_not_no_invite["An invite that is set and empty is refused, because 'it did not load' and 'there was none' were the same outcome"]
   automatic_session_checkpoints["A session that ends anywhere is collectable everywhere, without anyone running a command"]
   board_ttl_ceiling["Decide whether a board value has earned seven times a lease's lifetime"]
   capsule_sealed_out_of_the_workspace["A session capsule is sealed into a minted room, so the workspace never holds a transcript it can read"]
@@ -169,6 +171,7 @@ graph TD
   a_lobby_derived_from_the_key -.- one_resolved_context_across_surfaces
   a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
   abuse_control_after_authorization -.- ci_workspace_is_public
+  an_empty_invite_is_not_no_invite -.- every_silent_failure_looks_like_a_quiet_room
   automatic_session_checkpoints -.- cross_key_rendezvous
   automatic_session_checkpoints -.- selective_wake_for_the_listener
   board_ttl_ceiling -.- ttl_clamped_silently
@@ -386,6 +389,66 @@ graph TD
 > penalizes* — PoW spreads cheaply across a botnet and expensively across one
 > honest laptop or CI runner, so it raises the price of a concentrated attack while
 > mildly taxing the clients least able to pay.
+
+</details>
+
+### `an-empty-invite-is-not-no-invite`
+
+- **title:** An invite that is set and empty is refused, because "it did not load" and "there was none" were the same outcome
+- **status:** done
+- **arc:** setup-and-first-run
+- **priority:** next
+- **related to** (not a dependency — both are startable):
+  - `every-silent-failure-looks-like-a-quiet-room` — The same shape at the smallest possible scale. Every other silent failure on this board is a room you are alone in; this one is the flag that exists to prevent those, failing the same way. An empty `--invite` ran against whatever room the invocation would have resolved to anyway and exited 0.
+- **refs:**
+  - `Found on 2026-09-15 by an agent breaking its own operator's config with it — see the first line of evidence.`
+
+<details><summary>evidence</summary>
+
+> **Found by causing it.** An agent converting this repo's
+> `settings.local.json` from four variables to one invite wrote its safety
+> check as: mint the invite to a file, then `switchboard --invite "$BLOB"
+> agents`, and write the config only if that succeeded.
+>
+> The mint failed — a shell assignment in the wrong position, so the file was
+> never written and `$BLOB` was empty. `--invite ""` then **ran against the
+> room the invocation already resolved to, listed the roster, and exited 0**,
+> because `_apply_invite` opened with `if not blob: return config`. The check
+> passed, and the agent deleted three working variables and wrote an empty
+> one, breaking every session that would start in that repo.
+>
+> So the guard written specifically to prevent this could not fail. That is
+> the lesson worth more than the fix: a check whose passing condition is
+> reachable without the thing it checks is decoration. The same session had
+> spent the day adding control tests against exactly that — asserting a
+> capsule is *not* collectable only alongside a plain publish that *is* — and
+> still wrote one.
+>
+> **The fix draws the line on presence, not truthiness.** `SWITCHBOARD_INVITE`
+> absent means an environment that never mentioned an invite, which is not
+> misconfigured. Set-and-empty means somebody's wrapper meant to put a room
+> there and put nothing, and falling back answers that by joining a room they
+> did not choose. `invite.from_env` already refused a *malformed* invite for
+> precisely that reason — "an unreadable invite is somebody's default that is
+> not working" — and an empty one is the same sentence with fewer characters.
+> The flag is simpler still: passing `--invite` and passing nothing are
+> different intentions, so the empty string is refused outright.
+>
+> Both messages name the likely cause rather than the symptom, because the
+> symptom is indistinguishable from working: "if a variable should have filled
+> it, it is unset; check the wrapper rather than the room."
+>
+> **It caught a real one immediately.** The session that shipped the fix was
+> itself carrying `SWITCHBOARD_INVITE=""` — captured by the harness during the
+> window the bad write was on disk, and frozen there for that session's life in
+> the same way a dead `SWITCHBOARD_TOKEN` had been frozen the day before. The
+> files were clean; the process was not. Nothing but the new refusal would have
+> said so.
+>
+> How it is known to have worked: `--invite ""` and `SWITCHBOARD_INVITE=""` both
+> exit non-zero with a message naming the wrapper, an absent variable still
+> resolves the environment's own room, and a real invite is unaffected. All
+> three are asserted.
 
 </details>
 
@@ -926,6 +989,7 @@ graph TD
 - **status:** ready
 - **arc:** setup-and-first-run
 - **related to** (not a dependency — both are startable):
+  - `an-empty-invite-is-not-no-invite` — The same shape at the smallest possible scale. Every other silent failure on this board is a room you are alone in; this one is the flag that exists to prevent those, failing the same way. An empty `--invite` ran against whatever room the invocation would have resolved to anyway and exited 0.
   - `identity-rebinds-on-branch-change` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `joining-agent-sees-empty-inbox` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - `provisioned-token-is-stale-and-nothing-says-so` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
