@@ -2528,6 +2528,36 @@ graph TD
 > never watched. The heartbeat publishes the deadline and its source. What
 > remains here is the wake/skip seam and the two filters behind it.
 >
+> **The first filter and do-not-disturb are built (2026-09-23).** Asked for
+> by a persistent coordinating agent (a "CEO" role) that has to stay reachable
+> between turns but whose operator does not want it interrupted mid-work
+> except for urgent items. Before this its only options were "interruptible by
+> anything" or "no listener, and peers read it as dead". What shipped:
+>
+> - `listen --type T` (repeatable) is the wake/skip seam (`_Wake` in
+>   `cli.py`) with the type filter behind it. Non-matching messages are left
+>   unread and the next long-poll starts past them (`since`), so the listener
+>   waits for something new rather than spinning. `--type` refuses without
+>   `--until`, per the ceiling argument below.
+> - Declared DND: the heartbeat carries `dnd.wakes_on_types`,
+>   `dnd.reads_everything_else_at` and `dnd.dms_held`, and `dm` (CLI and MCP)
+>   tells a sender whose recipient is on it when their message will be read,
+>   or that its type wakes them.
+> - Delay, never drop, made true rather than assumed: messages expire on a
+>   one-hour default, so a DND stretch longer than that used to drop the mail
+>   it deferred. `POST /messages/hold` extends the caller's own unread DMs,
+>   capped at `MAX_MESSAGE_TTL` after posting; the DND listener calls it each
+>   pass up to the deadline plus an hour. Room channels are not held — they
+>   are broadcast, not addressed.
+> - Three defects in what the listener wrote about the agent it serves, found
+>   by the same agent: `-c` replaced the agent's subscriptions (the listener
+>   now sends none, since naming channels on `inbox` needs no subscription),
+>   every pass overwrote the agent's own `--back-in` (now kept; the later of
+>   it and the deadline is published), and `waiting_on` said `inbox` whatever
+>   `-c` named.
+>
+> Still open: `--match` and the claim-derived keyword list.
+>
 > **Three filters, in ascending cost:**
 >
 > 1. `--type` — `type` is already a free-form field on every message defaulting

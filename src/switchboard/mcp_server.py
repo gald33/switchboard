@@ -390,7 +390,10 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _schema({
             "to": {**_STR, "description": "recipient agent id (see roster)"},
             "message": {**_STR, "description": "what to say"},
-            "type": _STR,
+            "type": {**_STR, "description": (
+                "optional tag. A recipient on do-not-disturb (`listen --type urgent`) "
+                "is woken only by the types it names — the result's listener.peer_dnd "
+                "says which; send 'urgent' only for something that cannot wait")},
             "ttl": _NUM,
             "custom_scope": _CUSTOM_SCOPE,
             "execution_class": _TIMING_CLASS,
@@ -1405,7 +1408,8 @@ class Bridge:
 
     _sender_forecast = staticmethod(sender_forecast)
 
-    def _listener(self, peer: str | None = None) -> dict[str, Any]:
+    def _listener(self, peer: str | None = None,
+                  sent_type: str | None = None) -> dict[str, Any]:
         """Which end of the message just sent can be woken by an answer to it.
 
         One board read answers both halves — whether the recipient is parked,
@@ -1420,16 +1424,19 @@ class Bridge:
         a board read that fails costs the advice and not the send.
         """
         try:
-            parked = rendezvous.reachable_now(
-                self.client.board_list(prefix=rendezvous.LISTENER_PREFIX)
-            )
+            entries = self.client.board_list(prefix=rendezvous.LISTENER_PREFIX)
         except Exception:  # noqa: BLE001 - advice about a send that already happened
             return {}
+        parked = rendezvous.reachable_now(entries)
         out: dict[str, Any] = {"you_parked": self.client.agent_id in parked}
         if peer is not None:
             out["peer_parked"] = peer in parked
+            dnd = rendezvous.dnd_now(entries).get(peer)
+            if dnd and out["peer_parked"]:
+                out["peer_dnd"] = dnd
         out["next"] = rendezvous.listener_advice(
-            you_parked=out["you_parked"], peer_parked=out.get("peer_parked")
+            you_parked=out["you_parked"], peer_parked=out.get("peer_parked"),
+            peer_dnd=out.get("peer_dnd"), sent_type=sent_type,
         )
         return out
 
@@ -1463,7 +1470,7 @@ class Bridge:
         out = {
             "sent": True, "to": to, "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
-            "listener": self._listener(peer=to),
+            "listener": self._listener(peer=to, sent_type=type),
         }
         if forecast:
             out["timing_forecast"] = self._sender_forecast(forecast)
@@ -1479,7 +1486,7 @@ class Bridge:
         out = {
             "sent": True, "to": to, "seq": msg["seq"],
             "unread_dms": unread_dms, "now": _now_iso(),
-            "listener": self._listener(peer=to),
+            "listener": self._listener(peer=to, sent_type=type),
         }
         if forecast:
             out["timing_forecast"] = self._sender_forecast(forecast)

@@ -140,6 +140,12 @@ class PostIn(BaseModel):
     ttl: float | None = Field(default=None, gt=0)
 
 
+class HoldIn(BaseModel):
+    workspace: str = "default"
+    agent_id: str
+    ttl: float = Field(gt=0)
+
+
 class BoardIn(BaseModel):
     workspace: str = "default"
     key: str
@@ -716,6 +722,33 @@ def create_app(
         if unread is not None:
             out["unread_dms"] = unread
         return out
+
+    @app.post("/messages/hold", dependencies=writes)
+    async def hold_messages(payload: HoldIn) -> dict[str, Any]:
+        """Keep the caller's unread direct messages alive for `ttl` more seconds.
+
+        For a listener on do-not-disturb: it wakes only on urgent traffic and
+        leaves the rest unread, and without this the rest expired on the
+        ordinary one-hour clock while the agent was busy. Bounded twice — by
+        MAX_MESSAGE_TTL from now, and by MAX_MESSAGE_TTL after each message
+        was posted — so a held message is still one that expires on its own.
+
+        Only the caller's own `@<id>` channel, which is never blinded, so the
+        hub needs no help from the client to find it; room channels are
+        broadcast, not addressed, and are not the caller's to keep.
+        """
+        now = now_fn()
+        ttl = clamp_ttl(payload.ttl, DEFAULT_MESSAGE_TTL, MAX_MESSAGE_TTL)
+        held = await run_in_threadpool(
+            store.hold_unread,
+            workspace=payload.workspace,
+            channel=f"@{payload.agent_id}",
+            agent_id=payload.agent_id,
+            until=now + ttl,
+            ceiling=MAX_MESSAGE_TTL,
+            now=now,
+        )
+        return {"held": held, "until": iso(now + ttl)}
 
     def _unread_dms(workspace: str, agent_id: str | None) -> int | None:
         """How many DMs are waiting for this agent, for any response to carry.

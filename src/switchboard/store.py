@@ -829,6 +829,40 @@ class Store:
                 (workspace, channel, start, now, agent_id),
             ).fetchone()["n"]
 
+    def hold_unread(self, *, workspace: str, channel: str, agent_id: str,
+                    until: float, ceiling: float,
+                    now: float | None = None) -> int:
+        """Keep one agent's unread messages on one channel alive until `until`.
+
+        What makes do-not-disturb a delay rather than a loss. A listener that
+        wakes only on urgent traffic leaves everything else unread, and the
+        hub forgets unread messages on the same one-hour clock as read ones —
+        so a busy stretch longer than that used to drop exactly the mail it
+        was deferring. Only *lengthens* a message's life, never shortens it,
+        and never past `ceiling` seconds after it was posted: a hold is still
+        a TTL, so the message still expires on its own.
+
+        Unread means what `count_unread` means — past this agent's cursor,
+        not its own — so a hold cannot resurrect what was already read.
+        Returns how many messages it touched.
+        """
+        now = time.time() if now is None else now
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT last_seq FROM cursors WHERE workspace=? AND agent_id=? "
+                "AND channel=? AND expires_at > ?",
+                (workspace, agent_id, channel, now),
+            ).fetchone()
+            start = row["last_seq"] if row else 0
+            cur = conn.execute(
+                "UPDATE messages SET expires_at = MIN(?, created_at + ?) "
+                "WHERE workspace=? AND channel=? AND seq > ? AND expires_at > ? "
+                "AND sender != ? AND expires_at < MIN(?, created_at + ?)",
+                (until, ceiling, workspace, channel, start, now, agent_id,
+                 until, ceiling),
+            )
+            return cur.rowcount
+
     def peek(self, *, workspace: str, channel: str, limit: int = 50,
              now: float | None = None) -> list[Message]:
         """Most recent messages on a channel, oldest-first, cursor untouched."""
