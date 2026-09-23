@@ -6,7 +6,7 @@ org:
   default_branch: main
   checkout: /home/user/switchboard
   operator: { name: Gal, github: gald33 }
-  account: "80843d50-af81-43f7-bad1-91b400116ad3"
+  account: "3aa45cbd-39c1-4da0-b5c2-983ab5d7a876"
   paths:
     watchlist: docs/ai/ceo-watchlist.md
 ports:
