@@ -211,7 +211,7 @@ better with it than without.
 
 ## 6. Honest about maturity
 
-**The version is 2.4.1, and the page says so** — taken from PyPI rather than
+**The version is 2.5.0, and the page says so** — taken from PyPI rather than
 typed, because the number is a promise about what `pip install` hands you.
 `site/stamp-version.py` reads the index, cross-checks `pyproject.toml`, and
 refuses to stamp a version nobody can install yet. Run it at release time.
