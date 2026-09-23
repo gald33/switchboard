@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "switchboard": {
+      "command": "switchboard-mcp",
+      "env": {
+        "SWITCHBOARD_URL": "https://switchboard.lucille-ai.com",
+        "SWITCHBOARD_WORKSPACE": "gald33/switchboard"
+      }
+    },
+    "roadmap": {
+      "command": "sh",
+      "env": {
+        "ROADMAP_SOURCE": "local"
+      },
+      "args": [
+        "-c",
+        "command -v roadmap-mcp >/dev/null 2>&1 && exec roadmap-mcp; command -v uvx >/dev/null 2>&1 && exec uvx --from 'roadmap-core[files]>=0.3.1,<0.4' roadmap-mcp; echo 'roadmap: roadmap-mcp not found and uvx unavailable; pip install \"roadmap-core[files]>=0.3.1,<0.4\"' >&2; exit 127"
+      ]
+    },
+    "repoctx": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "for py in python3 python; do command -v \"$py\" >/dev/null 2>&1 && \"$py\" -c \"import repoctx.mcp_server\" >/dev/null 2>&1 && exec \"$py\" -m repoctx.mcp_server; done; command -v uv >/dev/null 2>&1 && exec uv run --no-project --with 'repoctx-mcp>=1.6' python -m repoctx.mcp_server; python3 -m pip install --quiet --break-system-packages 'repoctx-mcp>=1.6' 1>&2 && exec python3 -m repoctx.mcp_server; echo \"repoctx: could not launch the MCP server (no Python with repoctx-mcp, no uv, and pip install failed). Fix with: pip install 'repoctx-mcp>=1.6'\" >&2; exit 1"
+      ]
+    }
+  }
+}

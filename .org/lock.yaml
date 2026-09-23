@@ -1,0 +1,195 @@
+org_core: 0.31.5
+manifest_version: 1
+generated_at: '2026-09-23T12:15:57+00:00'
+ports:
+  work_store: roadmap-core
+  coordination: switchboard
+  code_context: repoctx
+  checks: absent
+  tickets: github-issues
+  prod_read: null
+  vcs: github
+  sessions: claude-code-remote
+  operator_surface: docs/human/state-of-the-org.md
+suite:
+  org-core:
+    policy: vendored
+    cli: org
+  switchboard:
+    policy: tracking
+    spec: agent-switchboard[all]
+    cli: switchboard
+    mcp: switchboard
+  roadmap-core:
+    policy: pinned
+    spec: roadmap-core[files]>=0.3.1,<0.4
+    cli: roadmap
+    mcp: roadmap
+  repoctx:
+    policy: pinned
+    spec: repoctx-mcp>=1.6
+    cli: repoctx
+    mcp: repoctx
+  tickets:
+    policy: builtin
+  db:
+    policy: service
+  gh:
+    policy: external
+    cli: gh
+files:
+  .claude/agents/account-manager.md:
+    role: account-manager
+    kind: agent
+    template_version: 0.3.2
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 123dbdb640dcae69009d838090bbde0c8d306c43c622ea32d5dcf81cbdb86dde
+    base_sha256: 62f8dc329e0a1c044e61b920fd12b998b81c2231241c18b64c5a104ac3030c0b
+  .claude/agents/builder.md:
+    role: builder
+    kind: agent
+    template_version: 0.3.3
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 7fa94ca34be3879904f46672077e148be3abf57864092e1177e3bcae393522b5
+    base_sha256: 938bf0bdd47f3fbf5ca99cbd41a5b82292141f9c01af72d7f3e56ff084c02f86
+  .claude/agents/ceo.md:
+    role: ceo
+    kind: agent
+    template_version: 0.3.6
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 3e4952e1b5b4e6841e86020cc8bbd5f1bbde7019f49817166cb44e1d23f774b6
+    base_sha256: eecfa16746f2c3adc45e7b1f348b610172e8698b1771cedef6d1cac6f6c0f23a
+  .claude/agents/checks-watch.md:
+    role: checks-watch
+    kind: agent
+    template_version: 0.3.7
+    template_sha256: c7655c46079a8e75cc6ccfb0e94bbf2e49c2320d72b74aef461b76a5f506dce4
+    rendered_sha256: 27434745779375fac952eb8fa9841b08bb36a7fc46ef5415446593c41d84af49
+    base_sha256: 7c11d60660f1d0ebc2f223f345cacf23e806c1d7bed3eff8590acb25ffa79174
+  .claude/agents/dispatcher.md:
+    role: dispatcher
+    kind: agent
+    template_version: 0.3.6
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 98d87d4a295b9c6bc3271d8662e2faf4f5ac7f13341ecc7b1e5b54a3870c6628
+    base_sha256: 93ef77f6091f1fa60ed2456aac96799db73634cda30bb717cef479d9e70130f1
+  .claude/agents/doctor.md:
+    role: doctor
+    kind: agent
+    template_version: 0.3.12
+    template_sha256: 91a50f5e2cd38ed5ad91f38dc2955dca0ad4ca413d293d0c4d92bad5fe56fb08
+    rendered_sha256: 3ea1f854eecc4caae020537a585f5204951602c847fe0412c0fd0bc210235ee2
+    base_sha256: 3ef08410c0e85f28ae0378010ec2c32d6fafe2513bb04ed0b59558e1fe1f09ae
+  .claude/agents/methods.md:
+    role: methods
+    kind: agent
+    template_version: 0.3.3
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 96df9c6439328ec420df7e00a399125127953ac480b276c88d2ee85af11c3a48
+    base_sha256: 36235242b642cdca58e6f9db785222e2e516071f1610488dd8c6281040f0f61c
+  .claude/agents/registrar.md:
+    role: registrar
+    kind: agent
+    template_version: 0.3.3
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 2fa4a12f9c9e77c00cdb0b4ff6718787a10b867da278091418487552cbac3415
+    base_sha256: 227f383da8fd11dac680ef879badac3e9685a312f0c2991acbdf6e787aa3c838
+  .claude/agents/reviewer.md:
+    role: reviewer
+    kind: agent
+    template_version: 0.3.4
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: 3a107b34a7b743c4351ab66d395c071912ac241aa23fc7a8f967aaa888de9bc7
+    base_sha256: cfdfca1821a177df3ed796e7424622c287b64168b95015147ae83be1a7b109f8
+  .claude/agents/verifier.md:
+    role: verifier
+    kind: agent
+    template_version: 0.3.4
+    template_sha256: 33ddc2b392edf765d67de50bf4ffbc66e1b8c3f8987fbce1d54dcbc76fa21cb8
+    rendered_sha256: a40c69fe477873a57852e08ff02e3dd8703f6a9a5a3c9b9a16586012a1bc19dc
+    base_sha256: fc9ea95a32e3eb476492ad19e9cca3978e38d6c8614dbc10bfa8c03cfe7b279c
+  .claude/hooks/org-setup.sh:
+    role: org
+    kind: setup
+    template_version: 0.31.5
+    template_sha256: 9a9c48c7a80049a0ab9fac047bdca6b582cf82dc7c60f07190f133603d4c85b4
+    rendered_sha256: 26d261ead3460e7a2f850d4612f34a759ba3741f3cf2917accf1d3ea9c68fd09
+    base_sha256: null
+  .claude/skills/account-manager/SKILL.md:
+    role: account-manager
+    kind: skill
+    template_version: 0.3.2
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: adf258d0459a6fbfe33cbcf17f13b3f83b35e6a4e0686e72bd5a57e6f6fad578
+    base_sha256: a515d65789b5df9efe99711f8a9401b2e2d66727e61d00ac0c56ab131c5c29e1
+  .claude/skills/builder/SKILL.md:
+    role: builder
+    kind: skill
+    template_version: 0.3.3
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: e07ea7142a2521d21afb398231d3bd0822161a7fc90934bd10913f1abb9cc89a
+    base_sha256: e78e462b64e0e04275a41ec1228401400f14573627f0e92218a82b809cd282f8
+  .claude/skills/ceo/SKILL.md:
+    role: ceo
+    kind: skill
+    template_version: 0.3.6
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: 9b267d567a8b6d9dd75269cf67d560c3a80da543f416a4ff471efd9d068daa29
+    base_sha256: fe7a39000cd5068804f5cf5c88af409486a462d242854242318e67518fcb206a
+  .claude/skills/checks-watch/SKILL.md:
+    role: checks-watch
+    kind: skill
+    template_version: 0.3.7
+    template_sha256: 48b013359069e9c2483fcad09a7480afde759102bad864f94685781dfeb3fec8
+    rendered_sha256: a89a0ab1247bb9e80d4c399da1999fa4fa622d4e915a17fa9b95a80105168ef6
+    base_sha256: 275dafb7562748fae65e2833ee03e3e1b6f72b83289a1573b675641f5499ab86
+  .claude/skills/dispatcher/SKILL.md:
+    role: dispatcher
+    kind: skill
+    template_version: 0.3.6
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: d08e4725b219e3735f4a96579dbd0c74e8a38687846b1e3afabb39adecbdb29c
+    base_sha256: 395d8e8ca0b3b556c2f38ec43b2e47f598a1ee0e8aa13834711178ef40382d9b
+  .claude/skills/doctor/SKILL.md:
+    role: doctor
+    kind: skill
+    template_version: 0.3.12
+    template_sha256: f3b54340181b5477c00e8d9bfd7425d42a47e932766d8382628f71e9ab7068ab
+    rendered_sha256: e9e0f8058a3c7b917147871f218296e8820e76436b4e00b04232101d744993ec
+    base_sha256: 42d4e22a2b812e6b0ab15a39067ba02f95015b49d92f49918469f0453fff0417
+  .claude/skills/methods/SKILL.md:
+    role: methods
+    kind: skill
+    template_version: 0.3.3
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: c9e2a45fdb18874ef369c61e129df2573d6546ba366146df4ef6d5206708e0b8
+    base_sha256: e1ea7f09fbbd3dc797626a89875e8b6665b9aa2b887daedeefebad7102d483fc
+  .claude/skills/registrar/SKILL.md:
+    role: registrar
+    kind: skill
+    template_version: 0.3.3
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: 8bba1fe44b692cb5d594effb3fb78fec0115cb957298f9c2d53de3e2bbb149e7
+    base_sha256: f6add4e9efcd73dd31a17aaa11f7b5134a74642ba48a81b540e3b070507343ca
+  .claude/skills/reviewer/SKILL.md:
+    role: reviewer
+    kind: skill
+    template_version: 0.3.4
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: 305de394c2f0f34b851bb1847f22b37c80ee1c82e9154bc1db29ebe20adf81a0
+    base_sha256: c65c1c3654b47d036254c7b0d95498865595c2c7bd3f2317ae99ed7eefa7c0f8
+  .claude/skills/verifier/SKILL.md:
+    role: verifier
+    kind: skill
+    template_version: 0.3.4
+    template_sha256: 3ada97da0ff62dc146c96b92f78ba0533d6b2765c60773e85afc434b3fe7ebc2
+    rendered_sha256: 0d8bfe016e53defc375664c50ed5283597f86c12644676b18aa3b315db4573b1
+    base_sha256: 43674c39c94bb6338c7db364c4256f2ef2a974e830f8564135f356c66d1d23a6
+  docs/ai/lessons.md:
+    role: org
+    kind: lessons
+    template_version: 0.31.5
+    template_sha256: 0c23ac9bd6d749e0e41a88dce87a803ffd01ed963d254e69a0215578e02cebe2
+    rendered_sha256: 624c859e1fa82f8dc9504dbef674b07823f0e76f5621e9c8316797c018b72bfa
+    base_sha256: dd0cb8f96493cf00ea850bb16dc5f05b4920db609a7047e4c85a2caab0fe3830
+vendored_wheel: .org/wheels/org_core-0.31.5-py3-none-any.whl
