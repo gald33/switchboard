@@ -36,3 +36,9 @@ site/design/agentswitchboard-landing.html
 
 # macOS Finder metadata
 .DS_Store
+# org-core: managed file, must reach a fresh container (row 93)
+!.claude/skills/
+# org-core: managed file, must reach a fresh container (row 93)
+!.claude/settings.json
+# org-core: managed file, must reach a fresh container (row 93)
+!.mcp.json

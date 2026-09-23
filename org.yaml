@@ -1,0 +1,76 @@
+schema_version: 1
+manifest_version: 1
+org:
+  id: switchboard
+  repo: gald33/switchboard
+  default_branch: main
+  checkout: /home/user/switchboard
+  operator: { name: Gal, github: gald33 }
+  account: "80843d50-af81-43f7-bad1-91b400116ad3"
+  paths:
+    watchlist: docs/ai/ceo-watchlist.md
+ports:
+  work_store:
+    tool: roadmap-core
+    mode: files
+    files: roadmap/
+    cli: roadmap
+  coordination:
+    tool: switchboard
+    url: https://switchboard.lucille-ai.com
+    workspace: gald33/switchboard
+  code_context:
+    tool: repoctx
+    ranker: lexical
+  checks:
+    tool: absent
+  tickets:
+    tool: github-issues
+    label: ticket
+  prod_read:
+    method: "readonly-key: the hub at https://switchboard.lucille-ai.com, read with a read-only key from $SWITCHBOARD_READ_KEY (never the write key)"
+  vcs:
+    tool: github
+    workflows_owned: []
+  sessions:
+    tool: claude-code-remote
+  operator_surface: docs/human/state-of-the-org.md
+operator_owns: {}
+roles:
+  ceo:
+    name: Link
+  dispatcher:
+    name: Marshal
+  builder:
+    name: Mason
+  reviewer:
+    name: Reed
+  verifier:
+    name: Vera
+  checks-watch:
+    name: Gus
+  registrar:
+    name: Nora
+  account-manager:
+    name: Ruth
+  methods:
+    name: Ida
+  doctor:
+    name: Doc
+budget:
+  daily_usd: <from the ledger>
+  at_80_percent: warn
+  at_100_percent: pause
+knobs:
+  dispatcher.cap:
+    default: 3
+    range:
+    - 0
+    - 6
+fleet:
+  report_to: gald33/org-core/fleet/switchboard
+  sends:
+  - doctor_report
+  - run_ledger_delta
+  - knob_overrides
+  - install_log
