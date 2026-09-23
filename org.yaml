@@ -41,22 +41,39 @@ roles:
     name: Link
   dispatcher:
     name: Marshal
+    cadence: "20 */6 * * *"
+    cadence_label: "every 6h"
   builder:
     name: Mason
   reviewer:
     name: Reed
   verifier:
     name: Vera
+    cadence: "20 5 * * 1,4"
+    cadence_label: "Mon & Thu 05:20Z"
+    period_hours: 96
   checks-watch:
     name: Gus
+    cadence: "45 6 * * 1,4"
+    cadence_label: "Mon & Thu 06:45Z"
+    period_hours: 96
   registrar:
     name: Nora
+    cadence: "0 7 * * 1,4"
+    cadence_label: "Mon & Thu 07:00Z"
+    period_hours: 96
   account-manager:
     name: Ruth
+    cadence: "15 7 * * 1,4"
+    cadence_label: "Mon & Thu 07:15Z"
+    period_hours: 96
   methods:
     name: Ida
   doctor:
     name: Doc
+    cadence: "0 9 * * 1,4"
+    cadence_label: "Mon & Thu 09:00Z"
+    period_hours: 96
 budget:
   daily_usd: <from the ledger>
   at_80_percent: warn
