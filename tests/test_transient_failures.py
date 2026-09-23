@@ -92,3 +92,33 @@ def test_the_listener_counts_a_timeout_as_a_retry_not_a_death(monkeypatch, capsy
     assert cli.cmd_listen(args) == cli.EXIT_ERROR
     assert len(attempts) == 3, "it should have spent its retries, not died on the first"
     assert "3/3" in capsys.readouterr().err
+
+
+def test_a_listener_room_that_crashes_is_reported_not_waited_on(monkeypatch, capsys):
+    """Found while adding a roster read to each pass: an exception nobody
+    anticipated killed the room's thread, and with no deadline `cmd_listen`
+    waited forever on a queue nothing would write to again."""
+    import argparse
+
+    from switchboard import cli
+
+    class BrokenHub:
+        agent_id = "me"
+        encrypted = True
+        config = type("C", (), {"url": "https://hub.example.com", "workspace": "w"})()
+
+        def health(self): return {"ok": True}
+        def agents(self): return []
+        def board_delete(self, *a, **kw): return True
+
+        def register(self, **kw):
+            raise ValueError("something nobody planned for")
+
+    monkeypatch.setattr(cli, "_make_client", lambda args: BrokenHub())
+    args = argparse.Namespace(
+        until=None, channel=None, ttl=1.0, max_fails=3, quiet=True,
+        agent_id="me", execution_class=None, effort=None, json=False,
+        no_lobby=True)
+
+    assert cli.cmd_listen(args) == cli.EXIT_ERROR
+    assert "something nobody planned for" in capsys.readouterr().err

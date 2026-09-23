@@ -2470,7 +2470,8 @@ def cmd_dm(args: argparse.Namespace) -> int:
         target = _resolve_recipient(hub, args.to, Fmt(_use_color(sys.stdout)))
         msg = hub.send(target, wrap_forecast(body, forecast),
                        type=args.type, thread=args.thread, ttl=args.ttl)
-        listener = {} if args.quiet else _listener_state(hub, peer=target)
+        listener = {} if args.quiet else _listener_state(hub, peer=target,
+                                                              sent_type=args.type)
     if args.json:
         _print_json({**msg, **({"listener": listener} if listener else {}),
                      **({"timing_forecast": sender_forecast(forecast)}
@@ -2518,7 +2519,8 @@ def cmd_whisper(args: argparse.Namespace) -> int:
                   "`--strict` refuses rather than downgrading.", file=sys.stderr)
             msg = hub.send(target, wrap_forecast(body, forecast), type=args.type, ttl=args.ttl)
         unread = hub.unread_dms
-        listener = {} if args.quiet else _listener_state(hub, peer=target)
+        listener = {} if args.quiet else _listener_state(hub, peer=target,
+                                                              sent_type=args.type)
     if args.json:
         _print_json({**msg, "unread_dms": unread, "sealed_to_peer": not downgraded,
                      **({"listener": listener} if listener else {}),
@@ -2552,7 +2554,8 @@ def _print_unread(count: int) -> None:
 _LISTENER_ADVISED = False
 
 
-def _listener_state(hub: Client, *, peer: str | None = None) -> dict[str, Any]:
+def _listener_state(hub: Client, *, peer: str | None = None,
+                    sent_type: str | None = None) -> dict[str, Any]:
     """Which end of the message just sent can be woken by an answer to it.
 
     One board read answers both halves, because both come off the same
@@ -2570,18 +2573,22 @@ def _listener_state(hub: Client, *, peer: str | None = None) -> dict[str, Any]:
     board read that fails costs the advice and not the send.
     """
     try:
-        parked = rendezvous.reachable_now(
-            hub.board_list(prefix=rendezvous.LISTENER_PREFIX)
-        )
+        entries = hub.board_list(prefix=rendezvous.LISTENER_PREFIX)
     except Exception:  # noqa: BLE001 - advice about a send that already happened
         return {}
+    parked = rendezvous.reachable_now(entries)
     state: dict[str, Any] = {"you_parked": hub.agent_id in parked}
     if peer is not None:
         state["peer_parked"] = peer in parked
+        dnd = rendezvous.dnd_now(entries).get(peer)
+        if dnd and state["peer_parked"]:
+            state["peer_dnd"] = dnd
+            state["peer_advice"] = rendezvous.dnd_advice(dnd, sent_type)
     # The prose comes from `rendezvous` so that `--json` here and the MCP
     # bridge's `listener` field are the same sentence, not two that drift.
     state["next"] = rendezvous.listener_advice(
-        you_parked=state["you_parked"], peer_parked=state.get("peer_parked")
+        you_parked=state["you_parked"], peer_parked=state.get("peer_parked"),
+        peer_dnd=state.get("peer_dnd"), sent_type=sent_type,
     )
     return state
 
@@ -2599,7 +2606,9 @@ def _print_listener_advice(
     global _LISTENER_ADVISED
     if not state:
         return
-    if peer is not None:
+    if peer is not None and state.get("peer_advice"):
+        print(fmt.dim(state["peer_advice"]))
+    elif peer is not None:
         print(fmt.dim(
             "their listener is parked, so an answer can arrive within seconds."
             if state.get("peer_parked") else
@@ -2760,6 +2769,18 @@ _LISTEN_MEANS = (
     "listening and nothing will revive it"
 )
 
+#: What the heartbeat says on do-not-disturb, where "parked" alone would
+#: promise a reply in seconds that is not coming.
+_DND_MEANS = (
+    "this agent is parked on do-not-disturb: only messages of type {types} "
+    "wake it before {until}; anything else waits, unread, until then. If this "
+    "key is gone, nobody is listening and nothing will revive it"
+)
+
+#: How long after do-not-disturb ends a deferred direct message is still
+#: kept: the woken session has to get to its inbox, and that is a turn.
+_HOLD_GRACE = 3600.0
+
 #: 0 woken, 1 never watched anything, 2 reached the deadline. Distinct because
 #: a woken agent has to tell them apart to know what to do next.
 EXIT_DEADLINE = 2
@@ -2837,9 +2858,42 @@ class _Post:
         self.heartbeat = rendezvous.listener_key(hub.agent_id)
         self.fails = 0
         self.passes = 0
+        #: Do-not-disturb bookkeeping: how far past the cursor this listener
+        #: has already looked, and how many messages it let lie.
+        self.since: int | None = None
+        self.skipped = 0
+        #: None until tried; False once the hub has said it cannot hold.
+        self.hold_ok: bool | None = None
+        #: The agent's own `--back-in`, as an absolute time, and the last
+        #: value this process wrote — see `_back_in`.
+        self.declared_back: float | None = None
+        self.back_written: float | None = None
 
     def __str__(self) -> str:
         return f"{self.workspace} [{self.role}]"
+
+
+class _Wake:
+    """Which messages end the park. The wake/skip seam.
+
+    No types: every message wakes, which is right for a session that armed
+    the listener because it is waiting on a reply. With types it is
+    do-not-disturb: only a message whose sender declared one of them — `dm
+    --type urgent` — wakes the agent, and everything else waits, unread, for
+    the next time it looks. The judgment stays with the sender, who knows
+    whether it is urgent; the listener only reads what was declared.
+
+    One method taking the whole batch, so a later filter (a body match, a
+    lease the agent holds) is a change here and nowhere else.
+    """
+
+    def __init__(self, types: Sequence[str] | None = None) -> None:
+        self.types = frozenset(t for t in (types or ()) if t)
+
+    def select(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.types:
+            return messages
+        return [m for m in messages if m.get("type") in self.types]
 
 
 def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
@@ -2955,16 +3009,93 @@ def _choose_wake(pending: list[tuple[_Post, list[dict[str, Any]]]],
     return min(pending, key=lambda item: posts.index(item[0]))
 
 
+def _back_in(post: _Post, deadline: float | None, now: float) -> float | None:
+    """What this pass tells the roster about when the agent is back.
+
+    The listener used to send its own deadline, or nothing, on every pass —
+    and presence replaces `expected_back` rather than merging it, so an agent
+    that ran `checkin --back-in 2400` before parking had its statement painted
+    over within 25 seconds. The agent's word is the one a peer wants: it says
+    when the work ends, and the listener's deadline only says when this
+    process gives up.
+
+    So read the roster row first and keep whatever the agent declared, and
+    take the later of that and the deadline — a parked agent is reachable
+    until the deadline whatever it said, and busy until its own time whatever
+    this process does. A value that is not the one this process last wrote is
+    a new declaration (the agent ran `checkin` mid-park); an absent one after
+    this process wrote one is the agent clearing it.
+    """
+    try:
+        row = next((a for a in post.hub.agents() if a.get("agent_id") == post.agent_id),
+                   None)
+    except Exception:  # noqa: BLE001 - advisory: a failed read keeps what we knew
+        row = None
+    if row is not None:
+        current = row.get("back_in")
+        current_at = now + current if isinstance(current, (int, float)) and current > 0 \
+            else None
+        if current_at is None:
+            # Never declared, cleared by the agent, or only our own value
+            # lapsing: in every case there is no statement left to keep.
+            post.declared_back = None
+        elif post.back_written is None or abs(current_at - post.back_written) > 2.0:
+            post.declared_back = current_at
+    candidates = [t for t in (post.declared_back, deadline) if t and t > now]
+    if not candidates:
+        post.back_written = None
+        return None
+    post.back_written = max(candidates)
+    return post.back_written - now
+
+
+def _heartbeat(post: _Post, wake: "_Wake", deadline: float | None, described: str,
+               source: str) -> dict[str, Any]:
+    """The `listener/<id>` value: what wakes this agent, and until when.
+
+    `waiting_on` names the channels when `-c` chose them — it used to say
+    "inbox" whatever the listener was actually watching. On do-not-disturb
+    the value declares the posture rather than keeping it private: which
+    message types still wake the agent, when it reads everything else, and
+    whether that everything else is being kept alive until then. That is the
+    question a peer about to post actually has.
+    """
+    value: dict[str, Any] = {
+        "pass": post.passes, "pid": os.getpid(),
+        "waiting_on": list(post.channels) if post.channels else "inbox",
+        "room": post.role,
+        **({"until": described, "until_source": source} if deadline else {}),
+        "means": _LISTEN_MEANS,
+    }
+    if wake.types:
+        value["dnd"] = {
+            "wakes_on_types": sorted(wake.types),
+            "reads_everything_else_at": described,
+            "dms_held": post.hold_ok,
+            "skipped": post.skipped,
+        }
+        value["means"] = _DND_MEANS.format(
+            types=", ".join(sorted(wake.types)), until=described)
+    return value
+
+
 def _park(post: _Post, identity: Identity, deadline: float | None, described: str,
           source: str, heartbeat_ttl: float, max_fails: int,
-          stop: threading.Event, events: "queue.Queue[tuple[str, _Post, Any]]") -> None:
+          stop: threading.Event, events: "queue.Queue[tuple[str, _Post, Any]]",
+          wake: "_Wake | None" = None) -> None:
     """One room's loop: announce, heartbeat, peek, until something happens.
 
     Reports to `events` and returns; the process decides what a report means.
     Three kinds: a message (the wake), the deadline, or this room giving up
     after too many consecutive hub errors — which is not the process giving
     up, if another room is still being watched.
+
+    With `wake.types` set this is do-not-disturb: a message of another type is
+    not a wake. It is left exactly where it was — the read is a peek — and the
+    next poll starts past it, so the long-poll waits for something new rather
+    than returning the same skipped message every pass.
     """
+    wake = wake or _Wake()
     hub = post.hub
     try:
         while not stop.is_set():
@@ -2985,8 +3116,8 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                 # most reachable an agent ever is, and without this the
                 # roster says it does not exist: `agents` comes back empty
                 # and `dm` warns the sender their message will be read by
-                # nobody. `back_in` is the deadline, so an empty roster can
-                # be told from one that is merely between turns.
+                # nobody. `back_in` says when to expect it (`_back_in`), so
+                # an empty roster can be told from one between turns.
                 hub.register(
                     name=identity.name, kind=identity.kind,
                     branch=identity.branch,
@@ -2994,25 +3125,32 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                     # business; what the agent is working on is the agent's,
                     # and a listener that rewrites it every pass turns the
                     # roster into a fight between two writers under one id.
-                    # `back_in` below already renders as "away 12m", which
-                    # is the fact a peer actually wants.
-                    # None, not []: without a `-c` this process has
-                    # nothing to say about subscriptions, and saying []
-                    # every pass was how it removed them.
-                    channels=post.channels,
+                    # `back_in` already renders as "away 12m", which is the
+                    # fact a peer actually wants.
+                    # And deliberately no channels, even with `-c`: the
+                    # listener reads the channels it names by naming them on
+                    # `inbox`, and needs no subscription to do it. Sending
+                    # them here replaced the agent's own subscriptions with
+                    # the listener's for as long as it was parked.
+                    channels=None,
                     meta=identity.meta, ttl=heartbeat_ttl,
-                    back_in=(deadline - time.time()) if deadline else None,
+                    back_in=_back_in(post, deadline, time.time()),
                 )
-                hub.board_set(post.heartbeat, {
-                    "pass": post.passes, "pid": os.getpid(), "waiting_on": "inbox",
-                    "room": post.role,
-                    **({"until": described, "until_source": source} if deadline else {}),
-                    "means": _LISTEN_MEANS,
-                }, ttl=heartbeat_ttl)
+                if wake.types:
+                    _hold(post, deadline)
+                hub.board_set(post.heartbeat,
+                              _heartbeat(post, wake, deadline, described, source),
+                              ttl=heartbeat_ttl)
                 # peek: this process shares a read cursor with the session
                 # it serves, so draining would consume the very message it
                 # woke that session to read. The woken session drains.
-                messages = hub.inbox(channels=post.channels, wait=wait, peek=True)
+                # On do-not-disturb, the hub's largest page: the next poll
+                # starts past the newest message seen, so an urgent one that
+                # did not fit on this page would be stepped over, unread by
+                # the filter and unwoken-for.
+                messages = hub.inbox(channels=post.channels, wait=wait, peek=True,
+                                     since=post.since,
+                                     limit=1000 if wake.types else 100)
             except (SwitchboardError, OSError, httpx.HTTPError) as exc:
                 # httpx.HTTPError belongs here as much as the other two,
                 # and its absence killed a listener in production: one
@@ -3030,9 +3168,30 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                 time.sleep(min(post.fails * 2, 10))
                 continue
             post.fails = 0
-            if messages:
-                events.put(("message", post, messages))
+            if not messages:
+                continue
+            matched = wake.select(messages)
+            if matched:
+                # What arrived alongside the wake and did not cause it is
+                # deferred too; the payload's count must include it.
+                post.skipped += len(messages) - len(matched)
+                events.put(("message", post, matched))
                 return
+            # Nothing that wakes. Remember how far we looked, so the next
+            # long-poll waits for something newer instead of handing back
+            # the same deferred messages at once and spinning.
+            seqs = [m["seq"] for m in messages if isinstance(m.get("seq"), int)]
+            if seqs:
+                post.since = max([*seqs, post.since or 0])
+            post.skipped += len(messages)
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        # A thread that dies silently leaves `cmd_listen` waiting on a queue
+        # nothing will ever write to: with no deadline, forever, which is the
+        # quiet failure this whole command exists to prevent. Whatever went
+        # wrong, the process has to hear that this room is no longer watched.
+        print(f"listen: stopped watching {post}: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        events.put(("gone", post, None))
     finally:
         # Best effort, and only best effort: the TTL is what makes a dead
         # listener visible. This makes a deliberate stop visible sooner.
@@ -3040,6 +3199,33 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             hub.board_delete(post.heartbeat)
         except (SwitchboardError, OSError, httpx.HTTPError):
             pass
+
+
+def _hold(post: _Post, deadline: float | None) -> None:
+    """Keep deferred direct messages alive until the agent reads them.
+
+    "Delay, never drop": do-not-disturb leaves ordinary messages unread, and
+    the hub expires unread messages on the same hour as read ones. Each pass
+    extends this agent's unread DMs to the end of do-not-disturb plus
+    `_HOLD_GRACE` — time for the woken session to get to its inbox. A hub
+    that predates the endpoint answers 404, once: the listener says so and
+    carries on, because deferring is still better than being interrupted,
+    and the heartbeat's `dms_held: false` tells a peer the difference.
+    """
+    if post.hold_ok is False or deadline is None:
+        return
+    ttl = max(0.0, deadline - time.time()) + _HOLD_GRACE
+    try:
+        post.hub.hold_dms(ttl)
+        post.hold_ok = True
+    except SwitchboardError as exc:
+        if getattr(exc, "status", None) in (404, 405):
+            post.hold_ok = False
+            print(f"listen: {post.hub.config.url} cannot hold messages (it predates "
+                  "POST /messages/hold); direct messages deferred past their own "
+                  "TTL will expire unread", file=sys.stderr)
+            return
+        raise
 
 
 def cmd_listen(args: argparse.Namespace) -> int:
@@ -3066,6 +3252,17 @@ def cmd_listen(args: argparse.Namespace) -> int:
         print(f"listen: {described} ({source}) is already past", file=sys.stderr)
         return EXIT_DEADLINE
 
+    wake = _Wake(getattr(args, "wake_types", None))
+    if wake.types and deadline is None:
+        # A filtered listener that never matches is indistinguishable from a
+        # dead one, and "until when?" is the question a peer deciding whether
+        # to wait needs answered. Do-not-disturb with no end is the quiet-room
+        # failure wearing a badge.
+        print("listen: --type needs --until: do-not-disturb has to say when it "
+              "ends, or it looks exactly like an agent that is gone",
+              file=sys.stderr)
+        return EXIT_ERROR
+
     identity = detect_identity(agent_id=args.agent_id)
     heartbeat_ttl = args.ttl or _LISTEN_TTL
     posts = _listen_posts(args, identity)
@@ -3088,7 +3285,9 @@ def cmd_listen(args: argparse.Namespace) -> int:
     if not args.quiet:
         where = " and ".join(f"as {post.agent_id} in {post}" for post in posts)
         print(f"listen: parked {where}"
-              + (f" until {described} [{source}]" if deadline else ""),
+              + (f" until {described} [{source}]" if deadline else "")
+              + (f", waking only on type {', '.join(sorted(wake.types))}"
+                 if wake.types else ""),
               file=sys.stderr)
 
     events: "queue.Queue[tuple[str, _Post, Any]]" = queue.Queue()
@@ -3097,7 +3296,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
         threading.Thread(
             target=_park,
             args=(post, identity, deadline, described, source, heartbeat_ttl,
-                  args.max_fails, stop, events),
+                  args.max_fails, stop, events, wake),
             daemon=True, name=f"listen:{post.role}",
         )
         for post in posts
@@ -3133,6 +3332,11 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     "messages": chosen_messages,
                     "room": chosen.workspace, "role": chosen.role,
                     "agent_id": chosen.agent_id,
+                    # On do-not-disturb the wake is the urgent message alone;
+                    # say how much else is waiting, so the session knows its
+                    # `inbox` holds more than what woke it.
+                    **({"deferred": sum(p.skipped for p in posts)}
+                       if wake.types else {}),
                 })
                 if not args.quiet:
                     print(f"listen: message arrived in {chosen} on pass "
@@ -7055,6 +7259,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --until forecast:…, the kind of work ahead")
     p.add_argument("--effort", choices=["low", "medium", "high"],
                    help="with --until forecast:…, the rough size of it")
+    p.add_argument(
+        "--type", dest="wake_types", action="append", metavar="TYPE",
+        help="do-not-disturb: wake only on messages of this type (repeatable), "
+             "e.g. `--type urgent` for senders who ran `dm --type urgent`. "
+             "Everything else stays unread for your next `inbox`, and your "
+             "unread direct messages are kept alive until --until plus an hour "
+             "so none expire while you are busy. Requires --until; the "
+             "heartbeat declares what wakes you and when you read the rest.",
+    )
     p.add_argument("--ttl", type=float,
                    help=f"heartbeat TTL in seconds (default {int(_LISTEN_TTL)})")
     p.add_argument("--max-fails", type=int, default=5,

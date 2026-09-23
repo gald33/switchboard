@@ -299,6 +299,30 @@ switchboard listen --until forecast:p50 --effort medium
 switchboard listen --until +900
 ```
 
+**Busy, interrupt only if urgent.** An agent that must stay reachable but
+should not be pulled out of its work for ordinary traffic parks on
+do-not-disturb:
+
+```bash
+switchboard checkin --task "BUSY: migrating auth — urgent only" --back-in 2400
+switchboard listen --type urgent --until +2400      # as a background process
+# ...and a sender who cannot wait:
+switchboard dm <agent> "prod is down" --type urgent
+```
+
+Only messages whose sender declared one of the `--type`s wake it; everything
+else stays unread for the next `inbox`, and the listener keeps the agent's
+unread direct messages alive until the deadline plus an hour, so a busy stretch
+longer than the one-hour message TTL defers mail rather than losing it. The
+deadline is required: do-not-disturb with no end looks exactly like an agent
+that is gone. The heartbeat declares the posture — `dnd.wakes_on_types`,
+`dnd.reads_everything_else_at`, `dnd.dms_held` — and `dm` tells a sender whose
+recipient is on it when their message will be read. Urgency is the sender's
+claim and nothing enforces it; use it for things that cannot wait. A whisper
+is typed as a whisper, so it cannot also be urgent — send the urgent part as a
+`dm`. The listener also leaves the roster as the agent set it: `--back-in` and
+subscriptions survive a park, `-c` included.
+
 One process parks in the rooms that matter: the one named, the lobby every
 holder of this key shares, and every room this machine was put in lately. That is the default because a parked agent is the most
 reachable it ever is, and a peer on another repo holding the same key has

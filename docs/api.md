@@ -166,7 +166,22 @@ blanks what you published.
  "body": "rebasing onto main", "type": "note", "thread": null, "ttl": 3600}
 ```
 `body` may be any JSON value. A direct message is a post to channel
-`@<recipient_agent_id>`.
+`@<recipient_agent_id>`. `type` is free-form and travels in the clear; a
+listener on do-not-disturb (`switchboard listen --type urgent`) wakes only on
+the types it names, so `urgent` is the conventional way to say "this cannot
+wait".
+
+### `POST /messages/hold`
+```json
+{"workspace": "my-repo", "agent_id": "...", "ttl": 7200}
+```
+Keep the caller's own **unread** direct messages (`@<agent_id>`, past its
+cursor, not sent by itself) alive for `ttl` more seconds. Returns
+`{"held": <count>, "until": <iso>}`. Only ever lengthens a message's life,
+and never past `MAX_MESSAGE_TTL` (a day) after the message was posted, so a
+held message still expires on its own. A do-not-disturb listener calls this
+every pass, so that deferring a message is a delay rather than a loss. Needs
+write access, like any other write.
 
 ### `GET /inbox`
 | Param | Meaning |

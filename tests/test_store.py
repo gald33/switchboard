@@ -500,3 +500,54 @@ def test_a_first_registration_without_channels_is_simply_unsubscribed(store):
     store.register_agent(workspace=WS, agent_id="a", name="a", ttl=60)
 
     assert store.list_agents(workspace=WS)[0].channels == []
+
+
+# --- holding deferred mail ----------------------------------------------------
+#
+# Do-not-disturb leaves ordinary messages unread on purpose, and the hub used
+# to expire them on the same hour as everything else — so a busy stretch longer
+# than that lost exactly the mail it was deferring. A hold makes deferring a
+# delay: it lengthens unread messages, and only those, and never forever.
+
+
+def test_a_hold_keeps_unread_mail_past_its_own_ttl(store):
+    store.post(workspace=WS, channel="@a1", sender="a2", body="later", ttl=60, now=1000.0)
+    held = store.hold_unread(workspace=WS, channel="@a1", agent_id="a1",
+                             until=5000.0, ceiling=86400, now=1010.0)
+    assert held == 1
+    got = store.read(workspace=WS, channels=["@a1"], agent_id="a1", now=4000.0)
+    assert [m.body for m in got] == ["later"]
+
+
+def test_a_hold_does_not_touch_what_was_already_read(store):
+    store.post(workspace=WS, channel="@a1", sender="a2", body="read", ttl=60, now=1000.0)
+    store.read(workspace=WS, channels=["@a1"], agent_id="a1", now=1001.0)
+    store.post(workspace=WS, channel="@a1", sender="a2", body="unread", ttl=60, now=1002.0)
+    assert store.hold_unread(workspace=WS, channel="@a1", agent_id="a1",
+                             until=5000.0, ceiling=86400, now=1010.0) == 1
+    got = store.peek(workspace=WS, channel="@a1", now=2000.0)
+    assert [m.body for m in got] == ["unread"]
+
+
+def test_a_hold_never_shortens_a_message(store):
+    store.post(workspace=WS, channel="@a1", sender="a2", body="long", ttl=9000, now=1000.0)
+    assert store.hold_unread(workspace=WS, channel="@a1", agent_id="a1",
+                             until=2000.0, ceiling=86400, now=1010.0) == 0
+    assert [m.body for m in store.peek(workspace=WS, channel="@a1", now=9000.0)] == ["long"]
+
+
+def test_a_held_message_still_expires(store):
+    """Every record must expire: a hold is bounded by a ceiling measured from
+    when the message was posted, however often it is renewed."""
+    store.post(workspace=WS, channel="@a1", sender="a2", body="x", ttl=60, now=1000.0)
+    store.hold_unread(workspace=WS, channel="@a1", agent_id="a1",
+                      until=10**9, ceiling=500, now=1010.0)
+    assert store.peek(workspace=WS, channel="@a1", now=1499.0) != []
+    assert store.peek(workspace=WS, channel="@a1", now=1501.0) == []
+
+
+def test_a_hold_is_for_mail_to_you_not_from_you(store):
+    store.post(workspace=WS, channel="@a1", sender="a1", body="note to self", ttl=60,
+               now=1000.0)
+    assert store.hold_unread(workspace=WS, channel="@a1", agent_id="a1",
+                             until=5000.0, ceiling=86400, now=1010.0) == 0

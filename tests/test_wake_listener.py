@@ -534,3 +534,134 @@ def test_only_parks_in_the_named_room_and_nowhere_else(listener, live_hub, tmp_p
     here.close()
     assert result.returncode == 2, result.stderr
     assert elsewhere in result.stderr and listener.workspace + " [" not in result.stderr
+
+
+# --- what a listener writes about the agent it serves ------------------------
+#
+# Three places the listener used to speak for the agent and get it wrong,
+# reported together from a coordinating agent that wanted to park on an urgent
+# channel while it worked: `-c` replaced its subscriptions, every pass painted
+# over its own `--back-in`, and the heartbeat said "inbox" whatever it watched.
+
+
+def _row(listener):
+    return next((a for a in listener.client("observer").agents()
+                 if a["agent_id"] == listener.agent_id), None)
+
+
+def _wait_for(predicate, timeout=20):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.25)
+    return None
+
+
+def test_naming_channels_does_not_replace_your_subscriptions(listener):
+    me = listener.client(listener.agent_id)
+    me.register(name="worker", channels=["general"], ttl=120)
+
+    assert listener("-c", "ceo-urgent", "--until", "+3", timeout=30).returncode == 2
+
+    assert _row(listener)["channels"] == ["general"]
+
+
+def test_parking_keeps_the_agents_own_back_in(listener):
+    """The agent said "back in 40 minutes"; a listener parked for 15 seconds
+    must not tell the roster otherwise."""
+    listener.client(listener.agent_id).register(name="worker", back_in=2400, ttl=120)
+    proc = listener.start("--until", "+15")
+    try:
+        board = listener.client("observer")
+        assert _wait_for(lambda: board.board_entry(f"listener/{listener.agent_id}")
+                         and (board.board_entry(f"listener/{listener.agent_id}")
+                              ["value"]["pass"] >= 1)), "never parked"
+        row = _row(listener)
+        assert row["back_in"] > 2000, row
+    finally:
+        proc.wait(timeout=60)
+
+
+def test_the_heartbeat_names_the_channels_it_watches(listener):
+    proc = listener.start("-c", "ceo-urgent", "--until", "+10")
+    try:
+        board = listener.client("observer")
+        entry = _wait_for(lambda: board.board_entry(f"listener/{listener.agent_id}"))
+        assert entry is not None
+        assert entry["value"]["waiting_on"] == ["ceo-urgent"]
+    finally:
+        proc.wait(timeout=60)
+
+
+# --- do-not-disturb ----------------------------------------------------------
+
+
+def test_do_not_disturb_wakes_on_urgent_and_leaves_the_rest_unread(listener):
+    target = listener.agent_id
+    peer = listener.client("peer")
+    peer.post(f"@{target}", "whenever you get a chance")
+    proc = listener.start("--type", "urgent", "--until", "+40")
+    try:
+        board = listener.client("observer")
+        # Parked past the ordinary message, not woken by it.
+        assert _wait_for(lambda: (board.board_entry(f"listener/{target}") or {})
+                         .get("value", {}).get("pass", 0) >= 2), "never re-polled"
+        assert proc.poll() is None, "an ordinary message woke a do-not-disturb listener"
+        peer.post(f"@{target}", "prod is down", type="urgent")
+        out, err = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0, err
+    payload = json.loads(out)
+    assert [m["body"] for m in payload["messages"]] == ["prod is down"]
+    assert payload["deferred"] == 1
+    # Delay, never drop: both are still waiting for the woken session.
+    assert [m["body"] for m in listener.client(target).inbox()] == [
+        "whenever you get a chance", "prod is down"]
+
+
+def test_do_not_disturb_with_nothing_urgent_comes_back_at_its_deadline(listener):
+    target = listener.agent_id
+    listener.client("peer").post(f"@{target}", "not urgent")
+
+    result = listener("--type", "urgent", "--until", "+4", timeout=60)
+
+    assert result.returncode == 2, result.stderr
+    assert "waking only on type urgent" in result.stderr
+    assert [m["body"] for m in listener.client(target).inbox()] == ["not urgent"]
+
+
+def test_do_not_disturb_needs_an_end(listener):
+    """A filtered listener that never matches looks exactly like a dead one;
+    the deadline is what tells them apart."""
+    result = listener("--type", "urgent", timeout=30)
+    assert result.returncode == 1
+    assert "--type needs --until" in result.stderr
+
+
+def test_do_not_disturb_is_declared_and_keeps_deferred_mail_alive(listener):
+    target = listener.agent_id
+    msg = listener.client("peer").post(f"@{target}", "short-lived", ttl=60)
+    proc = listener.start("--type", "urgent", "--until", "+10")
+    try:
+        board = listener.client("observer")
+        entry = _wait_for(lambda: (lambda e: e if e and "dnd" in e["value"] else None)(
+            board.board_entry(f"listener/{target}")))
+        assert entry is not None, "the heartbeat never declared do-not-disturb"
+        dnd = entry["value"]["dnd"]
+        assert dnd["wakes_on_types"] == ["urgent"]
+        assert dnd["reads_everything_else_at"] == entry["value"]["until"]
+        assert dnd["dms_held"] is True
+        assert "do-not-disturb" in entry["value"]["means"]
+    finally:
+        proc.wait(timeout=60)
+    # Held to the deadline plus an hour, not left on its own 60 seconds.
+    waiting = listener.client(target).inbox(peek=True)
+    assert [m["seq"] for m in waiting] == [msg["seq"]]
+    from datetime import datetime
+    expires = datetime.fromisoformat(waiting[0]["expires_at"].replace("Z", "+00:00"))
+    created = datetime.fromisoformat(waiting[0]["created_at"].replace("Z", "+00:00"))
+    assert (expires - created).total_seconds() > 3000

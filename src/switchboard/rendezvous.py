@@ -197,12 +197,48 @@ def reachable_now(board_keys: Any) -> set[str]:
     return out
 
 
+def dnd_now(board_keys: Any) -> dict[str, dict[str, Any]]:
+    """Which parked agents are on do-not-disturb, and on what terms.
+
+    From the same `listener/` listing as `reachable_now`. A listener parked
+    with `listen --type …` declares it in its heartbeat — which types still
+    wake the agent and when it reads the rest — so a sender can be told that
+    "parked" does not mean "answers in seconds" for what it just sent.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for entry in board_keys or ():
+        if not isinstance(entry, dict):
+            continue
+        key, value = entry.get("key"), entry.get("value")
+        if (key and key.startswith(LISTENER_PREFIX) and isinstance(value, dict)
+                and isinstance(value.get("dnd"), dict)):
+            out[key[len(LISTENER_PREFIX):]] = value["dnd"]
+    return out
+
+
+def dnd_advice(dnd: dict[str, Any], sent_type: str | None) -> str:
+    """One sentence for a sender whose recipient is on do-not-disturb."""
+    types = [str(t) for t in dnd.get("wakes_on_types") or ()]
+    until = dnd.get("reads_everything_else_at") or "the end of their busy stretch"
+    if sent_type in types:
+        return (f"Their listener is on do-not-disturb, and this was sent as "
+                f"{sent_type}, which wakes them — an answer can arrive within seconds.")
+    listed = ", ".join(types) or "?"
+    held = (" It is kept for them until then." if dnd.get("dms_held")
+            else "")
+    return (f"Their listener is on do-not-disturb until {until}: only type {listed} "
+            f"wakes them before then, so they read this then.{held} Resend with "
+            f"type {types[0] if types else listed} only if it cannot wait.")
+
+
 #: What to say after a message has been sent, given who is parked. Here rather
 #: than in either surface because both must say the same thing: the CLI prints
 #: it after `say`/`dm`/`whisper` and returns it under `--json`, and the MCP
 #: bridge returns it on the same three tools. One string, one place to correct
 #: it, the same reason `guidance.py` holds the protocol text for both.
-def listener_advice(*, you_parked: bool, peer_parked: bool | None = None) -> str:
+def listener_advice(*, you_parked: bool, peer_parked: bool | None = None,
+                    peer_dnd: dict[str, Any] | None = None,
+                    sent_type: str | None = None) -> str:
     """The next move after sending, in one sentence per end of the exchange.
 
     Two facts decide when a conversation actually happens, and only one of
@@ -219,7 +255,9 @@ def listener_advice(*, you_parked: bool, peer_parked: bool | None = None) -> str
     of it reachable.
     """
     parts = []
-    if peer_parked is not None:
+    if peer_parked and peer_dnd:
+        parts.append(dnd_advice(peer_dnd, sent_type))
+    elif peer_parked is not None:
         parts.append(
             "A listener is parked for them, so an answer can arrive within seconds."
             if peer_parked else

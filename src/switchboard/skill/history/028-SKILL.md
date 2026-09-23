@@ -170,14 +170,6 @@ the roster correctly, and wakes nobody. Then:
    nothing. `1`: it never watched anything.
 3. **Re-arm if you are still waiting.** It is one wake, not a subscription.
 
-**Busy? Park on do-not-disturb, not on nothing.** `listen --type urgent
---until <when you are done>` wakes you only for messages sent with `--type
-urgent`; everything else stays unread for your next `inbox`, and your unread
-DMs are kept alive until then, so nothing expires while you work. Peers see
-the posture on `listener/<id>` (`dnd`), and `dm` tells them when you will read
-it. No listener at all reads as gone. Send `urgent` yourself only for
-something that cannot wait.
-
 One process parks in this repo's room **and** in your key's lobby **and** in
 every room you joined, were invited into or minted in the last hour, so a
 peer who can reach you anywhere reaches you; the wake says which room it

@@ -1631,6 +1631,18 @@ class Client(_Base):
         """Direct message — sugar for posting to the recipient's ``@`` channel."""
         return self.post(f"@{to_agent}", body, **kwargs)
 
+    def hold_dms(self, ttl: float, *, workspace: str | None = None) -> dict[str, Any]:
+        """Keep this agent's unread direct messages alive `ttl` more seconds.
+
+        Returns ``{"held": <count>, "until": <iso>}``. For an agent that is
+        deliberately not reading — a listener on do-not-disturb — so that
+        deferring a message is never the same as losing it. Capped by the hub
+        at a day after each message was posted; see `POST /messages/hold`.
+        """
+        return self._call("POST", "/messages/hold", json={
+            "workspace": self._ws(workspace), "agent_id": self.agent_id, "ttl": ttl,
+        })
+
     def whisper(self, to_agent: str, body: Any, *, type: str = WHISPER_TYPE,
                 ttl: float | None = None,
                 workspace: str | None = None) -> dict[str, Any]:
@@ -1658,8 +1670,11 @@ class Client(_Base):
 
     def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
               limit: int = 100, peek: bool = False, include_own: bool = False,
-              workspace: str | None = None,
+              since: int | None = None, workspace: str | None = None,
               custom_scope: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        """New messages for this agent. `since` reads past a sequence number
+        instead of the cursor, which makes the read a peek whatever `peek`
+        says — the hub only advances a cursor it was asked to use."""
         ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
         params: dict[str, Any] = {
             "workspace": ws, "agent_id": agent_id,
@@ -1667,6 +1682,8 @@ class Client(_Base):
         }
         if channels:
             params["channel"] = list(channels)
+        if since is not None:
+            params["since"] = since
         self._learn_peers_before_reading()
         messages = self._call("GET", "/inbox", cipher=cipher, params=params)["messages"]
         fresh = self._open_whispers(messages)
@@ -1945,6 +1962,12 @@ class AsyncClient(_Base):
     async def send(self, to_agent: str, body: Any, **kwargs: Any) -> dict[str, Any]:
         return await self.post(f"@{to_agent}", body, **kwargs)
 
+    async def hold_dms(self, ttl: float, *, workspace: str | None = None) -> dict[str, Any]:
+        """See `Client.hold_dms`."""
+        return await self._call("POST", "/messages/hold", json={
+            "workspace": self._ws(workspace), "agent_id": self.agent_id, "ttl": ttl,
+        })
+
     async def whisper(self, to_agent: str, body: Any, *, type: str = WHISPER_TYPE,
                       ttl: float | None = None,
                       workspace: str | None = None) -> dict[str, Any]:
@@ -1954,7 +1977,7 @@ class AsyncClient(_Base):
 
     async def inbox(self, *, channels: Sequence[str] | None = None, wait: float = 0.0,
                     limit: int = 100, peek: bool = False, include_own: bool = False,
-                    workspace: str | None = None,
+                    since: int | None = None, workspace: str | None = None,
                     custom_scope: dict[str, str] | None = None) -> list[dict[str, Any]]:
         ws, cipher, agent_id = self._resolve_scope(custom_scope, workspace)
         params: dict[str, Any] = {
@@ -1963,6 +1986,8 @@ class AsyncClient(_Base):
         }
         if channels:
             params["channel"] = list(channels)
+        if since is not None:
+            params["since"] = since
         result = await self._call("GET", "/inbox", cipher=cipher, params=params)
         return self._open_whispers(result["messages"])
 

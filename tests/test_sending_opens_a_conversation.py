@@ -299,3 +299,53 @@ def test_the_recipients_half_is_omitted_when_there_is_no_recipient():
     solo = rendezvous.listener_advice(you_parked=True)
     assert "them" not in solo and "their" not in solo
     assert solo == "A listener is parked for you, so an answer wakes you."
+
+
+# --- a recipient on do-not-disturb -------------------------------------------
+#
+# "Parked" used to mean "answers in seconds", and a listener parked with
+# `listen --type urgent` breaks that on purpose: it is reachable, but not for
+# this. The heartbeat declares the terms, and the sender is told them rather
+# than left to find out by waiting.
+
+
+def _park_dnd(handle, agent_id: str = "peer") -> str:
+    client = handle.client(agent_id, agent_id=agent_id)
+    client.board_set(rendezvous.listener_key(client.agent_id), {
+        "waiting_on": "inbox",
+        "dnd": {"wakes_on_types": ["urgent"],
+                "reads_everything_else_at": "2026-09-23T12:00:00+00:00",
+                "dms_held": True, "skipped": 0},
+    }, ttl=120)
+    return client.agent_id
+
+
+def test_an_ordinary_dm_to_a_busy_agent_says_when_it_will_be_read(cli_hub, capsys):
+    peer = _peer(cli_hub)
+    _park_dnd(cli_hub)
+    out = _dm([peer, "whenever you get a chance"], capsys)
+    listener = out["listener"]
+    assert listener["peer_parked"] is True
+    assert listener["peer_dnd"]["wakes_on_types"] == ["urgent"]
+    assert "do-not-disturb until 2026-09-23T12:00:00+00:00" in listener["next"]
+    assert "kept for them" in listener["next"]
+
+
+def test_an_urgent_dm_to_a_busy_agent_is_told_it_wakes_them(cli_hub, capsys):
+    peer = _peer(cli_hub)
+    _park_dnd(cli_hub)
+    out = _dm([peer, "prod is down", "--type", "urgent"], capsys)
+    assert "which wakes them" in out["listener"]["next"]
+
+
+def test_the_mcp_dm_result_reports_do_not_disturb_too(bridge):
+    b, handle = bridge
+    peer = _park_dnd(handle, "peer")
+    out, err = call(b, "dm", to=peer, message="later is fine")
+    assert not err
+    assert out["listener"]["peer_dnd"]["wakes_on_types"] == ["urgent"]
+    assert out["listener"]["next"] == rendezvous.listener_advice(
+        you_parked=False, peer_parked=True, peer_dnd=out["listener"]["peer_dnd"],
+        sent_type="note")
+    urgent, _ = call(b, "dm", to=peer, message="now", type="urgent")
+    assert "which wakes them" in urgent["listener"]["next"]
