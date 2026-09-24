@@ -8,43 +8,47 @@ Kept by Link (ceo). One line per item; a role's own evidence is linked from its 
 2. **The ticket label does not exist.** `org.yaml` names tickets as GitHub issues labelled `ticket`; the account-manager read that label as not found in `gald33/switchboard` (2026-09-23, not re-checked by the CEO). The ticket queue is unreadable, not empty. Create the label or point `org.yaml` at the one you use. *(raised 2026-09-23)*
 3. **`gh` is not installed in role containers.** The CEO container has no `gh` (2026-09-23 12:55Z); the dispatcher reports tempo cannot read PRs, so no reviewer was spawned for #301 (held since 12:53Z). Add it to the environment's setup script. *(raised 2026-09-23)*
 4. **checks-watch has no registry.** `org.yaml` says `ports.checks.tool: absent`, yet checks-watch has a daily routine. Declare a registry, or set checks-watch `enabled: false` (Gus proposes the latter). *(raised 2026-09-23)*
+5. **Schedules and cadences disagree.** Six routines were re-scheduled together on 2026-09-23 at 18:36Z: the dispatcher to every 6 h, and verifier, checks-watch, doctor, registrar and account-manager to Mondays and Thursdays. `org.yaml` declares no cadence, so the contracts still say hourly and daily, and the doctor will read these roles as dead. Set `cadence` in `org.yaml` to match, or restore the crons. *(raised 2026-09-24)*
+6. **Two org-core 0.31.5 defects to file upstream** (org-core is not reachable from this org's sessions):
+   - `org tempo register` answers `listener_alive: true` after a container restart when no listener process exists. Reproduced by the CEO at 2026-09-24 01:41Z (`ps`: 0) and, separately, by the verifier at about 07:10Z (`pgrep`: none). A persistent role that trusts it stays unreachable until its cron.
+   - `org operator render` raises `FileNotFoundError` on an org's first render: it reads a missing operator file as empty but never creates `docs/human/`. *(raised 2026-09-24)*
 
 Resolved: routines for doctor, verifier and checks-watch were created 2026-09-23 18:13Z (the doctor's 12:52Z line below predates that). There is still no CEO clock floor; it is reached by DM only.
 
 
 ### Link — ceo · a session, listening
 
-- **last run:** 2026-09-23 18:15Z
-- **outcome:** Operator: (1) all 10 roles procedure-less after #299 — 8 blocked so far; (2) ticket label missing; (3) gh not installed, #301 has no reviewer; (4) checks-watch scheduled with no checks registry. Routines gap is closed.
-- **blocked:** no procedure for this org yet — all 10 roles have an empty org-core:project section in both .claude/skills/<role>/SKILL.md and .claude/agents/<role>.md (20 files, 0 lines each, read 2026-09-23T12:47Z after install #299 / e5bff09). Base says do not improvise; writing them is a role_text_change: the operator decides. PR #301 not merged: no CEO procedure, no reviewer verdict.
+- **last run:** 2026-09-24 01:42Z
+- **outcome:** New: six switchboard routines were throttled (dispatcher 6-hourly, five roles Mon/Thu) at 18:36Z yesterday but org.yaml still implies hourly/daily — the doctor will call them dead; align one or the other. Four earlier items still open.
+- **blocked:** no procedure for this org yet — all 10 roles have an empty org-core:project section (20 files). Writing them is a role_text_change: the operator decides. PR #301 not merged: no CEO procedure, no reviewer verdict.
 
 
 ### Marshal — dispatcher · hourly
 
-- **last run:** 2026-09-23 18:21Z
-- **outcome:** Spawned 0 — no dispatch procedure; PR #301 unreviewed (gh missing here); verifier and checks-watch now also blocked
-- **blocked:** (1) no procedure for this org yet — dispatcher project section empty on origin/main 2701d4f, no builder can be spawned; (2) PR #301 reviewer held at 12:53 and still unspawned: gh not installed in the dispatcher container, so tempo cannot read PRs
+- **last run:** 2026-09-24 06:22Z
+- **outcome:** Spawned 0 — no dispatch procedure; routine fires every 6 h, not hourly; PR #301 unreviewed (gh missing); session at a 7-day rate-limit warning
+- **blocked:** (1) no procedure for this org yet — dispatcher project section empty on origin/main d1b4e62 (operator queue item 1); (2) PR #301 reviewer held since 2026-09-23 12:53 — gh not installed here, tempo cannot read PRs (operator queue item 3); (3) my routine trig_01Py8BgoxMH12Tet7wAbvoMR fires every 6 h (`20 */6 * * *`, read 2026-09-24 00:21Z; this wake 06:21Z is consistent with it) while the role contract says hourly and the doctor reads DEAD past 2 h — set it back to `20 * * * *` or change the contract cadence
 
 
 ### Vera — verifier · daily 05:20Z
 
-- **last run:** 2026-09-23 18:14Z
-- **outcome:** Nothing was due: 0 verifying items of 41 (roadmap/items, 2026-09-23: 24 ready, 12 done, 5 deferred); verifier has no org procedure yet, so a non-empty band could not be worked.
-- **blocked:** no procedure for this org yet — the project section of .claude/skills/verifier/SKILL.md and .claude/agents/verifier.md is empty (both rendered at org-core base 0.3.4; container runs org-core 0.31.5). Also absent: docs/human/state-of-the-org.md and docs/ai/ceo-watchlist.md.
+- **last run:** 2026-09-24 07:10Z
+- **outcome:** Nothing was due: 0 verifying items of 41 on origin/main e5bff09 (24 ready, 12 done, 5 deferred); still blocked on the missing verifier procedure (operator item 1).
+- **blocked:** no procedure for this org yet — project section of .claude/skills/verifier/SKILL.md and .claude/agents/verifier.md still empty on origin/main e5bff09 (read 2026-09-24 05:21Z); already operator item 1 in docs/human/state-of-the-org.md, so no new DM to ceo. docs/ai/ceo-watchlist.md still absent on main. | FINDING for the chair to file: after a container restart (2026-09-24 ~07:10Z) `org tempo register --role verifier` answered listener_alive: true while pgrep showed no listen process; I re-parked by hand. Any persistent role that trusts that answer after a restart parks nothing and stays unreac…
 
 
 ### Gus — checks-watch · daily 06:45Z
 
-- **last run:** 2026-09-23 18:14Z
-- **outcome:** No checks registry: org.yaml ports.checks.tool is absent, so checked=0 is not a clean reading. checks-watch should be enabled: false in the manifest until a registry exists — operator decision.
+- **last run:** 2026-09-24 06:45Z
+- **outcome:** Second run blocked the same way: org.yaml ports.checks.tool is absent on main, so checked=0 is not a clean reading. checks-watch should be enabled: false until a registry exists — operator decision.
 - **blocked:** no checks port declared
 
 
 ### Nora — registrar · daily 07:04Z
 
-- **last run:** 2026-09-23 12:48Z
-- **outcome:** No registrar procedure for this org yet (the skill project section is empty); 0 of 41 roadmap items are in verifying (24 ready, 12 done, 5 deferred), so nothing is waiting on it today.
-- **blocked:** no procedure for this org yet — the project section of .claude/skills/registrar/SKILL.md is empty (org-core 0.31.5, base 0.3.3), so the registrar has no org-specific way to date, work or close items
+- **last run:** 2026-09-24 07:02Z
+- **outcome:** Still no registrar procedure (operator item 1); 0 of 41 items in verifying (24 ready, 12 done, 5 deferred), so nothing is due. Note: after a container restart on 09-24, tempo register answered listener_alive: true with no listener process running — check 4 can read a dead listener as alive.
+- **blocked:** no procedure for this org yet — the project section of .claude/skills/registrar/SKILL.md is still empty at origin/main d1b4e62 (org-core 0.31.5, base 0.3.3); already on the operator list as item 1
 
 
 ### Ruth — account-manager · daily 07:15Z
