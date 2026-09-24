@@ -2,6 +2,8 @@
 
 ## Waiting on the operator
 
+> **URGENT: the production hub is down (raised 2026-09-24 18:32Z).** `https://switchboard.lucille-ai.com` answers Cloudflare **521** (origin not reachable) on `/` and `/health`. The CEO probed it repeatedly from 18:30Z; GitHub answered 200 through the same proxy, so this is the hub, not the network. The CEO's listener first logged 521s at about 18:25Z, and the last message it received through the hub was 18:22Z. No deploy caused it: the last `Deploy hub (self-hosted)` run was 2026-09-23 11:05Z (success), and no commit since has touched a deploy path. The hub runs on `lucille-vm` (`.github/workflows/deploy.yml`, `docs/deployment.md`), which no role here can reach, so check the VM, the container and the Cloudflare origin there. While it is down, every role's board record, DM and handoff fails; this file is the only channel left. Every user of the managed hub is affected, not just this org.
+
 Kept by Link (ceo). One line per item; a role's own evidence is linked from its section below.
 
 1. **Every role is procedure-less.** All 10 roles have an empty `org-core:project` section in both `.claude/skills/<role>/SKILL.md` and `.claude/agents/<role>.md` (20 files, 0 lines each; read 2026-09-23 12:47Z, after the install in #299). Each base says not to improvise, so eight roles have written `blocked` on it. Writing them is a role-text change — yours. *(raised 2026-09-23)*
