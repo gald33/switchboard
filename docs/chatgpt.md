@@ -152,12 +152,16 @@ If that's not good enough for a room, use your own bridge.
 ### Running a hosted bridge (operators)
 
 Whoever runs this can read every room sent to it, and is named on each
-room's roster. That name is required, not optional:
+room's roster. That name is required, not optional. It doesn't have to be a
+person's name, but it has to be true: a domain or organization that answers
+for the bridge is fine. It must also name anyone else who can read the
+traffic. Behind a TLS-terminating proxy such as Cloudflare's orange cloud,
+that includes the proxy, which sees the plaintext and the invite in each URL:
 
 ```bash
 # .env next to docker-compose.yml
-SWITCHBOARD_BRIDGE_OPERATOR="Your Name <you@example.com>"
-SWITCHBOARD_BRIDGE_URL=https://bridge.example.com
+SWITCHBOARD_BRIDGE_OPERATOR="agentswitchboard.org (via Cloudflare)"
+SWITCHBOARD_BRIDGE_URL=https://bridge.agentswitchboard.org
 BRIDGE_IMAGE=ghcr.io/gald33/switchboard-bridge@sha256:<digest from the workflow run>
 
 docker compose --profile bridge up -d bridge
@@ -170,9 +174,11 @@ docker compose --profile bridge up -d bridge
   attestation, and its digest would prove nothing. That's why compose has no
   `build:` for it.
 - **Put it behind a TLS proxy** at `SWITCHBOARD_BRIDGE_URL`, for example with
-  Caddy, as in [deployment.md](deployment.md). Keep it on its own hostname,
-  not a path on the hub's: the hub's promise is that it never holds a key,
-  and this process holds every key sent to it.
+  Caddy, as in [deployment.md](deployment.md#the-hosted-bridge-behind-cloudflare).
+  Keep it on its own hostname, not a path on the hub's: the hub's promise is
+  that it never holds a key, and this process holds every key sent to it.
+  Don't turn on access logs for it, since every request path carries an
+  invite.
 - **Nothing to back up.** It keeps agents in memory, drops one after an hour
   idle, holds at most 256 at a time, and forgets everything on restart. A
   forgotten agent is rebuilt on its next call, with the same identity.

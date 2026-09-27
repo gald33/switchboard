@@ -214,6 +214,73 @@ directly. The DNS-01 cert above still matters either way — it's what lets
 the CDN validate the origin connection as Full (strict) instead of falling
 back to an unencrypted or unverified hop.
 
+## The hosted bridge behind Cloudflare
+
+The ChatGPT bridge ([chatgpt.md](chatgpt.md)) runs on the same VM as the
+hub and takes the same route: Cloudflare on :443, an Origin Rule to the
+switchboard-only Caddy on :8444, and Full (strict) on that hop. The managed
+deployment serves it at `bridge.agentswitchboard.org`.
+
+**Cloudflare.** `scripts/cloudflare_bridge.py` makes the three changes, each
+only if it's missing, and changes nothing zone-wide:
+
+- a proxied `A` record for the hostname, at the hub's origin IP (read from
+  the hub's own record)
+- an Origin Rule sending that hostname to :8444
+- a Configuration Rule setting SSL to Full (strict) for that hostname
+
+```bash
+CLOUDFLARE_API_TOKEN=... python3 scripts/cloudflare_bridge.py --dry-run   # look first
+CLOUDFLARE_API_TOKEN=... python3 scripts/cloudflare_bridge.py
+```
+
+The token needs these permissions:
+
+- On `agentswitchboard.org`: Zone Read, DNS Edit, Origin Rules Edit and
+  Config Rules Edit.
+- On `lucille-ai.com`: DNS Read, to find the origin IP. Skip this and pass
+  `--origin-ip` instead if you'd rather.
+
+The script reports Bot Fight Mode and AI-bot blocking but doesn't change
+them, since they're the website's too. Either can answer ChatGPT, which
+connects from OpenAI's servers, with a challenge page instead of MCP.
+
+Proxying means Cloudflare terminates TLS for the bridge, so it can read what
+the bridge reads. That's unlike the hub, whose traffic it only ever sees
+sealed. So `SWITCHBOARD_BRIDGE_OPERATOR` names it:
+`"agentswitchboard.org (via Cloudflare)"`. A DNS-only (grey cloud) record
+straight to :8444 would take Cloudflare out of that list, if ChatGPT accepts
+a URL with a port.
+
+**Caddy.** Add a site next to the hub's in the same `Caddyfile`. Caddy
+reaches the bridge by its compose service name:
+
+```caddyfile
+bridge.agentswitchboard.org:8444 {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+    reverse_proxy bridge:8788 {
+        transport http {
+            read_timeout 60s
+        }
+    }
+    # No `log` directive: every request path carries an invite.
+}
+```
+
+Caddy's own token needs DNS Edit on `agentswitchboard.org` too, for the
+DNS-01 certificate.
+
+**The bridge.** Set `SWITCHBOARD_BRIDGE_OPERATOR`, `SWITCHBOARD_BRIDGE_URL`
+and `BRIDGE_IMAGE` (pinned by digest) in `.env`, then:
+
+```bash
+docker compose --profile bridge up -d bridge
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build caddy
+curl -s https://bridge.agentswitchboard.org/.well-known/switchboard-bridge
+```
+
 ## Security
 
 **Always set a token before exposing a hub.** Without `SWITCHBOARD_TOKEN` the
