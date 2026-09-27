@@ -226,11 +226,34 @@ jobs:
           done
           curl -sf http://127.0.0.1:8788/.well-known/switchboard-bridge \
             | python -c "import json,sys; i=json.load(sys.stdin); assert i['hosted'] and i['commit']=='${{ github.sha }}', i"
-          invite=$(python -c "from switchboard.invite import Invite; from switchboard.crypto import generate_key; print(Invite(url='http://127.0.0.1:8787', workspace='ci-bridge', token='ci', key=generate_key(), note='ci').encode())")
-          curl -sf -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' \
-            "http://127.0.0.1:8788/mcp/${invite}" \
-            | python -c "import json,sys; r=json.load(sys.stdin)['result']; w=json.loads(r['content'][0]['text']); assert not r['isError'] and w['relay']['operator']=='CI' and w['encrypted'], w"
+          # The way ChatGPT uses it: one URL, initialize for a session, the
+          # invite passed to join_room, then tools that name no room at all.
+          python - <<'PY'
+          import json, httpx
+          from switchboard.crypto import generate_key
+          from switchboard.invite import Invite
+          url = "http://127.0.0.1:8788/mcp"
+          invite = Invite(url="http://127.0.0.1:8787", workspace="ci-bridge", token="ci",
+                          key=generate_key(), note="").encode()
+          def rpc(method, session=None, **params):
+              headers = {"Mcp-Session-Id": session} if session else {}
+              r = httpx.post(url, headers=headers, timeout=30,
+                             json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+              r.raise_for_status()
+              return r
+          init = rpc("initialize", protocolVersion="2025-06-18", capabilities={},
+                     clientInfo={"name": "openai-mcp"})
+          session = init.headers["Mcp-Session-Id"]
+          joined = rpc("tools/call", session, name="join_room",
+                       arguments={"invite": invite}).json()["result"]
+          assert not joined["isError"], joined
+          result = rpc("tools/call", session, name="whoami", arguments={}).json()["result"]
+          me = json.loads(result["content"][0]["text"])
+          assert not result["isError"] and me["encrypted"], me
+          assert me["relay"]["operator"] == "CI", me
+          assert me["name"].startswith("ChatGPT (via hosted bridge; CI can read"), me
+          print("hosted bridge ok:", me["name"])
+          PY
           docker rm -f bridge swb
 
   # A smoke test against the real hub, not a notice board.
