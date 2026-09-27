@@ -41,6 +41,7 @@ from . import (
     knownrooms,
     rendezvous,
     rooms,
+    signing,
 )
 from .client import (
     WHISPER_TYPE,
@@ -591,7 +592,29 @@ def _make_client(args: argparse.Namespace) -> Client:
     _warn_identity_drift(args, identity, config)
     _warn_unresolved_room(args, config)
     _remember_repo_room(args, config)
+    _ensure_signer(identity.agent_id)
     return Client(config, agent_id=identity.agent_id)
+
+
+def _ensure_signer(agent_id: str) -> None:
+    """Make sure this agent has one signing identity across its commands.
+
+    Every command is a process, and a process with nobody to attach to mints a
+    keypair of its own — so a CLI-only agent announced one exchange key,
+    parked `listen` under a second, and read its `inbox` with a third, which
+    could not open the whisper the second was sent, and consumed it. Its
+    replies came from a fourth, so its peers watched its key change on every
+    command. Starting (or finding) the agent's signer here, before the
+    `Client` attaches to it, is what makes them all one agent. See
+    `signing.ensure_signer`; the key never leaves that signer's memory.
+
+    Never fails the command: without a signer it signs as itself, as it
+    always did.
+    """
+    try:
+        signing.ensure_signer(agent_id)
+    except Exception:  # noqa: BLE001 - see the docstring
+        pass
 
 
 def _remember_repo_room(args: argparse.Namespace, config: ClientConfig) -> None:
@@ -2091,6 +2114,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 def cmd_register(args: argparse.Namespace) -> int:
     identity = detect_identity(agent_id=args.agent_id)
     config = _make_config(args)
+    _ensure_signer(identity.agent_id)
     with Client(config, agent_id=identity.agent_id) as hub:
         agent = hub.register(
             name=args.name or identity.name,
@@ -3212,6 +3236,32 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             pass
 
 
+def _standing_name(hub: Client, identity: Identity) -> Identity:
+    """`identity`, under the name this agent already goes by in `hub`'s room.
+
+    The listener re-registers every pass, and `register` takes a name. It used
+    to send the derived one (`<dir>:<branch>`), so parking overwrote whatever
+    `announce --name` had set — observed 2026-09-27 as `tmp:detached`
+    replacing a chosen name for as long as the agent was parked. Presence is
+    the listener's business; what the agent calls itself is not.
+
+    `SWITCHBOARD_AGENT_NAME` still wins: that is a name chosen for this very
+    process. With no roster row yet there is nothing to keep, and a roster
+    that cannot be read costs only this nicety, never the park.
+    """
+    if os.environ.get("SWITCHBOARD_AGENT_NAME"):
+        return identity
+    try:
+        rows = hub.agents()
+    except Exception:      # noqa: BLE001 -- see the docstring
+        return identity
+    for row in rows:
+        name = row.get("name")
+        if row.get("agent_id") == hub.agent_id and isinstance(name, str) and name:
+            return replace(identity, name=name)
+    return identity
+
+
 def _hold(post: _Post, deadline: float | None) -> None:
     """Keep deferred direct messages alive until the agent reads them.
 
@@ -3306,8 +3356,8 @@ def cmd_listen(args: argparse.Namespace) -> int:
     threads = [
         threading.Thread(
             target=_park,
-            args=(post, identity, deadline, described, source, heartbeat_ttl,
-                  args.max_fails, stop, events, wake),
+            args=(post, _standing_name(post.hub, identity), deadline, described,
+                  source, heartbeat_ttl, args.max_fails, stop, events, wake),
             daemon=True, name=f"listen:{post.role}",
         )
         for post in posts
@@ -4493,6 +4543,44 @@ def cmd_join(args: argparse.Namespace) -> int:
     print(f"\n{fmt.green('verified')} — {check.detail}."
           + (f"\n\n{room.note}" if room.note else ""), file=sys.stderr)
     return EXIT_OK
+
+
+def cmd_signer(args: argparse.Namespace) -> int:
+    """This agent's signer: run it, report on it, or stop it.
+
+    Stopping ends the identity. Whatever was sealed to its exchange key and not
+    yet read can never be opened afterwards, by anything — that is what "never
+    written down" costs, and why this is a flag rather than a side effect.
+    """
+    agent_id = detect_identity(agent_id=args.agent_id).agent_id
+    if args.stop:
+        stopped = signing.stop_signer(agent_id)
+        if not args.quiet:
+            print("signer stopped" if stopped
+                  else "no standalone signer is running for this agent")
+        return EXIT_OK if stopped else EXIT_ERROR
+    found = signing.attach(agent_id) if signing.AVAILABLE else None
+    if args.status:
+        if args.json:
+            _print_json({"agent_id": agent_id, "running": found is not None,
+                         "pubkey": found.public_key if found else None,
+                         "exchange_key": found.exchange_key if found else None})
+        elif found is not None:
+            print(f"signing for {agent_id} as {found.public_key}")
+        else:
+            print(f"no signer for {agent_id}; each command signs as itself")
+        return EXIT_OK if found is not None else EXIT_ERROR
+    if found is not None:
+        print(f"already signing for {agent_id} as {found.public_key}", file=sys.stderr)
+        return EXIT_OK
+    if not args.quiet:
+        print(f"signing for {agent_id} at {signing.socket_path(agent_id)}",
+              file=sys.stderr)
+    idle = signing.DEFAULT_IDLE_SECONDS if args.idle is None else args.idle
+    try:
+        return signing.serve(agent_id, idle_timeout=idle)
+    except KeyboardInterrupt:
+        return EXIT_OK
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -7039,6 +7127,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stats", help="hub-wide counts")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser(
+        "signer",
+        help="hold this agent's signing key for its other commands",
+        description="Serve this agent's signing and exchange key, in memory, to "
+                    "every other switchboard command it runs, so they speak as one "
+                    "agent. Commands start one on their own when none is running "
+                    "(SWITCHBOARD_SIGNER=off stops that); this runs one in the "
+                    "foreground, or reports on or stops the one that is.",
+    )
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--status", action="store_true",
+                      help="say whether a signer is serving this agent, and exit")
+    mode.add_argument("--stop", action="store_true",
+                      help="stop this agent's standalone signer; its key is gone")
+    p.add_argument("--idle", type=float, default=None, metavar="SECONDS",
+                   help="exit after this long without a request (default: a day)")
+    p.set_defaults(func=cmd_signer)
 
     p = sub.add_parser(
         "announce", aliases=["register"],

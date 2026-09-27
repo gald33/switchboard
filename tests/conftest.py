@@ -170,6 +170,12 @@ def isolated_signing_socket_dir():
     base = tempfile.mkdtemp(prefix="swb-")  # short: the socket path is capped
     previous = os.environ.get("XDG_RUNTIME_DIR")
     os.environ["XDG_RUNTIME_DIR"] = base
+    # And no standalone signers. Every CLI command would otherwise start one
+    # (`signing.ensure_signer`) for every agent id a test invents, each a
+    # detached process that outlives the suite by a day. The tests of that
+    # feature turn it back on and stop what they start (test_cli_signer.py).
+    previous_signer = os.environ.get("SWITCHBOARD_SIGNER")
+    os.environ["SWITCHBOARD_SIGNER"] = "off"
     try:
         yield base
     finally:
@@ -177,3 +183,7 @@ def isolated_signing_socket_dir():
             os.environ.pop("XDG_RUNTIME_DIR", None)
         else:
             os.environ["XDG_RUNTIME_DIR"] = previous
+        if previous_signer is None:
+            os.environ.pop("SWITCHBOARD_SIGNER", None)
+        else:
+            os.environ["SWITCHBOARD_SIGNER"] = previous_signer

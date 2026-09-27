@@ -1215,7 +1215,10 @@ class _Base:
                     message["body"], my_identity=self.signing,
                     peer_exchange_key=peer_key, context=WHISPER_CONTEXT,
                 )
-            except DecryptionError:
+            except (DecryptionError, OSError):
+                # OSError: this agent's signer (another process) stopped
+                # answering. Unopened, not an error — and stashed, like any
+                # other message this process could not read.
                 message["unreadable"] = True
                 self._stash_unopened(message)
         return messages
@@ -1240,7 +1243,7 @@ class _Base:
                 message["body"], my_identity=self.signing,
                 peer_exchange_key=peer_key, context=WHISPER_CONTEXT,
             )
-        except DecryptionError:
+        except (DecryptionError, OSError):
             return False
         return True
 
