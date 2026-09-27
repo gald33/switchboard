@@ -571,3 +571,55 @@ def test_idle_sessions_and_handles_are_let_go(hub):
     assert sid not in front._sessions
     assert front._blob_for(handle) is None
     bridges.close()
+
+
+# --- what a plugin submission needs -----------------------------------------
+
+
+def test_every_tool_declares_all_three_hints(hosted):
+    server, _ = hosted
+    tools = send(server, path="/mcp", body=rpc("tools/list")).json()["result"]["tools"]
+    for t in tools:
+        assert set(t["annotations"]) >= {"readOnlyHint", "destructiveHint", "openWorldHint"}, \
+            t["name"]
+        assert t["annotations"]["openWorldHint"] is False, t["name"]
+        # A read-only tool cannot also be destructive.
+        assert not (t["annotations"]["readOnlyHint"] and t["annotations"]["destructiveHint"])
+
+
+@pytest.mark.parametrize("name, destructive", [
+    ("say", True), ("dm", True), ("whisper", True),       # a sent message can't be unsent
+    ("board_set", True), ("board_delete", True), ("leave", True),
+    ("claim", False), ("release", False), ("checkin", False), ("inbox", False),
+    ("join_room", False),
+])
+def test_destructive_means_cannot_be_taken_back(hosted, name, destructive):
+    server, _ = hosted
+    tools = {t["name"]: t for t in send(server, path="/mcp", body=rpc(
+        "tools/list")).json()["result"]["tools"]}
+    assert tools[name]["annotations"]["destructiveHint"] is destructive
+
+
+def test_the_openai_challenge_is_served_as_the_bare_token(hub):
+    bridges = HostedBridges(hosted_relay(OPERATOR), hubs=[hub.url])
+    server = make_hosted_server(bridges, "127.0.0.1", 0, challenge="tok_abc123")
+    try:
+        response = send(server, method="GET", path="/.well-known/openai-apps-challenge")
+        assert response.status_code == 200
+        assert response.text == "tok_abc123"
+        assert response.headers["Content-Type"].startswith("text/plain")
+    finally:
+        server.server_close()
+        bridges.close()
+
+
+def test_no_challenge_configured_is_not_found(hosted):
+    server, _ = hosted
+    response = send(server, method="GET", path="/.well-known/openai-apps-challenge")
+    assert response.status_code == 404
+
+
+def test_the_challenge_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SWITCHBOARD_OPENAI_CHALLENGE", " tok_env \n")
+    args = mcp_server._parse_args(["--http", "--hosted", "--operator", "x"])
+    assert args.openai_challenge == "tok_env"

@@ -71,6 +71,9 @@ services:
       # hub only. An invite naming any other hub is refused, or it would be a
       # way to make this host fetch arbitrary addresses on request.
       SWITCHBOARD_BRIDGE_HUBS: ${SWITCHBOARD_BRIDGE_HUBS:-}
+      # The domain-verification token OpenAI's plugin portal issues, served
+      # at /.well-known/openai-apps-challenge. Empty serves nothing there.
+      SWITCHBOARD_OPENAI_CHALLENGE: ${SWITCHBOARD_OPENAI_CHALLENGE:-}
       SWITCHBOARD_BUILD_IMAGE: ${BRIDGE_IMAGE:-}
     # Nothing to keep, so nothing to mount: the bridge holds every agent in
     # memory and a restart forgets them.

@@ -753,13 +753,30 @@ TOOLS: list[dict[str, Any]] = [
 #: unmarked would put a confirmation prompt in front of reading the roster.
 #: Presence is bumped as a side effect of every call, which is bookkeeping,
 #: not a change anyone asked for — `inbox` is absent because it advances a
-#: read cursor, which is.
-_READ_ONLY = {"help", "whoami", "roster", "claims", "history", "board_get", "board_list"}
+#: read cursor, which is. `keygen` is here because it only computes, locally.
+_READ_ONLY = {"help", "whoami", "roster", "claims", "history", "board_get", "board_list",
+              "keygen"}
+
+#: Write tools whose effect cannot be taken back, in OpenAI's sense of
+#: `destructiveHint`: "delete, overwrite, revoke access, send messages … that
+#: can't be undone". A message is read the moment it lands, so every send is
+#: here; so are overwriting and deleting a board entry, `leave` (it releases
+#: every lease at once, into whoever claims next), and handing a whole
+#: session away. Claiming, renewing, releasing one's own lease and
+#: (un)subscribing are ordinary, reversible bookkeeping.
+_DESTRUCTIVE = {"say", "dm", "whisper", "rendezvous", "board_set", "board_delete", "leave",
+                "session_handoff"}
 
 for _tool in TOOLS:
     if _tool["name"] not in _ROOMLESS:
         _tool["inputSchema"]["properties"]["room"] = _ROOM_PARAM
-    _tool["annotations"] = {"readOnlyHint": _tool["name"] in _READ_ONLY}
+    _tool["annotations"] = {
+        "readOnlyHint": _tool["name"] in _READ_ONLY,
+        "destructiveHint": _tool["name"] in _DESTRUCTIVE,
+        # Every tool acts inside one room — a bounded set of agents holding
+        # its key — never on the open internet.
+        "openWorldHint": False,
+    }
 del _tool
 
 
@@ -2015,6 +2032,9 @@ HTTP_DEFAULT_PORT = 8788
 HTTP_PATH = "/mcp"
 #: Where a bridge says what it is, for anyone deciding whether to trust it.
 WELL_KNOWN_PATH = "/.well-known/switchboard-bridge"
+#: Where OpenAI looks for the domain-verification token of a plugin submission.
+#: It must hold that one token and nothing else — no JSON, no list.
+OPENAI_CHALLENGE_PATH = "/.well-known/openai-apps-challenge"
 #: Larger than any tool call this server accepts, small enough that a stray
 #: client cannot make it buffer something absurd.
 HTTP_MAX_BODY = 4 * 1024 * 1024
@@ -2273,7 +2293,7 @@ FRONT_JOIN_TOOL: dict[str, Any] = {
     "inputSchema": _schema({
         "invite": {**_STR, "description": "the Switchboard invite, starting 'swb1_'"},
     }, ["invite"]),
-    "annotations": {"readOnlyHint": False},
+    "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
 }
 
 _FRONT_ROOM_PARAM = {
@@ -2561,8 +2581,8 @@ class _Pinned:
         return False
 
 
-def _http_handler(resolve: Callable[[str, Any], Any],
-                  info: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+def _http_handler(resolve: Callable[[str, Any], Any], info: dict[str, Any],
+                  challenge: str | None = None) -> type[BaseHTTPRequestHandler]:
     """A request handler that asks `resolve` what a request is for.
 
     `resolve(path, headers)` returns something with `serve(messages,
@@ -2601,6 +2621,15 @@ def _http_handler(resolve: Callable[[str, Any], Any],
             if data:
                 self.wfile.write(data)
 
+        def _send_text(self, status: int, text: str) -> None:
+            data = text.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
         def _path(self) -> str:
             return urlsplit(self.path).path.rstrip("/") or "/"
 
@@ -2619,6 +2648,12 @@ def _http_handler(resolve: Callable[[str, Any], Any],
                 return
             if path == "/health":
                 self._send(200, {"ok": True})
+                return
+            if path == OPENAI_CHALLENGE_PATH:
+                if challenge:
+                    self._send_text(200, challenge)
+                else:
+                    self._send(404, {"error": "not found"})
                 return
             # No server-initiated stream: every response rides its request.
             if self._route():
@@ -2745,7 +2780,8 @@ def make_http_server(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
 
 
 def make_hosted_server(bridges: HostedBridges, host: str = HTTP_DEFAULT_HOST,
-                       port: int = HTTP_DEFAULT_PORT) -> ThreadingHTTPServer:
+                       port: int = HTTP_DEFAULT_PORT,
+                       challenge: str | None = None) -> ThreadingHTTPServer:
     """A hosted bridge, bound but not yet serving. Threaded, because it is
     many agents; see `HostedBridges` for how each one stays single-file.
     The front door it serves at `/mcp` is kept on the server as `.front`."""
@@ -2755,7 +2791,8 @@ def make_hosted_server(bridges: HostedBridges, host: str = HTTP_DEFAULT_HOST,
             "keeps": "nothing on disk; each agent lives in memory until idle for "
                      f"{int(HOSTED_IDLE_SECONDS)}s",
             "can_read": "every room whose invite is sent here — see docs/chatgpt.md"}
-    server = ThreadingHTTPServer((host, port), _http_handler(_hosted_resolver(front), info))
+    server = ThreadingHTTPServer((host, port),
+                                 _http_handler(_hosted_resolver(front), info, challenge))
     server.daemon_threads = True
     server.front = front  # type: ignore[attr-defined]
     return server
@@ -2821,6 +2858,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              f"(default $SWITCHBOARD_BRIDGE_HUBS, comma-separated, else {MANAGED_HUB_URL}). "
              "An invite naming any other hub is refused, so the bridge cannot be "
              "pointed at arbitrary addresses")
+    parser.add_argument(
+        "--openai-challenge",
+        default=(os.environ.get("SWITCHBOARD_OPENAI_CHALLENGE") or "").strip() or None,
+        help="with --hosted: the domain-verification token OpenAI's plugin portal "
+             f"issues, served as-is at {OPENAI_CHALLENGE_PATH} "
+             "(default $SWITCHBOARD_OPENAI_CHALLENGE)")
     parser.add_argument(
         "--public-url", default=os.environ.get("SWITCHBOARD_BRIDGE_URL") or None,
         help="the HTTPS address this bridge is reached at, for the links it prints "
@@ -2900,7 +2943,8 @@ def main(argv: list[str] | None = None) -> int:
             f"commit={build_info()['commit'] or 'unknown (not an image build)'}, "
             f"hubs={sorted(bridges.hubs)}")
         try:
-            serve_http(make_hosted_server(bridges, args.host, args.port),
+            serve_http(make_hosted_server(bridges, args.host, args.port,
+                                          args.openai_challenge),
                        hosted=True, token=None, public_url=args.public_url)
         except KeyboardInterrupt:
             pass

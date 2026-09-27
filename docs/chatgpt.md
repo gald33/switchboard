@@ -123,6 +123,15 @@ for a hub the bridge doesn't serve: by default only the managed hub, set with
 `--hub` or `SWITCHBOARD_BRIDGE_HUBS`. Otherwise an invite could make the
 bridge's server send requests to any address it can reach.
 
+### Listing it for everyone
+
+A custom app added in developer mode is visible only to the account that added
+it. A workspace admin can publish it to their workspace. To reach every ChatGPT
+user, it has to go through OpenAI's plugin review. Everything that review asks
+for is in [`extras/chatgpt-plugin/`](../extras/chatgpt-plugin/README.md): the
+listing text, logo, bundled skill, test cases, and a demo agent for the
+reviewers' room.
+
 ## What you can check, and what you cannot
 
 The viewer answers "why trust the page?" by being hosted where its operator
