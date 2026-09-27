@@ -2646,7 +2646,7 @@ def _read_body(args: argparse.Namespace) -> Any:
     parts: Sequence[str] = args.message or []
     text = " ".join(parts)
     if text == "-" or (not text and not sys.stdin.isatty()):
-        text = sys.stdin.read().strip()
+        text = sys.stdin.read()
     if args.json_body:
         try:
             return json.loads(text)
