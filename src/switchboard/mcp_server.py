@@ -40,7 +40,6 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
-from . import invite as invite_module
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -2036,8 +2035,8 @@ HOSTED_WITHHELD = {
     "session_import": "it moves Claude Code transcripts on the bridge's own machine",
     "session_resume": "it moves Claude Code transcripts on the bridge's own machine",
     "join_room": (
-        "it would fill gaps in the invite from the server's environment. Connect "
-        "with the other room's invite as its own app URL instead"
+        "it would fill gaps in the invite from the server's environment; the front "
+        "door's own join_room, which takes nothing but the invite, replaces it"
     ),
 }
 
@@ -2259,14 +2258,319 @@ class HostedBridges:
                 bridge.close()
 
 
+#: The front door's own `join_room`: the one tool that takes an invite, so the
+#: app URL can stay the same for every room and every conversation.
+FRONT_JOIN_TOOL: dict[str, Any] = {
+    "name": "join_room",
+    "description": (
+        "Enter a Switchboard room. Call this before any other tool, with the invite "
+        "the user gives you — a string starting 'swb1_'. If they have not given you "
+        "one, ask for it (they get one by running `switchboard invite`). Every other "
+        "tool then acts in that room for the rest of this conversation. It returns a "
+        "room handle: pass it as `room` only if a tool reports that no room is "
+        "joined. Calling it again with another invite moves you to that room."
+    ),
+    "inputSchema": _schema({
+        "invite": {**_STR, "description": "the Switchboard invite, starting 'swb1_'"},
+    }, ["invite"]),
+    "annotations": {"readOnlyHint": False},
+}
+
+_FRONT_ROOM_PARAM = {
+    "type": "string",
+    "description": (
+        "The room handle join_room returned. Leave it out once you have called "
+        "join_room in this conversation; pass it if a tool reports no room joined."
+    ),
+}
+
+#: Front-door sessions and room handles kept, and for how long an idle one is
+#: kept. Memory only, like the agents they point at.
+FRONT_MAX_SESSIONS = 4096
+FRONT_MAX_ROOMS = 1024
+
+
+def _front_notice(relay: dict[str, Any]) -> str:
+    operator = relay.get("operator") or "an unnamed operator"
+    return (
+        f"This connector is a hosted Switchboard bridge run by {operator}. It holds the "
+        "key of every room joined through it, so its operator can read those rooms. "
+        "If the user assumes a room here is private to their own devices, correct that."
+    )
+
+
+class HostedFront:
+    """The hosted bridge's front door: one URL, every room.
+
+    The app is added once, at `/mcp`, and the invite arrives in the
+    conversation as `join_room`'s argument — so a person never edits the app
+    to change rooms, and no invite has to live in its settings.
+
+    Which room a conversation is in is remembered two ways. With MCP
+    sessions (the `Mcp-Session-Id` the host sends back after `initialize`),
+    `join_room` makes that room the session's own, and nothing else has to
+    name it. Without them, every call names its room by the handle
+    `join_room` returned. Handles are random and live only in this process:
+    an expired one is answered with "join again", and the invite is still in
+    the conversation to do it with.
+
+    Nothing here is written down. Sessions, handles and the invites behind
+    them are held in memory, dropped when idle, and forgotten on restart.
+    """
+
+    def __init__(self, bridges: HostedBridges,
+                 idle_seconds: float = HOSTED_IDLE_SECONDS,
+                 max_sessions: int = FRONT_MAX_SESSIONS, max_rooms: int = FRONT_MAX_ROOMS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.bridges = bridges
+        self.idle_seconds = idle_seconds
+        self.max_sessions = max_sessions
+        self.max_rooms = max_rooms
+        self._clock = clock
+        self._lock = threading.Lock()
+        #: session id -> {"client": clientInfo, "room": handle or None, "seen": t}
+        self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        #: room handle -> [invite, last seen]; and invite digest -> handle, so
+        #: joining the same room twice hands back the same handle.
+        self._rooms: OrderedDict[str, list[Any]] = OrderedDict()
+        self._handles: dict[str, str] = {}
+
+    # -- bookkeeping, all under _lock ----------------------------------------
+
+    def _prune(self, table: OrderedDict[str, Any], cap: int, seen: Callable[[Any], float],
+               on_drop: Callable[[str, Any], None] = lambda k, v: None) -> None:
+        now = self._clock()
+        for key in list(table):
+            if now - seen(table[key]) > self.idle_seconds or len(table) > cap:
+                on_drop(key, table.pop(key))
+
+    def _session(self, sid: str | None) -> dict[str, Any] | None:
+        if sid is None:
+            return None
+        with self._lock:
+            session = self._sessions.get(sid)
+            if session is None:
+                # The spec's answer to a session this server does not hold —
+                # expired or from before a restart — so the host starts afresh.
+                raise _Refused(404, {"error": "unknown session; initialize again"})
+            session["seen"] = self._clock()
+            self._sessions.move_to_end(sid)
+            return session
+
+    def _new_session(self, client_info: Any) -> str:
+        sid = secrets.token_urlsafe(24)
+        with self._lock:
+            self._sessions[sid] = {"client": client_info, "room": None, "seen": self._clock()}
+            self._prune(self._sessions, self.max_sessions, lambda s: s["seen"])
+        return sid
+
+    def _handle_for(self, blob: str) -> str:
+        digest = hashlib.sha256(blob.encode()).hexdigest()
+        with self._lock:
+            handle = self._handles.get(digest)
+            if handle is None or handle not in self._rooms:
+                handle = "room_" + secrets.token_urlsafe(18)
+                self._handles[digest] = handle
+            self._rooms[handle] = [blob, self._clock()]
+            self._rooms.move_to_end(handle)
+            self._prune(self._rooms, self.max_rooms, lambda r: r[1],
+                        lambda h, r: self._handles.pop(
+                            hashlib.sha256(r[0].encode()).hexdigest(), None))
+        return handle
+
+    def _blob_for(self, handle: str) -> str | None:
+        with self._lock:
+            entry = self._rooms.get(handle)
+            if entry is None:
+                return None
+            entry[1] = self._clock()
+            self._rooms.move_to_end(handle)
+            return entry[0]
+
+    # -- the transport's side ------------------------------------------------
+
+    def end(self, headers: Any) -> bool:
+        sid = headers.get("Mcp-Session-Id")
+        if not sid:
+            return False
+        with self._lock:
+            self._sessions.pop(sid, None)
+        return True
+
+    def serve(self, messages: list[Any], headers: Any) -> tuple[list[Any], dict[str, str]]:
+        session = self._session(headers.get("Mcp-Session-Id"))
+        extra: dict[str, str] = {}
+        out = []
+        for message in messages:
+            if not isinstance(message, dict):
+                out.append(_error(None, JSONRPC_INVALID_REQUEST, "expected a JSON object"))
+                continue
+            try:
+                if message.get("method") == "initialize":
+                    sid = self._new_session((message.get("params") or {}).get("clientInfo"))
+                    extra["Mcp-Session-Id"] = sid
+                    session = self._sessions.get(sid)
+                    out.append(self._initialize(message))
+                else:
+                    out.append(self._request(message, session, headers))
+            except _Refused:
+                raise
+            except Exception:  # noqa: BLE001 - a tool bug must not kill the server
+                log("unhandled error:\n" + traceback.format_exc())
+                out.append(_error(message.get("id"), JSONRPC_INTERNAL_ERROR,
+                                  "internal error (see stderr)"))
+        return out, extra
+
+    # -- the protocol's side -------------------------------------------------
+
+    def _initialize(self, request: dict[str, Any]) -> dict[str, Any]:
+        requested = (request.get("params") or {}).get("protocolVersion")
+        version = requested if requested in SUPPORTED_PROTOCOLS else LATEST_PROTOCOL
+        return _response(request.get("id"), {
+            "protocolVersion": version,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "switchboard", "version": __version__},
+            "instructions": (
+                "Switchboard coordinates you with other AI agents working the same "
+                "project, in a shared room. Before using any other tool, get a "
+                "Switchboard invite from the user (a string starting 'swb1_'; they make "
+                "one with `switchboard invite`) and call join_room with it. Then call "
+                "roster to see who is there, subscribe to the channels people talk on, "
+                "and use inbox, say and dm to talk with them."
+                f"\n\nIMPORTANT: {_front_notice(self.bridges.relay)}"
+            ),
+        })
+
+    def _tools(self) -> list[dict[str, Any]]:
+        out = []
+        for tool in TOOLS:
+            name = tool["name"]
+            if name == "join_room":
+                out.append(FRONT_JOIN_TOOL)
+                continue
+            if name in HOSTED_WITHHELD:
+                continue
+            schema = tool["inputSchema"]
+            out.append({**tool, "inputSchema": {
+                **schema, "properties": {**schema["properties"], "room": _FRONT_ROOM_PARAM},
+            }})
+        return out
+
+    def _request(self, request: dict[str, Any], session: dict[str, Any] | None,
+                 headers: Any) -> dict[str, Any] | None:
+        method = request.get("method")
+        request_id = request.get("id")
+        params = request.get("params") or {}
+        if method in ("notifications/initialized", "initialized") or "id" not in request:
+            return None
+        if method == "ping":
+            return _response(request_id, {})
+        if method == "tools/list":
+            return _response(request_id, {"tools": self._tools()})
+        if method != "tools/call":
+            return _error(request_id, JSONRPC_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+        arguments = dict(params.get("arguments") or {})
+        if params.get("name") == "join_room":
+            return self._join(request_id, arguments, session, headers)
+
+        handle = arguments.pop("room", None) or (session or {}).get("room")
+        if not handle:
+            return _response(request_id, _tool_result({
+                "error": "no_room",
+                "detail": "No room joined yet. Ask the user for a Switchboard invite "
+                          "(a string starting 'swb1_') and call join_room with it.",
+            }, is_error=True))
+        blob = self._blob_for(handle)
+        if blob is None:
+            return _response(request_id, _tool_result({
+                "error": "room_expired",
+                "detail": "That room handle is no longer held here (idle too long, or "
+                          "the bridge restarted). Call join_room again with the invite.",
+            }, is_error=True))
+        bridge, lock = self.bridges.get(blob)
+        with lock:
+            return handle_request(bridge, {**request, "params": {**params,
+                                                                 "arguments": arguments}})
+
+    def _join(self, request_id: Any, arguments: dict[str, Any],
+              session: dict[str, Any] | None, headers: Any) -> dict[str, Any]:
+        blob = arguments.get("invite")
+        if not isinstance(blob, str) or not blob.strip():
+            return _response(request_id, _tool_result({
+                "joined": False, "error": "join_room needs the invite, a string starting "
+                                          "'swb1_'. Ask the user for one."}, is_error=True))
+        blob = blob.strip()
+        try:
+            bridge, lock = self.bridges.get(blob)
+        except InviteError as exc:
+            return _response(request_id, _tool_result(
+                {"joined": False, "error": str(exc)}, is_error=True))
+        handle = self._handle_for(blob)
+        client = (session or {}).get("client")
+        if client is None:
+            # No session to remember the app by: the User-Agent is the next
+            # best way to tell ChatGPT from anything else. Only an app this
+            # bridge recognises is named from it — a roster full of
+            # "python-httpx" and "curl" would tell nobody anything.
+            agent = {"name": (headers.get("User-Agent") or "").split("/")[0].strip()}
+            client = agent if _client_label(agent) in set(_KNOWN_CLIENTS.values()) else None
+        with lock:
+            _name_hosted_agent(bridge, client)
+            payload = {
+                "joined": True,
+                "room": handle,
+                "workspace": bridge.config.workspace,
+                "hub": bridge.config.url,
+                "encrypted": bridge.client.encrypted,
+                "you_appear_as": bridge.identity.name,
+                "next": ("Every tool now acts in this room for the rest of the "
+                         "conversation. Call roster to see who is here."
+                         if session is not None else
+                         f"Pass room='{handle}' on every other tool call."),
+            }
+            notice = _hosted_notice(bridge)
+        if session is not None:
+            with self._lock:
+                session["room"] = handle
+        result = _tool_result(payload)
+        if notice:
+            result["content"].append({"type": "text", "text": notice})
+        return _response(request_id, result)
+
+
+class _Refused(Exception):
+    """A request turned away at the HTTP layer rather than answered."""
+
+    def __init__(self, status: int, body: Any, headers: dict[str, str] | None = None) -> None:
+        super().__init__(status)
+        self.status, self.body, self.headers = status, body, headers
+
+
+class _Pinned:
+    """Your own bridge behind its route. Every call into it holds its lock."""
+
+    def __init__(self, bridge: Bridge, lock: threading.Lock) -> None:
+        self.bridge, self.lock = bridge, lock
+
+    def serve(self, messages: list[Any], headers: Any) -> tuple[list[Any], dict[str, str]]:
+        with self.lock:
+            return [_handle_one(self.bridge, m) for m in messages], {}
+
+    def end(self, headers: Any) -> bool:
+        return False
+
+
 def _http_handler(resolve: Callable[[str, Any], Any],
                   info: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    """A request handler that asks `resolve` which bridge a request is for.
+    """A request handler that asks `resolve` what a request is for.
 
-    `resolve(path, headers)` returns ``(bridge, lock)`` to serve it, or
-    ``(status, body, headers)`` to refuse it. Everything else — the JSON-RPC
-    framing, the status codes, what never reaches the log — is the same in
-    both shapes, which is the point of it being one handler.
+    `resolve(path, headers)` returns something with `serve(messages,
+    headers)` — your own bridge (`_Pinned`) or the hosted front door
+    (`HostedFront`) — or ``(status, body, headers)`` to refuse it.
+    Everything else — the JSON-RPC framing, the status codes, what never
+    reaches the log — is the same in every shape, which is the point of it
+    being one handler.
     """
 
     class Handler(BaseHTTPRequestHandler):
@@ -2276,8 +2580,8 @@ def _http_handler(resolve: Callable[[str, Any], Any],
         timeout = 60
 
         def log_request(self, code: Any = "-", size: Any = "-") -> None:
-            # Not the request line: the path is the credential, a token or a
-            # whole invite, and logs travel further than secrets should.
+            # Not the request line: on your own bridge the path can carry its
+            # token, and logs travel further than secrets should.
             log(f"http {self.command} -> {code}")
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -2300,13 +2604,13 @@ def _http_handler(resolve: Callable[[str, Any], Any],
         def _path(self) -> str:
             return urlsplit(self.path).path.rstrip("/") or "/"
 
-        def _route(self) -> tuple[Bridge, threading.Lock] | None:
-            """The bridge to serve, or None once a refusal has been sent."""
+        def _route(self) -> Any:
+            """What serves this request, or None once a refusal has been sent."""
             outcome = resolve(self._path(), self.headers)
-            if len(outcome) == 2:
-                return outcome
-            self._send(*outcome)
-            return None
+            if isinstance(outcome, tuple):
+                self._send(*outcome)
+                return None
+            return outcome
 
         def do_GET(self) -> None:  # noqa: N802 - the stdlib's naming
             path = self._path()
@@ -2321,15 +2625,18 @@ def _http_handler(resolve: Callable[[str, Any], Any],
                 self._send(405, {"error": "use POST"}, {"Allow": "POST"})
 
         def do_DELETE(self) -> None:  # noqa: N802
-            # No sessions to end, since none are issued.
-            if self._route():
+            target = self._route()
+            if target is None:
+                return
+            if target.end(self.headers):
+                self._send(204)
+            else:
                 self._send(405, {"error": "use POST"}, {"Allow": "POST"})
 
         def do_POST(self) -> None:  # noqa: N802
-            routed = self._route()
-            if routed is None:
+            target = self._route()
+            if target is None:
                 return
-            bridge, lock = routed
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -2345,15 +2652,17 @@ def _http_handler(resolve: Callable[[str, Any], Any],
             # A list is a JSON-RPC batch, which 2025-03-26 allowed and later
             # revisions dropped; answering one costs nothing.
             batch = isinstance(message, list)
-            with lock:
-                responses = [r for r in (_handle_one(bridge, m)
-                                         for m in (message if batch else [message]))
-                             if r is not None]
+            try:
+                responses, extra = target.serve(message if batch else [message], self.headers)
+            except _Refused as refused:
+                self._send(refused.status, refused.body, refused.headers)
+                return
+            responses = [r for r in responses if r is not None]
             if not responses:
                 # Only notifications: accepted, and there is nothing to say.
-                self._send(202)
+                self._send(202, None, extra)
             else:
-                self._send(200, responses if batch else responses[0])
+                self._send(200, responses if batch else responses[0], extra)
 
     return Handler
 
@@ -2381,13 +2690,13 @@ def _own_bridge_resolver(bridge: Bridge, token: str | None) -> Callable[[str, An
     Even there a web page can reach it through DNS rebinding, so a request
     carrying a non-local ``Origin`` is refused, as the MCP spec requires.
     """
-    lock = threading.Lock()
+    pinned = _Pinned(bridge, threading.Lock())
     token_path = f"{HTTP_PATH}/{token}" if token else None
 
     def resolve(path: str, headers: Any) -> Any:
         if token_path is not None and hmac.compare_digest(
                 path.encode("utf-8", "replace"), token_path.encode()):
-            return bridge, lock
+            return pinned
         if path != HTTP_PATH:
             # 404 rather than 401 for a wrong token in the path, so the
             # endpoint does not confirm which half of a guess was right.
@@ -2396,34 +2705,27 @@ def _own_bridge_resolver(bridge: Bridge, token: str | None) -> Callable[[str, An
             origin = headers.get("Origin")
             if origin and not _origin_is_local(origin):
                 return 403, {"error": "origin not allowed"}, None
-            return bridge, lock
+            return pinned
         scheme, _, value = (headers.get("Authorization") or "").partition(" ")
         if scheme.lower() == "bearer" and hmac.compare_digest(
                 value.strip().encode("utf-8", "replace"), token.encode()):
-            return bridge, lock
+            return pinned
         return 401, {"error": "unauthorized"}, {"WWW-Authenticate": "Bearer"}
 
     return resolve
 
 
-def _hosted_resolver(bridges: HostedBridges) -> Callable[[str, Any], Any]:
-    """Routing for a hosted bridge: the invite in the path is the agent.
+def _hosted_resolver(front: HostedFront) -> Callable[[str, Any], Any]:
+    """Routing for a hosted bridge: `/mcp`, the front door, and nothing else.
 
-    There is no token of the server's own. The invite is already a credential
-    — it carries the room's key — and a second secret in front of it would
-    protect nothing the first does not.
+    One URL for every room, the invite arriving as a `join_room` argument.
+    There is no token of the server's own: the invite is already a
+    credential — it carries the room's key — and a second secret in front of
+    it would protect nothing the first does not.
     """
-    prefix = f"{HTTP_PATH}/{invite_module.PREFIX}"
 
     def resolve(path: str, headers: Any) -> Any:
-        if not path.startswith(prefix):
-            return 404, {"error": "not found"}, None
-        try:
-            return bridges.get(path[len(HTTP_PATH) + 1:])
-        except InviteError as exc:
-            # Said to the holder of the invite, who is the only one who can
-            # send it: the reason is theirs to act on and names nothing secret.
-            return 400, {"error": "bad invite", "detail": str(exc)}, None
+        return front if path == HTTP_PATH else (404, {"error": "not found"}, None)
 
     return resolve
 
@@ -2445,14 +2747,17 @@ def make_http_server(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
 def make_hosted_server(bridges: HostedBridges, host: str = HTTP_DEFAULT_HOST,
                        port: int = HTTP_DEFAULT_PORT) -> ThreadingHTTPServer:
     """A hosted bridge, bound but not yet serving. Threaded, because it is
-    many agents; see `HostedBridges` for how each one stays single-file."""
+    many agents; see `HostedBridges` for how each one stays single-file.
+    The front door it serves at `/mcp` is kept on the server as `.front`."""
+    front = HostedFront(bridges)
     info = {**build_info(), "hosted": True, "operator": bridges.relay.get("operator"),
             "hubs": sorted(bridges.hubs),
             "keeps": "nothing on disk; each agent lives in memory until idle for "
                      f"{int(HOSTED_IDLE_SECONDS)}s",
             "can_read": "every room whose invite is sent here — see docs/chatgpt.md"}
-    server = ThreadingHTTPServer((host, port), _http_handler(_hosted_resolver(bridges), info))
+    server = ThreadingHTTPServer((host, port), _http_handler(_hosted_resolver(front), info))
     server.daemon_threads = True
+    server.front = front  # type: ignore[attr-defined]
     return server
 
 
@@ -2462,8 +2767,8 @@ def serve_http(server: HTTPServer, *, hosted: bool, token: str | None,
     shown = f"[{host}]" if ":" in str(host) else host
     base = (public_url or f"http://{shown}:{port}").rstrip("/") + HTTP_PATH
     if hosted:
-        log(f"hosted bridge at {base}/<invite> — each user's ChatGPT app URL is "
-            f"{base}/ followed by the output of `switchboard invite`")
+        log(f"hosted bridge at {base} — one app URL for every room; the invite is "
+            "passed to join_room in the conversation")
     elif token:
         log(f"serving MCP over HTTP at {base}/<token> (or {base} with a bearer token)")
         log("ChatGPT: expose this port over HTTPS (a tunnel, or a reverse proxy) and add "
@@ -2501,7 +2806,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="serve HTTP with no token (refused unless bound to loopback)")
     parser.add_argument(
         "--hosted", action="store_true",
-        help="serve many agents, each from the invite in its URL (/mcp/swb1_...), "
+        help="serve many agents at /mcp, each from the invite passed to join_room, "
              "holding nothing on disk. Whoever runs this can read every room whose "
              "invite is sent to it, and every such room's roster says so")
     parser.add_argument(

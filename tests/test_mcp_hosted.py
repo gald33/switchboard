@@ -26,7 +26,6 @@ from switchboard.client import relay_of
 from switchboard.crypto import generate_key
 from switchboard.invite import Invite
 from switchboard.mcp_server import (
-    HOSTED_WITHHELD,
     HostedBridges,
     hosted_relay,
     make_hosted_server,
@@ -62,18 +61,29 @@ def hosted(hub):
     bridges.close()
 
 
-def tool(server, blob: str, name: str, **arguments):
-    response = send(server, path=f"/mcp/{blob}", body=rpc(
-        "tools/call", name=name, arguments=arguments))
+def _call(server, blob: str, name: str, session: str | None, arguments: dict) -> dict:
+    """Join the room `blob` names through the front door, then call `name` in
+    it — by session when there is one, by the returned handle otherwise."""
+    headers = {"Mcp-Session-Id": session} if session else {}
+    joined = send(server, path="/mcp", headers=headers, body=rpc(
+        "tools/call", name="join_room", arguments={"invite": blob}))
+    assert joined.status_code == 200, joined.text
+    handle = json.loads(joined.json()["result"]["content"][0]["text"])["room"]
+    response = send(server, path="/mcp", headers=headers, body=rpc(
+        "tools/call", name=name, arguments={**arguments, "room": handle}))
     assert response.status_code == 200, response.text
-    result = response.json()["result"]
+    return response.json()["result"]
+
+
+def tool(server, blob: str, name: str, session: str | None = None, **arguments):
+    result = _call(server, blob, name, session, arguments)
     return json.loads(result["content"][0]["text"]), result["isError"]
 
 
 # --- the invite is the agent ------------------------------------------------
 
 
-def test_an_invite_url_is_a_working_agent_in_that_room(hub, hosted):
+def test_an_invite_is_a_working_agent_in_that_room(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub)
     payload, is_error = tool(server, blob, "claim", resource="docs/chatgpt.md")
@@ -112,21 +122,20 @@ def test_the_agent_id_does_not_carry_the_invite(hub, hosted):
 def test_an_invite_that_leaves_its_key_out_is_refused(hub, hosted, monkeypatch):
     # The operator's own environment must never complete somebody's invite.
     monkeypatch.setenv("SWITCHBOARD_KEY", hub.key)
-    server, _ = hosted
-    blob = invite_for(hub, key=None, key_id="team")
-    response = send(server, path=f"/mcp/{blob}", body=rpc("tools/list"))
-    assert response.status_code == 400
-    assert "switchboard invite" in response.json()["detail"]
+    server, bridges = hosted
+    joined, is_error, _ = front_call(server, "join_room",
+                                     invite=invite_for(hub, key=None, key_id="team"))
+    assert is_error and "switchboard invite" in joined["error"]
+    assert len(bridges) == 0
 
 
 def test_an_invite_for_another_hub_is_refused(hub, hosted):
     # Or an invite would be a way to make the server fetch anything it can
     # reach — a cloud metadata endpoint, a private address — on request.
     server, bridges = hosted
-    blob = invite_for(hub, url="http://169.254.169.254/latest")
-    response = send(server, path=f"/mcp/{blob}", body=rpc("tools/list"))
-    assert response.status_code == 400
-    assert "serves rooms on" in response.json()["detail"]
+    joined, is_error, _ = front_call(server, "join_room",
+                                     invite=invite_for(hub, url="http://169.254.169.254/latest"))
+    assert is_error and "serves rooms on" in joined["error"]
     assert len(bridges) == 0
 
 
@@ -147,32 +156,22 @@ def test_hubs_come_from_flags_or_the_environment(monkeypatch):
     assert args.hubs == ["https://c.example"]
 
 
-def test_a_corrupt_invite_is_a_bad_request(hosted):
+def test_the_front_door_is_the_only_door(hub, hosted):
+    # No app pinned to a room by its URL: the invite is always a parameter.
     server, _ = hosted
-    response = send(server, path="/mcp/swb1_notbase64!!", body=rpc("tools/list"))
-    assert response.status_code == 400
-
-
-def test_anything_but_an_invite_is_not_found(hosted):
-    server, _ = hosted
-    assert send(server, path="/mcp", body=rpc("ping")).status_code == 404
+    assert send(server, path=f"/mcp/{invite_for(hub)}", body=rpc("ping")).status_code == 404
     assert send(server, path="/mcp/some-token", body=rpc("ping")).status_code == 404
-
-
-def test_the_invite_is_not_written_to_the_log(hub, hosted, capsys):
-    server, _ = hosted
-    blob = invite_for(hub)
-    send(server, path=f"/mcp/{blob}", body=rpc("ping"))
-    assert blob not in capsys.readouterr().err
+    assert send(server, path="/", body=rpc("ping")).status_code == 404
 
 
 def test_machine_local_tools_are_withheld(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub)
-    tools = send(server, path=f"/mcp/{blob}",
-                 body=rpc("tools/list")).json()["result"]["tools"]
-    names = {t["name"] for t in tools}
-    assert names and not names & set(HOSTED_WITHHELD)
+    tools = {t["name"]: t for t in send(server, path="/mcp", body=rpc(
+        "tools/list")).json()["result"]["tools"]}
+    assert tools and not {"session_handoff", "session_import", "session_resume"} & set(tools)
+    # join_room is there, but it is the front door's: the invite and nothing else.
+    assert list(tools["join_room"]["inputSchema"]["properties"]) == ["invite"]
     payload, is_error = tool(server, blob, "session_handoff")
     assert is_error and "hosted bridge" in payload["detail"]
 
@@ -182,9 +181,7 @@ def test_machine_local_tools_are_withheld(hub, hosted):
 
 def blocks(server, blob: str, name: str, **arguments) -> list[str]:
     """Every text block of a tool result, not just the payload."""
-    response = send(server, path=f"/mcp/{blob}", body=rpc(
-        "tools/call", name=name, arguments=arguments))
-    return [c["text"] for c in response.json()["result"]["content"]]
+    return [c["text"] for c in _call(server, blob, name, None, arguments)["content"]]
 
 
 def test_the_hosted_agent_is_told_who_can_read_its_room(hub, hosted):
@@ -208,13 +205,6 @@ def test_every_result_carries_the_notice(hub, hosted, name, arguments):
     texts = blocks(server, invite_for(hub), name, **arguments)
     assert len(texts) == 2
     assert OPERATOR in texts[-1] and "can read this room" in texts[-1]
-
-
-def test_the_connection_itself_says_so(hub, hosted):
-    server, _ = hosted
-    result = send(server, path=f"/mcp/{invite_for(hub)}",
-                  body=rpc("initialize")).json()["result"]
-    assert OPERATOR in result["instructions"].split("IMPORTANT:")[1]
 
 
 def test_a_bridge_of_your_own_adds_nothing(hub):
@@ -387,19 +377,11 @@ def test_nothing_is_written_to_the_operators_disk(hub, hosted, tmp_path, monkeyp
 # --- naming without anybody passing --note ----------------------------------
 
 
-def _connect(server, blob: str, client_info=None) -> None:
-    params = {"protocolVersion": "2025-06-18", "capabilities": {}}
-    if client_info is not None:
-        params["clientInfo"] = client_info
-    assert send(server, path=f"/mcp/{blob}",
-                body=rpc("initialize", **params)).status_code == 200
-
-
 def test_the_app_names_the_agent_when_the_invite_does_not(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub, note="")
-    _connect(server, blob, {"name": "openai-mcp", "version": "1.0.0"})
-    me, _ = tool(server, blob, "whoami")
+    session = connect(server, {"name": "openai-mcp", "version": "1.0.0"})
+    me, _ = tool(server, blob, "whoami", session)
     assert me["name"] == f"ChatGPT (via hosted bridge; {OPERATOR} can read this room)"
 
 
@@ -408,8 +390,8 @@ def test_an_agent_already_on_the_roster_is_renamed_there(hub, hosted):
     blob = invite_for(hub, note="")
     first, _ = tool(server, blob, "whoami")           # registers, unnamed
     assert first["name"].startswith("hosted agent (")
-    _connect(server, blob, {"name": "openai-mcp"})
-    tool(server, blob, "whoami")                      # re-announces
+    session = connect(server, {"name": "openai-mcp"})
+    tool(server, blob, "whoami", session)             # rejoined by the app: re-announces
     roster, _ = call(make_bridge(hub, "laptop"), "roster")
     (entry,) = [a for a in roster["agents"] if a["agent_id"] == first["agent_id"]]
     assert entry["name"].startswith("ChatGPT (via hosted bridge;")
@@ -418,16 +400,14 @@ def test_an_agent_already_on_the_roster_is_renamed_there(hub, hosted):
 def test_an_invite_note_outranks_the_app(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub, note="Dana's ChatGPT")
-    _connect(server, blob, {"name": "openai-mcp"})
-    me, _ = tool(server, blob, "whoami")
+    me, _ = tool(server, blob, "whoami", connect(server, {"name": "openai-mcp"}))
     assert me["name"].startswith("Dana's ChatGPT (via hosted bridge;")
 
 
 def test_with_neither_the_disclosure_still_stands(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub, note="")
-    _connect(server, blob)
-    me, _ = tool(server, blob, "whoami")
+    me, _ = tool(server, blob, "whoami", connect(server))
     assert me["name"] == f"hosted agent (via hosted bridge; {OPERATOR} can read this room)"
 
 
@@ -443,3 +423,151 @@ def test_with_neither_the_disclosure_still_stands(hub, hosted):
 ])
 def test_client_labels_are_short_and_single_line(info, label):
     assert mcp_server._client_label(info) == label
+
+
+# --- the front door: one URL, the invite as a parameter ----------------------
+
+
+def front_call(server, name: str, session: str | None = None,
+               user_agent: str | None = None, **arguments):
+    headers = {}
+    if session:
+        headers["Mcp-Session-Id"] = session
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    response = send(server, path="/mcp", headers=headers, body=rpc(
+        "tools/call", name=name, arguments=arguments))
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    texts = [c["text"] for c in result["content"]]
+    return json.loads(texts[0]), result["isError"], texts
+
+
+def connect(server, client_info=None) -> str:
+    params = {"protocolVersion": "2025-06-18", "capabilities": {}}
+    if client_info is not None:
+        params["clientInfo"] = client_info
+    response = send(server, path="/mcp", body=rpc("initialize", **params))
+    assert response.status_code == 200
+    return response.headers["Mcp-Session-Id"]
+
+
+def test_the_front_door_asks_for_an_invite_and_says_who_can_read(hosted):
+    server, _ = hosted
+    response = send(server, path="/mcp", body=rpc("initialize"))
+    instructions = response.json()["result"]["instructions"]
+    assert "join_room" in instructions and "swb1_" in instructions
+    assert OPERATOR in instructions.split("IMPORTANT:")[1]
+    assert response.headers["Mcp-Session-Id"]
+
+
+def test_the_front_door_lists_join_room_with_an_invite_parameter(hosted):
+    server, _ = hosted
+    tools = {t["name"]: t for t in send(server, path="/mcp", body=rpc(
+        "tools/list")).json()["result"]["tools"]}
+    assert tools["join_room"]["inputSchema"]["required"] == ["invite"]
+    assert "room" in tools["roster"]["inputSchema"]["properties"]
+    assert "room" not in tools["roster"]["inputSchema"]["required"]
+    assert not {"session_handoff", "session_import", "session_resume"} & set(tools)
+
+
+def test_join_once_and_the_session_stays_in_that_room(hub, hosted):
+    server, _ = hosted
+    session = connect(server, {"name": "openai-mcp"})
+    joined, is_error, texts = front_call(server, "join_room", session,
+                                         invite=invite_for(hub, note=""))
+    assert not is_error and joined["joined"] and joined["room"].startswith("room_")
+    assert joined["you_appear_as"].startswith("ChatGPT (via hosted bridge;")
+    assert OPERATOR in texts[-1]
+    # No room named from here on: the session remembers it.
+    claim, is_error, texts = front_call(server, "claim", session, resource="docs/x")
+    assert not is_error and claim["acquired"] is True
+    assert OPERATOR in texts[-1]
+    theirs, _ = call(make_bridge(hub, "laptop"), "claim", resource="docs/x")
+    assert theirs["acquired"] is False
+
+
+def test_without_a_session_the_handle_names_the_room(hub, hosted):
+    server, _ = hosted
+    joined, _, _ = front_call(server, "join_room", invite=invite_for(hub, note=""),
+                              user_agent="openai-mcp/1.0")
+    assert f"room='{joined['room']}'" in joined["next"]
+    # Named from the User-Agent, since there is no session to remember the app by.
+    assert joined["you_appear_as"].startswith("ChatGPT (via hosted bridge;")
+    lost, is_error, _ = front_call(server, "roster")
+    assert is_error and lost["error"] == "no_room"
+    roster, is_error, _ = front_call(server, "roster", room=joined["room"])
+    assert not is_error and roster["count"] == 1
+
+
+def test_sessions_do_not_see_each_others_rooms(hub, hosted):
+    server, _ = hosted
+    one, two = connect(server), connect(server)
+    front_call(server, "join_room", one, invite=invite_for(hub, note="one"))
+    lost, is_error, _ = front_call(server, "whoami", two)
+    assert is_error and lost["error"] == "no_room"
+
+
+def test_the_same_invite_is_the_same_agent_and_handle(hub, hosted):
+    server, _ = hosted
+    blob = invite_for(hub)
+    first, _, _ = front_call(server, "join_room", connect(server), invite=blob)
+    again, _, _ = front_call(server, "join_room", connect(server), invite=blob)
+    assert first["room"] == again["room"]
+    one, _, _ = front_call(server, "whoami", room=first["room"])
+    other, _ = tool(server, blob, "whoami", connect(server))
+    assert one["agent_id"] == other["agent_id"]
+
+
+def test_a_bad_invite_is_a_tool_error_not_an_http_one(hub, hosted):
+    server, _ = hosted
+    for invite in ("swb1_notbase64!!", "hello",
+                   invite_for(hub, url="http://169.254.169.254/latest")):
+        joined, is_error, _ = front_call(server, "join_room", invite=invite)
+        assert is_error and joined["joined"] is False and joined["error"]
+    missing, is_error, _ = front_call(server, "join_room")
+    assert is_error and "invite" in missing["error"]
+
+
+def test_an_unknown_handle_says_join_again(hosted):
+    server, _ = hosted
+    gone, is_error, _ = front_call(server, "roster", room="room_nope")
+    assert is_error and gone["error"] == "room_expired"
+
+
+def test_an_unknown_session_is_sent_to_initialize_again(hosted):
+    server, _ = hosted
+    response = send(server, path="/mcp", headers={"Mcp-Session-Id": "nope"},
+                    body=rpc("tools/list"))
+    assert response.status_code == 404
+
+
+def test_a_session_can_be_ended(hub, hosted):
+    server, _ = hosted
+    session = connect(server)
+    assert send(server, method="DELETE", path="/mcp",
+                headers={"Mcp-Session-Id": session}).status_code == 204
+    response = send(server, path="/mcp", headers={"Mcp-Session-Id": session},
+                    body=rpc("tools/list"))
+    assert response.status_code == 404
+
+
+def test_the_invite_is_not_written_to_the_log_from_the_front_door(hub, hosted, capsys):
+    server, _ = hosted
+    blob = invite_for(hub)
+    front_call(server, "join_room", connect(server), invite=blob)
+    assert blob not in capsys.readouterr().err
+
+
+def test_idle_sessions_and_handles_are_let_go(hub):
+    clock = _Clock()
+    bridges = HostedBridges(hosted_relay(OPERATOR), hubs=[hub.url], clock=clock)
+    front = mcp_server.HostedFront(bridges, idle_seconds=60, clock=clock)
+    sid = front._new_session(None)
+    handle = front._handle_for(invite_for(hub))
+    clock.now = 120
+    front._new_session(None)                          # pruning runs on the way in
+    front._handle_for(invite_for(hub, note="other"))
+    assert sid not in front._sessions
+    assert front._blob_for(handle) is None
+    bridges.close()

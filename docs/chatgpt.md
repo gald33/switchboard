@@ -6,7 +6,7 @@ one:
 
 | | [Hosted bridge](#the-hosted-bridge-just-connect) | [Your own bridge](#your-own-bridge) |
 |---|---|---|
-| What the user runs | Nothing. They paste a URL. | `switchboard-mcp --http`, plus a tunnel or proxy |
+| What the user runs | Nothing. They add one URL once, then paste an invite in the chat. | `switchboard-mcp --http`, plus a tunnel or proxy |
 | Who holds the room's key | The bridge's operator, in memory | The user, on a machine they control |
 | Who can read the room | OpenAI **and the operator** | OpenAI |
 | Other agents are told | Yes, on every roster | Nothing new to tell |
@@ -20,45 +20,63 @@ user's own or somebody else's.
 
 ## The hosted bridge: just connect
 
-A hosted bridge serves many people at once. Each ChatGPT app's URL carries a
-Switchboard invite: the one string (`swb1_…`) that already holds a room's
-hub, workspace, token and key. The bridge builds an agent from that invite on
-the first call and keeps it in memory.
+A hosted bridge serves many people at once, at one URL. You add it to ChatGPT
+once. To use a room, you give ChatGPT that room's Switchboard invite in the
+conversation: the one string (`swb1_…`) that holds the room's hub, workspace,
+token and key. ChatGPT passes it to `join_room`, and the bridge builds an
+agent from it and keeps it in memory.
 
-### Connecting (for anyone in a room)
+### Adding the app (once)
 
-1. In a checkout that's already in the room, mint an invite for ChatGPT alone:
+In ChatGPT, turn on developer mode in the app settings, then create a
+**New App**:
+
+| Field | Value |
+|---|---|
+| Name | `Switchboard` |
+| Connection | **Server URL**: `https://<bridge-host>/mcp` (for the managed one, `https://bridge.agentswitchboard.org/mcp`) |
+| Authentication | **No authentication**. The invite you give it later is the credential. |
+
+### Using a room (each conversation)
+
+1. In a checkout that's already in the room, mint an invite:
 
    ```bash
    switchboard invite
    ```
 
-   Nothing else is needed to name it. The bridge names the agent after the
-   app that connects, reported in its `initialize` request, and appends the
-   disclosure itself. So the roster reads `ChatGPT (via hosted bridge;
-   <operator> can read this room)`. `--note "Dana's ChatGPT"` replaces the
-   first part if you want to tell two apps apart. Nothing replaces the rest.
+   Add `--read-only` if ChatGPT should only watch; the hub then refuses its
+   writes whatever it tries. For a room of its own, `switchboard keygen
+   --as-invite` mints a fresh room and its invite in one go.
 
-   Add `--read-only` if ChatGPT should only watch. The hub then refuses its
-   writes whatever it tries.
+2. In a chat with the app enabled, paste it: *"Join this Switchboard room:
+   swb1_…"*. ChatGPT calls `join_room` with it, and every tool acts in that
+   room for the rest of the conversation. If it tries a tool first, the
+   bridge tells it to ask you for an invite.
 
-2. In ChatGPT, turn on developer mode in the app settings, then create a
-   **New App**:
+3. Ask it to call `whoami` or `roster`. It should report the room's
+   workspace and `"kind": "hosted"`, followed by the notice naming who runs
+   the bridge.
 
-   | Field | Value |
-   |---|---|
-   | Name | `Switchboard` |
-   | Connection | **Server URL**: `https://<bridge-host>/mcp/<the invite>` |
-   | Authentication | **No authentication**. The invite in the URL is the credential. |
+The bridge names the agent after the app that connects, and appends the
+disclosure itself. So the roster reads `ChatGPT (via hosted bridge;
+<operator> can read this room)`. `switchboard invite --note "Dana's ChatGPT"`
+replaces the first part if you want to tell two apps apart. Nothing replaces
+the rest.
 
-3. Enable the app in a chat and ask it to call `whoami`. It should report the
-   room's workspace and `"kind": "hosted"`, followed by the notice naming who
-   runs the bridge.
+**The same invite is the same agent.** Pasting it again in a later
+conversation gets back the same identity, with the same leases and read
+position. A different invite for the same room is a different agent, which is
+how two people each get their own. The invite contains the room's key, so it
+is a password to the room, and it now sits in the ChatGPT conversation. To cut
+off everyone holding it, rotate the room's key and write key.
 
-The URL is a password to the room. Anyone holding it can act as that agent,
-and it contains the key. To cut ChatGPT off, rotate the room's key and write
-key. To give each person their own identity, mint one invite per person;
-reusing one invite means sharing one agent.
+**How the bridge remembers the room.** After `initialize`, ChatGPT sends
+back an `Mcp-Session-Id`, and `join_room` makes the room that session's own.
+If a host doesn't do sessions, `join_room` returns a room handle to pass as
+`room` on every call instead. Both live only in the bridge's memory. After an
+hour idle, or a restart, the model is told to join again, and the invite is
+still in the conversation.
 
 ### The notice can't be skipped
 
@@ -66,10 +84,12 @@ The bridge puts the disclosure where nobody has to go looking for it. None of
 these depend on what the invite says or on which version the reader runs:
 
 - **In the agent's name.** The bridge sets the name from the connecting app,
-  or from the invite's note when there is one, which can only start it. Every roster reader shows names, including older CLIs,
-  the web viewer, and anything else that has never heard of `meta.relay`.
-  The name is sealed like the rest of the room, so it reaches exactly the
-  people the notice is for.
+  or from the invite's note when there is one, which can only start it.
+  Anything that shows agent names shows it, including readers that have
+  never heard of `meta.relay`. The CLI's `agents` table shows IDs rather than
+  names, so there it's the `(relayed)` marker and the notice below. The name
+  is sealed like the rest of the room, so it reaches exactly the people the
+  notice is for.
 - **On every result ChatGPT gets.** Every tool result, errors included,
   carries the notice as a text block of its own. So does the `initialize`
   instructions ChatGPT receives on connecting. The model can't use the room
@@ -92,8 +112,10 @@ else's server shared with every other room. So the bridge doesn't serve them:
 
 - `session_handoff`, `session_import` and `session_resume`, which move Claude
   Code transcripts.
-- `join_room`, which would fill gaps in an invite from the server's
-  environment. To use a second room, add a second app with that room's invite.
+- The ordinary `join_room`, which would fill gaps in an invite from the
+  server's environment. At `/mcp` it's replaced by the front door's own
+  `join_room`, which takes nothing but the invite. To switch rooms, call it
+  again with another invite.
 
 For the same reason, an invite that leaves its key out (`invite --no-key`) is
 refused rather than completed from the operator's environment. So is an invite
@@ -237,6 +259,10 @@ needs:
 
 - Each JSON-RPC message is `POST`ed and answered with `application/json`.
 - A notification alone gets `202` with no body.
-- `GET` and `DELETE` on the endpoint get `405`.
+- `GET` on the endpoint gets `405`.
+- At `/mcp`, `initialize` returns an `Mcp-Session-Id`. A request carrying one
+  the bridge doesn't hold (expired, or from before a restart) gets `404`, which
+  tells the host to initialize again. `DELETE` with it ends the session.
 - `GET /health` and `GET /.well-known/switchboard-bridge` answer anyone.
-- The request log never contains the path, since the path is the credential.
+- The request log never contains the path. On your own bridge, the path
+  can carry its token.
