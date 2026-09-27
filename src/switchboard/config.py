@@ -993,6 +993,7 @@ def isolation_warning(config: ClientConfig, kind: str) -> str | None:
     origin = {
         "mcp.json": "the committed .mcp.json",
         "rooms": "this repo's rooms file",
+        "invite": "the invite this agent was given",
     }.get(config.url_source, "the built-in default")
     corroboration = ""
     if config.token or config.key:

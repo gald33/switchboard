@@ -5,27 +5,42 @@ rather than through an SDK. The tools-only subset is small and stable, and
 implementing it here means the bridge has no dependency beyond ``httpx`` and
 cannot break when an SDK renames its API between majors.
 
-Run it as ``switchboard-mcp``. Everything is configured by environment:
+Run it as ``switchboard-mcp``, or ``switchboard-mcp --http`` to serve the same
+tools at a URL for hosts that connect rather than spawn — ChatGPT's custom
+apps among them (see docs/chatgpt.md). Everything else is configured by
+environment:
 
     SWITCHBOARD_URL        hub base URL
     SWITCHBOARD_TOKEN      bearer token
     SWITCHBOARD_WORKSPACE  workspace to join
     SWITCHBOARD_AGENT_ID   override the inferred agent id
+    SWITCHBOARD_MCP_TOKEN  the secret an --http caller must present
 
-stdout is the protocol channel — every diagnostic goes to stderr.
+Over stdio, stdout is the protocol channel — every diagnostic goes to stderr.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import sys
+import threading
+import time
 import traceback
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
+from . import invite as invite_module
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -34,8 +49,10 @@ from .client import (
     SwitchboardError,
     UnknownPeerExchangeKey,
     detect_identity,
+    relay_notice,
+    relay_of,
 )
-from .config import ClientConfig, isolation_warning, rooms_warning
+from .config import MANAGED_HUB_URL, ClientConfig, isolation_warning, rooms_warning
 from .crypto import CryptoError, generate_key
 from .guidance import skill_text
 from .handoff import HandoffError
@@ -731,9 +748,19 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+#: Tools that change nothing another agent can see. Declared as MCP
+#: `readOnlyHint` annotations because hosts act on them: ChatGPT asks the user
+#: to confirm every call to a tool not marked read-only, so leaving these
+#: unmarked would put a confirmation prompt in front of reading the roster.
+#: Presence is bumped as a side effect of every call, which is bookkeeping,
+#: not a change anyone asked for — `inbox` is absent because it advances a
+#: read cursor, which is.
+_READ_ONLY = {"help", "whoami", "roster", "claims", "history", "board_get", "board_list"}
+
 for _tool in TOOLS:
     if _tool["name"] not in _ROOMLESS:
         _tool["inputSchema"]["properties"]["room"] = _ROOM_PARAM
+    _tool["annotations"] = {"readOnlyHint": _tool["name"] in _READ_ONLY}
 del _tool
 
 
@@ -755,9 +782,16 @@ class Bridge:
     #: bridge built by `Bridge.__new__`.
     _presence_ttl: float | None = None
 
-    def __init__(self) -> None:
-        self.config = ClientConfig.from_env()
-        self.identity: Identity = detect_identity()
+    #: Tools this bridge does not serve. Empty for a bridge on the agent's own
+    #: machine; the hosted bridge withholds the ones that only mean anything
+    #: there (see `HOSTED_WITHHELD`). Class-level for the same reasons as
+    #: above.
+    _withheld: frozenset[str] = frozenset()
+
+    def __init__(self, config: ClientConfig | None = None,
+                 identity: Identity | None = None) -> None:
+        self.config = config or ClientConfig.from_env()
+        self.identity: Identity = identity or detect_identity()
         self.client = Client(self.config, agent_id=self.identity.agent_id)
         self.timing = TimingModel(self.config.timing_db)
         self._registered = False
@@ -1011,16 +1045,17 @@ class Bridge:
         and it falls back to the static list if the timing store is
         unreadable, since tools/list must never fail over a nicety.
         """
+        served = [t for t in TOOLS if t["name"] not in self._withheld]
         try:
             classes = self.timing.top_classes(self.identity.agent_id, self.config.workspace)
         except Exception:
-            return TOOLS
+            return served
         if not classes:
-            return TOOLS
+            return served
         hint = f" Ones you use most: {', '.join(classes)} — or any other label that fits."
 
         patched = []
-        for tool in TOOLS:
+        for tool in served:
             properties = tool["inputSchema"]["properties"]
             if "execution_class" not in properties:
                 patched.append(tool)
@@ -1144,6 +1179,10 @@ class Bridge:
                  if note]
         if notes:
             out["WARNING"] = "\n\n".join(notes)
+        relay = relay_of(getattr(self.identity, "meta", None))
+        if relay:
+            # The notice itself rides on every result — see `_hosted_notice`.
+            out["relay"] = relay
         calibration = self._calibration()
         if calibration:
             out["forecast_calibration"] = calibration
@@ -1214,6 +1253,7 @@ class Bridge:
         leases = self.client.leases()
         mismatched = self.client.key_mismatches(agents)
         swapped = [a["agent_id"] for a in agents if a.get("key_changed_while_live")]
+        relayed = [a for a in agents if relay_of(a.get("meta"))]
         by_holder: dict[str, list[str]] = {}
         for lease in leases:
             by_holder.setdefault(lease["holder"], []).append(lease["resource"])
@@ -1237,10 +1277,14 @@ class Bridge:
                     # an ordinary restart and says nothing.
                     **({"identity_changed_while_active": True}
                        if a.get("key_changed_while_live") else {}),
+                    **({"relay": relay_of(a.get("meta"))}
+                       if relay_of(a.get("meta")) else {}),
                 }
                 for a in agents
             ],
             "count": len(agents),
+            **({"RELAY_NOTICE": relay_notice(relayed), "relayed_agents": [
+                a["agent_id"] for a in relayed]} if relayed else {}),
             **({
                 "WARNING": (
                     f"{len(mismatched)} agent(s) in this workspace hold a different "
@@ -1744,6 +1788,8 @@ class Bridge:
         handler: Callable[..., Any] | None = getattr(self, name, None)
         if handler is None or name.startswith("_") or name not in {t["name"] for t in TOOLS}:
             raise ValueError(f"unknown tool: {name}")
+        if name in self._withheld:
+            raise ValueError(f"{name} is not served by a hosted bridge: {HOSTED_WITHHELD[name]}")
         arguments = dict(arguments)
         room = arguments.pop("room", None)
         if not room:
@@ -1791,6 +1837,8 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOLS else LATEST_PROTOCOL
+        notice = _hosted_notice(bridge)
+        _name_hosted_agent(bridge, params.get("clientInfo"))
         return _response(request_id, {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
@@ -1817,6 +1865,7 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
                 "agent holding the wrong key or workspace has an empty inbox that looks "
                 "exactly like a quiet one — so have them confirm with `switchboard agents` "
                 "from the new environment."
+                + (f"\n\nIMPORTANT: {notice}" if notice else "")
             ),
         })
 
@@ -1830,62 +1879,79 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         return _response(request_id, {"tools": bridge.tools()})
 
     if method == "tools/call":
-        name = params.get("name", "")
-        arguments = params.get("arguments") or {}
-        try:
-            result = bridge.dispatch(name, arguments)
-        except LeaseHeld as exc:
-            return _response(request_id, _tool_result(
-                {"error": "lease_held", "detail": str(exc), **exc.payload}, is_error=True
-            ))
-        except UnknownPeerExchangeKey as exc:
-            # Before the SwitchboardError branch below, which it subclasses:
-            # nothing was sent to the hub, so "hub_error" would misname what
-            # went wrong. The fix is local — read the roster — and the
-            # message already says so.
-            return _response(request_id, _tool_result(
-                {"error": "unknown_peer_exchange_key", "detail": str(exc)}, is_error=True
-            ))
-        except CryptoError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "crypto_unavailable", "detail": str(exc)}, is_error=True
-            ))
-        except SwitchboardError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "hub_error", "detail": str(exc), "status": exc.status}, is_error=True
-            ))
-        except TypeError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "bad_arguments", "detail": str(exc)}, is_error=True
-            ))
-        except (HandoffError, claude_session.CapsuleError) as exc:
-            # Same placement and reason as SpecError below: a capsule that will
-            # not verify is not an unknown tool.
-            return _response(request_id, _tool_result(
-                {"error": "handoff", "detail": str(exc)}, is_error=True
-            ))
-        except SpecError as exc:
-            # Before the ValueError branch below, which reports `unknown_tool`
-            # — accurate for a name this bridge does not serve, and actively
-            # misleading for a role this *repo* does not declare. An agent told
-            # the tool does not exist looks in a different place entirely.
-            return _response(request_id, _tool_result(
-                {"error": "unknown_role", "detail": str(exc)}, is_error=True
-            ))
-        except ValueError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "unknown_tool", "detail": str(exc)}, is_error=True
-            ))
-        except OSError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "hub_unreachable", "detail": str(exc),
-                 "hub": bridge.config.url}, is_error=True
-            ))
-        return _response(request_id, _tool_result(result))
+        response = _call_tool(bridge, request_id, params)
+        notice = _hosted_notice(bridge)
+        if notice:
+            # A block of its own on every result, errors included, rather than
+            # a field some results have: it is not something the model should
+            # have to ask for, or be able to reach this room without reading.
+            response["result"]["content"].append({"type": "text", "text": notice})
+        return response
 
     if is_notification:
         return None
     return _error(request_id, JSONRPC_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+
+def _hosted_notice(bridge: Bridge) -> str | None:
+    """What a hosted agent is told on every call, or None for any other."""
+    relay = relay_of(getattr(getattr(bridge, "identity", None), "meta", None))
+    return _relay_notice_for_self(relay) if relay else None
+
+
+def _call_tool(bridge: Bridge, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    name = params.get("name", "")
+    arguments = params.get("arguments") or {}
+    try:
+        result = bridge.dispatch(name, arguments)
+    except LeaseHeld as exc:
+        return _response(request_id, _tool_result(
+            {"error": "lease_held", "detail": str(exc), **exc.payload}, is_error=True
+        ))
+    except UnknownPeerExchangeKey as exc:
+        # Before the SwitchboardError branch below, which it subclasses:
+        # nothing was sent to the hub, so "hub_error" would misname what
+        # went wrong. The fix is local — read the roster — and the
+        # message already says so.
+        return _response(request_id, _tool_result(
+            {"error": "unknown_peer_exchange_key", "detail": str(exc)}, is_error=True
+        ))
+    except CryptoError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "crypto_unavailable", "detail": str(exc)}, is_error=True
+        ))
+    except SwitchboardError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "hub_error", "detail": str(exc), "status": exc.status}, is_error=True
+        ))
+    except TypeError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "bad_arguments", "detail": str(exc)}, is_error=True
+        ))
+    except (HandoffError, claude_session.CapsuleError) as exc:
+        # Same placement and reason as SpecError below: a capsule that will
+        # not verify is not an unknown tool.
+        return _response(request_id, _tool_result(
+            {"error": "handoff", "detail": str(exc)}, is_error=True
+        ))
+    except SpecError as exc:
+        # Before the ValueError branch below, which reports `unknown_tool`
+        # — accurate for a name this bridge does not serve, and actively
+        # misleading for a role this *repo* does not declare. An agent told
+        # the tool does not exist looks in a different place entirely.
+        return _response(request_id, _tool_result(
+            {"error": "unknown_role", "detail": str(exc)}, is_error=True
+        ))
+    except ValueError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "unknown_tool", "detail": str(exc)}, is_error=True
+        ))
+    except OSError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "hub_unreachable", "detail": str(exc),
+             "hub": bridge.config.url}, is_error=True
+        ))
+    return _response(request_id, _tool_result(result))
 
 
 def serve_stdio(bridge: Bridge, stdin: Any = None, stdout: Any = None) -> None:
@@ -1920,6 +1986,580 @@ def serve_stdio(bridge: Bridge, stdin: Any = None, stdout: Any = None) -> None:
             stdout.flush()
 
 
+# --- streamable HTTP --------------------------------------------------------
+#
+# The same JSON-RPC, POSTed to one URL instead of written to stdin — the MCP
+# "streamable HTTP" transport, in the subset a tools-only server needs: every
+# request gets a plain JSON response, so there is no SSE stream to hold open
+# and GET is refused. This is what a host that cannot spawn a process connects
+# to: ChatGPT's custom apps, and anything else that only takes a server URL.
+#
+# Two shapes, one handler:
+#
+# - **Your own bridge** (`--http`). One agent, built from this environment
+#   exactly as over stdio, guarded by a token of its own. The key never
+#   leaves a machine you run.
+# - **A hosted bridge** (`--http --hosted`). Many agents, each built from the
+#   invite in its URL and held only in memory. Anyone can connect without
+#   running anything — and the price is that the operator of this server can
+#   read every room whose invite is sent here. That price is declared on the
+#   roster of every such room rather than left for its members to guess; see
+#   `relay_of`.
+#
+# Neither can live in the hub: the hub never holds a key, and a hub that did
+# would undo the one promise it makes.
+
+HTTP_DEFAULT_HOST = "127.0.0.1"
+#: One above the hub's 8787, so a hub and a bridge on one machine do not
+#: fight over a port by default.
+HTTP_DEFAULT_PORT = 8788
+HTTP_PATH = "/mcp"
+#: Where a bridge says what it is, for anyone deciding whether to trust it.
+WELL_KNOWN_PATH = "/.well-known/switchboard-bridge"
+#: Larger than any tool call this server accepts, small enough that a stray
+#: client cannot make it buffer something absurd.
+HTTP_MAX_BODY = 4 * 1024 * 1024
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+#: What a hosted bridge's source is, and how to check a build of it. The
+#: commit is baked in by the image build (Dockerfile.bridge); a bridge run from
+#: a checkout has none, and says so rather than guessing.
+BRIDGE_SOURCE = "https://github.com/gald33/switchboard"
+BRIDGE_IMAGE = "ghcr.io/gald33/switchboard-bridge"
+
+#: Tools a hosted bridge does not serve, with the reason a caller is given.
+#: Each one reaches for the machine the bridge runs on — its Claude Code
+#: transcripts, its environment's keys — which on a hosted bridge is somebody
+#: else's server, shared with every other room it serves.
+HOSTED_WITHHELD = {
+    "session_handoff": "it moves Claude Code transcripts on the bridge's own machine",
+    "session_import": "it moves Claude Code transcripts on the bridge's own machine",
+    "session_resume": "it moves Claude Code transcripts on the bridge's own machine",
+    "join_room": (
+        "it would fill gaps in the invite from the server's environment. Connect "
+        "with the other room's invite as its own app URL instead"
+    ),
+}
+
+#: Hosted bridges kept warm, and for how long an idle one is kept. Memory is
+#: the only place they live, so these bound what a hosted server holds.
+HOSTED_MAX_BRIDGES = 256
+HOSTED_IDLE_SECONDS = 3600.0
+
+
+def _is_loopback(host: str) -> bool:
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _origin_is_local(origin: str) -> bool:
+    return _is_loopback(urlsplit(origin).hostname or "")
+
+
+def _relay_notice_for_self(relay: dict[str, Any]) -> str:
+    operator = relay.get("operator") or "an unnamed operator"
+    return (
+        f"You reach this room through a hosted bridge run by {operator}. It holds the "
+        "room's key in order to act for you, so its operator can read this room — what "
+        "you say, what you read, and everything else in it. Other agents are told this "
+        "on their roster. If the user assumes this conversation is end-to-end encrypted "
+        "to their own devices, correct that."
+    )
+
+
+def build_info() -> dict[str, Any]:
+    """What this bridge is built from, as far as this process can say."""
+    commit = os.environ.get("SWITCHBOARD_BUILD_COMMIT") or None
+    image = os.environ.get("SWITCHBOARD_BUILD_IMAGE") or None
+    return {
+        "version": __version__,
+        "source": BRIDGE_SOURCE,
+        "commit": commit,
+        "tree": f"{BRIDGE_SOURCE}/tree/{commit}" if commit else None,
+        "image": image,
+        "verify": (
+            f"gh attestation verify oci://{image} --repo gald33/switchboard"
+            if image else None
+        ),
+    }
+
+
+def _hub_key(url: str) -> str:
+    return url.strip().rstrip("/").lower()
+
+
+def hosted_name(label: str | None, relay: dict[str, Any]) -> str:
+    """The roster name of a hosted agent, with the disclosure built in.
+
+    `label` says whose agent this is: the invite's `--note` when somebody
+    passed one, otherwise what the connecting app calls itself (see
+    `_client_label`) — nobody should have to remember a flag for the roster
+    to say "ChatGPT".
+
+    `meta.relay` is what current readers act on, but only readers that know
+    to look — an older CLI, the web viewer, anything written against the
+    roster before this existed shows a name and nothing else. The name is the
+    one field every reader displays, and it is sealed like the room, so it
+    reaches exactly the people the notice is for. Set here rather than taken
+    from the invite, so no invite can name an agent out of it.
+    """
+    operator = relay.get("operator") or "an unnamed operator"
+    return f"{label or 'hosted agent'} (via hosted bridge; {operator} can read this room)"
+
+
+#: What a connecting app's `clientInfo` looks like, mapped to what a person
+#: reading the roster would call it. Anything unlisted is shown as it came.
+_KNOWN_CLIENTS = {"openai-mcp": "ChatGPT", "chatgpt": "ChatGPT", "openai": "ChatGPT"}
+
+
+def _client_label(client_info: Any) -> str | None:
+    """A short roster label from an `initialize` request's `clientInfo`.
+
+    Client-supplied, so trimmed to something that cannot pass for a second
+    sentence of the disclosure it sits in front of: printable, one line,
+    short.
+    """
+    if not isinstance(client_info, dict):
+        return None
+    raw = client_info.get("title") or client_info.get("name")
+    if not isinstance(raw, str):
+        return None
+    label = " ".join("".join(ch if ch.isprintable() else " " for ch in raw).split())[:40]
+    if not label:
+        return None
+    known = _KNOWN_CLIENTS.get(label.lower())
+    if known is None and ("openai" in label.lower() or "chatgpt" in label.lower()):
+        known = "ChatGPT"
+    return known or label
+
+
+def _name_hosted_agent(bridge: Bridge, client_info: Any) -> None:
+    """Name a hosted agent after the app that connected, unless an invite
+    note already did. Re-announces if it was registered under another name."""
+    relay = relay_of(getattr(getattr(bridge, "identity", None), "meta", None))
+    if not relay or getattr(bridge, "_hosted_note", ""):
+        return
+    label = _client_label(client_info)
+    if not label:
+        return
+    name = hosted_name(label, relay)
+    if name != bridge.identity.name:
+        bridge.identity.name = name
+        bridge._registered = False
+
+
+def hosted_bridge(blob: str, relay: dict[str, Any],
+                  hubs: frozenset[str] | None = None) -> Bridge:
+    """One agent, built from nothing but an invite.
+
+    Everything the stdio bridge reads from its environment or its disk comes
+    from the invite here, or is held in memory, or is off. A hosted server is
+    shared by every room sent to it, so its environment is nobody's to borrow
+    — an invite that leaves its key out is refused rather than completed from
+    whatever the operator happens to have exported — and anything written to
+    its disk would outlive the promise that nothing is kept.
+    """
+    invite = Invite.decode(blob)
+    if hubs is not None and _hub_key(invite.url) not in hubs:
+        # Otherwise an invite is a way to make this server send requests
+        # anywhere it can reach — its cloud metadata endpoint, its private
+        # network — and report back what came of them.
+        raise InviteError(
+            f"this bridge serves rooms on {', '.join(sorted(hubs))} only, and this "
+            f"invite is for {invite.url}. Use your own bridge for that hub."
+        )
+    if invite.key_id and not invite.key:
+        raise InviteError(
+            f"this invite leaves its key out (it names key {invite.key_id!r}), and a "
+            "hosted bridge holds no keys of its own. Mint one that carries it: "
+            "`switchboard invite`."
+        )
+    digest = hashlib.sha256(blob.encode()).hexdigest()
+    # Stable per invite, so a reconnect is the same agent — its leases, its
+    # read cursor — and distinct per invite, so two people's apps never share
+    # one. Not derived from the key: the id reaches the hub (blinded, when the
+    # room is sealed), and a hash of the invite is a hash of the key.
+    local_id = f"hosted-{hashlib.sha256(digest.encode()).hexdigest()[:12]}"
+    config = ClientConfig(
+        url=invite.url, url_source="invite",
+        token=invite.token, token_source="invite" if invite.token else "none",
+        workspace=invite.workspace, workspace_source="invite",
+        agent_id=local_id, key=invite.key, write_key=invite.write_key,
+        timing_db=":memory:", peer_log="", stash_db="",
+    )
+    identity = Identity(
+        agent_id=local_id, name=hosted_name(invite.note or None, relay), kind="hosted",
+        branch=None, meta={"relay": relay},
+    )
+    bridge = Bridge(config, identity)
+    #: An invite's note outranks what the app calls itself: somebody chose it.
+    bridge._hosted_note = invite.note
+    bridge._withheld = frozenset(HOSTED_WITHHELD)
+    return bridge
+
+
+class HostedBridges:
+    """The agents a hosted server is holding, by invite, in memory only.
+
+    Each has its own lock, and every call into it is made holding that lock:
+    one agent is one client, one set of leases and one read cursor, and it
+    was written to be driven by one caller at a time. Different agents run
+    in parallel, so one room's long poll never stalls another's.
+    """
+
+    def __init__(self, relay: dict[str, Any], hubs: Sequence[str] = (MANAGED_HUB_URL,),
+                 max_bridges: int = HOSTED_MAX_BRIDGES,
+                 idle_seconds: float = HOSTED_IDLE_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.relay = relay
+        #: The hubs an invite may name. Never "any": see `hosted_bridge`.
+        self.hubs = frozenset(_hub_key(h) for h in hubs)
+        self.max_bridges = max_bridges
+        self.idle_seconds = idle_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        #: Keyed by a digest of the invite, never the invite itself, so a dump
+        #: of this dict's keys is not a list of credentials.
+        self._held: OrderedDict[str, list[Any]] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._held)
+
+    def get(self, blob: str) -> tuple[Bridge, threading.Lock]:
+        digest = hashlib.sha256(blob.encode()).hexdigest()
+        with self._lock:
+            entry = self._held.get(digest)
+            if entry is None:
+                entry = [hosted_bridge(blob, self.relay, self.hubs), threading.Lock(), 0.0]
+                self._held[digest] = entry
+            entry[2] = self._clock()
+            self._held.move_to_end(digest)
+            evicted = self._evict()
+        for bridge, lock in evicted:
+            with lock:
+                bridge.close()
+        return entry[0], entry[1]
+
+    def _evict(self) -> list[tuple[Bridge, threading.Lock]]:
+        """Drop the idle, then the least recent past the cap. Caller holds
+        `_lock`. The newest entry is never dropped: it is the one being used."""
+        now = self._clock()
+        out = []
+        for digest in list(self._held)[:-1]:
+            bridge, lock, seen = self._held[digest]
+            if now - seen > self.idle_seconds or len(self._held) > self.max_bridges:
+                del self._held[digest]
+                out.append((bridge, lock))
+        return out
+
+    def close(self) -> None:
+        with self._lock:
+            held, self._held = list(self._held.values()), OrderedDict()
+        for bridge, lock, _ in held:
+            with lock:
+                bridge.close()
+
+
+def _http_handler(resolve: Callable[[str, Any], Any],
+                  info: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    """A request handler that asks `resolve` which bridge a request is for.
+
+    `resolve(path, headers)` returns ``(bridge, lock)`` to serve it, or
+    ``(status, body, headers)`` to refuse it. Everything else — the JSON-RPC
+    framing, the status codes, what never reaches the log — is the same in
+    both shapes, which is the point of it being one handler.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = f"switchboard-mcp/{__version__}"
+        #: Socket timeout, so a client that connects and sends nothing cannot
+        #: hold a thread — or, for your own bridge, the whole server — forever.
+        timeout = 60
+
+        def log_request(self, code: Any = "-", size: Any = "-") -> None:
+            # Not the request line: the path is the credential, a token or a
+            # whole invite, and logs travel further than secrets should.
+            log(f"http {self.command} -> {code}")
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            log("http " + (format % args))
+
+        def _send(self, status: int, body: Any = None,
+                  headers: dict[str, str] | None = None) -> None:
+            data = b"" if body is None else json.dumps(body, default=str).encode()
+            self.send_response(status)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+
+        def _path(self) -> str:
+            return urlsplit(self.path).path.rstrip("/") or "/"
+
+        def _route(self) -> tuple[Bridge, threading.Lock] | None:
+            """The bridge to serve, or None once a refusal has been sent."""
+            outcome = resolve(self._path(), self.headers)
+            if len(outcome) == 2:
+                return outcome
+            self._send(*outcome)
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's naming
+            path = self._path()
+            if path == WELL_KNOWN_PATH:
+                self._send(200, info)
+                return
+            if path == "/health":
+                self._send(200, {"ok": True})
+                return
+            # No server-initiated stream: every response rides its request.
+            if self._route():
+                self._send(405, {"error": "use POST"}, {"Allow": "POST"})
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            # No sessions to end, since none are issued.
+            if self._route():
+                self._send(405, {"error": "use POST"}, {"Allow": "POST"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            routed = self._route()
+            if routed is None:
+                return
+            bridge, lock = routed
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > HTTP_MAX_BODY:
+                self._send(413, _error(None, JSONRPC_INVALID_REQUEST, "bad body length"))
+                return
+            try:
+                message = json.loads(self.rfile.read(length) or b"null")
+            except ValueError:
+                self._send(400, _error(None, JSONRPC_PARSE_ERROR, "invalid JSON"))
+                return
+            # A list is a JSON-RPC batch, which 2025-03-26 allowed and later
+            # revisions dropped; answering one costs nothing.
+            batch = isinstance(message, list)
+            with lock:
+                responses = [r for r in (_handle_one(bridge, m)
+                                         for m in (message if batch else [message]))
+                             if r is not None]
+            if not responses:
+                # Only notifications: accepted, and there is nothing to say.
+                self._send(202)
+            else:
+                self._send(200, responses if batch else responses[0])
+
+    return Handler
+
+
+def _handle_one(bridge: Bridge, request: Any) -> dict[str, Any] | None:
+    if not isinstance(request, dict):
+        return _error(None, JSONRPC_INVALID_REQUEST, "expected a JSON object")
+    try:
+        return handle_request(bridge, request)
+    except Exception:  # noqa: BLE001 - a tool bug must not kill the server
+        log("unhandled error:\n" + traceback.format_exc())
+        return _error(request.get("id"), JSONRPC_INTERNAL_ERROR, "internal error (see stderr)")
+
+
+def _own_bridge_resolver(bridge: Bridge, token: str | None) -> Callable[[str, Any], Any]:
+    """Routing for your own bridge: one agent, one token.
+
+    The token is accepted two ways, because the hosts that matter disagree on
+    how to send one. As a bearer header, for clients that let you set one;
+    and as the last path segment (``/mcp/<token>``), for hosts like ChatGPT
+    whose only choices are OAuth or no authentication at all — there, the URL
+    itself is the credential, the same shape as a webhook URL.
+
+    With no token the endpoint is open, which is only defensible on loopback.
+    Even there a web page can reach it through DNS rebinding, so a request
+    carrying a non-local ``Origin`` is refused, as the MCP spec requires.
+    """
+    lock = threading.Lock()
+    token_path = f"{HTTP_PATH}/{token}" if token else None
+
+    def resolve(path: str, headers: Any) -> Any:
+        if token_path is not None and hmac.compare_digest(
+                path.encode("utf-8", "replace"), token_path.encode()):
+            return bridge, lock
+        if path != HTTP_PATH:
+            # 404 rather than 401 for a wrong token in the path, so the
+            # endpoint does not confirm which half of a guess was right.
+            return 404, {"error": "not found"}, None
+        if token is None:
+            origin = headers.get("Origin")
+            if origin and not _origin_is_local(origin):
+                return 403, {"error": "origin not allowed"}, None
+            return bridge, lock
+        scheme, _, value = (headers.get("Authorization") or "").partition(" ")
+        if scheme.lower() == "bearer" and hmac.compare_digest(
+                value.strip().encode("utf-8", "replace"), token.encode()):
+            return bridge, lock
+        return 401, {"error": "unauthorized"}, {"WWW-Authenticate": "Bearer"}
+
+    return resolve
+
+
+def _hosted_resolver(bridges: HostedBridges) -> Callable[[str, Any], Any]:
+    """Routing for a hosted bridge: the invite in the path is the agent.
+
+    There is no token of the server's own. The invite is already a credential
+    — it carries the room's key — and a second secret in front of it would
+    protect nothing the first does not.
+    """
+    prefix = f"{HTTP_PATH}/{invite_module.PREFIX}"
+
+    def resolve(path: str, headers: Any) -> Any:
+        if not path.startswith(prefix):
+            return 404, {"error": "not found"}, None
+        try:
+            return bridges.get(path[len(HTTP_PATH) + 1:])
+        except InviteError as exc:
+            # Said to the holder of the invite, who is the only one who can
+            # send it: the reason is theirs to act on and names nothing secret.
+            return 400, {"error": "bad invite", "detail": str(exc)}, None
+
+    return resolve
+
+
+def make_http_server(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
+                     port: int = HTTP_DEFAULT_PORT,
+                     token: str | None = None) -> HTTPServer:
+    """Your own bridge over HTTP, bound but not yet serving.
+
+    Deliberately not threaded. A bridge is one agent, and this one was built
+    on the thread that serves it — the same as over stdio. The cost is that a
+    long-polling `inbox` holds the server for up to its 25s wait, which a
+    single host making one call at a time never notices.
+    """
+    info = {**build_info(), "hosted": False}
+    return HTTPServer((host, port), _http_handler(_own_bridge_resolver(bridge, token), info))
+
+
+def make_hosted_server(bridges: HostedBridges, host: str = HTTP_DEFAULT_HOST,
+                       port: int = HTTP_DEFAULT_PORT) -> ThreadingHTTPServer:
+    """A hosted bridge, bound but not yet serving. Threaded, because it is
+    many agents; see `HostedBridges` for how each one stays single-file."""
+    info = {**build_info(), "hosted": True, "operator": bridges.relay.get("operator"),
+            "hubs": sorted(bridges.hubs),
+            "keeps": "nothing on disk; each agent lives in memory until idle for "
+                     f"{int(HOSTED_IDLE_SECONDS)}s",
+            "can_read": "every room whose invite is sent here — see docs/chatgpt.md"}
+    server = ThreadingHTTPServer((host, port), _http_handler(_hosted_resolver(bridges), info))
+    server.daemon_threads = True
+    return server
+
+
+def serve_http(server: HTTPServer, *, hosted: bool, token: str | None,
+               public_url: str | None) -> None:
+    host, port = server.server_address[:2]
+    shown = f"[{host}]" if ":" in str(host) else host
+    base = (public_url or f"http://{shown}:{port}").rstrip("/") + HTTP_PATH
+    if hosted:
+        log(f"hosted bridge at {base}/<invite> — each user's ChatGPT app URL is "
+            f"{base}/ followed by the output of `switchboard invite`")
+    elif token:
+        log(f"serving MCP over HTTP at {base}/<token> (or {base} with a bearer token)")
+        log("ChatGPT: expose this port over HTTPS (a tunnel, or a reverse proxy) and add "
+            f"https://<your-host>{HTTP_PATH}/<token> as the app's Server URL, "
+            "with Authentication set to 'No authentication'")
+    else:
+        log(f"serving MCP over HTTP at {base} with NO authentication")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="switchboard-mcp",
+        description=(
+            "Serve a Switchboard hub to an MCP host as tools. Speaks stdio by "
+            "default; --http serves the same tools at a URL instead, for hosts such "
+            "as ChatGPT that connect to a server rather than spawning one."
+        ),
+    )
+    parser.add_argument("--http", action="store_true",
+                        help="serve streamable HTTP instead of stdio")
+    parser.add_argument("--host", default=HTTP_DEFAULT_HOST,
+                        help=f"address to bind with --http (default {HTTP_DEFAULT_HOST})")
+    parser.add_argument("--port", type=int, default=HTTP_DEFAULT_PORT,
+                        help=f"port to bind with --http (default {HTTP_DEFAULT_PORT})")
+    parser.add_argument(
+        "--token", default=os.environ.get("SWITCHBOARD_MCP_TOKEN") or None,
+        help="secret an HTTP caller must present, as a bearer token or as the last "
+             "path segment (default $SWITCHBOARD_MCP_TOKEN, else a fresh random one "
+             "printed at startup)")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="serve HTTP with no token (refused unless bound to loopback)")
+    parser.add_argument(
+        "--hosted", action="store_true",
+        help="serve many agents, each from the invite in its URL (/mcp/swb1_...), "
+             "holding nothing on disk. Whoever runs this can read every room whose "
+             "invite is sent to it, and every such room's roster says so")
+    parser.add_argument(
+        "--operator", default=os.environ.get("SWITCHBOARD_BRIDGE_OPERATOR") or None,
+        help="with --hosted: who runs this bridge, as shown on every roster it "
+             "reaches (default $SWITCHBOARD_BRIDGE_OPERATOR; required)")
+    parser.add_argument(
+        "--hub", action="append", dest="hubs", metavar="URL",
+        default=[h.strip() for h in os.environ.get("SWITCHBOARD_BRIDGE_HUBS", "").split(",")
+                 if h.strip()] or None,
+        help="with --hosted: a hub whose rooms this bridge serves; repeat for more "
+             f"(default $SWITCHBOARD_BRIDGE_HUBS, comma-separated, else {MANAGED_HUB_URL}). "
+             "An invite naming any other hub is refused, so the bridge cannot be "
+             "pointed at arbitrary addresses")
+    parser.add_argument(
+        "--public-url", default=os.environ.get("SWITCHBOARD_BRIDGE_URL") or None,
+        help="the HTTPS address this bridge is reached at, for the links it prints "
+             "and the verification link it puts on the roster")
+    args = parser.parse_args(argv)
+    if args.hosted:
+        if not args.http:
+            parser.error("--hosted serves HTTP; pass --http as well")
+        if not args.operator:
+            parser.error("--hosted needs --operator (or $SWITCHBOARD_BRIDGE_OPERATOR): "
+                         "every room this bridge reaches is told who can read it, and "
+                         "'nobody said' is not an answer to give them")
+        if args.token or args.no_auth:
+            parser.error("--hosted takes no token: the invite in each URL is the "
+                         "credential")
+        return args
+    if args.no_auth:
+        if not _is_loopback(args.host):
+            parser.error("--no-auth is only allowed on a loopback --host: anyone who "
+                         "can reach this port would act as this agent")
+        args.token = None
+    elif args.http and not args.token:
+        # Random rather than refusing to start, so the first run just works;
+        # the log says to pin it, since a URL that changes on every restart
+        # means re-adding the app every time.
+        args.token = secrets.token_urlsafe(24)
+        log(f"generated token: {args.token}")
+        log("set SWITCHBOARD_MCP_TOKEN to keep this URL stable across restarts")
+    return args
+
+
+def hosted_relay(operator: str, public_url: str | None = None) -> dict[str, Any]:
+    """The declaration every agent on a hosted bridge registers with."""
+    info = build_info()
+    return {
+        "hosted": True,
+        "operator": operator,
+        "source": info["source"],
+        "commit": info["commit"],
+        "image": info["image"],
+        "about": (public_url.rstrip("/") + WELL_KNOWN_PATH) if public_url else None,
+    }
+
+
 def _holds_the_key(signing: object | None) -> bool:
     """Is this process's signing identity its own, rather than borrowed?
 
@@ -1945,6 +2585,24 @@ def _holds_the_key(signing: object | None) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.hosted:
+        # No bridge of its own and no signing socket: every agent here is
+        # somebody else's, built from their invite when they first call.
+        bridges = HostedBridges(hosted_relay(args.operator, args.public_url),
+                                hubs=args.hubs or (MANAGED_HUB_URL,))
+        log(f"hosted bridge, operator={args.operator!r}, "
+            f"commit={build_info()['commit'] or 'unknown (not an image build)'}, "
+            f"hubs={sorted(bridges.hubs)}")
+        try:
+            serve_http(make_hosted_server(bridges, args.host, args.port),
+                       hosted=True, token=None, public_url=args.public_url)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            bridges.close()
+        return 0
+
     bridge = Bridge()
     log(
         f"agent={bridge.identity.agent_id} workspace={bridge.config.workspace} "
@@ -1966,7 +2624,11 @@ def main(argv: list[str] | None = None) -> int:
             signer = None
 
     try:
-        serve_stdio(bridge)
+        if args.http:
+            serve_http(make_http_server(bridge, args.host, args.port, args.token),
+                       hosted=False, token=args.token, public_url=args.public_url)
+        else:
+            serve_stdio(bridge)
     except KeyboardInterrupt:
         pass
     finally:

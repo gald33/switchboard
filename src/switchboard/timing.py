@@ -308,7 +308,11 @@ class TimingModel:
             directory = os.path.dirname(self.db_path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
-            conn = sqlite3.connect(self.db_path)
+            # Not bound to the creating thread: the hosted bridge serves one
+            # agent from whichever request thread is current, and serializes
+            # every call into it (see `mcp_server.HostedBridges`), which is
+            # the guarantee this check exists to demand.
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(
                 """

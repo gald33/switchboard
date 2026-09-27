@@ -1,0 +1,48 @@
+# Switchboard hosted bridge — `switchboard-mcp --http --hosted`.
+#
+# What ChatGPT (or any host that connects by URL) talks to when the person
+# using it runs nothing of their own. Built only by .github/workflows/bridge.yml,
+# which publishes it to ghcr.io/gald33/switchboard-bridge with a signed build
+# attestation naming the commit and workflow run that produced it. That is
+# what lets anyone check a running bridge's claim about itself — see
+# docs/chatgpt.md, "What you can check, and what you cannot".
+#
+# Its own image rather than a target of the hub's Dockerfile, for the reason
+# the viewer is not served by the hub: the hub's promise is that it never
+# holds a key, and this process holds every key sent to it. Keeping them apart
+# keeps that promise checkable — nothing here is in the hub's image.
+FROM python:3.12-slim AS build
+
+WORKDIR /src
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir --upgrade pip build \
+ && python -m build --wheel --outdir /dist
+
+FROM python:3.12-slim
+
+# No volume and no writable home worth the name: the bridge keeps nothing on
+# disk, and a test (tests/test_mcp_hosted.py) holds it to that.
+RUN useradd --uid 10001 --no-create-home --home-dir /nonexistent switchboard
+
+COPY --from=build /dist/*.whl /tmp/
+# No [server] extra: the bridge is a client of a hub, not one.
+RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+
+# Baked in by the build, read back by /.well-known/switchboard-bridge and put
+# on the roster of every room this bridge reaches. A build that did not pass
+# it says "unknown" rather than claiming a commit it cannot name.
+ARG SWITCHBOARD_BUILD_COMMIT=""
+ENV SWITCHBOARD_BUILD_COMMIT=${SWITCHBOARD_BUILD_COMMIT} \
+    PYTHONUNBUFFERED=1
+
+USER switchboard
+EXPOSE 8788
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/health', timeout=3)"]
+
+# The operator is required and has no default here on purpose: every room this
+# bridge reaches is told who can read it. Set SWITCHBOARD_BRIDGE_OPERATOR (and
+# SWITCHBOARD_BRIDGE_URL, SWITCHBOARD_BUILD_IMAGE) when running it.
+ENTRYPOINT ["switchboard-mcp", "--http", "--hosted", "--host", "0.0.0.0", "--port", "8788"]

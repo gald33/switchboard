@@ -40,5 +40,43 @@ services:
     volumes:
       - switchboard-data:/data
 
+  # The hosted bridge: what ChatGPT connects to when its user runs nothing of
+  # their own (docs/chatgpt.md). Off unless asked for —
+  #
+  #   docker compose --profile bridge up -d bridge
+  #
+  # — because running it is a decision, not a default: whoever runs it can
+  # read every room whose invite is sent to it, and every such room's roster
+  # names SWITCHBOARD_BRIDGE_OPERATOR as that person.
+  #
+  # Pulled, never built here. The point of the image is the signed statement
+  # GitHub makes about it (.github/workflows/bridge.yml); an image built on
+  # this host would carry none, and the digest it published would prove
+  # nothing. Pin BRIDGE_IMAGE to a digest in `.env`, and set the same value as
+  # SWITCHBOARD_BUILD_IMAGE so the bridge publishes what it was started from.
+  bridge:
+    profiles: ["bridge"]
+    image: ${BRIDGE_IMAGE:-ghcr.io/gald33/switchboard-bridge:latest}
+    container_name: switchboard-bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8788"
+    environment:
+      # Required, and enforced by the bridge rather than by `:?` here: compose
+      # interpolates every service whether its profile is on or not, so a
+      # `:?` would fail the hub's own deploy on any host that never runs this.
+      SWITCHBOARD_BRIDGE_OPERATOR: ${SWITCHBOARD_BRIDGE_OPERATOR:-}
+      SWITCHBOARD_BRIDGE_URL: ${SWITCHBOARD_BRIDGE_URL:-}
+      # Hubs whose rooms it serves, comma-separated. Empty means the managed
+      # hub only. An invite naming any other hub is refused, or it would be a
+      # way to make this host fetch arbitrary addresses on request.
+      SWITCHBOARD_BRIDGE_HUBS: ${SWITCHBOARD_BRIDGE_HUBS:-}
+      SWITCHBOARD_BUILD_IMAGE: ${BRIDGE_IMAGE:-}
+    # Nothing to keep, so nothing to mount: the bridge holds every agent in
+    # memory and a restart forgets them.
+    read_only: true
+    tmpfs:
+      - /tmp
+
 volumes:
   switchboard-data:

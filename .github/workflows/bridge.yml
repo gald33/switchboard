@@ -1,0 +1,88 @@
+name: Build hosted bridge image
+
+# Builds Dockerfile.bridge, publishes it to ghcr.io/gald33/switchboard-bridge,
+# and signs a build-provenance attestation for it: a Sigstore-backed statement,
+# made by GitHub rather than by whoever runs the bridge, that this exact image
+# digest was produced by this workflow from this commit.
+#
+# That is the bridge's equivalent of the viewer's "no build step" (pages.yml):
+# the thing that turns "trust the host" into "read the source". Anyone can
+# check a digest with
+#
+#   gh attestation verify oci://ghcr.io/gald33/switchboard-bridge@sha256:<digest> \
+#     --repo gald33/switchboard
+#
+# and the bridge publishes the digest it was started with at
+# /.well-known/switchboard-bridge. What this does NOT prove is that a server
+# is running the image it names — see docs/chatgpt.md for that gap and what
+# closes it.
+#
+# One manual step, once: after the first run, make the package public
+# (GitHub -> Packages -> switchboard-bridge -> Package settings -> Change
+# visibility), or nobody else can pull the image to check it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - pyproject.toml
+      - Dockerfile.bridge
+      - .github/workflows/bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  # Both needed to sign: the OIDC token Sigstore certifies, and the right to
+  # store the attestation against this repo.
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: bridge-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/gald33/switchboard-bridge
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.bridge
+          push: true
+          build-args: SWITCHBOARD_BUILD_COMMIT=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          # Adds its own SLSA provenance too; the attestation below is the one
+          # `gh attestation verify` checks.
+          provenance: true
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Say what was built
+        run: |
+          {
+            echo "### ${IMAGE}@${{ steps.push.outputs.digest }}"
+            echo
+            echo "Built from \`${GITHUB_SHA}\`. Verify with:"
+            echo
+            echo '```'
+            echo "gh attestation verify oci://${IMAGE}@${{ steps.push.outputs.digest }} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
