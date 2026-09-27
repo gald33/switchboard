@@ -50,8 +50,11 @@ import hashlib
 import json
 import os
 import socket as _socket
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -206,10 +209,12 @@ def message_payload(*, sender: str, channel: str, seq: int, body: Any) -> bytes:
 # stream of one-message strangers, and `release` from the Stop hook, which is
 # an impersonation target, would be signed by nobody in particular.
 #
-# The key does not move. The MCP server signs on behalf of the others over a
-# unix socket, so it stays in one process's memory and still never touches
-# disk. Both sides can compute the path without a handoff because `agent_id` is
-# already derived deterministically from branch, host and session.
+# The key does not move. One process signs on behalf of the others over a
+# unix socket -- the MCP server when there is one, else a standalone signer the
+# CLI starts (`ensure_signer`, below) -- so it stays in one process's memory
+# and still never touches disk. Both sides can compute the path without a
+# handoff because `agent_id` is already derived deterministically from branch,
+# host and session.
 #
 # This grants any process running as the same user the ability to sign as this
 # agent. That is not a new exposure: such a process could already read the
@@ -236,11 +241,20 @@ def socket_path(agent_id: str) -> Path:
 class SigningServer:
     """Signs on behalf of the other processes that make up this agent."""
 
-    def __init__(self, identity: SigningIdentity, agent_id: str) -> None:
+    def __init__(self, identity: SigningIdentity, agent_id: str, *,
+                 stoppable: bool = False) -> None:
         self.identity = identity
         self.path = socket_path(agent_id)
         self._server: _socket.socket | None = None
         self._thread: threading.Thread | None = None
+        #: Whether a `stop` request is honoured. Only for a standalone signer
+        #: (`serve`), whose one job this is; the MCP server's socket is not
+        #: something another process should be able to switch off.
+        self._stoppable = stoppable
+        #: Set when a `stop` request arrives, and bumped on every request, so
+        #: `serve` can tell an idle signer from a busy one.
+        self.stopped = threading.Event()
+        self.last_used = time.monotonic()
 
     def start(self) -> bool:
         """Begin listening. False if this platform or environment cannot."""
@@ -278,7 +292,12 @@ class SigningServer:
         if not data:
             return
         request = json.loads(data.decode())
+        self.last_used = time.monotonic()
         op = request.get("op")
+        if op == "stop" and self._stoppable:
+            conn.sendall(json.dumps({"stopped": True}).encode())
+            self.stopped.set()
+            return
         if op == "pubkey":
             reply = {"pubkey": self.identity.public_key,
                      "exchange_key": self.identity.exchange_key}
@@ -376,3 +395,157 @@ def attach(agent_id: str) -> RemoteSigningIdentity | None:
             or not isinstance(reply.get("exchange_key"), str)):
         return None
     return RemoteSigningIdentity(path, reply["pubkey"], reply["exchange_key"])
+
+
+# --- a signer of its own, for an agent that has no MCP server -----------------
+#
+# `attach` only helps if somebody is serving. The MCP server does, for the
+# agents it runs; an agent that only ever runs `switchboard` commands has no
+# long-lived process at all, so every command minted a key of its own. Observed
+# 2026-09-27: `announce` published exchange key A, `listen` re-registered with
+# B, a peer sealed a whisper to B, `listen` opened it and exited, and `inbox`
+# — holding C — could not, and marked it read. The stash (stash.py) did keep a
+# copy, but a stash retries with the keys known *now*, and what was missing was
+# this agent's own private half, which died with `listen`. Nothing later can
+# ever bring that back, so the only fix is for the key not to die.
+#
+# So the CLI starts a signer: a small detached process that generates the
+# keypair in its own memory and serves it on the same socket the MCP server
+# would, and nothing else. Every rule above still holds — the key is generated
+# in that process, never passed to it, never written, never put in an
+# environment — and it ends the way an identity is meant to here, with the
+# process: after `DEFAULT_IDLE_SECONDS` without a request, or on `stop`.
+
+#: How long a standalone signer lives without being asked for anything. A day,
+#: because that is how long anything lasts on a hub (see the module docstring),
+#: and an agent that has not run a command in a day has become another agent.
+DEFAULT_IDLE_SECONDS = 24 * 3600.0
+
+#: How long a command waits for a signer it started to come up before giving
+#: up and signing as itself, which is what it did before this existed.
+_SPAWN_WAIT_SECONDS = 5.0
+
+
+def signer_enabled() -> bool:
+    """Whether CLI commands may start a signer. `SWITCHBOARD_SIGNER=off` says no.
+
+    Attaching to one that is already running is not affected: that is how the
+    CLI has always found the MCP server's.
+    """
+    value = os.environ.get("SWITCHBOARD_SIGNER", "on").strip().lower()
+    return value not in {"0", "off", "false", "no"}
+
+
+def _lock_path(agent_id: str) -> Path:
+    # Empty, and only ever empty: its whole content is the flock on it.
+    return socket_path(agent_id).with_suffix(".lock")
+
+
+def serve(agent_id: str, *, idle_timeout: float = DEFAULT_IDLE_SECONDS) -> int:
+    """Be this agent's signer until idle for `idle_timeout`, or told to stop.
+
+    Returns 0 without serving if another process already is: a signer that
+    replaced a live one would strand every process attached to it (see
+    `mcp_server._holds_the_key` for the same hazard from the other side). Two
+    commands racing to start one are settled by an exclusive lock, held for
+    the life of the signer.
+    """
+    if not AVAILABLE:
+        return 1
+    path = socket_path(agent_id)
+    try:
+        import fcntl
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        lock = open(_lock_path(agent_id), "a")  # noqa: SIM115 - held until exit
+    except (OSError, ImportError):
+        return 1
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0                        # another signer is starting or running
+        if attach(agent_id) is not None:
+            return 0                        # an MCP server already holds this agent
+        server = SigningServer(SigningIdentity.generate(), agent_id, stoppable=True)
+        if not server.start():
+            return 1
+        try:
+            tick = max(0.05, min(60.0, idle_timeout / 4))
+            while not server.stopped.wait(tick):
+                if time.monotonic() - server.last_used > idle_timeout:
+                    break
+                if not path.exists():
+                    break                   # unreachable now; nobody can use us
+        finally:
+            server.close()
+        return 0
+    finally:
+        lock.close()
+
+
+def ensure_signer(agent_id: str, *, idle_timeout: float | None = None,
+                  wait: float = _SPAWN_WAIT_SECONDS) -> RemoteSigningIdentity | None:
+    """This agent's signer: the one already running, else one started now.
+
+    None where none can be had — the platform has no unix sockets, starting
+    one is turned off (`signer_enabled`), or it did not come up in time. The
+    caller then signs as itself, as every CLI command did before this.
+    """
+    if not AVAILABLE:
+        return None
+    found = attach(agent_id)
+    if found is not None or not signer_enabled() or os.name != "posix":
+        return found
+    # Run the same switchboard as this process, wherever it was imported from:
+    # a checkout under test, a venv, an installed wheel.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (package_root, env.get("PYTHONPATH")) if p)
+    command = [sys.executable, "-m", "switchboard.signing", f"--agent-id={agent_id}"]
+    if idle_timeout is not None:
+        command.append(f"--idle={idle_timeout}")
+    try:
+        subprocess.Popen(
+            command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        )
+    except OSError:
+        return None
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        found = attach(agent_id)
+        if found is not None:
+            return found
+        time.sleep(0.05)
+    return None
+
+
+def stop_signer(agent_id: str, *, wait: float = 2.0) -> bool:
+    """Ask this agent's standalone signer to exit. False if none answered.
+
+    An MCP server's signer ignores this: it is not a standalone one.
+    """
+    reply = _ask(socket_path(agent_id), {"op": "stop"})
+    if not reply or not reply.get("stopped"):
+        return False
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and socket_path(agent_id).exists():
+        time.sleep(0.02)
+    return True
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m switchboard.signing")
+    parser.add_argument("--agent-id", required=True)
+    parser.add_argument("--idle", type=float, default=DEFAULT_IDLE_SECONDS)
+    args = parser.parse_args(argv)
+    return serve(args.agent_id, idle_timeout=args.idle)
+
+
+if __name__ == "__main__":  # pragma: no cover - run as a detached subprocess
+    raise SystemExit(_main())
