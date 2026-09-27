@@ -5,25 +5,35 @@ rather than through an SDK. The tools-only subset is small and stable, and
 implementing it here means the bridge has no dependency beyond ``httpx`` and
 cannot break when an SDK renames its API between majors.
 
-Run it as ``switchboard-mcp``. Everything is configured by environment:
+Run it as ``switchboard-mcp``, or ``switchboard-mcp --http`` to serve the same
+tools at a URL for hosts that connect rather than spawn — ChatGPT's custom
+apps among them (see docs/chatgpt.md). Everything else is configured by
+environment:
 
     SWITCHBOARD_URL        hub base URL
     SWITCHBOARD_TOKEN      bearer token
     SWITCHBOARD_WORKSPACE  workspace to join
     SWITCHBOARD_AGENT_ID   override the inferred agent id
+    SWITCHBOARD_MCP_TOKEN  the secret an --http caller must present
 
-stdout is the protocol channel — every diagnostic goes to stderr.
+Over stdio, stdout is the protocol channel — every diagnostic goes to stderr.
 """
 
 from __future__ import annotations
 
+import argparse
+import hmac
 import json
+import os
+import secrets
 import sys
 import traceback
 from dataclasses import replace
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
 from .client import (
@@ -731,9 +741,19 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+#: Tools that change nothing another agent can see. Declared as MCP
+#: `readOnlyHint` annotations because hosts act on them: ChatGPT asks the user
+#: to confirm every call to a tool not marked read-only, so leaving these
+#: unmarked would put a confirmation prompt in front of reading the roster.
+#: Presence is bumped as a side effect of every call, which is bookkeeping,
+#: not a change anyone asked for — `inbox` is absent because it advances a
+#: read cursor, which is.
+_READ_ONLY = {"help", "whoami", "roster", "claims", "history", "board_get", "board_list"}
+
 for _tool in TOOLS:
     if _tool["name"] not in _ROOMLESS:
         _tool["inputSchema"]["properties"]["room"] = _ROOM_PARAM
+    _tool["annotations"] = {"readOnlyHint": _tool["name"] in _READ_ONLY}
 del _tool
 
 
@@ -1920,6 +1940,225 @@ def serve_stdio(bridge: Bridge, stdin: Any = None, stdout: Any = None) -> None:
             stdout.flush()
 
 
+# --- streamable HTTP --------------------------------------------------------
+#
+# The same JSON-RPC, POSTed to one URL instead of written to stdin — the MCP
+# "streamable HTTP" transport, in the subset a tools-only server needs: every
+# request gets a plain JSON response, so there is no SSE stream to hold open
+# and GET is refused. This is what a host that cannot spawn a process connects
+# to: ChatGPT's custom apps, and anything else that only takes a server URL.
+#
+# It is still a *bridge*, not the hub. The workspace key and signing identity
+# live in this process, exactly as they do for stdio, which is why the hub
+# cannot simply serve MCP itself: it never holds a key. Whoever can reach this
+# URL acts as this agent, so it is guarded by a token of its own.
+
+HTTP_DEFAULT_HOST = "127.0.0.1"
+#: One above the hub's 8787, so a hub and a bridge on one machine do not
+#: fight over a port by default.
+HTTP_DEFAULT_PORT = 8788
+HTTP_PATH = "/mcp"
+#: Larger than any tool call this server accepts, small enough that a stray
+#: client cannot make it buffer something absurd.
+HTTP_MAX_BODY = 4 * 1024 * 1024
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _origin_is_local(origin: str) -> bool:
+    host = urlsplit(origin).hostname or ""
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _http_handler(bridge: Bridge, token: str | None) -> type[BaseHTTPRequestHandler]:
+    """A request handler bound to one bridge and one token.
+
+    A token is accepted two ways, because the hosts that matter disagree on
+    how to send one. As a bearer header, for clients that let you set one;
+    and as the last path segment (``/mcp/<token>``), for hosts like ChatGPT
+    whose only choices are OAuth or no authentication at all — there, the URL
+    itself is the credential, the same shape as a webhook URL.
+
+    With no token the endpoint is open, which is only defensible on loopback.
+    Even there a web page can reach it through DNS rebinding, so a request
+    carrying a non-local ``Origin`` is refused, as the MCP spec requires.
+    """
+    token_path = f"{HTTP_PATH}/{token}" if token else None
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = f"switchboard-mcp/{__version__}"
+        #: Socket timeout. The server handles one request at a time — see
+        #: `make_http_server` — so a client that connects and sends nothing
+        #: must not be able to hold it forever.
+        timeout = 60
+
+        def log_request(self, code: Any = "-", size: Any = "-") -> None:
+            # Not the request line: with a token in the path, that is the
+            # credential, and logs travel further than secrets should.
+            log(f"http {self.command} -> {code}")
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            log("http " + (format % args))
+
+        def _send(self, status: int, body: Any = None,
+                  headers: dict[str, str] | None = None) -> None:
+            data = b"" if body is None else json.dumps(body, default=str).encode()
+            self.send_response(status)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+
+        def _route(self) -> bool:
+            """Answer anything that is not an authorized request to the
+            endpoint, and return whether the caller should carry on."""
+            path = urlsplit(self.path).path.rstrip("/")
+            if token_path is not None and hmac.compare_digest(
+                    path.encode("utf-8", "replace"), token_path.encode()):
+                return True
+            if path != HTTP_PATH:
+                # 404 rather than 401 for a wrong token in the path, so the
+                # endpoint does not confirm which half of a guess was right.
+                self._send(404, {"error": "not found"})
+                return False
+            if token is None:
+                origin = self.headers.get("Origin")
+                if origin and not _origin_is_local(origin):
+                    self._send(403, {"error": "origin not allowed"})
+                    return False
+                return True
+            presented = self.headers.get("Authorization", "")
+            scheme, _, value = presented.partition(" ")
+            if scheme.lower() == "bearer" and hmac.compare_digest(
+                    value.strip().encode("utf-8", "replace"), token.encode()):
+                return True
+            self._send(401, {"error": "unauthorized"}, {"WWW-Authenticate": "Bearer"})
+            return False
+
+        def do_POST(self) -> None:  # noqa: N802 - the stdlib's naming
+            if not self._route():
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > HTTP_MAX_BODY:
+                self._send(413, _error(None, JSONRPC_INVALID_REQUEST, "bad body length"))
+                return
+            try:
+                message = json.loads(self.rfile.read(length) or b"null")
+            except ValueError:
+                self._send(400, _error(None, JSONRPC_PARSE_ERROR, "invalid JSON"))
+                return
+            # A list is a JSON-RPC batch, which 2025-03-26 allowed and later
+            # revisions dropped; answering one costs nothing.
+            batch = isinstance(message, list)
+            requests = message if batch else [message]
+            responses = [r for r in map(self._handle, requests) if r is not None]
+            if not responses:
+                # Only notifications: accepted, and there is nothing to say.
+                self._send(202)
+            else:
+                self._send(200, responses if batch else responses[0])
+
+        def _handle(self, request: Any) -> dict[str, Any] | None:
+            if not isinstance(request, dict):
+                return _error(None, JSONRPC_INVALID_REQUEST, "expected a JSON object")
+            try:
+                return handle_request(bridge, request)
+            except Exception:  # noqa: BLE001 - a tool bug must not kill the server
+                log("unhandled error:\n" + traceback.format_exc())
+                return _error(
+                    request.get("id"), JSONRPC_INTERNAL_ERROR, "internal error (see stderr)"
+                )
+
+        def do_GET(self) -> None:  # noqa: N802
+            # No server-initiated stream: every response rides its request.
+            if self._route():
+                self._send(405, {"error": "use POST"}, {"Allow": "POST"})
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            # No sessions to end, since none are issued.
+            if self._route():
+                self._send(405, {"error": "use POST"}, {"Allow": "POST"})
+
+    return Handler
+
+
+def make_http_server(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
+                     port: int = HTTP_DEFAULT_PORT,
+                     token: str | None = None) -> HTTPServer:
+    """An HTTP server for `bridge`, bound but not yet serving.
+
+    Deliberately not threaded. A bridge is one agent with one client, one
+    timing store (a SQLite connection that refuses other threads) and one set
+    of leases, and it was written to be driven by one caller at a time — the
+    same as over stdio. The cost is that a long-polling `inbox` holds the
+    server for up to its 25s wait, which a single host making one call at a
+    time never notices.
+    """
+    return HTTPServer((host, port), _http_handler(bridge, token))
+
+
+def serve_http(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
+               port: int = HTTP_DEFAULT_PORT, token: str | None = None) -> None:
+    server = make_http_server(bridge, host, port, token)
+    shown = f"[{host}]" if ":" in host else host
+    base = f"http://{shown}:{server.server_address[1]}{HTTP_PATH}"
+    if token:
+        log(f"serving MCP over HTTP at {base}/<token> (or {base} with a bearer token)")
+        log("ChatGPT: expose this port over HTTPS (a tunnel, or a reverse proxy) and add "
+            f"https://<your-host>{HTTP_PATH}/<token> as the app's Server URL, "
+            "with Authentication set to 'No authentication'")
+    else:
+        log(f"serving MCP over HTTP at {base} with NO authentication")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="switchboard-mcp",
+        description=(
+            "Serve a Switchboard hub to an MCP host as tools. Speaks stdio by "
+            "default; --http serves the same tools at a URL instead, for hosts such "
+            "as ChatGPT that connect to a server rather than spawning one."
+        ),
+    )
+    parser.add_argument("--http", action="store_true",
+                        help="serve streamable HTTP instead of stdio")
+    parser.add_argument("--host", default=HTTP_DEFAULT_HOST,
+                        help=f"address to bind with --http (default {HTTP_DEFAULT_HOST})")
+    parser.add_argument("--port", type=int, default=HTTP_DEFAULT_PORT,
+                        help=f"port to bind with --http (default {HTTP_DEFAULT_PORT})")
+    parser.add_argument(
+        "--token", default=os.environ.get("SWITCHBOARD_MCP_TOKEN") or None,
+        help="secret an HTTP caller must present, as a bearer token or as the last "
+             "path segment (default $SWITCHBOARD_MCP_TOKEN, else a fresh random one "
+             "printed at startup)")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="serve HTTP with no token (refused unless bound to loopback)")
+    args = parser.parse_args(argv)
+    if args.no_auth:
+        if args.host not in _LOOPBACK_HOSTS and not args.host.startswith("127."):
+            parser.error("--no-auth is only allowed on a loopback --host: anyone who "
+                         "can reach this port would act as this agent")
+        args.token = None
+    elif args.http and not args.token:
+        # Random rather than refusing to start, so the first run just works;
+        # the log says to pin it, since a URL that changes on every restart
+        # means re-adding the app every time.
+        args.token = secrets.token_urlsafe(24)
+        log(f"generated token: {args.token}")
+        log("set SWITCHBOARD_MCP_TOKEN to keep this URL stable across restarts")
+    return args
+
+
 def _holds_the_key(signing: object | None) -> bool:
     """Is this process's signing identity its own, rather than borrowed?
 
@@ -1945,6 +2184,7 @@ def _holds_the_key(signing: object | None) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     bridge = Bridge()
     log(
         f"agent={bridge.identity.agent_id} workspace={bridge.config.workspace} "
@@ -1966,7 +2206,10 @@ def main(argv: list[str] | None = None) -> int:
             signer = None
 
     try:
-        serve_stdio(bridge)
+        if args.http:
+            serve_http(bridge, args.host, args.port, args.token)
+        else:
+            serve_stdio(bridge)
     except KeyboardInterrupt:
         pass
     finally:

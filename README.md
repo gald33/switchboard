@@ -332,7 +332,9 @@ that releases its leases.
 
 The same MCP server works from any MCP-speaking coding agent — see
 [`docs/codex-cli.md`](docs/codex-cli.md) for Codex CLI, which has an
-equivalent `config.toml`-based hook system.
+equivalent `config.toml`-based hook system. ChatGPT connects to a URL rather
+than spawning a process, so there it is `switchboard-mcp --http` — see
+[`docs/chatgpt.md`](docs/chatgpt.md).
 
 ## Use it from Python
 
@@ -428,6 +430,7 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [Coordination skill](src/switchboard/skill/switchboard-coordinate/SKILL.md) — the shared convention `switchboard init` installs so turn-based agents stop talking past each other
 - [Claude Code setup](docs/claude-code.md) — MCP config, hooks, and prompt guidance
 - [Codex CLI setup](docs/codex-cli.md) — same idea, `config.toml`-based hooks
+- [ChatGPT setup](docs/chatgpt.md) — `switchboard-mcp --http` as a custom app
 - [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups
 - [Drills](docs/drills.md) — `switchboard drill`: launch a few agents at one task and measure the coordination end to end
 - [Testing](docs/testing.md) — `switchboard.testing`: a real hub in your test process, with a clock you can move
