@@ -180,12 +180,62 @@ def test_machine_local_tools_are_withheld(hub, hosted):
 # --- disclosure -------------------------------------------------------------
 
 
+def blocks(server, blob: str, name: str, **arguments) -> list[str]:
+    """Every text block of a tool result, not just the payload."""
+    response = send(server, path=f"/mcp/{blob}", body=rpc(
+        "tools/call", name=name, arguments=arguments))
+    return [c["text"] for c in response.json()["result"]["content"]]
+
+
 def test_the_hosted_agent_is_told_who_can_read_its_room(hub, hosted):
     server, _ = hosted
     payload, _ = tool(server, invite_for(hub), "whoami")
     assert payload["kind"] == "hosted"
     assert payload["relay"]["operator"] == OPERATOR
-    assert OPERATOR in payload["NOTICE"]
+
+
+@pytest.mark.parametrize("name, arguments", [
+    ("roster", {}),
+    ("claim", {"resource": "x"}),
+    ("help", {}),                        # a plain-text result, not JSON
+    ("session_handoff", {}),             # an error result
+    ("no_such_tool", {}),                # and an unknown tool
+])
+def test_every_result_carries_the_notice(hub, hosted, name, arguments):
+    # Not a field the model has to ask for: it cannot use this room through
+    # the bridge without being handed the notice alongside the answer.
+    server, _ = hosted
+    texts = blocks(server, invite_for(hub), name, **arguments)
+    assert len(texts) == 2
+    assert OPERATOR in texts[-1] and "can read this room" in texts[-1]
+
+
+def test_the_connection_itself_says_so(hub, hosted):
+    server, _ = hosted
+    result = send(server, path=f"/mcp/{invite_for(hub)}",
+                  body=rpc("initialize")).json()["result"]
+    assert OPERATOR in result["instructions"].split("IMPORTANT:")[1]
+
+
+def test_a_bridge_of_your_own_adds_nothing(hub):
+    bridge = make_bridge(hub, "laptop")
+    response = mcp_server.handle_request(bridge, rpc("tools/call", name="roster", arguments={}))
+    assert len(response["result"]["content"]) == 1
+    init = mcp_server.handle_request(bridge, rpc("initialize"))["result"]
+    assert "IMPORTANT:" not in init["instructions"]
+
+
+def test_the_name_carries_the_disclosure_whatever_the_invite_says(hub, hosted):
+    # The name is the one roster field every reader shows — old clients, the
+    # web viewer — so the disclosure lives there too, and the note in the
+    # invite can add to it but not replace it.
+    server, _ = hosted
+    me, _ = tool(server, invite_for(hub, note="just a normal agent"), "whoami")
+    assert me["name"].startswith("just a normal agent")
+    assert f"{OPERATOR} can read this room" in me["name"]
+    roster, _ = call(make_bridge(hub, "laptop"), "roster")
+    (entry,) = [a for a in roster["agents"] if a["agent_id"] == me["agent_id"]]
+    assert f"{OPERATOR} can read this room" in entry["name"]
 
 
 def test_every_other_agent_is_told_on_its_roster(hub, hosted):
@@ -332,3 +382,64 @@ def test_nothing_is_written_to_the_operators_disk(hub, hosted, tmp_path, monkeyp
     tool(server, blob, "inbox")
     tool(server, blob, "roster")
     assert list(tmp_path.iterdir()) == []
+
+
+# --- naming without anybody passing --note ----------------------------------
+
+
+def _connect(server, blob: str, client_info=None) -> None:
+    params = {"protocolVersion": "2025-06-18", "capabilities": {}}
+    if client_info is not None:
+        params["clientInfo"] = client_info
+    assert send(server, path=f"/mcp/{blob}",
+                body=rpc("initialize", **params)).status_code == 200
+
+
+def test_the_app_names_the_agent_when_the_invite_does_not(hub, hosted):
+    server, _ = hosted
+    blob = invite_for(hub, note="")
+    _connect(server, blob, {"name": "openai-mcp", "version": "1.0.0"})
+    me, _ = tool(server, blob, "whoami")
+    assert me["name"] == f"ChatGPT (via hosted bridge; {OPERATOR} can read this room)"
+
+
+def test_an_agent_already_on_the_roster_is_renamed_there(hub, hosted):
+    server, _ = hosted
+    blob = invite_for(hub, note="")
+    first, _ = tool(server, blob, "whoami")           # registers, unnamed
+    assert first["name"].startswith("hosted agent (")
+    _connect(server, blob, {"name": "openai-mcp"})
+    tool(server, blob, "whoami")                      # re-announces
+    roster, _ = call(make_bridge(hub, "laptop"), "roster")
+    (entry,) = [a for a in roster["agents"] if a["agent_id"] == first["agent_id"]]
+    assert entry["name"].startswith("ChatGPT (via hosted bridge;")
+
+
+def test_an_invite_note_outranks_the_app(hub, hosted):
+    server, _ = hosted
+    blob = invite_for(hub, note="Dana's ChatGPT")
+    _connect(server, blob, {"name": "openai-mcp"})
+    me, _ = tool(server, blob, "whoami")
+    assert me["name"].startswith("Dana's ChatGPT (via hosted bridge;")
+
+
+def test_with_neither_the_disclosure_still_stands(hub, hosted):
+    server, _ = hosted
+    blob = invite_for(hub, note="")
+    _connect(server, blob)
+    me, _ = tool(server, blob, "whoami")
+    assert me["name"] == f"hosted agent (via hosted bridge; {OPERATOR} can read this room)"
+
+
+@pytest.mark.parametrize("info, label", [
+    ({"name": "openai-mcp"}, "ChatGPT"),
+    ({"name": "ChatGPT Connector"}, "ChatGPT"),
+    ({"name": "x", "title": "Some Client"}, "Some Client"),
+    ({"name": "a\nb\tc"}, "a b c"),
+    ({"name": "y" * 100}, "y" * 40),
+    ({"name": "   "}, None),
+    ({"version": "1"}, None),
+    ("not a dict", None),
+])
+def test_client_labels_are_short_and_single_line(info, label):
+    assert mcp_server._client_label(info) == label

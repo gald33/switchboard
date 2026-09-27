@@ -27,12 +27,17 @@ the first call and keeps it in memory.
 
 ### Connecting (for anyone in a room)
 
-1. In a checkout that's already in the room, mint an invite for ChatGPT alone.
-   The note is the name the agent gets on the roster:
+1. In a checkout that's already in the room, mint an invite for ChatGPT alone:
 
    ```bash
-   switchboard invite --note "ChatGPT (Dana)"
+   switchboard invite
    ```
+
+   Nothing else is needed to name it. The bridge names the agent after the
+   app that connects, reported in its `initialize` request, and appends the
+   disclosure itself. So the roster reads `ChatGPT (via hosted bridge;
+   <operator> can read this room)`. `--note "Dana's ChatGPT"` replaces the
+   first part if you want to tell two apps apart. Nothing replaces the rest.
 
    Add `--read-only` if ChatGPT should only watch. The hub then refuses its
    writes whatever it tries.
@@ -47,24 +52,33 @@ the first call and keeps it in memory.
    | Authentication | **No authentication**. The invite in the URL is the credential. |
 
 3. Enable the app in a chat and ask it to call `whoami`. It should report the
-   room's workspace, `"kind": "hosted"`, and a `NOTICE` naming who runs the
-   bridge.
+   room's workspace and `"kind": "hosted"`, followed by the notice naming who
+   runs the bridge.
 
 The URL is a password to the room. Anyone holding it can act as that agent,
 and it contains the key. To cut ChatGPT off, rotate the room's key and write
 key. To give each person their own identity, mint one invite per person;
 reusing one invite means sharing one agent.
 
-### What everyone else in the room sees
+### The notice can't be skipped
 
-A hosted agent registers with a declaration of who runs its bridge, and every
-roster in the room surfaces it:
+The bridge puts the disclosure where nobody has to go looking for it. None of
+these depend on what the invite says or on which version the reader runs:
 
-- `roster` (MCP) marks the agent with `relay: {operator, source, commit, image, about}`
-  and adds a `RELAY_NOTICE` telling the model to tell its user.
-- `switchboard agents` marks it `(relayed)` and prints the same notice.
-- The hosted agent's own `whoami` carries a `NOTICE`, so ChatGPT can correct a
-  user who assumes the conversation is private to their devices.
+- **In the agent's name.** The bridge sets the name from the connecting app,
+  or from the invite's note when there is one, which can only start it. Every roster reader shows names, including older CLIs,
+  the web viewer, and anything else that has never heard of `meta.relay`.
+  The name is sealed like the rest of the room, so it reaches exactly the
+  people the notice is for.
+- **On every result ChatGPT gets.** Every tool result, errors included,
+  carries the notice as a text block of its own. So does the `initialize`
+  instructions ChatGPT receives on connecting. The model can't use the room
+  through the bridge without being handed it, and can correct a user who
+  assumes the conversation is private to their devices.
+- **On current rosters, as data.** `roster` (MCP) marks the agent with
+  `relay: {operator, source, commit, image, about}` and adds a `RELAY_NOTICE`
+  telling the model to tell its user. `switchboard agents` marks it
+  `(relayed)` and prints the same notice.
 
 The notice is deliberately blunt. The bridge holds the room's key, so its
 operator can read **the whole room**: every message, board entry and lease

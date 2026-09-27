@@ -1181,8 +1181,8 @@ class Bridge:
             out["WARNING"] = "\n\n".join(notes)
         relay = relay_of(getattr(self.identity, "meta", None))
         if relay:
+            # The notice itself rides on every result — see `_hosted_notice`.
             out["relay"] = relay
-            out["NOTICE"] = _relay_notice_for_self(relay)
         calibration = self._calibration()
         if calibration:
             out["forecast_calibration"] = calibration
@@ -1837,6 +1837,8 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOLS else LATEST_PROTOCOL
+        notice = _hosted_notice(bridge)
+        _name_hosted_agent(bridge, params.get("clientInfo"))
         return _response(request_id, {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
@@ -1863,6 +1865,7 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
                 "agent holding the wrong key or workspace has an empty inbox that looks "
                 "exactly like a quiet one — so have them confirm with `switchboard agents` "
                 "from the new environment."
+                + (f"\n\nIMPORTANT: {notice}" if notice else "")
             ),
         })
 
@@ -1876,62 +1879,79 @@ def handle_request(bridge: Bridge, request: dict[str, Any]) -> dict[str, Any] | 
         return _response(request_id, {"tools": bridge.tools()})
 
     if method == "tools/call":
-        name = params.get("name", "")
-        arguments = params.get("arguments") or {}
-        try:
-            result = bridge.dispatch(name, arguments)
-        except LeaseHeld as exc:
-            return _response(request_id, _tool_result(
-                {"error": "lease_held", "detail": str(exc), **exc.payload}, is_error=True
-            ))
-        except UnknownPeerExchangeKey as exc:
-            # Before the SwitchboardError branch below, which it subclasses:
-            # nothing was sent to the hub, so "hub_error" would misname what
-            # went wrong. The fix is local — read the roster — and the
-            # message already says so.
-            return _response(request_id, _tool_result(
-                {"error": "unknown_peer_exchange_key", "detail": str(exc)}, is_error=True
-            ))
-        except CryptoError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "crypto_unavailable", "detail": str(exc)}, is_error=True
-            ))
-        except SwitchboardError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "hub_error", "detail": str(exc), "status": exc.status}, is_error=True
-            ))
-        except TypeError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "bad_arguments", "detail": str(exc)}, is_error=True
-            ))
-        except (HandoffError, claude_session.CapsuleError) as exc:
-            # Same placement and reason as SpecError below: a capsule that will
-            # not verify is not an unknown tool.
-            return _response(request_id, _tool_result(
-                {"error": "handoff", "detail": str(exc)}, is_error=True
-            ))
-        except SpecError as exc:
-            # Before the ValueError branch below, which reports `unknown_tool`
-            # — accurate for a name this bridge does not serve, and actively
-            # misleading for a role this *repo* does not declare. An agent told
-            # the tool does not exist looks in a different place entirely.
-            return _response(request_id, _tool_result(
-                {"error": "unknown_role", "detail": str(exc)}, is_error=True
-            ))
-        except ValueError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "unknown_tool", "detail": str(exc)}, is_error=True
-            ))
-        except OSError as exc:
-            return _response(request_id, _tool_result(
-                {"error": "hub_unreachable", "detail": str(exc),
-                 "hub": bridge.config.url}, is_error=True
-            ))
-        return _response(request_id, _tool_result(result))
+        response = _call_tool(bridge, request_id, params)
+        notice = _hosted_notice(bridge)
+        if notice:
+            # A block of its own on every result, errors included, rather than
+            # a field some results have: it is not something the model should
+            # have to ask for, or be able to reach this room without reading.
+            response["result"]["content"].append({"type": "text", "text": notice})
+        return response
 
     if is_notification:
         return None
     return _error(request_id, JSONRPC_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+
+def _hosted_notice(bridge: Bridge) -> str | None:
+    """What a hosted agent is told on every call, or None for any other."""
+    relay = relay_of(getattr(getattr(bridge, "identity", None), "meta", None))
+    return _relay_notice_for_self(relay) if relay else None
+
+
+def _call_tool(bridge: Bridge, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    name = params.get("name", "")
+    arguments = params.get("arguments") or {}
+    try:
+        result = bridge.dispatch(name, arguments)
+    except LeaseHeld as exc:
+        return _response(request_id, _tool_result(
+            {"error": "lease_held", "detail": str(exc), **exc.payload}, is_error=True
+        ))
+    except UnknownPeerExchangeKey as exc:
+        # Before the SwitchboardError branch below, which it subclasses:
+        # nothing was sent to the hub, so "hub_error" would misname what
+        # went wrong. The fix is local — read the roster — and the
+        # message already says so.
+        return _response(request_id, _tool_result(
+            {"error": "unknown_peer_exchange_key", "detail": str(exc)}, is_error=True
+        ))
+    except CryptoError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "crypto_unavailable", "detail": str(exc)}, is_error=True
+        ))
+    except SwitchboardError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "hub_error", "detail": str(exc), "status": exc.status}, is_error=True
+        ))
+    except TypeError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "bad_arguments", "detail": str(exc)}, is_error=True
+        ))
+    except (HandoffError, claude_session.CapsuleError) as exc:
+        # Same placement and reason as SpecError below: a capsule that will
+        # not verify is not an unknown tool.
+        return _response(request_id, _tool_result(
+            {"error": "handoff", "detail": str(exc)}, is_error=True
+        ))
+    except SpecError as exc:
+        # Before the ValueError branch below, which reports `unknown_tool`
+        # — accurate for a name this bridge does not serve, and actively
+        # misleading for a role this *repo* does not declare. An agent told
+        # the tool does not exist looks in a different place entirely.
+        return _response(request_id, _tool_result(
+            {"error": "unknown_role", "detail": str(exc)}, is_error=True
+        ))
+    except ValueError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "unknown_tool", "detail": str(exc)}, is_error=True
+        ))
+    except OSError as exc:
+        return _response(request_id, _tool_result(
+            {"error": "hub_unreachable", "detail": str(exc),
+             "hub": bridge.config.url}, is_error=True
+        ))
+    return _response(request_id, _tool_result(result))
 
 
 def serve_stdio(bridge: Bridge, stdin: Any = None, stdout: Any = None) -> None:
@@ -2067,6 +2087,66 @@ def _hub_key(url: str) -> str:
     return url.strip().rstrip("/").lower()
 
 
+def hosted_name(label: str | None, relay: dict[str, Any]) -> str:
+    """The roster name of a hosted agent, with the disclosure built in.
+
+    `label` says whose agent this is: the invite's `--note` when somebody
+    passed one, otherwise what the connecting app calls itself (see
+    `_client_label`) — nobody should have to remember a flag for the roster
+    to say "ChatGPT".
+
+    `meta.relay` is what current readers act on, but only readers that know
+    to look — an older CLI, the web viewer, anything written against the
+    roster before this existed shows a name and nothing else. The name is the
+    one field every reader displays, and it is sealed like the room, so it
+    reaches exactly the people the notice is for. Set here rather than taken
+    from the invite, so no invite can name an agent out of it.
+    """
+    operator = relay.get("operator") or "an unnamed operator"
+    return f"{label or 'hosted agent'} (via hosted bridge; {operator} can read this room)"
+
+
+#: What a connecting app's `clientInfo` looks like, mapped to what a person
+#: reading the roster would call it. Anything unlisted is shown as it came.
+_KNOWN_CLIENTS = {"openai-mcp": "ChatGPT", "chatgpt": "ChatGPT", "openai": "ChatGPT"}
+
+
+def _client_label(client_info: Any) -> str | None:
+    """A short roster label from an `initialize` request's `clientInfo`.
+
+    Client-supplied, so trimmed to something that cannot pass for a second
+    sentence of the disclosure it sits in front of: printable, one line,
+    short.
+    """
+    if not isinstance(client_info, dict):
+        return None
+    raw = client_info.get("title") or client_info.get("name")
+    if not isinstance(raw, str):
+        return None
+    label = " ".join("".join(ch if ch.isprintable() else " " for ch in raw).split())[:40]
+    if not label:
+        return None
+    known = _KNOWN_CLIENTS.get(label.lower())
+    if known is None and ("openai" in label.lower() or "chatgpt" in label.lower()):
+        known = "ChatGPT"
+    return known or label
+
+
+def _name_hosted_agent(bridge: Bridge, client_info: Any) -> None:
+    """Name a hosted agent after the app that connected, unless an invite
+    note already did. Re-announces if it was registered under another name."""
+    relay = relay_of(getattr(getattr(bridge, "identity", None), "meta", None))
+    if not relay or getattr(bridge, "_hosted_note", ""):
+        return
+    label = _client_label(client_info)
+    if not label:
+        return
+    name = hosted_name(label, relay)
+    if name != bridge.identity.name:
+        bridge.identity.name = name
+        bridge._registered = False
+
+
 def hosted_bridge(blob: str, relay: dict[str, Any],
                   hubs: frozenset[str] | None = None) -> Bridge:
     """One agent, built from nothing but an invite.
@@ -2107,10 +2187,12 @@ def hosted_bridge(blob: str, relay: dict[str, Any],
         timing_db=":memory:", peer_log="", stash_db="",
     )
     identity = Identity(
-        agent_id=local_id, name=invite.note or "hosted agent", kind="hosted",
+        agent_id=local_id, name=hosted_name(invite.note or None, relay), kind="hosted",
         branch=None, meta={"relay": relay},
     )
     bridge = Bridge(config, identity)
+    #: An invite's note outranks what the app calls itself: somebody chose it.
+    bridge._hosted_note = invite.note
     bridge._withheld = frozenset(HOSTED_WITHHELD)
     return bridge
 
