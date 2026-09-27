@@ -472,6 +472,21 @@ def test_a_key_id_is_never_named_for_a_room_it_does_not_open(
     assert Invite.decode(json.loads(capsys.readouterr().out)["invite"]).key_id == ""
 
 
+def test_an_invite_carrying_the_key_says_what_else_it_opens(cli_hub, monkeypatch, capsys):
+    """An agent asked to "give ChatGPT the repo room" runs `invite` with no
+    TTY, so the note that steers it to `--no-key` cannot be a prompt-only
+    nicety: it is on stderr always, and in the JSON."""
+    monkeypatch.setenv("SWITCHBOARD_URL", BASE_URL)
+    monkeypatch.setenv("SWITCHBOARD_KEY", cli_hub.workspace_key)
+
+    assert main(["invite", "--no-input"]) == 0
+    assert "--no-key" in capsys.readouterr().err
+    assert main(["invite", "--json"]) == 0
+    assert "lobby" in json.loads(capsys.readouterr().out)["carries_key"]
+    assert main(["invite", "--no-key", "--json"]) == 0
+    assert "carries_key" not in json.loads(capsys.readouterr().out)
+
+
 # --- an invite as a link ------------------------------------------------------
 
 

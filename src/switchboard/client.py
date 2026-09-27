@@ -204,13 +204,14 @@ def relay_notice(agents: Sequence[dict[str, Any]]) -> str:
         for a in agents
     })
     return (
-        f"{len(agents)} agent(s) here reach this room through a hosted bridge run by "
-        f"{', '.join(operators)}. The bridge holds this room's key in order to act for "
-        "them, so its operator can read the room: every message, board entry and lease "
-        "note, not only what those agents are shown. Whispers between other agents stay "
-        "sealed to their recipients. The room is still sealed from the hub; it is not "
-        "sealed from that operator. Tell the user, and keep anything that must stay "
-        "between key holders on machines they control out of this room."
+        f"{len(agents)} agent(s) here can't encrypt on their own, so they reach this room "
+        f"through a hosted encryption bridge run by {', '.join(operators)}. The hub still "
+        "can't read the room. The bridge holds the room's key while it works for them, "
+        "so, as with any hosted integration, its operator is trusted with what the room "
+        "holds: every message, board entry and lease note, not only what those agents "
+        "are shown. Whispers between other agents stay sealed to their recipients. Tell "
+        "the user, and keep anything that must stay on machines they control out of "
+        "this room."
     )
 
 

@@ -4327,6 +4327,19 @@ def _declared_room(workspace: str) -> rooms.Room | None:
     return None
 
 
+#: What an invite carrying the key hands over, and which invite fits a chat.
+#: A key opens every room sealed with it and the lobby derived from it, so
+#: the difference between a repo's invite and a throwaway room's is not the
+#: room: it is what else the key opens, and for how long.
+INVITE_KEY_NOTE = (
+    "this invite carries the room's key, which also opens its lobby and every other "
+    "room sealed with it, for as long as the key lives. Right for a teammate's "
+    "machine. For a chat with a hosted model (ChatGPT through a hosted bridge), use "
+    "`switchboard invite --no-key` and link the key once on the bridge's sign-in "
+    "page; for a room of its own, `switchboard keygen --as-invite`."
+)
+
+
 def cmd_invite(args: argparse.Namespace) -> int:
     """Emit one string carrying everything a peer needs to join this room.
 
@@ -4375,7 +4388,8 @@ def cmd_invite(args: argparse.Namespace) -> int:
     handover, caveat = _handover(blob, args)
     if args.json:
         _print_json({"invite": blob.encode(), "describes": blob.redacted(),
-                     **({"link": handover} if args.link else {})})
+                     **({"link": handover} if args.link else {}),
+                     **({"carries_key": INVITE_KEY_NOTE} if blob.key else {})})
         return EXIT_OK
     print(handover)
     # Not inside the prompt block below: that one is gated on a TTY, and a
@@ -4383,6 +4397,11 @@ def cmd_invite(args: argparse.Namespace) -> int:
     # users. It is the reason the flag was worth thinking about.
     if caveat:
         print(f"\n{caveat}", file=sys.stderr)
+    # Not gated either, and for the same reason: the one most likely to mint
+    # an invite for a chat is an agent, with no TTY, asked to "give ChatGPT
+    # access to the repo room".
+    if blob.key:
+        print(f"\nnote: {INVITE_KEY_NOTE}", file=sys.stderr)
     if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
         fmt = Fmt(_use_color(sys.stdout))
         if rooms.is_write_protected(config.workspace) and not blob.write_key:
@@ -7081,7 +7100,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--note", help="one line for whoever pastes it: which room, and why")
     p.add_argument("--no-key", action="store_true",
-                   help="omit the key (the peer must already hold it)")
+                   help="omit the key: for a peer that already holds it, or an app on a "
+                        "hosted bridge the user linked it to by signing in. The invite "
+                        "for a chat with a hosted model")
     p.add_argument("--read-only", action="store_true",
                    help="omit the write key, so the holder can read this room and "
                         "nothing else. Enforced by the hub, not by good behaviour: "

@@ -14,7 +14,14 @@ doing, claim what you are about to touch, and read what the others say to you.
 1. You need the room's **invite**, a string starting `swb1_`. If the user
    hasn't given you one, ask for it. They make one by running
    `switchboard invite` in their project, or `switchboard keygen --as-invite`
-   for a fresh room of their own.
+   for a fresh room of their own. For a room they keep, suggest
+   `switchboard invite --no-key`: it leaves the key out, and the bridge
+   supplies it from the keys they link by signing in. If `join_room` asks for
+   sign-in, let the app's sign-in prompt handle it; never ask the user to
+   paste a key into the conversation. Once they are signed in, you need no
+   invite for their linked rooms: `join_room(name="lobby")` is the meeting
+   place of everyone holding their team key, and `linked_keys` lists the
+   rest by name.
 2. Call `join_room` with it. Every other tool then acts in that room for the
    rest of the conversation. If a tool reports "no room joined" or "room
    expired", call `join_room` again with the same invite. It is still the same
@@ -25,10 +32,12 @@ doing, claim what you are about to touch, and read what the others say to you.
 
 ## Before you tell the user it is private
 
-Every result from this app carries a notice saying who runs the bridge and
-that they can read the room. Believe it, and say so if the user assumes the
-room is private to their own devices. The invite is a password to the room:
-don't repeat it back, and don't post it into the room.
+The Switchboard hub can't read any room. You can't encrypt, so you reach
+rooms through a hosted encryption service, and every result from this app
+carries a notice saying who runs it. Like any hosted integration, it is
+trusted with the rooms it works in. Say so if the user assumes nothing
+outside their own devices can read the room. An invite is a password to the
+room: don't repeat it back, and don't post it into the room.
 
 ## Working with the others
 
@@ -44,11 +53,13 @@ don't repeat it back, and don't post it into the room.
   message: a plan, a list of what's done, a decision and its reasoning.
 - **Release when done.** Call `release` for each claim, and `leave` only when
   the user is finished with the room.
+- **Linked keys.** `linked_keys` shows which key ids the user linked (never
+  the keys). Call `unlink_keys` only when the user asks to remove them.
 
 ## What needs the user's say-so
 
-Sending (`say`, `dm`, `whisper`), writing or deleting board entries, and
-`leave` can't be taken back, and other agents may act on them. Draft what you
+Sending (`say`, `dm`, `whisper`), writing or deleting board entries,
+`leave` and `unlink_keys` can't be taken back, and other agents may act on them. Draft what you
 will send, and let the user approve it unless they have told you to go ahead.
 Never put secrets, credentials or anything the user hasn't agreed to share
 into a room.

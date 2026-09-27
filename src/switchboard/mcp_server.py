@@ -40,6 +40,14 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
+from .bridge_links import (
+    DEFAULT_REDIRECT_HOSTS,
+    SCOPE,
+    Link,
+    LinkStore,
+    OAuthServer,
+    seal_key_from_env,
+)
 from .client import (
     WHISPER_TYPE,
     Client,
@@ -2077,11 +2085,12 @@ def _origin_is_local(origin: str) -> bool:
 def _relay_notice_for_self(relay: dict[str, Any]) -> str:
     operator = relay.get("operator") or "an unnamed operator"
     return (
-        f"You reach this room through a hosted bridge run by {operator}. It holds the "
-        "room's key in order to act for you, so its operator can read this room — what "
-        "you say, what you read, and everything else in it. Other agents are told this "
-        "on their roster. If the user assumes this conversation is end-to-end encrypted "
-        "to their own devices, correct that."
+        "The Switchboard hub can't read this room: it is end-to-end encrypted. You can't "
+        "encrypt on your own, so you reach it through a hosted encryption bridge run by "
+        f"{operator}, which holds the room's key while it works for you. As with any hosted "
+        "integration, its operator is trusted with what passes through it: what you say "
+        "and what you read. Other agents are told this on their roster. If the user "
+        "assumes nothing outside their own devices can read this room, correct that."
     )
 
 
@@ -2122,7 +2131,7 @@ def hosted_name(label: str | None, relay: dict[str, Any]) -> str:
     from the invite, so no invite can name an agent out of it.
     """
     operator = relay.get("operator") or "an unnamed operator"
-    return f"{label or 'hosted agent'} (via hosted bridge; {operator} can read this room)"
+    return f"{label or 'hosted agent'} (via hosted encryption bridge run by {operator})"
 
 
 #: What a connecting app's `clientInfo` looks like, mapped to what a person
@@ -2167,7 +2176,7 @@ def _name_hosted_agent(bridge: Bridge, client_info: Any) -> None:
 
 
 def hosted_bridge(blob: str, relay: dict[str, Any],
-                  hubs: frozenset[str] | None = None) -> Bridge:
+                  hubs: frozenset[str] | None = None, seed: str | None = None) -> Bridge:
     """One agent, built from nothing but an invite.
 
     Everything the stdio bridge reads from its environment or its disk comes
@@ -2176,6 +2185,11 @@ def hosted_bridge(blob: str, relay: dict[str, Any],
     — an invite that leaves its key out is refused rather than completed from
     whatever the operator happens to have exported — and anything written to
     its disk would outlive the promise that nothing is kept.
+
+    `seed` is a signed-in person's link id (see bridge_links.py). With one,
+    the agent is theirs rather than the invite's: the same agent in a room
+    from every conversation they have, and a key-less invite already
+    completed from their keyring before it reaches here.
     """
     invite = Invite.decode(blob)
     if hubs is not None and _hub_key(invite.url) not in hubs:
@@ -2188,16 +2202,19 @@ def hosted_bridge(blob: str, relay: dict[str, Any],
         )
     if invite.key_id and not invite.key:
         raise InviteError(
-            f"this invite leaves its key out (it names key {invite.key_id!r}), and a "
-            "hosted bridge holds no keys of its own. Mint one that carries it: "
-            "`switchboard invite`."
+            f"this invite leaves its key out (it names key {invite.key_id!r}). Sign in "
+            "to link your keys, or use an invite that carries it: `switchboard invite`."
         )
-    digest = hashlib.sha256(blob.encode()).hexdigest()
-    # Stable per invite, so a reconnect is the same agent — its leases, its
-    # read cursor — and distinct per invite, so two people's apps never share
-    # one. Not derived from the key: the id reaches the hub (blinded, when the
-    # room is sealed), and a hash of the invite is a hash of the key.
-    local_id = f"hosted-{hashlib.sha256(digest.encode()).hexdigest()[:12]}"
+    # Stable per invite (or per sign-in), so a reconnect is the same agent —
+    # its leases, its read cursor — and distinct per invite, so two people's
+    # apps never share one. Not derived from the key: the id reaches the hub
+    # (blinded, when the room is sealed), and a hash of the invite is a hash
+    # of the key. A link id is random, and says nothing about the key.
+    if seed:
+        digest = hashlib.sha256(f"link:{seed}:{invite.workspace}".encode()).hexdigest()
+    else:
+        digest = hashlib.sha256(hashlib.sha256(blob.encode()).hexdigest().encode()).hexdigest()
+    local_id = f"hosted-{digest[:12]}"
     config = ClientConfig(
         url=invite.url, url_source="invite",
         token=invite.token, token_source="invite" if invite.token else "none",
@@ -2214,6 +2231,11 @@ def hosted_bridge(blob: str, relay: dict[str, Any],
     bridge._hosted_note = invite.note
     bridge._withheld = frozenset(HOSTED_WITHHELD)
     return bridge
+
+
+def _room_digest(blob: str, seed: str | None) -> str:
+    """How a hosted agent is filed: by invite, and by sign-in when there is one."""
+    return hashlib.sha256((f"{seed}\0{blob}" if seed else blob).encode()).hexdigest()
 
 
 class HostedBridges:
@@ -2243,12 +2265,13 @@ class HostedBridges:
     def __len__(self) -> int:
         return len(self._held)
 
-    def get(self, blob: str) -> tuple[Bridge, threading.Lock]:
-        digest = hashlib.sha256(blob.encode()).hexdigest()
+    def get(self, blob: str, seed: str | None = None) -> tuple[Bridge, threading.Lock]:
+        digest = _room_digest(blob, seed)
         with self._lock:
             entry = self._held.get(digest)
             if entry is None:
-                entry = [hosted_bridge(blob, self.relay, self.hubs), threading.Lock(), 0.0]
+                entry = [hosted_bridge(blob, self.relay, self.hubs, seed), threading.Lock(),
+                         0.0]
                 self._held[digest] = entry
             entry[2] = self._clock()
             self._held.move_to_end(digest)
@@ -2310,12 +2333,48 @@ FRONT_MAX_SESSIONS = 4096
 FRONT_MAX_ROOMS = 1024
 
 
-def _front_notice(relay: dict[str, Any]) -> str:
+#: Signing in is optional: throwaway rooms work from an invite alone, and
+#: only a key-less invite needs the keys a sign-in links.
+_SECURITY_EITHER = [{"type": "noauth"}, {"type": "oauth2", "scopes": [SCOPE]}]
+_SECURITY_SIGNED_IN = [{"type": "oauth2", "scopes": [SCOPE]}]
+
+LINKED_KEYS_TOOL: dict[str, Any] = {
+    "name": "linked_keys",
+    "description": (
+        "List the Switchboard keys the user linked by signing in: their ids, never the "
+        "keys. A key-less invite (made with `switchboard invite --no-key`) is opened "
+        "with the linked key it names. Asks the user to sign in if they haven't."
+    ),
+    "inputSchema": _schema({}, []),
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+    "securitySchemes": _SECURITY_SIGNED_IN,
+}
+
+UNLINK_KEYS_TOOL: dict[str, Any] = {
+    "name": "unlink_keys",
+    "description": (
+        "Delete the Switchboard keys the user linked by signing in, from the bridge, "
+        "at once. Only when the user asks. Rooms joined with them stop working here "
+        "until they sign in again."
+    ),
+    "inputSchema": _schema({}, []),
+    "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False},
+    "securitySchemes": _SECURITY_SIGNED_IN,
+}
+
+
+def _front_notice(relay: dict[str, Any], linked: bool = False) -> str:
     operator = relay.get("operator") or "an unnamed operator"
     return (
-        f"This connector is a hosted Switchboard bridge run by {operator}. It holds the "
-        "key of every room joined through it, so its operator can read those rooms. "
-        "If the user assumes a room here is private to their own devices, correct that."
+        "The Switchboard hub can't read any room: rooms are end-to-end encrypted. This "
+        f"connector is an optional encryption service run by {operator}, for apps that "
+        "can't encrypt on their own. It holds the key of each room joined through it "
+        "while it works, so, as with any hosted integration, its operator is trusted with "
+        "those rooms' contents."
+        + (" Keys linked by signing in are stored sealed under the sign-in, which the "
+           "bridge can't open without it." if linked else "")
+        + " If the user assumes nothing outside their own devices can read a room here, "
+        "correct that."
     )
 
 
@@ -2341,8 +2400,11 @@ class HostedFront:
     def __init__(self, bridges: HostedBridges,
                  idle_seconds: float = HOSTED_IDLE_SECONDS,
                  max_sessions: int = FRONT_MAX_SESSIONS, max_rooms: int = FRONT_MAX_ROOMS,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 oauth: OAuthServer | None = None) -> None:
         self.bridges = bridges
+        #: Signing in, when this bridge offers it (`--store`). See bridge_links.py.
+        self.oauth = oauth
         self.idle_seconds = idle_seconds
         self.max_sessions = max_sessions
         self.max_rooms = max_rooms
@@ -2350,8 +2412,10 @@ class HostedFront:
         self._lock = threading.Lock()
         #: session id -> {"client": clientInfo, "room": handle or None, "seen": t}
         self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        #: room handle -> [invite, last seen]; and invite digest -> handle, so
-        #: joining the same room twice hands back the same handle.
+        #: room handle -> [invite, last seen, link id or None]; and room digest
+        #: -> handle, so joining the same room twice hands back the same handle.
+        #: A handle made under a sign-in answers only to that sign-in: the
+        #: invite behind it was completed from their keys.
         self._rooms: OrderedDict[str, list[Any]] = OrderedDict()
         self._handles: dict[str, str] = {}
 
@@ -2384,28 +2448,53 @@ class HostedFront:
             self._prune(self._sessions, self.max_sessions, lambda s: s["seen"])
         return sid
 
-    def _handle_for(self, blob: str) -> str:
-        digest = hashlib.sha256(blob.encode()).hexdigest()
+    def _handle_for(self, blob: str, link_id: str | None = None) -> str:
+        digest = _room_digest(blob, link_id)
         with self._lock:
             handle = self._handles.get(digest)
             if handle is None or handle not in self._rooms:
                 handle = "room_" + secrets.token_urlsafe(18)
                 self._handles[digest] = handle
-            self._rooms[handle] = [blob, self._clock()]
+            self._rooms[handle] = [blob, self._clock(), link_id]
             self._rooms.move_to_end(handle)
             self._prune(self._rooms, self.max_rooms, lambda r: r[1],
-                        lambda h, r: self._handles.pop(
-                            hashlib.sha256(r[0].encode()).hexdigest(), None))
+                        lambda h, r: self._handles.pop(_room_digest(r[0], r[2]), None))
         return handle
 
-    def _blob_for(self, handle: str) -> str | None:
+    def _blob_for(self, handle: str) -> tuple[str, str | None] | None:
         with self._lock:
             entry = self._rooms.get(handle)
             if entry is None:
                 return None
             entry[1] = self._clock()
             self._rooms.move_to_end(handle)
-            return entry[0]
+            return entry[0], entry[2]
+
+    def _link(self, headers: Any) -> Link | None:
+        """The sign-in a request carries, if any. A bearer token this bridge
+        does not recognise is refused at the HTTP layer, as the spec asks, so
+        the app refreshes it or signs in again."""
+        scheme, _, token = (headers.get("Authorization") or "").partition(" ")
+        if self.oauth is None or scheme.lower() != "bearer" or not token.strip():
+            return None
+        link = self.oauth.store.open_access(token.strip())
+        if link is None:
+            raise _Refused(401, {"error": "invalid_token"}, {
+                "WWW-Authenticate": self.oauth.challenge(
+                    "invalid_token", "The sign-in has expired or was revoked.")})
+        return link
+
+    def _sign_in(self, request_id: Any, detail: str) -> dict[str, Any]:
+        """A tool result asking the app to sign the user in (ChatGPT shows its
+        sign-in prompt for this), or plain advice where there is no sign-in."""
+        if self.oauth is None:
+            return _response(request_id, _tool_result(
+                {"error": "needs_key", "detail": detail}, is_error=True))
+        result = _tool_result({"error": "sign_in_required", "detail": detail},
+                              is_error=True)
+        result["_meta"] = {"mcp/www_authenticate": [
+            self.oauth.challenge("insufficient_scope", detail)]}
+        return _response(request_id, result)
 
     # -- the transport's side ------------------------------------------------
 
@@ -2419,6 +2508,7 @@ class HostedFront:
 
     def serve(self, messages: list[Any], headers: Any) -> tuple[list[Any], dict[str, str]]:
         session = self._session(headers.get("Mcp-Session-Id"))
+        link = self._link(headers)
         extra: dict[str, str] = {}
         out = []
         for message in messages:
@@ -2432,7 +2522,7 @@ class HostedFront:
                     session = self._sessions.get(sid)
                     out.append(self._initialize(message))
                 else:
-                    out.append(self._request(message, session, headers))
+                    out.append(self._request(message, session, headers, link))
             except _Refused:
                 raise
             except Exception:  # noqa: BLE001 - a tool bug must not kill the server
@@ -2457,7 +2547,11 @@ class HostedFront:
                 "one with `switchboard invite`) and call join_room with it. Then call "
                 "roster to see who is there, subscribe to the channels people talk on, "
                 "and use inbox, say and dm to talk with them."
-                f"\n\nIMPORTANT: {_front_notice(self.bridges.relay)}"
+                + (" An invite made with --no-key leaves the room's key out: join_room "
+                   "opens it with the key the user linked by signing in, and asks them "
+                   "to sign in if they haven't. Never ask the user to paste a key."
+                   if self.oauth else "")
+                + f"\n\nIMPORTANT: {_front_notice(self.bridges.relay, bool(self.oauth))}"
             ),
         })
 
@@ -2466,7 +2560,7 @@ class HostedFront:
         for tool in TOOLS:
             name = tool["name"]
             if name == "join_room":
-                out.append(FRONT_JOIN_TOOL)
+                out.append(self._join_tool())
                 continue
             if name in HOSTED_WITHHELD:
                 continue
@@ -2474,10 +2568,30 @@ class HostedFront:
             out.append({**tool, "inputSchema": {
                 **schema, "properties": {**schema["properties"], "room": _FRONT_ROOM_PARAM},
             }})
-        return out
+        if self.oauth is None:
+            return out
+        return [{**tool, "securitySchemes": _SECURITY_EITHER} for tool in out] + [
+            LINKED_KEYS_TOOL, UNLINK_KEYS_TOOL]
+
+    def _join_tool(self) -> dict[str, Any]:
+        if self.oauth is None:
+            return FRONT_JOIN_TOOL
+        schema = FRONT_JOIN_TOOL["inputSchema"]
+        return {**FRONT_JOIN_TOOL, "description": FRONT_JOIN_TOOL["description"] + (
+            " An invite made with `switchboard invite --no-key` names the room but not "
+            "its key: the bridge opens it with the key the user linked by signing in, "
+            "and asks them to sign in if they haven't. Signed in, pass `name` instead of "
+            "an invite to join a linked room: 'lobby', the meeting place of everyone "
+            "holding the user's team key, or a name linked_keys lists. Never ask the "
+            "user for a key."), "inputSchema": {**schema, "required": [], "properties": {
+                **schema["properties"],
+                "name": {**_STR, "description": (
+                    "instead of an invite, when signed in: a linked room's name, "
+                    "e.g. 'lobby'")},
+            }}}
 
     def _request(self, request: dict[str, Any], session: dict[str, Any] | None,
-                 headers: Any) -> dict[str, Any] | None:
+                 headers: Any, link: Link | None = None) -> dict[str, Any] | None:
         method = request.get("method")
         request_id = request.get("id")
         params = request.get("params") or {}
@@ -2492,7 +2606,11 @@ class HostedFront:
 
         arguments = dict(params.get("arguments") or {})
         if params.get("name") == "join_room":
-            return self._join(request_id, arguments, session, headers)
+            return self._join(request_id, arguments, session, headers, link)
+        if params.get("name") == LINKED_KEYS_TOOL["name"] and self.oauth is not None:
+            return self._linked_keys(request_id, link)
+        if params.get("name") == UNLINK_KEYS_TOOL["name"] and self.oauth is not None:
+            return self._unlink_keys(request_id, link)
 
         handle = arguments.pop("room", None) or (session or {}).get("room")
         if not handle:
@@ -2501,32 +2619,102 @@ class HostedFront:
                 "detail": "No room joined yet. Ask the user for a Switchboard invite "
                           "(a string starting 'swb1_') and call join_room with it.",
             }, is_error=True))
-        blob = self._blob_for(handle)
-        if blob is None:
+        held = self._blob_for(handle)
+        if held is None:
             return _response(request_id, _tool_result({
                 "error": "room_expired",
                 "detail": "That room handle is no longer held here (idle too long, or "
                           "the bridge restarted). Call join_room again with the invite.",
             }, is_error=True))
-        bridge, lock = self.bridges.get(blob)
+        blob, owner = held
+        if owner is not None and (link is None or link.link_id != owner):
+            return self._sign_in(request_id, "This room was joined with keys linked by "
+                                             "signing in. Sign in to use it.")
+        bridge, lock = self.bridges.get(blob, owner)
         with lock:
             return handle_request(bridge, {**request, "params": {**params,
                                                                  "arguments": arguments}})
 
+    def _linked_keys(self, request_id: Any, link: Link | None) -> dict[str, Any]:
+        if link is None:
+            return self._sign_in(request_id, "Sign in to link your Switchboard keys.")
+        return _response(request_id, _tool_result({
+            "signed_in": True,
+            "key_ids": link.keyring.key_ids(),
+            "rooms": link.keyring.room_names(),
+            "hubs_with_token": sorted(link.keyring.tokens),
+            "linked_at": datetime.fromtimestamp(link.created, timezone.utc).isoformat(),
+            "next": "Join one of these rooms with join_room(name=...), or give join_room "
+                    "an invite made with `switchboard invite --no-key`: the key it names is "
+                    "filled in from these. To link different keys, call unlink_keys if the "
+                    "user asks, and they sign in again.",
+        }))
+
+    def _unlink_keys(self, request_id: Any, link: Link | None) -> dict[str, Any]:
+        if link is None:
+            return _response(request_id, _tool_result({
+                "unlinked": False, "detail": "Not signed in, so there are no linked keys."}))
+        self.oauth.store.revoke_link(link.link_id)
+        with self._lock:
+            for handle in [h for h, r in self._rooms.items() if r[2] == link.link_id]:
+                blob, _, owner = self._rooms.pop(handle)
+                self._handles.pop(_room_digest(blob, owner), None)
+        return _response(request_id, _tool_result({
+            "unlinked": True,
+            "detail": "The linked keys are deleted from the bridge, and this sign-in "
+                      "with them. Key-less invites need a new sign-in.",
+        }))
+
     def _join(self, request_id: Any, arguments: dict[str, Any],
-              session: dict[str, Any] | None, headers: Any) -> dict[str, Any]:
+              session: dict[str, Any] | None, headers: Any,
+              link: Link | None = None) -> dict[str, Any]:
         blob = arguments.get("invite")
+        name = arguments.get("name")
+        seed = link.link_id if link is not None else None
+        tip = None
+        if (not isinstance(blob, str) or not blob.strip()) and isinstance(name, str) \
+                and name.strip() and self.oauth is not None:
+            if link is None:
+                return self._sign_in(request_id, "Sign in to join a room by name with the "
+                                                 "keys you link.")
+            try:
+                invite = link.keyring.room(name)
+                blob = invite.encode()
+                bridge, lock = self.bridges.get(blob, seed)
+            except InviteError as exc:
+                return _response(request_id, _tool_result(
+                    {"joined": False, "error": str(exc)}, is_error=True))
+            return self._joined(request_id, bridge, lock, blob, seed, session, headers,
+                                "your linked keys")
         if not isinstance(blob, str) or not blob.strip():
             return _response(request_id, _tool_result({
                 "joined": False, "error": "join_room needs the invite, a string starting "
                                           "'swb1_'. Ask the user for one."}, is_error=True))
         blob = blob.strip()
         try:
-            bridge, lock = self.bridges.get(blob)
+            invite = Invite.decode(blob)
+            if link is not None and link.keyring.holds(invite.key):
+                tip = ("This invite carried a key the user has already linked. Next time, "
+                       "`switchboard invite --no-key` is enough, and keeps the key out of "
+                       "the conversation.")
+            if not invite.key and self.oauth is not None:
+                if link is None:
+                    return self._sign_in(request_id, (
+                        "This invite leaves the room's key out. Sign in to link your "
+                        "Switchboard keys, and the bridge supplies it."))
+                blob = link.keyring.complete(invite).encode()
+            bridge, lock = self.bridges.get(blob, seed)
         except InviteError as exc:
             return _response(request_id, _tool_result(
                 {"joined": False, "error": str(exc)}, is_error=True))
-        handle = self._handle_for(blob)
+        return self._joined(request_id, bridge, lock, blob, seed, session, headers,
+                            "invite" if seed is None or invite.key else "your linked keys",
+                            tip)
+
+    def _joined(self, request_id: Any, bridge: Bridge, lock: threading.Lock, blob: str,
+                seed: str | None, session: dict[str, Any] | None, headers: Any,
+                key_from: str, tip: str | None = None) -> dict[str, Any]:
+        handle = self._handle_for(blob, seed)
         client = (session or {}).get("client")
         if client is None:
             # No session to remember the app by: the User-Agent is the next
@@ -2543,12 +2731,15 @@ class HostedFront:
                 "workspace": bridge.config.workspace,
                 "hub": bridge.config.url,
                 "encrypted": bridge.client.encrypted,
+                "key_from": key_from,
                 "you_appear_as": bridge.identity.name,
                 "next": ("Every tool now acts in this room for the rest of the "
                          "conversation. Call roster to see who is here."
                          if session is not None else
                          f"Pass room='{handle}' on every other tool call."),
             }
+            if tip:
+                payload["tip"] = tip
             notice = _hosted_notice(bridge)
         if session is not None:
             with self._lock:
@@ -2582,7 +2773,8 @@ class _Pinned:
 
 
 def _http_handler(resolve: Callable[[str, Any], Any], info: dict[str, Any],
-                  challenge: str | None = None) -> type[BaseHTTPRequestHandler]:
+                  challenge: str | None = None,
+                  oauth: OAuthServer | None = None) -> type[BaseHTTPRequestHandler]:
     """A request handler that asks `resolve` what a request is for.
 
     `resolve(path, headers)` returns something with `serve(messages,
@@ -2633,6 +2825,38 @@ def _http_handler(resolve: Callable[[str, Any], Any], info: dict[str, Any],
         def _path(self) -> str:
             return urlsplit(self.path).path.rstrip("/") or "/"
 
+        def _oauth(self, body: bytes = b"") -> bool:
+            """Answer a sign-in request (see bridge_links.py). False when this
+            is not one, or this bridge offers no sign-in."""
+            if oauth is None:
+                return False
+            reply = oauth.handle(self.command, self._path(), urlsplit(self.path).query,
+                                 self.headers, body)
+            if reply is None:
+                return False
+            self.send_response(reply.status)
+            if reply.content_type:
+                self.send_header("Content-Type", reply.content_type)
+            self.send_header("Content-Length", str(len(reply.body)))
+            self.send_header("Cache-Control", "no-store")
+            for name, value in reply.headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if reply.body:
+                self.wfile.write(reply.body)
+            return True
+
+        def _body(self) -> bytes | None:
+            """The request body, or None once a refusal has been sent."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > HTTP_MAX_BODY:
+                self._send(413, _error(None, JSONRPC_INVALID_REQUEST, "bad body length"))
+                return None
+            return self.rfile.read(length)
+
         def _route(self) -> Any:
             """What serves this request, or None once a refusal has been sent."""
             outcome = resolve(self._path(), self.headers)
@@ -2655,6 +2879,8 @@ def _http_handler(resolve: Callable[[str, Any], Any], info: dict[str, Any],
                 else:
                     self._send(404, {"error": "not found"})
                 return
+            if self._oauth():
+                return
             # No server-initiated stream: every response rides its request.
             if self._route():
                 self._send(405, {"error": "use POST"}, {"Allow": "POST"})
@@ -2669,18 +2895,19 @@ def _http_handler(resolve: Callable[[str, Any], Any], info: dict[str, Any],
                 self._send(405, {"error": "use POST"}, {"Allow": "POST"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if oauth is not None and self._path().startswith("/oauth/"):
+                body = self._body()
+                if body is not None and not self._oauth(body):
+                    self._send(404, {"error": "not found"})
+                return
             target = self._route()
             if target is None:
                 return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = -1
-            if length < 0 or length > HTTP_MAX_BODY:
-                self._send(413, _error(None, JSONRPC_INVALID_REQUEST, "bad body length"))
+            body = self._body()
+            if body is None:
                 return
             try:
-                message = json.loads(self.rfile.read(length) or b"null")
+                message = json.loads(body or b"null")
             except ValueError:
                 self._send(400, _error(None, JSONRPC_PARSE_ERROR, "invalid JSON"))
                 return
@@ -2781,18 +3008,25 @@ def make_http_server(bridge: Bridge, host: str = HTTP_DEFAULT_HOST,
 
 def make_hosted_server(bridges: HostedBridges, host: str = HTTP_DEFAULT_HOST,
                        port: int = HTTP_DEFAULT_PORT,
-                       challenge: str | None = None) -> ThreadingHTTPServer:
+                       challenge: str | None = None,
+                       oauth: OAuthServer | None = None) -> ThreadingHTTPServer:
     """A hosted bridge, bound but not yet serving. Threaded, because it is
     many agents; see `HostedBridges` for how each one stays single-file.
-    The front door it serves at `/mcp` is kept on the server as `.front`."""
-    front = HostedFront(bridges)
+    The front door it serves at `/mcp` is kept on the server as `.front`.
+    With `oauth`, people can also sign in and link their keys."""
+    front = HostedFront(bridges, oauth=oauth)
     info = {**build_info(), "hosted": True, "operator": bridges.relay.get("operator"),
             "hubs": sorted(bridges.hubs),
-            "keeps": "nothing on disk; each agent lives in memory until idle for "
-                     f"{int(HOSTED_IDLE_SECONDS)}s",
-            "can_read": "every room whose invite is sent here — see docs/chatgpt.md"}
+            "keeps": ("on disk, only keys people linked by signing in, sealed under "
+                      "their sign-in tokens; " if oauth else "nothing on disk; ")
+                     + f"each agent lives in memory until idle for {int(HOSTED_IDLE_SECONDS)}s",
+            "can_read": "every room it is asked to act in, while it acts — see "
+                        "docs/chatgpt.md",
+            "sign_in": ({"metadata": oauth.issuer + "/.well-known/oauth-authorization-server",
+                         "linked_keys_expire": "90 days after last use"}
+                        if oauth else None)}
     server = ThreadingHTTPServer((host, port),
-                                 _http_handler(_hosted_resolver(front), info, challenge))
+                                 _http_handler(_hosted_resolver(front), info, challenge, oauth))
     server.daemon_threads = True
     server.front = front  # type: ignore[attr-defined]
     return server
@@ -2868,6 +3102,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--public-url", default=os.environ.get("SWITCHBOARD_BRIDGE_URL") or None,
         help="the HTTPS address this bridge is reached at, for the links it prints "
              "and the verification link it puts on the roster")
+    parser.add_argument(
+        "--store", default=os.environ.get("SWITCHBOARD_BRIDGE_STORE") or None,
+        help="with --hosted: a SQLite file for sign-ins, which lets people link their "
+             "keys so a key-less invite is enough (default $SWITCHBOARD_BRIDGE_STORE; "
+             "without it, no sign-in is offered). Needs --public-url, and "
+             "$SWITCHBOARD_BRIDGE_SEAL_KEY: 32 random bytes the linked keys are sealed "
+             "under, together with each sign-in's own tokens")
+    parser.add_argument(
+        "--redirect-host", action="append", dest="redirect_hosts", metavar="HOST",
+        default=[h.strip() for h in
+                 os.environ.get("SWITCHBOARD_BRIDGE_REDIRECT_HOSTS", "").split(",")
+                 if h.strip()] or None,
+        help="with --store: a host an app may have a sign-in sent back to; repeat for "
+             "more (default $SWITCHBOARD_BRIDGE_REDIRECT_HOSTS, comma-separated, else "
+             f"{', '.join(DEFAULT_REDIRECT_HOSTS)}). Loopback is always allowed")
     args = parser.parse_args(argv)
     if args.hosted:
         if not args.http:
@@ -2879,7 +3128,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         if args.token or args.no_auth:
             parser.error("--hosted takes no token: the invite in each URL is the "
                          "credential")
+        if args.store:
+            if not args.public_url:
+                parser.error("--store needs --public-url: sign-in tokens are issued "
+                             "for that address")
+            try:
+                args.seal_key = seal_key_from_env(
+                    os.environ.get("SWITCHBOARD_BRIDGE_SEAL_KEY"))
+            except ValueError as exc:
+                parser.error(str(exc))
+            if args.seal_key is None:
+                parser.error("--store needs $SWITCHBOARD_BRIDGE_SEAL_KEY (32 random "
+                             "bytes, hex or base64url). Not a flag, so it stays out of "
+                             "process listings")
         return args
+    if args.store:
+        parser.error("--store is for --hosted")
     if args.no_auth:
         if not _is_loopback(args.host):
             parser.error("--no-auth is only allowed on a loopback --host: anyone who "
@@ -2939,17 +3203,27 @@ def main(argv: list[str] | None = None) -> int:
         # somebody else's, built from their invite when they first call.
         bridges = HostedBridges(hosted_relay(args.operator, args.public_url),
                                 hubs=args.hubs or (MANAGED_HUB_URL,))
+        oauth = None
+        if args.store:
+            oauth = OAuthServer(
+                LinkStore(args.store, args.seal_key), args.public_url, args.seal_key,
+                operator=args.operator, hubs=bridges.hubs,
+                redirect_hosts=tuple(args.redirect_hosts or DEFAULT_REDIRECT_HOSTS))
         log(f"hosted bridge, operator={args.operator!r}, "
             f"commit={build_info()['commit'] or 'unknown (not an image build)'}, "
-            f"hubs={sorted(bridges.hubs)}")
+            f"hubs={sorted(bridges.hubs)}, "
+            + (f"sign-in on, returning to {sorted(oauth.redirect_hosts)}" if oauth
+               else "sign-in off"))
         try:
             serve_http(make_hosted_server(bridges, args.host, args.port,
-                                          args.openai_challenge),
+                                          args.openai_challenge, oauth),
                        hosted=True, token=None, public_url=args.public_url)
         except KeyboardInterrupt:
             pass
         finally:
             bridges.close()
+            if oauth is not None:
+                oauth.store.close()
         return 0
 
     bridge = Bridge()
