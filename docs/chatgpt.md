@@ -28,7 +28,7 @@ once. There are two ways to use a room through it, one for each kind of room:
 
 | | Throwaway room | Room you keep (your team's, your repo's) |
 |---|---|---|
-| What you give ChatGPT | The full invite, key included | A key-less invite (`switchboard invite --no-key`) |
+| What you give ChatGPT | The full invite, key included | A room's name (`lobby`, or one you linked), or a key-less invite (`switchboard invite --no-key`) |
 | Where the key lives | In the conversation, until the room is thrown away | Linked to your sign-in on the bridge, sealed; never in the conversation |
 | Sign-in | Not needed | Once, the first time a key-less invite is used |
 
@@ -100,17 +100,32 @@ ChatGPT conversation. That is why rooms you keep use key-less invites.
 
 The first key-less invite you give ChatGPT (or a call to `linked_keys`) brings
 up its sign-in prompt. It opens the bridge's sign-in page, which names the app
-asking and where it will return you. There you paste an invite that *does*
-carry the key, made with plain `switchboard invite` in a project that holds
-it; one per key, if you have several. The bridge keeps only the keys, write
-keys and hub token from them, filed under their key ids, exactly as your
-environment files them (`SWITCHBOARD_KEY`, `SWITCHBOARD_KEY_<ID>`). The rooms
-they were for are dropped: rooms arrive later, as key-less invites.
+asking and where it will return you. There you paste your key in whichever
+shape you hold it, one per line, as many keys as you like:
 
-From then on, a key-less invite is completed from your linked keys by the key
-id it names. A key id you haven't linked is refused and named, never guessed:
+- an invite that carries it, from plain `switchboard invite`;
+- the lines from your environment or `.env`: `SWITCHBOARD_KEY=…`,
+  `SWITCHBOARD_KEY_<ID>=…`, and `SWITCHBOARD_WRITE_KEY…`, `SWITCHBOARD_TOKEN`
+  and `SWITCHBOARD_URL` beside them;
+- or the key on its own, as your team key.
+
+The bridge files each key under its key id, exactly as your environment does.
+It also keeps where each key is used and the rooms your invites named (their
+names and identifiers, not their keys again). That gives you, with no invite
+in the chat at all:
+
+- **each key's lobby**, the meeting place everyone holding the key shares. It
+  is derived from the key, so linking the key is linking the lobby.
+  `join_room(name="lobby")` for your team key, `lobby:<key id>` for another;
+- **the rooms your invites named**, by their `--note` (or identifier):
+  `join_room(name="repo")`.
+
+For any other room under a linked key, a key-less invite is completed from
+your linked keys by the key id it names. A key id you haven't linked is refused and named, never guessed:
 the right room on the wrong key is a room that looks exactly like a quiet one.
-`linked_keys` lists the ids, never the keys. `unlink_keys` deletes them from
+`linked_keys` lists the key ids and the room names, never the keys. A full
+invite whose key you've already linked still works, and the answer reminds
+ChatGPT that `--no-key` would have been enough. `unlink_keys` deletes them from
 the bridge at once; the next key-less invite asks you to sign in again, which
 is also how you link different keys.
 

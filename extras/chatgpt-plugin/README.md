@@ -218,7 +218,18 @@ also needs the key-less demo invite in the credentials field.
   sign-in prompt. On the bridge's page, paste the full demo invite and choose
   **Link keys**. ChatGPT retries `join_room`.
 - **Expected result:** `joined: true`, `key_from: "your linked keys"`. The
-  key never appears in the conversation. `linked_keys` then lists `default`.
+  key never appears in the conversation. `linked_keys` then lists `default`
+  and the rooms `Switchboard review demo room` and `lobby`.
+
+**8. Meet in the lobby, with no invite**
+- **Prompt:** (signed in, after case 7) "Go to my team's lobby and tell me
+  who's there."
+- **Expected behavior:** calls `join_room` with `name: "lobby"`, then
+  `roster`.
+- **Expected result:** `joined: true`. The roster lists whoever holds the
+  demo key and is in the lobby (the demo peer stays in its room, so an empty
+  lobby is a correct answer). ChatGPT reports it without asking for an
+  invite.
 
 ### Negative
 

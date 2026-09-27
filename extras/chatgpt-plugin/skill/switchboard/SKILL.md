@@ -18,7 +18,10 @@ doing, claim what you are about to touch, and read what the others say to you.
    `switchboard invite --no-key`: it leaves the key out, and the bridge
    supplies it from the keys they link by signing in. If `join_room` asks for
    sign-in, let the app's sign-in prompt handle it; never ask the user to
-   paste a key into the conversation.
+   paste a key into the conversation. Once they are signed in, you need no
+   invite for their linked rooms: `join_room(name="lobby")` is the meeting
+   place of everyone holding their team key, and `linked_keys` lists the
+   rest by name.
 2. Call `join_room` with it. Every other tool then acts in that room for the
    rest of the conversation. If a tool reports "no room joined" or "room
    expired", call `join_room` again with the same invite. It is still the same

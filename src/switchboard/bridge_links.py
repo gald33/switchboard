@@ -6,12 +6,15 @@ account it can only act on a key the conversation hands it, which is fine for
 a throwaway room and wrong for a permanent one: a team key pasted into a chat
 lives in the transcript, and the model has no business holding it.
 
-So a person can *link* their keys instead. ChatGPT signs in over OAuth, the
-sign-in page takes the keys (pasted as invites, which already carry them),
-and from then on an invite made with `switchboard invite --no-key` — the room,
-without its key — is enough: the bridge fills the key in from the link. One
-team key opens every room made under it, which is the design, so the link is
-a keyring (key id -> key and write key), not a list of rooms.
+So a person can *link* their keys instead. ChatGPT signs in over OAuth, and
+the sign-in page takes the keys however the person holds them: invites, the
+`SWITCHBOARD_KEY...` lines of their environment, or a bare key. From then on
+an invite made with `switchboard invite --no-key` (the room, without its key)
+is enough: the bridge fills the key in from the link. One team key opens
+every room made under it, which is the design, so the link is a keyring
+(key id -> key and write key) first. It also keeps where each key is used, so
+the key's lobby, the meeting place every holder shares, is a room too, and
+the rooms the pasted invites named, so they can be joined by name.
 
 **How the keyring is kept.** Nothing that opens it is stored:
 
@@ -55,8 +58,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from .crypto import CryptoError, _decode_key
 from .invite import Invite, InviteError
-from .rooms import DEFAULT_KEY_ID
+from .rooms import DEFAULT_KEY_ID, env_var_for, lobby_token, write_key_env_var_for
 
 #: The one scope: use the keys you linked.
 SCOPE = "keys"
@@ -113,66 +117,221 @@ def _lookup(token: str) -> str:
 # -- the keyring -------------------------------------------------------------
 
 
+#: `SWITCHBOARD_KEY_<ID>=...` and friends, as an environment or `.env` holds
+#: them, with or without `export` and quotes.
+ENV_LINE = re.compile(
+    r"""^\s*(?:export\s+)?(SWITCHBOARD_[A-Z0-9_]+)\s*=\s*(["']?)([^"'\s]*)\2\s*$""")
+#: `SWITCHBOARD_KEY_*` names that are settings, not keys.
+_NOT_KEYS = {"SWITCHBOARD_KEY_EPOCH_PERIOD"}
+LOBBY = "lobby"
+MAX_ROOMS = 64
+
+
+def _same_id(a: str, b: str) -> bool:
+    """Key ids compared the way the environment files them: `team/ops` and
+    `TEAM_OPS` are the same variable, so they are the same key."""
+    return env_var_for(a or DEFAULT_KEY_ID) == env_var_for(b or DEFAULT_KEY_ID)
+
+
+def _is_key(value: str) -> bool:
+    try:
+        return len(_decode_key(value)) >= 32
+    except (CryptoError, ValueError):
+        return False
+
+
 @dataclass
 class Keyring:
-    """Key id -> {"key", "write_key"}, and a hub token per hub.
+    """What a sign-in links: keys, where they are used, and the rooms named.
 
-    The same shape an environment has (`SWITCHBOARD_KEY_<ID>`,
-    `SWITCHBOARD_WRITE_KEY_<ID>`, `SWITCHBOARD_TOKEN`), so a key-less invite
-    resolves here exactly as it would on the machine it was made on.
+    - `keys`: key id -> {"key", "write_key"?, "hub"?}. The same shape an
+      environment has (`SWITCHBOARD_KEY_<ID>`, `SWITCHBOARD_WRITE_KEY_<ID>`),
+      so a key-less invite resolves here exactly as it would on the machine
+      it was made on. `hub` is where the key's lobby is.
+    - `tokens`: hub -> hub token (`SWITCHBOARD_TOKEN`).
+    - `rooms`: the rooms the pasted invites were for, without their keys, so
+      a signed-in person can join one by name with no invite at all.
+
+    Every key also opens its lobby, the meeting place every holder of the key
+    shares (`rooms.lobby_token`), so that is a room too, derived rather than
+    kept.
     """
 
     keys: dict[str, dict[str, str]] = field(default_factory=dict)
     tokens: dict[str, str] = field(default_factory=dict)
+    rooms: list[dict[str, str]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
-        return {"keys": self.keys, "tokens": self.tokens}
+        return {"keys": self.keys, "tokens": self.tokens, "rooms": self.rooms}
 
     @classmethod
     def from_json(cls, data: Any) -> Keyring:
         data = data if isinstance(data, dict) else {}
-        return cls(keys=dict(data.get("keys") or {}), tokens=dict(data.get("tokens") or {}))
+        return cls(keys=dict(data.get("keys") or {}), tokens=dict(data.get("tokens") or {}),
+                   rooms=list(data.get("rooms") or []))
 
     @classmethod
-    def from_invites(cls, text: str, hubs: frozenset[str] | None = None) -> Keyring:
-        """The keys carried by every invite pasted into `text`.
+    def from_text(cls, text: str, hubs: frozenset[str] | None = None) -> Keyring:
+        """Everything linkable in what a person pasted.
 
-        Only the keys and the hub token are kept. Which room each invite was
-        for is dropped on purpose: the key opens every room made under it,
-        and the room itself arrives later, key-less, in the conversation.
+        Three shapes, mixed freely, because people hold keys in different
+        places: invites (`swb1_...`, as `switchboard invite` prints them),
+        environment lines (`SWITCHBOARD_KEY=...`, `SWITCHBOARD_KEY_OPS=...`,
+        `SWITCHBOARD_WRITE_KEY...`, `SWITCHBOARD_TOKEN`, `SWITCHBOARD_URL`,
+        `SWITCHBOARD_WORKSPACE`), or one bare key on its own.
         """
-        found = INVITE_PATTERN.findall(text or "")
-        if not found:
-            raise InviteError("paste at least one invite (a string starting 'swb1_'), "
-                              "as `switchboard invite` prints it")
         ring = cls()
-        for blob in found:
-            invite = Invite.decode(blob)
-            if hubs is not None and hub_key(invite.url) not in hubs:
-                raise InviteError(f"an invite is for {invite.url}, and this bridge serves "
-                                  f"{', '.join(sorted(hubs))} only")
-            if not invite.key:
+        env: dict[str, str] = {}
+        leftovers: list[str] = []
+        for line in (text or "").splitlines():
+            invites = INVITE_PATTERN.findall(line)
+            for blob in invites:
+                ring._add_invite(Invite.decode(blob), hubs)
+            match = ENV_LINE.match(line)
+            if match and not invites:
+                env[match.group(1)] = match.group(3)
+            elif not invites:
+                leftovers.extend(line.split())
+        ring._add_env(env, hubs)
+        if leftovers:
+            if len(leftovers) == 1 and _is_key(leftovers[0]) and not ring.keys:
+                ring._add_key(DEFAULT_KEY_ID, leftovers[0], None, ring._hub(env, hubs))
+            else:
                 raise InviteError(
-                    "an invite leaves its key out (it was made with --no-key), so there "
-                    "is nothing in it to link. Paste one made with plain "
-                    "`switchboard invite`.")
-            key_id = invite.key_id or DEFAULT_KEY_ID
-            held = ring.keys.get(key_id)
-            if held and held["key"] != invite.key:
-                raise InviteError(f"two invites carry different keys under the same key id "
-                                  f"{key_id!r}; link them one at a time")
-            entry = held or {"key": invite.key}
-            if invite.write_key:
-                entry["write_key"] = invite.write_key
-            ring.keys[key_id] = entry
-            if invite.token:
-                ring.tokens[hub_key(invite.url)] = invite.token
-        if len(ring.keys) > MAX_KEYS:
-            raise InviteError(f"at most {MAX_KEYS} keys per sign-in")
+                    "some of what you pasted is not an invite, a SWITCHBOARD_... line or "
+                    "a key. Paste one of those per line.")
+        if not ring.keys:
+            raise InviteError("nothing to link: paste an invite (swb1_...), your "
+                              "SWITCHBOARD_KEY lines, or the key itself")
+        for room in ring.rooms:
+            if ring._find(room["key_id"]) is None:
+                raise InviteError(
+                    f"the room {room['name']!r} needs key {room['key_id']!r}, and nothing "
+                    "pasted carries it. Add the key, or an invite made without --no-key.")
+        if len(ring.keys) > MAX_KEYS or len(ring.rooms) > MAX_ROOMS:
+            raise InviteError(f"at most {MAX_KEYS} keys and {MAX_ROOMS} rooms per sign-in")
         return ring
+
+    # -- building --
+
+    @staticmethod
+    def _hub(env: dict[str, str], hubs: frozenset[str] | None) -> str | None:
+        url = env.get("SWITCHBOARD_URL")
+        if url:
+            return url
+        return next(iter(hubs)) if hubs and len(hubs) == 1 else None
+
+    @staticmethod
+    def _check_hub(url: str, hubs: frozenset[str] | None) -> None:
+        if hubs is not None and hub_key(url) not in hubs:
+            raise InviteError(f"{url} is not a hub this bridge serves "
+                              f"({', '.join(sorted(hubs))})")
+
+    def _find(self, key_id: str) -> str | None:
+        return next((k for k in self.keys if _same_id(k, key_id)), None)
+
+    def _add_key(self, key_id: str, key: str, write_key: str | None,
+                 hub: str | None) -> None:
+        held = self._find(key_id)
+        if held is not None and self.keys[held]["key"] != key:
+            raise InviteError(f"two different keys are pasted under the key id "
+                              f"{key_id!r}; link them one at a time")
+        entry = self.keys.setdefault(held or key_id, {"key": key})
+        if write_key:
+            entry["write_key"] = write_key
+        if hub and "hub" not in entry:
+            entry["hub"] = hub
+
+    def _add_room(self, url: str, workspace: str, workspace_token: str, key_id: str,
+                  name: str) -> None:
+        if any(r["workspace"] == workspace and hub_key(r["url"]) == hub_key(url)
+               for r in self.rooms):
+            return
+        taken = {r["name"] for r in self.rooms} | {LOBBY}
+        base = " ".join(name.split())[:60] or workspace[:24]
+        name, n = base, 2
+        while name in taken or name.startswith(LOBBY + ":"):
+            name, n = f"{base} ({n})", n + 1
+        self.rooms.append({"name": name, "url": url, "workspace": workspace,
+                           "workspace_token": workspace_token, "key_id": key_id})
+
+    def _add_invite(self, invite: Invite, hubs: frozenset[str] | None) -> None:
+        self._check_hub(invite.url, hubs)
+        key_id = invite.key_id or DEFAULT_KEY_ID
+        if invite.key:
+            self._add_key(key_id, invite.key, invite.write_key, invite.url)
+        # A key-less invite is only a room: fine alongside its key, pasted
+        # elsewhere in the same box. `from_text` checks that it was.
+        if invite.token:
+            self.tokens[hub_key(invite.url)] = invite.token
+        if not invite.workspace.startswith("lobby-"):
+            self._add_room(invite.url, invite.workspace, invite.workspace_token, key_id,
+                           invite.note)
+
+    def _add_env(self, env: dict[str, str], hubs: frozenset[str] | None) -> None:
+        if not env:
+            return
+        hub = self._hub(env, hubs)
+        if env.get("SWITCHBOARD_URL"):
+            self._check_hub(env["SWITCHBOARD_URL"], hubs)
+        writes = {name: value for name, value in env.items()
+                  if name.startswith("SWITCHBOARD_WRITE_KEY")}
+        for name, value in env.items():
+            if not name.startswith("SWITCHBOARD_KEY") or name in _NOT_KEYS:
+                continue
+            key_id = DEFAULT_KEY_ID if name == "SWITCHBOARD_KEY" else \
+                name[len("SWITCHBOARD_KEY_"):].lower()
+            if not _is_key(value):
+                raise InviteError(f"{name} does not hold a key (at least 32 bytes, as "
+                                  "base64url or hex)")
+            self._add_key(key_id, value, writes.pop(write_key_env_var_for(key_id), None),
+                          hub)
+        if writes:
+            raise InviteError(f"{sorted(writes)[0]} has no key beside it to belong to")
+        if env.get("SWITCHBOARD_TOKEN") and hub:
+            self.tokens[hub_key(hub)] = env["SWITCHBOARD_TOKEN"]
+        if env.get("SWITCHBOARD_WORKSPACE") and hub and self._find(DEFAULT_KEY_ID):
+            self._add_room(hub, env["SWITCHBOARD_WORKSPACE"], "", DEFAULT_KEY_ID, "")
+
+    # -- reading --
 
     def key_ids(self) -> list[str]:
         return sorted(self.keys)
+
+    def room_names(self) -> list[str]:
+        return [r["name"] for r in self.rooms] + sorted(self._lobbies())
+
+    def _lobbies(self) -> dict[str, str]:
+        """Lobby name -> key id, for every key whose hub is known. The team
+        key's is plain 'lobby'; any other key's is 'lobby:<key id>'."""
+        plain = self._find(DEFAULT_KEY_ID) or (next(iter(self.keys))
+                                               if len(self.keys) == 1 else None)
+        return {(LOBBY if key_id == plain else f"{LOBBY}:{key_id}"): key_id
+                for key_id, entry in self.keys.items() if entry.get("hub")}
+
+    def room(self, name: str) -> Invite:
+        """A named room, as a complete invite, or `InviteError` naming the
+        rooms there are."""
+        name = " ".join((name or "").split())
+        for entry in self.rooms:
+            if entry["name"] == name:
+                return self.complete(Invite(
+                    url=entry["url"], workspace=entry["workspace"],
+                    workspace_token=entry.get("workspace_token", ""),
+                    key_id=entry.get("key_id", ""), note=entry["name"]))
+        key_id = self._lobbies().get(name)
+        if key_id is not None:
+            entry = self.keys[key_id]
+            # The lobby is derived from the key, so it is the one room a key
+            # opens with nothing else to remember but where the key is used.
+            return Invite(url=entry["hub"], workspace_token=lobby_token(entry["key"]),
+                          key=entry["key"], key_id=key_id, note=LOBBY,
+                          token=self.tokens.get(hub_key(entry["hub"])))
+        known = ", ".join(repr(n) for n in self.room_names()) or "none"
+        raise InviteError(f"no linked room is called {name!r}. Linked rooms: {known}.")
+
+    def holds(self, key: str | None) -> bool:
+        return bool(key) and any(e["key"] == key for e in self.keys.values())
 
     def complete(self, invite: Invite) -> Invite:
         """`invite` with its key, write key and token filled in from here.
@@ -185,13 +344,14 @@ class Keyring:
         if invite.key:
             return invite
         key_id = invite.key_id or DEFAULT_KEY_ID
-        entry = self.keys.get(key_id)
-        if entry is None:
+        held = self._find(key_id)
+        if held is None:
             linked = ", ".join(repr(k) for k in self.key_ids()) or "none"
             raise InviteError(
                 f"this invite leaves its key out and needs key {key_id!r}, which is not "
                 f"among the keys linked to this sign-in ({linked}). Sign in again and "
-                "paste an invite that carries it.")
+                "paste that key, or an invite that carries it.")
+        entry = self.keys[held]
         return replace(
             invite, key=entry["key"],
             write_key=invite.write_key or entry.get("write_key"),
@@ -612,13 +772,16 @@ of the bridge's database opens nothing, and a sign-in unused for 90 days is dele
 {problem}
 <form method="post" action="{AUTHORIZE_PATH}">
 <input type="hidden" name="request" value="{signed}">
-<label for="invites">Paste an invite for each key to link. Run
-<code>switchboard invite</code> in a project that holds the key. Only the keys and the hub
-token are kept.</label>
-<textarea id="invites" name="invites" rows="5" required
- autocomplete="off" spellcheck="false" placeholder="swb1_..."></textarea>
-<p>Afterwards, give {name} rooms with <code>switchboard invite --no-key</code>: the invite
-names the room, and the bridge supplies the key, so the conversation never holds it.</p>
+<label for="invites">Paste your key, one per line in any of these shapes: an invite from
+<code>switchboard invite</code>; the <code>SWITCHBOARD_KEY</code> lines from your
+environment (<code>SWITCHBOARD_KEY_&lt;ID&gt;</code>, <code>SWITCHBOARD_WRITE_KEY</code> and
+<code>SWITCHBOARD_TOKEN</code> too); or the key on its own.</label>
+<textarea id="invites" name="invites" rows="6" required autocomplete="off"
+ spellcheck="false"
+ placeholder="swb1_...&#10;SWITCHBOARD_KEY=...&#10;SWITCHBOARD_KEY_OPS=..."></textarea>
+<p>Afterwards, {name} can join each key's lobby and the rooms your invites named, by
+name. For other rooms, give it <code>switchboard invite --no-key</code>: the invite names
+the room, and the bridge supplies the key, so the conversation never holds it.</p>
 <button type="submit" name="action" value="link">Link keys</button>
 <button type="submit" name="action" value="deny" formnovalidate class="quiet">Cancel</button>
 </form>"""
@@ -637,7 +800,7 @@ names the room, and the bridge supplies the key, so the conversation never holds
             return self._send_back(request["redirect_uri"], request["state"],
                                    {"error": "access_denied"})
         try:
-            keyring = Keyring.from_invites(form.get("invites", ""), self.hubs)
+            keyring = Keyring.from_text(form.get("invites", ""), self.hubs)
         except InviteError as exc:
             return self._form_page({k: v for k, v in request.items() if k != "t"},
                                    str(exc), 400)

@@ -2576,10 +2576,19 @@ class HostedFront:
     def _join_tool(self) -> dict[str, Any]:
         if self.oauth is None:
             return FRONT_JOIN_TOOL
+        schema = FRONT_JOIN_TOOL["inputSchema"]
         return {**FRONT_JOIN_TOOL, "description": FRONT_JOIN_TOOL["description"] + (
             " An invite made with `switchboard invite --no-key` names the room but not "
             "its key: the bridge opens it with the key the user linked by signing in, "
-            "and asks them to sign in if they haven't. Never ask the user for a key.")}
+            "and asks them to sign in if they haven't. Signed in, pass `name` instead of "
+            "an invite to join a linked room: 'lobby', the meeting place of everyone "
+            "holding the user's team key, or a name linked_keys lists. Never ask the "
+            "user for a key."), "inputSchema": {**schema, "required": [], "properties": {
+                **schema["properties"],
+                "name": {**_STR, "description": (
+                    "instead of an invite, when signed in: a linked room's name, "
+                    "e.g. 'lobby'")},
+            }}}
 
     def _request(self, request: dict[str, Any], session: dict[str, Any] | None,
                  headers: Any, link: Link | None = None) -> dict[str, Any] | None:
@@ -2632,11 +2641,13 @@ class HostedFront:
         return _response(request_id, _tool_result({
             "signed_in": True,
             "key_ids": link.keyring.key_ids(),
+            "rooms": link.keyring.room_names(),
             "hubs_with_token": sorted(link.keyring.tokens),
             "linked_at": datetime.fromtimestamp(link.created, timezone.utc).isoformat(),
-            "next": "Give join_room an invite made with `switchboard invite --no-key`; "
-                    "the key it names is filled in from these. To link different keys, "
-                    "call unlink_keys if the user asks, and they sign in again.",
+            "next": "Join one of these rooms with join_room(name=...), or give join_room "
+                    "an invite made with `switchboard invite --no-key`: the key it names is "
+                    "filled in from these. To link different keys, call unlink_keys if the "
+                    "user asks, and they sign in again.",
         }))
 
     def _unlink_keys(self, request_id: Any, link: Link | None) -> dict[str, Any]:
@@ -2658,14 +2669,34 @@ class HostedFront:
               session: dict[str, Any] | None, headers: Any,
               link: Link | None = None) -> dict[str, Any]:
         blob = arguments.get("invite")
+        name = arguments.get("name")
+        seed = link.link_id if link is not None else None
+        tip = None
+        if (not isinstance(blob, str) or not blob.strip()) and isinstance(name, str) \
+                and name.strip() and self.oauth is not None:
+            if link is None:
+                return self._sign_in(request_id, "Sign in to join a room by name with the "
+                                                 "keys you link.")
+            try:
+                invite = link.keyring.room(name)
+                blob = invite.encode()
+                bridge, lock = self.bridges.get(blob, seed)
+            except InviteError as exc:
+                return _response(request_id, _tool_result(
+                    {"joined": False, "error": str(exc)}, is_error=True))
+            return self._joined(request_id, bridge, lock, blob, seed, session, headers,
+                                "your linked keys")
         if not isinstance(blob, str) or not blob.strip():
             return _response(request_id, _tool_result({
                 "joined": False, "error": "join_room needs the invite, a string starting "
                                           "'swb1_'. Ask the user for one."}, is_error=True))
         blob = blob.strip()
-        seed = link.link_id if link is not None else None
         try:
             invite = Invite.decode(blob)
+            if link is not None and link.keyring.holds(invite.key):
+                tip = ("This invite carried a key the user has already linked. Next time, "
+                       "`switchboard invite --no-key` is enough, and keeps the key out of "
+                       "the conversation.")
             if not invite.key and self.oauth is not None:
                 if link is None:
                     return self._sign_in(request_id, (
@@ -2676,6 +2707,13 @@ class HostedFront:
         except InviteError as exc:
             return _response(request_id, _tool_result(
                 {"joined": False, "error": str(exc)}, is_error=True))
+        return self._joined(request_id, bridge, lock, blob, seed, session, headers,
+                            "invite" if seed is None or invite.key else "your linked keys",
+                            tip)
+
+    def _joined(self, request_id: Any, bridge: Bridge, lock: threading.Lock, blob: str,
+                seed: str | None, session: dict[str, Any] | None, headers: Any,
+                key_from: str, tip: str | None = None) -> dict[str, Any]:
         handle = self._handle_for(blob, seed)
         client = (session or {}).get("client")
         if client is None:
@@ -2693,13 +2731,15 @@ class HostedFront:
                 "workspace": bridge.config.workspace,
                 "hub": bridge.config.url,
                 "encrypted": bridge.client.encrypted,
-                "key_from": "invite" if seed is None or invite.key else "your linked keys",
+                "key_from": key_from,
                 "you_appear_as": bridge.identity.name,
                 "next": ("Every tool now acts in this room for the rest of the "
                          "conversation. Call roster to see who is here."
                          if session is not None else
                          f"Pass room='{handle}' on every other tool call."),
             }
+            if tip:
+                payload["tip"] = tip
             notice = _hosted_notice(bridge)
         if session is not None:
             with self._lock:

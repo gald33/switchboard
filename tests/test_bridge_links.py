@@ -27,6 +27,7 @@ from test_mcp_http import rpc, send
 
 from switchboard import bridge_links
 from switchboard.bridge_links import Keyring, LinkError, LinkStore, OAuthServer
+from switchboard.crypto import generate_key
 from switchboard.invite import Invite, InviteError
 from switchboard.mcp_server import HostedBridges, hosted_relay, make_hosted_server
 
@@ -151,38 +152,87 @@ def test_revoking_any_token_deletes_the_link(tmp_path):
 
 def _blob(**fields) -> str:
     base = dict(url="https://hub.example", workspace="ws", token="tok", key="K1")
+    if "key" not in fields:
+        fields["key"] = K1
     return Invite(**{**base, **fields}).encode()
 
 
-def test_the_keyring_keeps_keys_and_drops_rooms():
-    ops = _blob(key="K2", key_id="ops", workspace="other")
-    ring = Keyring.from_invites(f"here: {_blob(write_key='W1')}\nand {ops}")
-    assert ring.keys == {"default": {"key": "K1", "write_key": "W1"}, "ops": {"key": "K2"}}
-    assert ring.tokens == {"https://hub.example": "tok"}
-    assert "ws" not in json.dumps(ring.to_json())
+HUB = "https://hub.example"
+K1, K2 = generate_key(), generate_key()
 
 
-def test_a_key_less_invite_cannot_be_linked():
-    with pytest.raises(InviteError, match="--no-key"):
-        Keyring.from_invites(_blob(key=None))
+def test_the_keyring_keeps_keys_rooms_and_where_they_are_used():
+    ops = _blob(key=K2, key_id="ops", workspace="other", note="ops room")
+    ring = Keyring.from_text(f"{_blob(key=K1, write_key='W1', note='repo')}\n"
+                             f"Join this one too: {ops}")
+    assert ring.keys == {"default": {"key": K1, "write_key": "W1", "hub": HUB},
+                         "ops": {"key": K2, "hub": HUB}}
+    assert ring.tokens == {HUB: "tok"}
+    assert ring.room_names() == ["repo", "ops room", "lobby", "lobby:ops"]
+
+
+def test_a_bare_key_is_linked_as_the_team_key():
+    ring = Keyring.from_text(f"  {K1}  ", frozenset({HUB}))
+    assert ring.keys == {"default": {"key": K1, "hub": HUB}}
+    assert ring.room_names() == ["lobby"]
+
+
+def test_environment_lines_are_linked_as_the_environment_files_them():
+    ring = Keyring.from_text(
+        f"export SWITCHBOARD_URL={HUB}\nSWITCHBOARD_TOKEN='tok'\n"
+        f'SWITCHBOARD_KEY="{K1}"\nSWITCHBOARD_WRITE_KEY=W1\nSWITCHBOARD_KEY_TEAM_OPS={K2}\n'
+        "SWITCHBOARD_KEY_EPOCH_PERIOD=3600\nSWITCHBOARD_WORKSPACE=my-repo")
+    assert ring.keys["default"] == {"key": K1, "write_key": "W1", "hub": HUB}
+    assert ring.keys["team_ops"]["key"] == K2
+    assert ring.tokens == {HUB: "tok"} and ring.room_names()[0] == "my-repo"
+    # `team/ops` in an invite is the variable SWITCHBOARD_KEY_TEAM_OPS: the same key.
+    done = ring.complete(Invite.decode(_blob(key=None, key_id="team/ops")))
+    assert done.key == K2
+
+
+def test_invites_and_keys_mix_in_one_paste():
+    ring = Keyring.from_text(f"{_blob(key=None, key_id='ops', note='ops')}\n"
+                             f"SWITCHBOARD_KEY_OPS={K2}\nSWITCHBOARD_URL={HUB}")
+    assert ring.room("ops").key == K2
+
+
+def test_a_room_whose_key_was_not_pasted_is_refused():
+    with pytest.raises(InviteError, match="needs key 'ops'"):
+        Keyring.from_text(f"{_blob(key=K1)}\n{_blob(key=None, key_id='ops', workspace='o')}")
+
+
+def test_nothing_linkable_is_refused():
+    with pytest.raises(InviteError, match="nothing to link"):
+        Keyring.from_text(_blob(key=None))
+    with pytest.raises(InviteError, match="not an invite"):
+        Keyring.from_text("hello there")
 
 
 def test_the_keyring_refuses_hubs_the_bridge_does_not_serve():
     with pytest.raises(InviteError, match="serves"):
-        Keyring.from_invites(_blob(), frozenset({"https://other.example"}))
+        Keyring.from_text(_blob(key=K1), frozenset({"https://other.example"}))
+
+
+def test_the_lobby_is_derived_from_the_key():
+    from switchboard import rooms
+    lobby = Keyring.from_text(_blob(key=K1)).room("lobby")
+    assert lobby.key == K1 and lobby.url == HUB
+    assert lobby.workspace == rooms.lobby(K1).workspace
 
 
 def test_a_key_less_invite_is_completed_by_the_key_it_names():
-    ring = Keyring.from_invites(_blob() + " " + _blob(key="K2", key_id="ops"))
+    ring = Keyring.from_text(_blob(key=K1) + "\n" + _blob(key=K2, key_id="ops"))
     done = ring.complete(Invite.decode(_blob(key=None, key_id="ops", token=None)))
-    assert (done.key, done.token) == ("K2", "tok")
-    assert ring.complete(Invite.decode(_blob(key=None))).key == "K1"
+    assert (done.key, done.token) == (K2, "tok")
+    assert ring.complete(Invite.decode(_blob(key=None))).key == K1
 
 
 def test_a_key_the_keyring_lacks_is_refused_not_guessed():
-    ring = Keyring.from_invites(_blob())
+    ring = Keyring.from_text(_blob(key=K1))
     with pytest.raises(InviteError, match="'ops'"):
         ring.complete(Invite.decode(_blob(key=None, key_id="ops")))
+    with pytest.raises(InviteError, match="Linked rooms"):
+        ring.room("nope")
 
 
 # --- the OAuth dance, over a socket -----------------------------------------
@@ -242,10 +292,10 @@ def sign_in(server, invites: str) -> dict:
     return {**token.json(), "client_id": client_id}
 
 
-def front(server, name: str, token: str | None = None, **arguments):
+def front(server, tool_name: str, token: str | None = None, **arguments):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     response = send(server, path="/mcp", headers=headers,
-                    body=rpc("tools/call", name=name, arguments=arguments))
+                    body=rpc("tools/call", name=tool_name, arguments=arguments))
     return response
 
 
@@ -320,7 +370,7 @@ def test_a_bad_invite_keeps_the_user_on_the_page(signed, hub):  # noqa: F811
     request = page.text.split('name="request" value="')[1].split('"')[0]
     again = send(server, path="/oauth/authorize", headers=FORM, body=urlencode(
         {"request": request, "invites": invite_for(hub, key=None), "action": "link"}))
-    assert again.status_code == 400 and "--no-key" in again.text
+    assert again.status_code == 400 and "nothing to link" in again.text
 
 
 def test_a_key_less_invite_without_a_sign_in_asks_for_one(signed, hub):  # noqa: F811
@@ -480,3 +530,40 @@ def test_unlinking_deletes_the_keys_at_once(signed, hub):  # noqa: F811
         "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"],
         "client_id": tokens["client_id"]}))
     assert refreshed.status_code == 400
+
+
+def test_signed_in_the_lobby_needs_no_invite(signed, hub):  # noqa: F811
+    server, _, _ = signed
+    tokens = sign_in(server, invite_for(hub, note="repo"))
+    listed, _ = payload(front(server, "linked_keys", tokens["access_token"]))
+    assert listed["rooms"] == ["repo", "lobby"]
+    data, result = payload(front(server, "join_room", tokens["access_token"], name="lobby"))
+    assert not result["isError"], data
+    # The lobby every holder of the key shares: a laptop with the key meets us there.
+    me, _ = payload(front(server, "whoami", tokens["access_token"], room=data["room"]))
+    met, _ = call(make_bridge(hub, "laptop"), "roster", room="lobby")
+    assert me["agent_id"] in [a["agent_id"] for a in met["agents"]]
+
+
+def test_signed_in_a_linked_room_is_joined_by_name(signed, hub):  # noqa: F811
+    server, _, _ = signed
+    tokens = sign_in(server, invite_for(hub, note="repo"))
+    data, result = payload(front(server, "join_room", tokens["access_token"], name="repo"))
+    assert not result["isError"] and data["workspace"] == hub.workspace, data
+    missing, result = payload(front(server, "join_room", tokens["access_token"], name="x"))
+    assert result["isError"] and "'repo'" in missing["error"]
+
+
+def test_a_bare_key_on_the_sign_in_page_links(signed, hub):  # noqa: F811
+    server, _, _ = signed
+    tokens = sign_in(server, f"SWITCHBOARD_KEY={hub.key}\nSWITCHBOARD_TOKEN={hub.token}")
+    data, result = payload(front(server, "join_room", tokens["access_token"],
+                                 invite=invite_for(hub, key=None, token=None)))
+    assert not result["isError"], data
+
+
+def test_a_full_invite_for_a_linked_key_gets_a_tip(signed, hub):  # noqa: F811
+    server, _, _ = signed
+    tokens = sign_in(server, invite_for(hub))
+    data, _ = payload(front(server, "join_room", tokens["access_token"], invite=invite_for(hub)))
+    assert "--no-key" in data["tip"]
