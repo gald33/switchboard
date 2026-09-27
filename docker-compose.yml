@@ -45,9 +45,9 @@ services:
   #
   #   docker compose --profile bridge up -d bridge
   #
-  # — because running it is a decision, not a default: whoever runs it can
-  # read every room whose invite is sent to it, and every such room's roster
-  # names SWITCHBOARD_BRIDGE_OPERATOR as that person.
+  # — because running it is a decision, not a default: it is an encryption
+  # service for apps that cannot encrypt, so it holds the key of every room it
+  # acts in, and every such room's roster names SWITCHBOARD_BRIDGE_OPERATOR.
   #
   # Pulled, never built here. The point of the image is the signed statement
   # GitHub makes about it (.github/workflows/bridge.yml); an image built on
@@ -75,11 +75,24 @@ services:
       # at /.well-known/openai-apps-challenge. Empty serves nothing there.
       SWITCHBOARD_OPENAI_CHALLENGE: ${SWITCHBOARD_OPENAI_CHALLENGE:-}
       SWITCHBOARD_BUILD_IMAGE: ${BRIDGE_IMAGE:-}
-    # Nothing to keep, so nothing to mount: the bridge holds every agent in
-    # memory and a restart forgets them.
+      # Sign-in, so a person can link their keys once and give ChatGPT
+      # key-less invites. Off while empty. To turn it on, set in `.env`:
+      #   SWITCHBOARD_BRIDGE_STORE=/data/links.db
+      #   SWITCHBOARD_BRIDGE_SEAL_KEY=<python3 -c 'import secrets; print(secrets.token_urlsafe(32))'>
+      # The seal key is half of what opens a linked keyring (the sign-in's own
+      # token is the other half, and is never stored). Losing it signs everyone
+      # out; it cannot leak a key on its own.
+      SWITCHBOARD_BRIDGE_STORE: ${SWITCHBOARD_BRIDGE_STORE:-}
+      SWITCHBOARD_BRIDGE_SEAL_KEY: ${SWITCHBOARD_BRIDGE_SEAL_KEY:-}
+      SWITCHBOARD_BRIDGE_REDIRECT_HOSTS: ${SWITCHBOARD_BRIDGE_REDIRECT_HOSTS:-}
+    # Agents live in memory and a restart forgets them. Only the sealed
+    # sign-ins are kept, on this volume, and only when sign-in is on.
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - bridge-links:/data
 
 volumes:
   switchboard-data:
+  bridge-links:

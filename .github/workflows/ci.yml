@@ -218,14 +218,21 @@ jobs:
       - run: pip install -e .
       - name: hosted bridge serves an invite and says who runs it
         run: |
+          # With sign-in on, as deployed: the store on /data, which the image
+          # must leave writable by its own user.
           docker run -d --name bridge --network host \
             -e SWITCHBOARD_BRIDGE_OPERATOR="CI" \
+            -e SWITCHBOARD_BRIDGE_URL=http://127.0.0.1:8788 \
+            -e SWITCHBOARD_BRIDGE_STORE=/data/links.db \
+            -e SWITCHBOARD_BRIDGE_SEAL_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
             -e SWITCHBOARD_BRIDGE_HUBS=http://127.0.0.1:8787 switchboard-bridge:ci
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8788/health && break || sleep 1
           done
           curl -sf http://127.0.0.1:8788/.well-known/switchboard-bridge \
-            | python -c "import json,sys; i=json.load(sys.stdin); assert i['hosted'] and i['commit']=='${{ github.sha }}', i"
+            | python -c "import json,sys; i=json.load(sys.stdin); assert i['hosted'] and i['commit']=='${{ github.sha }}' and i['sign_in'], i"
+          curl -sf http://127.0.0.1:8788/.well-known/oauth-authorization-server \
+            | python -c "import json,sys; m=json.load(sys.stdin); assert m['code_challenge_methods_supported']==['S256'], m"
           # The way ChatGPT uses it: one URL, initialize for a session, the
           # invite passed to join_room, then tools that name no room at all.
           python - <<'PY'
@@ -251,7 +258,13 @@ jobs:
           me = json.loads(result["content"][0]["text"])
           assert not result["isError"] and me["encrypted"], me
           assert me["relay"]["operator"] == "CI", me
-          assert me["name"].startswith("ChatGPT (via hosted bridge; CI can read"), me
+          assert me["name"] == "ChatGPT (via hosted encryption bridge run by CI)", me
+          # A key-less invite, not signed in: the app is asked to sign the user in.
+          keyless = Invite(url="http://127.0.0.1:8787", workspace="ci-bridge", token="ci",
+                           note="").encode()
+          asked = rpc("tools/call", session, name="join_room",
+                      arguments={"invite": keyless}).json()["result"]
+          assert asked["isError"] and "mcp/www_authenticate" in asked["_meta"], asked
           print("hosted bridge ok:", me["name"])
           PY
           docker rm -f bridge swb

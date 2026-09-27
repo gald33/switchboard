@@ -2,10 +2,11 @@
 
 A hosted bridge serves many agents, each built from the invite in its URL, so
 that someone with only a ChatGPT account can join a room. The price is that
-whoever runs it can read every room sent to it — and these tests hold the two
+the bridge, an encryption service for apps that cannot encrypt on their own,
+holds the key of every room sent to it — and these tests hold the two
 promises that make that price honest: nothing is taken from the operator's
-environment or written to its disk, and every roster the bridge reaches says
-who can read the room.
+environment or written to its disk (bar the sealed sign-ins of
+`test_bridge_links.py`), and every roster the bridge reaches says who runs it.
 
 Over a real socket, against a real hub, for the reason `test_mcp_http.py`
 gives. The bridge's clients reach the hub in-process through the hub's own
@@ -204,7 +205,7 @@ def test_every_result_carries_the_notice(hub, hosted, name, arguments):
     server, _ = hosted
     texts = blocks(server, invite_for(hub), name, **arguments)
     assert len(texts) == 2
-    assert OPERATOR in texts[-1] and "can read this room" in texts[-1]
+    assert OPERATOR in texts[-1] and "trusted with what passes through it" in texts[-1]
 
 
 def test_a_bridge_of_your_own_adds_nothing(hub):
@@ -222,10 +223,10 @@ def test_the_name_carries_the_disclosure_whatever_the_invite_says(hub, hosted):
     server, _ = hosted
     me, _ = tool(server, invite_for(hub, note="just a normal agent"), "whoami")
     assert me["name"].startswith("just a normal agent")
-    assert f"{OPERATOR} can read this room" in me["name"]
+    assert f"hosted encryption bridge run by {OPERATOR}" in me["name"]
     roster, _ = call(make_bridge(hub, "laptop"), "roster")
     (entry,) = [a for a in roster["agents"] if a["agent_id"] == me["agent_id"]]
-    assert f"{OPERATOR} can read this room" in entry["name"]
+    assert f"hosted encryption bridge run by {OPERATOR}" in entry["name"]
 
 
 def test_every_other_agent_is_told_on_its_roster(hub, hosted):
@@ -382,7 +383,7 @@ def test_the_app_names_the_agent_when_the_invite_does_not(hub, hosted):
     blob = invite_for(hub, note="")
     session = connect(server, {"name": "openai-mcp", "version": "1.0.0"})
     me, _ = tool(server, blob, "whoami", session)
-    assert me["name"] == f"ChatGPT (via hosted bridge; {OPERATOR} can read this room)"
+    assert me["name"] == f"ChatGPT (via hosted encryption bridge run by {OPERATOR})"
 
 
 def test_an_agent_already_on_the_roster_is_renamed_there(hub, hosted):
@@ -394,21 +395,21 @@ def test_an_agent_already_on_the_roster_is_renamed_there(hub, hosted):
     tool(server, blob, "whoami", session)             # rejoined by the app: re-announces
     roster, _ = call(make_bridge(hub, "laptop"), "roster")
     (entry,) = [a for a in roster["agents"] if a["agent_id"] == first["agent_id"]]
-    assert entry["name"].startswith("ChatGPT (via hosted bridge;")
+    assert entry["name"].startswith("ChatGPT (via hosted encryption bridge")
 
 
 def test_an_invite_note_outranks_the_app(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub, note="Dana's ChatGPT")
     me, _ = tool(server, blob, "whoami", connect(server, {"name": "openai-mcp"}))
-    assert me["name"].startswith("Dana's ChatGPT (via hosted bridge;")
+    assert me["name"].startswith("Dana's ChatGPT (via hosted encryption bridge")
 
 
 def test_with_neither_the_disclosure_still_stands(hub, hosted):
     server, _ = hosted
     blob = invite_for(hub, note="")
     me, _ = tool(server, blob, "whoami", connect(server))
-    assert me["name"] == f"hosted agent (via hosted bridge; {OPERATOR} can read this room)"
+    assert me["name"] == f"hosted agent (via hosted encryption bridge run by {OPERATOR})"
 
 
 @pytest.mark.parametrize("info, label", [
@@ -477,7 +478,7 @@ def test_join_once_and_the_session_stays_in_that_room(hub, hosted):
     joined, is_error, texts = front_call(server, "join_room", session,
                                          invite=invite_for(hub, note=""))
     assert not is_error and joined["joined"] and joined["room"].startswith("room_")
-    assert joined["you_appear_as"].startswith("ChatGPT (via hosted bridge;")
+    assert joined["you_appear_as"].startswith("ChatGPT (via hosted encryption bridge")
     assert OPERATOR in texts[-1]
     # No room named from here on: the session remembers it.
     claim, is_error, texts = front_call(server, "claim", session, resource="docs/x")
@@ -493,7 +494,7 @@ def test_without_a_session_the_handle_names_the_room(hub, hosted):
                               user_agent="openai-mcp/1.0")
     assert f"room='{joined['room']}'" in joined["next"]
     # Named from the User-Agent, since there is no session to remember the app by.
-    assert joined["you_appear_as"].startswith("ChatGPT (via hosted bridge;")
+    assert joined["you_appear_as"].startswith("ChatGPT (via hosted encryption bridge")
     lost, is_error, _ = front_call(server, "roster")
     assert is_error and lost["error"] == "no_room"
     roster, is_error, _ = front_call(server, "roster", room=joined["room"])

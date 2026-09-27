@@ -21,9 +21,12 @@ RUN pip install --no-cache-dir --upgrade pip build \
 
 FROM python:3.12-slim
 
-# No volume and no writable home worth the name: the bridge keeps nothing on
-# disk, and a test (tests/test_mcp_hosted.py) holds it to that.
-RUN useradd --uid 10001 --no-create-home --home-dir /nonexistent switchboard
+# No writable home worth the name. The one thing it may keep is /data, and
+# only when sign-in is turned on (SWITCHBOARD_BRIDGE_STORE): the keys people
+# link, each sealed under their own sign-in's tokens, which the bridge does not
+# store (src/switchboard/bridge_links.py). Without it, nothing is written.
+RUN useradd --uid 10001 --no-create-home --home-dir /nonexistent switchboard \
+ && mkdir /data && chown switchboard /data
 
 COPY --from=build /dist/*.whl /tmp/
 # No [server] extra: the bridge is a client of a hub, not one.
