@@ -209,7 +209,29 @@ jobs:
             curl -sf http://127.0.0.1:8787/health && break || sleep 1
           done
           curl -sf http://127.0.0.1:8787/health | grep -q '"ok":true'
-          docker rm -f swb
+      # The hosted bridge, end to end: its own image, in front of the hub
+      # above, reached the way ChatGPT reaches it — by an invite in the URL.
+      - run: docker build -f Dockerfile.bridge --build-arg SWITCHBOARD_BUILD_COMMIT=${{ github.sha }} -t switchboard-bridge:ci .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: hosted bridge serves an invite and says who runs it
+        run: |
+          docker run -d --name bridge --network host \
+            -e SWITCHBOARD_BRIDGE_OPERATOR="CI" \
+            -e SWITCHBOARD_BRIDGE_HUBS=http://127.0.0.1:8787 switchboard-bridge:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8788/health && break || sleep 1
+          done
+          curl -sf http://127.0.0.1:8788/.well-known/switchboard-bridge \
+            | python -c "import json,sys; i=json.load(sys.stdin); assert i['hosted'] and i['commit']=='${{ github.sha }}', i"
+          invite=$(python -c "from switchboard.invite import Invite; from switchboard.crypto import generate_key; print(Invite(url='http://127.0.0.1:8787', workspace='ci-bridge', token='ci', key=generate_key(), note='ci').encode())")
+          curl -sf -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' \
+            "http://127.0.0.1:8788/mcp/${invite}" \
+            | python -c "import json,sys; r=json.load(sys.stdin)['result']; w=json.loads(r['content'][0]['text']); assert not r['isError'] and w['relay']['operator']=='CI' and w['encrypted'], w"
+          docker rm -f bridge swb
 
   # A smoke test against the real hub, not a notice board.
   #

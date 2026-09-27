@@ -95,6 +95,18 @@ def test_warns_when_a_remote_agent_inherits_a_loopback_hub(kind):
     assert ".mcp.json" in note
 
 
+def test_a_loopback_hub_from_an_invite_is_blamed_on_the_invite():
+    """A hosted bridge handed an invite for somebody's localhost dials its own.
+
+    Worth the warning, and worth naming the invite: "the built-in default"
+    sends the reader to their environment, which never chose this URL.
+    """
+    note = isolation_warning(ClientConfig(url=LOOPBACK, url_source="invite"), "hosted")
+    assert note is not None
+    assert "the invite" in note
+    assert "built-in default" not in note
+
+
 def test_a_local_agent_on_a_local_hub_is_the_happy_path():
     """The case that must stay silent: serve in one terminal, agents in others."""
     assert isolation_warning(ClientConfig(url=LOOPBACK, url_source="default"), "local") is None

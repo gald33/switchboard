@@ -51,6 +51,8 @@ from .client import (
     SwitchboardError,
     UnknownPeerExchangeKey,
     detect_identity,
+    relay_notice,
+    relay_of,
     rootless_warning,
 )
 from .config import (
@@ -2152,6 +2154,7 @@ def cmd_agents(args: argparse.Namespace) -> int:
     print(fmt.bold(f"{'AGENT':<34} {'KIND':<7} {'BRANCH':<24} {'SEEN':<10} TASK"))
     swapped = []
     away = []
+    relayed = []
     for a in agents:
         seen = _ago(a["last_seen_at"])
         # Three states, not two. `away` is the agent's own statement that it is
@@ -2169,6 +2172,9 @@ def cmd_agents(args: argparse.Namespace) -> int:
         marker = fmt.red(" !") if a.get("key_changed_while_live") else ""
         if marker:
             swapped.append(a["agent_id"])
+        if relay_of(a.get("meta")):
+            relayed.append(a)
+            marker += fmt.yellow(" (relayed)")
         row = (
             f"{a['agent_id'][:33]:<34} {a['kind'][:6]:<7} "
             f"{(a.get('branch') or '-')[:23]:<24} {seen_txt:<10} "
@@ -2206,6 +2212,11 @@ def cmd_agents(args: argparse.Namespace) -> int:
               "else. Pin SWITCHBOARD_AGENT_ID to rule out the first.",
             file=sys.stderr,
         )
+    if relayed:
+        # Not an error: somebody chose this, and the room works. But it changes
+        # what the room's encryption promises everyone else in it, and nobody
+        # else was asked — so it is said wherever the roster is read.
+        print("\n" + fmt.yellow("notice: " + relay_notice(relayed)), file=sys.stderr)
     if mismatched:
         # A key mismatch is otherwise completely silent: their messages never
         # reach this inbox, this agent's never reach theirs, and neither
