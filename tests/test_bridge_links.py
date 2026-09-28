@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -25,7 +26,7 @@ from test_mcp import call, make_bridge
 from test_mcp_hosted import OPERATOR, WS, hub, invite_for  # noqa: F401 - fixture
 from test_mcp_http import rpc, send
 
-from switchboard import bridge_links
+from switchboard import bridge_links, mcp_server
 from switchboard.bridge_links import Keyring, LinkError, LinkStore, OAuthServer
 from switchboard.crypto import generate_key
 from switchboard.invite import Invite, InviteError
@@ -468,6 +469,41 @@ def test_tools_declare_both_ways_in(signed):
     for name in ("linked_keys", "unlink_keys"):
         assert by_name[name]["securitySchemes"] == [{"type": "oauth2", "scopes": ["keys"]}]
     assert "--no-key" in by_name["join_room"]["description"]
+
+
+#: How ChatGPT's "Suspicious Instruction" warning reads a tool: text telling the
+#: model what to do ("Call this before any other tool", "Never ask the user for
+#: a key", "park a listener before the turn ends") rather than what the tool
+#: does. Both flags it raised on a recording matched one of these.
+COACHING = re.compile(
+    r"\b(call (this|it)|before (any|starting)|never|always|important|read it|"
+    r"use (this|it)|reach for|only (set|when|if)|must|ask (the user|for|them)|"
+    r"correct that|omit|leave it out|switchboard listen|park)\b", re.I)
+
+
+def _descriptions(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "description" and isinstance(value, str):
+                yield value
+            else:
+                yield from _descriptions(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _descriptions(item)
+
+
+def test_the_front_door_describes_rather_than_directs(signed):
+    server, _, _ = signed
+    tools = send(server, path="/mcp", body=rpc("tools/list")).json()["result"]["tools"]
+    instructions = send(server, path="/mcp", body=rpc("initialize")).json()["result"][
+        "instructions"]
+    pinned = [mcp_server.hosted_tool(t) for t in mcp_server.TOOLS
+              if t["name"] not in mcp_server.HOSTED_WITHHELD]
+    # A tool added later is described for the hosted bridge too, not by accident.
+    assert {t["name"] for t in pinned} <= set(mcp_server.HOSTED_DESCRIPTIONS)
+    for text in [instructions, *_descriptions(tools), *_descriptions(pinned)]:
+        assert not COACHING.search(text), (COACHING.search(text).group(0), text)
 
 
 def test_linked_keys_without_a_sign_in_asks_for_one(signed):

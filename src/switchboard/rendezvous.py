@@ -238,7 +238,7 @@ def dnd_advice(dnd: dict[str, Any], sent_type: str | None) -> str:
 #: it, the same reason `guidance.py` holds the protocol text for both.
 def listener_advice(*, you_parked: bool, peer_parked: bool | None = None,
                     peer_dnd: dict[str, Any] | None = None,
-                    sent_type: str | None = None) -> str:
+                    sent_type: str | None = None, can_listen: bool = True) -> str:
     """The next move after sending, in one sentence per end of the exchange.
 
     Two facts decide when a conversation actually happens, and only one of
@@ -253,6 +253,12 @@ def listener_advice(*, you_parked: bool, peer_parked: bool | None = None,
     consequence rather than a suggestion. Sending is not a one-off; it is the
     opening of an exchange, and the listener is the half that makes the rest
     of it reachable.
+
+    `can_listen` is False for an agent that has no listener to run — one on a
+    hosted bridge, whose host calls tools and nothing else. Advice to start a
+    process it cannot start is noise at best, and read as an instruction
+    smuggled into a tool result at worst, so it is told where the answer
+    will be instead.
     """
     parts = []
     if peer_parked and peer_dnd:
@@ -267,6 +273,11 @@ def listener_advice(*, you_parked: bool, peer_parked: bool | None = None,
         parts.append(
             "Yours is parked too, so their answer wakes you." if peer_parked is not None
             else "A listener is parked for you, so an answer wakes you."
+        )
+    elif not can_listen:
+        parts.append(
+            "No listener runs for you here, so an answer waits in your inbox until "
+            "inbox or checkin reads it."
         )
     else:
         parts.append(
