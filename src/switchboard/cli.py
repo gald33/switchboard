@@ -7704,6 +7704,18 @@ def _escape_dash_leading_positionals(
     knows. So `claim x -m "-a dashed note"` is untouched (`-m` is real, and
     the dashed text is its value), while `board get -abc` is escaped.
 
+    The `--` goes in front of the positionals only, never in front of an
+    option that follows them. Everything after `--` is positional, so the
+    first version turned `dm -abc "prod is down" --type urgent` into a *note*
+    whose body ended in the words "--type urgent": no error, just a message
+    of the wrong type. That was the same one-in-sixty-six, and it showed up as
+    an intermittent `[encrypted]` failure in
+    `test_an_urgent_dm_to_a_busy_agent_is_told_it_wakes_them`, which passed
+    whenever the random key blinded its peer to an id without a leading dash.
+    So the options this subcommand knows are moved ahead of the `--`, where
+    argparse reads them as it would for an id with no dash (see
+    `_hoist_options`).
+
     Writing `--` by hand still works, and is still what a shell user should
     reach for. This only means they no longer have to know that.
     """
@@ -7756,9 +7768,57 @@ def _escape_dash_leading_positionals(
             index += 1
             continue
         if token.startswith("-") and len(token) > 1:
-            return args[:index] + ["--"] + args[index:]
+            options_after, positionals = _hoist_options(current, args[index:])
+            return args[:index] + options_after + ["--"] + positionals
         index += 1
     return args
+
+
+def _hoist_options(
+    parser: argparse.ArgumentParser, tail: list[str],
+) -> tuple[list[str], list[str]]:
+    """Split what follows an escaped positional into its options and the rest.
+
+    `tail` starts at the dash-leading positional being escaped. A token this
+    subcommand knows as an option is kept with its value(s) and returned
+    first, to go in front of the `--`. Anything else is positional, and keeps
+    its order behind the `--`. That includes a dash-leading token that is not
+    a known option, such as a mistyped `--tread`, which stays message text as
+    it was before.
+    """
+    tail = list(tail)
+    options: list[str] = []
+    positionals: list[str] = []
+    known = parser._option_string_actions
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        if token.startswith("--") and "=" in token and token.split("=", 1)[0] in known:
+            options.append(token)
+            index += 1
+            continue
+        if token not in known:
+            positionals.append(token)
+            index += 1
+            continue
+        if _join_dash_leading_option_value(parser, tail, index):
+            options.append(tail[index])
+            index += 1
+            continue
+        nargs = known[token].nargs
+        if nargs is None:
+            width = 1
+        elif isinstance(nargs, int):
+            width = nargs
+        else:  # "?", "*", "+": the values that do not look like flags
+            width = 0
+            while (index + 1 + width < len(tail)
+                   and not tail[index + 1 + width].startswith("-")
+                   and not (nargs == "?" and width == 1)):
+                width += 1
+        options.extend(tail[index:index + 1 + width])
+        index += 1 + width
+    return options, positionals
 
 
 def main(argv: Sequence[str] | None = None) -> int:

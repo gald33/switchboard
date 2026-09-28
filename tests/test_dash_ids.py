@@ -99,6 +99,37 @@ def test_everything_else_is_left_exactly_alone(parser, argv):
     assert escape(parser, argv) == argv
 
 
+@pytest.mark.parametrize("argv, expected", [
+    # Options after the escaped id go in front of the `--`, not behind it.
+    # Behind it they are positional, and `--type urgent` was sent as the last
+    # two words of a *note*: no error, only the wrong message type.
+    (["dm", "-abc", "prod is down", "--type", "urgent"],
+     ["dm", "--type", "urgent", "--", "-abc", "prod is down"]),
+    (["--json", "dm", "-abc", "hi", "--thread=t1", "--json-body"],
+     ["--json", "dm", "--thread=t1", "--json-body", "--", "-abc", "hi"]),
+    # An option's own dash-leading value is joined, as it is anywhere else.
+    (["dm", "-abc", "hi", "--thread", "-t1"],
+     ["dm", "--thread=-t1", "--", "-abc", "hi"]),
+    # Only options this subcommand knows move. A typo stays text, which is
+    # the trade-off `test_surface_parity` pins for the unescaped case too.
+    (["say", "-chan", "hello", "--tread", "plan"],
+     ["say", "--", "-chan", "hello", "--tread", "plan"]),
+])
+def test_options_after_an_escaped_positional_are_still_options(parser, argv, expected):
+    assert escape(parser, argv) == expected
+
+
+@pytest.mark.parametrize("peer", ["bob", "-yLAoQ63KcM86gn3wjgD3w"])
+def test_a_dash_leading_id_parses_exactly_like_any_other(parser, peer):
+    """The property the escaping owes: the leading character of an id
+    changes nothing else about the command. Both ids, the same argv, so any
+    difference is the escaping's fault."""
+    argv = ["dm", peer, "prod is down", "--type", "urgent", "--thread", "t1"]
+    args = parser.parse_args(escape(parser, argv))
+    assert (args.to, args.message, args.type, args.thread) == (
+        peer, ["prod is down"], "urgent", "t1")
+
+
 def test_an_explicit_double_dash_is_never_second_guessed(parser):
     argv = ["dm", "--", "-abc", "-still-a-body"]
     assert escape(parser, argv) == argv
@@ -136,6 +167,37 @@ def test_a_dm_reaches_a_peer_whose_id_begins_with_a_dash(capsys, monkeypatch):
     err = capsys.readouterr().err
     assert "unrecognized arguments" not in err
     assert "nobody on the roster" not in err, "escaped, but addressed to the wrong id"
+
+
+def test_a_typed_dm_to_a_dash_leading_id_keeps_its_type(capsys, monkeypatch):
+    """End to end, for the flags that follow the id. This is the failure that
+    showed up as `test_an_urgent_dm_to_a_busy_agent_is_told_it_wakes_them
+    [encrypted]` going red about once in sixty-six runs: the random key
+    sometimes blinded its peer to an id beginning with `-`, and then
+    `--type urgent` arrived as message text on a note."""
+    import switchboard.cli as cli_module
+
+    key = generate_key()
+    with hub(workspace=WS, key=key) as handle:
+        monkeypatch.setattr(cli_module, "Client", handle.client_class())
+        monkeypatch.delenv("SWITCHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv("SWITCHBOARD_KEY", key)
+
+        cipher = WorkspaceCipher.from_key(key, WS)
+        name = next((n for n in (f"bob{i}" for i in range(5000))
+                     if cipher.blind(n, "agent").startswith("-")), None)
+        assert name, "no blinded id in 5000 began with '-'"
+        bob = handle.client(name, agent_id=name)
+        bob.register(name=name)
+        assert bob.agent_id.startswith("-")
+
+        monkeypatch.setenv("SWITCHBOARD_AGENT_ID", "alice")
+        assert main(["--url", BASE_URL, "-w", WS, "--quiet", "dm", bob.agent_id,
+                     "prod is down", "--type", "urgent"]) == 0
+        [got] = bob.inbox()
+
+    assert got["type"] == "urgent"
+    assert got["body"] == "prod is down"
 
 
 @pytest.mark.parametrize("argv, expected", [
