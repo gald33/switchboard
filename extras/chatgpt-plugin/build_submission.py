@@ -110,6 +110,10 @@ REASONS: dict[str, tuple[str, str]] = {
 DEMO = "<the full demo invite from the credentials field>"
 DEMO_KEYLESS = "<the key-less demo invite from the credentials field>"
 
+#: The portal takes exactly five positive and three negative cases (its
+#: schema says "at least"; the form does not). These five cover joining with
+#: the privacy notice, the roster, a claim someone else holds, a message round
+#: trip, and sign-in with a key-less invite: the parts a reviewer must see.
 TEST_CASES: list[dict[str, Any]] = [
     {"description": "Join a room from an invite. Expected: joined is true, the room is "
                     "encrypted, and the result carries the notice that the hub can't read "
@@ -128,10 +132,6 @@ TEST_CASES: list[dict[str, Any]] = [
      "user_prompt": "Claim docs/README.md for me.",
      "tools_triggered": "claim",
      "expected_output": "Not acquired: docs/README.md is held by the Demo teammate."},
-    {"description": "Read the shared board.",
-     "user_prompt": "What's the plan on the board?",
-     "tools_triggered": "board_list, board_get",
-     "expected_output": "Summarises the plan at demo/plan: goal, what is done, what is next."},
     {"description": "Message a teammate and read the reply. The dm is a write, so ChatGPT "
                     "asks for confirmation first; the demo peer answers within about 30 "
                     "seconds.",
@@ -140,21 +140,12 @@ TEST_CASES: list[dict[str, Any]] = [
      "tools_triggered": "dm, inbox",
      "expected_output": "Relays the Demo teammate's reply, which quotes the message and "
                         "names docs/README.md."},
-    {"description": "Catch up on a channel.",
-     "user_prompt": "Subscribe to general and tell me what's been said.",
-     "tools_triggered": "subscribe, inbox",
-     "expected_output": "Summarises the Demo teammate's latest post on general."},
     {"description": "Join a kept room by signing in. join_room asks for sign-in; on the "
                     "bridge's page, paste the full demo invite and choose Link keys. "
                     "ChatGPT retries, and the key never appears in the conversation.",
      "user_prompt": f"Join this Switchboard room: {DEMO_KEYLESS}",
      "tools_triggered": "join_room",
      "expected_output": "After sign-in: joined, with key_from 'your linked keys'."},
-    {"description": "Meet in the team lobby with no invite, after the sign-in above. An "
-                    "empty lobby is a correct answer: the demo peer stays in its own room.",
-     "user_prompt": "Go to my team's Switchboard lobby and tell me who's there.",
-     "tools_triggered": "join_room, roster",
-     "expected_output": "Joins the lobby by name and reports who is present."},
 ]
 
 NEGATIVE_TEST_CASES: list[dict[str, Any]] = [

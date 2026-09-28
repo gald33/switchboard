@@ -166,3 +166,10 @@ def test_the_listing_in_the_submission_matches_the_package():
     assert info["display_name"] == INTERFACE["displayName"]
     assert info["subtitle"] == INTERFACE["shortDescription"]
     assert info["description"] == INTERFACE["longDescription"]
+
+
+def test_the_submission_has_exactly_the_test_cases_the_form_takes():
+    # The schema says "at least"; the portal's form rejects anything but these.
+    data = json.loads(SUBMISSION.read_text(encoding="utf-8"))
+    assert len(data["test_cases"]) == 5
+    assert len(data["negative_test_cases"]) == 3

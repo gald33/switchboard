@@ -329,34 +329,16 @@
       "expected_output": "Not acquired: docs/README.md is held by the Demo teammate."
     },
     {
-      "description": "Read the shared board.",
-      "user_prompt": "What's the plan on the board?",
-      "tools_triggered": "board_list, board_get",
-      "expected_output": "Summarises the plan at demo/plan: goal, what is done, what is next."
-    },
-    {
       "description": "Message a teammate and read the reply. The dm is a write, so ChatGPT asks for confirmation first; the demo peer answers within about 30 seconds.",
       "user_prompt": "Send the demo teammate a direct message asking what they're working on, then check for a reply.",
       "tools_triggered": "dm, inbox",
       "expected_output": "Relays the Demo teammate's reply, which quotes the message and names docs/README.md."
     },
     {
-      "description": "Catch up on a channel.",
-      "user_prompt": "Subscribe to general and tell me what's been said.",
-      "tools_triggered": "subscribe, inbox",
-      "expected_output": "Summarises the Demo teammate's latest post on general."
-    },
-    {
       "description": "Join a kept room by signing in. join_room asks for sign-in; on the bridge's page, paste the full demo invite and choose Link keys. ChatGPT retries, and the key never appears in the conversation.",
       "user_prompt": "Join this Switchboard room: <the key-less demo invite from the credentials field>",
       "tools_triggered": "join_room",
       "expected_output": "After sign-in: joined, with key_from 'your linked keys'."
-    },
-    {
-      "description": "Meet in the team lobby with no invite, after the sign-in above. An empty lobby is a correct answer: the demo peer stays in its own room.",
-      "user_prompt": "Go to my team's Switchboard lobby and tell me who's there.",
-      "tools_triggered": "join_room, roster",
-      "expected_output": "Joins the lobby by name and reports who is present."
     }
   ],
   "negative_test_cases": [

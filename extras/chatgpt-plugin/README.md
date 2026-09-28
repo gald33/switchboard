@@ -164,8 +164,10 @@ overwrites or deletes a board entry, leaves the room, or unlinks the keys) and
 
 ## 5. Test cases
 
-These are in `chatgpt-app-submission.json` too (8 positive, 3 negative), so
-importing it fills them in. They're kept here in prose for the reviewer notes.
+`chatgpt-app-submission.json` carries five of these (the portal takes exactly
+five positive and three negative): 1, 2, 3, 5 and 7, plus the three negative
+ones, so importing it fills them in. The rest stay here for the reviewer
+notes.
 
 Every case uses the demo room from section 3. The **fixture** is always: *the
 demo invite from the credentials field, and the demo peer running.* Case 7
