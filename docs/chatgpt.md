@@ -381,7 +381,8 @@ needs:
   refresh tokens rotate) and `/oauth/revoke` implement it. Every tool
   declares `securitySchemes` of `noauth` and `oauth2`, except `linked_keys`,
   which is `oauth2` only. A tool call that needs a sign-in returns
-  `_meta["mcp/www_authenticate"]`, and an access token the bridge doesn't
-  hold gets `401` with a `WWW-Authenticate` pointing at the metadata.
+  `_meta["mcp/www_authenticate"]`. An access token the bridge doesn't hold
+  (expired, or unlinked) is served as signed out, not refused with `401`: a
+  `401` makes ChatGPT demand a sign-in before any call, even a full invite's.
 - The request log never contains the path. On your own bridge, the path
   can carry its token.
