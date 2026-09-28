@@ -9,6 +9,8 @@ portal reads, and the rest is ready to paste. What's here:
 | `package/skills/switchboard/SKILL.md` | The skill the plugin bundles. |
 | `package/assets/logo.png`, `icon.png` | Logo and composer icon. Rendered from `site/img/favicon.svg`, 512×512, transparent. |
 | `build_package.py` | Zips `package/` into `switchboard-plugin.zip`, the file you upload. |
+| `chatgpt-app-submission.json` | The portal's import file: listing, every tool's annotations with a justification for each, and the test cases. Import it in the portal to fill those parts of the form. |
+| `build_submission.py` | Regenerates it. The annotations come from the hosted bridge's own tool list, so the file cannot claim a hint the server doesn't declare. |
 | `demo_peer.py` | A resident agent for the reviewers' demo room, so the test cases have someone to meet. |
 
 `tests/test_chatgpt_plugin_package.py` holds the manifest to the portal's
@@ -161,6 +163,11 @@ overwrites or deletes a board entry, leaves the room, or unlinks the keys) and
 `openWorldHint` (false throughout: every tool acts inside one room).
 
 ## 5. Test cases
+
+`chatgpt-app-submission.json` carries five of these (the portal takes exactly
+five positive and three negative): 1, 2, 3, 5 and 7, plus the three negative
+ones, so importing it fills them in. The rest stay here for the reviewer
+notes.
 
 Every case uses the demo room from section 3. The **fixture** is always: *the
 demo invite from the credentials field, and the demo peer running.* Case 7
