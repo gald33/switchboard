@@ -1,12 +1,20 @@
 # Submitting Switchboard as a ChatGPT plugin
 
-Everything the OpenAI plugin portal asks for, ready to paste. What's here:
+Everything the OpenAI plugin portal asks for. The listing is a package the
+portal reads, and the rest is ready to paste. What's here:
 
 | File | For |
 |---|---|
-| `logo-512.png` | The listing's logo. Rendered from `site/img/favicon.svg`, 512×512, transparent. |
-| `skill/switchboard/SKILL.md` | The skill the plugin bundles. Zip the `switchboard` folder and upload it. |
+| `package/plugin.json` | The manifest: name, descriptions, developer, category, URLs, starter prompts, brand colours and logo, under `extensions.com.openai.interface`. |
+| `package/skills/switchboard/SKILL.md` | The skill the plugin bundles. |
+| `package/assets/logo.png`, `icon.png` | Logo and composer icon. Rendered from `site/img/favicon.svg`, 512×512, transparent. |
+| `build_package.py` | Zips `package/` into `switchboard-plugin.zip`, the file you upload. |
 | `demo_peer.py` | A resident agent for the reviewers' demo room, so the test cases have someone to meet. |
+
+`tests/test_chatgpt_plugin_package.py` holds the manifest to the portal's
+documented limits, the tighter final-directory ones included (30 characters
+for the name and the short description, three starter prompts of up to 128),
+so an edit that would fail in the portal fails in CI first.
 
 The app itself is the hosted bridge at `https://bridge.agentswitchboard.org/mcp`
 ([docs/chatgpt.md](../../docs/chatgpt.md)).
@@ -106,46 +114,28 @@ and *"Key-less invite (paste in chat; ChatGPT asks you to sign in)"*.
 
 ## 4. The listing
 
-**Name:** `Switchboard`
+The listing is `package/plugin.json`. Build the ZIP and upload it in the
+portal:
 
-**Short description:**
-> Coordinate with your team's AI agents: see who's working, claim tasks, and message them.
+```bash
+python3 extras/chatgpt-plugin/build_package.py      # -> extras/chatgpt-plugin/switchboard-plugin.zip
+```
 
-**Long description:**
-> Switchboard is where a team's AI agents coordinate. Coding agents on laptops,
-> in the cloud and in CI share a room: they see who is active and what they're
-> working on, claim a task so nobody duplicates it, message each other, and leave
-> plans and handoffs on a shared board. Everything expires on its own:
-> presence in minutes, messages in an hour, board entries in a day.
->
-> This plugin puts ChatGPT in the room. Paste a room's invite (`swb1_…`, made
-> with `switchboard invite`) into the conversation, and ChatGPT can check who's
-> around, claim work, catch up on what was said, and talk to the other agents.
-> For rooms you keep, sign in once to link your team's key, and give ChatGPT
-> invites without it: the key never enters the conversation.
->
-> Privacy, plainly: the Switchboard hub can't read anything. Rooms are
-> end-to-end encrypted between their members. ChatGPT can't encrypt on its
-> own, so this plugin uses an optional encryption service, a hosted bridge run
-> by agentswitchboard.org (behind Cloudflare), that encrypts and decrypts on
-> its behalf. Its security is the common trust model of any hosted
-> integration: it works with the rooms you use it in while it acts for you.
-> Every agent in the room is told so, on its roster. Keys you link are stored
-> encrypted under your own sign-in, and nothing else is written down. If a
-> room must stay between machines you control, run your own bridge instead
-> (see the docs).
+It fills in the name (`Switchboard`), the short description (`Coordinate your
+AI agents`), the long description, the developer name, the category
+(`Developer Tools`), the website, support, privacy and terms URLs, three
+starter prompts, the brand colours, the logo and the composer icon, and the
+bundled skill. The package carries no `mcp.json` or `.app.json`: a remote
+server goes in the **With MCP** form, and the portal refuses a package that
+bundles one.
 
-**Category:** Productivity, or Developer tools if offered.
+**Developer name.** The manifest says `agentswitchboard.org`. If the portal
+insists on the name of the identity you verified, it asks to use that for
+both `author.name` and `developerName`, and that is the name the listing
+shows. A business verification is what lets a listing carry an organization's
+name instead of a person's.
 
-**URLs.** The site redirects the bare domain to `www`, so these are the final
-addresses:
-
-| Field | Value |
-|---|---|
-| Website | `https://www.agentswitchboard.org` |
-| Support | `mailto:hello@agentswitchboard.org`, or `https://github.com/gald33/switchboard/issues` if a web URL is required |
-| Privacy policy | `https://www.agentswitchboard.org/privacy` |
-| Terms | `https://www.agentswitchboard.org/terms` |
+**Still typed into the form:**
 
 **MCP server:** `https://bridge.agentswitchboard.org/mcp`, authentication
 **OAuth**, and optional: every tool declares both `noauth` and `oauth2`, so a
@@ -153,7 +143,12 @@ throwaway room works from a full invite with no sign-in. Signing in links the
 user's keys, for key-less invites (`switchboard invite --no-key`). The bridge
 publishes its metadata at `/.well-known/oauth-protected-resource`, registers
 clients dynamically, and requires PKCE. `linked_keys` and `unlink_keys` are
-`oauth2` only.
+`oauth2` only. URL type **Universal** (one URL for everyone). Content security
+policy: none, since the tools render no UI. Then **Scan Tools**, which should
+find 25 tools.
+
+**Countries:** all where the Plugins Directory is available; nothing here is
+region-specific.
 
 **Demo account for the reviewers:** sign-in has no account of its own; the
 "account" is the keys pasted on the sign-in page. Give reviewers the demo
@@ -256,11 +251,11 @@ also needs the key-less demo invite in the credentials field.
 
 ## 6. Starter prompts
 
-- "Join my Switchboard room: swb1_…"
-- "Who's working in the room right now, and on what?"
-- "Is anyone working on docs/README.md?"
-- "Catch me up on what the other agents said."
-- "Tell the team I'm taking the API refactor, and claim it."
+In the manifest, as `defaultPrompt` (the portal allows three):
+
+- "Who's working in my Switchboard room right now, and on what?"
+- "Go to my team's Switchboard lobby and tell me who's there."
+- "Catch me up on what the other agents said, then claim the next task."
 
 ## 7. Release notes
 
@@ -272,14 +267,14 @@ also needs the key-less demo invite in the credentials field.
 
 ## 8. Screenshots
 
-Take three or four in ChatGPT on the demo room: joining (with the notice
-visible), the sign-in page, the roster, and a message round trip with the Demo
-teammate.
+None. The portal allows screenshots only for plugins whose tools render a
+custom UI (`screenshots_not_allowed`), and Switchboard's tools return text.
 
 ## After approval
 
 The portal publishes it to the Plugins Directory, for ChatGPT and Codex. Keep
 the bridge running and the privacy page accurate. If the bridge's operator or
 hosting changes, update `SWITCHBOARD_BRIDGE_OPERATOR`, the privacy page, and
-the long description together. Keep the seal key and the `bridge-links`
+the long description (in `package/plugin.json`) together, and bump its
+`version` for each new submission. Keep the seal key and the `bridge-links`
 volume: losing either signs everyone out.
