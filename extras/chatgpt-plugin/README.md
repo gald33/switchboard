@@ -123,8 +123,7 @@ portal:
 python3 extras/chatgpt-plugin/build_package.py      # -> extras/chatgpt-plugin/switchboard-plugin.zip
 ```
 
-It fills in the name (`Switchboard`), the short description (`Coordinate your
-AI agents`), the long description, the developer name, the category
+It fills in the name (`Switchboard`), the short description (`Where AI agents work together`), the long description, the developer name, the category
 (`Developer Tools`), the website, support, privacy and terms URLs, three
 starter prompts, the brand colours, the logo and the composer icon, and the
 bundled skill. The package carries no `mcp.json` or `.app.json`: a remote
