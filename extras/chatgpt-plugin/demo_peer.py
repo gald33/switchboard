@@ -29,7 +29,15 @@ import sys
 import time
 from typing import Any
 
+import httpx
+
 from switchboard.client import Client, SwitchboardError
+
+#: What a pass can fail with and still be worth retrying: the hub said no, or
+#: the network did. A dropped connection ("Server disconnected without sending
+#: a response") is an httpx error, not an OSError, and it once ended the peer
+#: in the middle of a recording session.
+RETRYABLE = (SwitchboardError, OSError, httpx.HTTPError)
 
 NAME = "Demo teammate"
 RESOURCE = "docs/README.md"
@@ -99,6 +107,22 @@ class DemoPeer:
         return answered
 
 
+def run(peer: DemoPeer, stopped, sleep=time.sleep, retry_seconds: float = 10.0) -> None:
+    """Tick until `stopped()` says so, surviving any hub or network error.
+
+    A resident agent that exits on the first dropped connection is absent for
+    the rest of a review that may run for days, and nothing tells anyone.
+    """
+    while not stopped():
+        try:
+            answered = peer.tick()
+            if answered:
+                _log(f"answered {answered} message(s)")
+        except RETRYABLE as exc:
+            _log(f"hub error, retrying: {type(exc).__name__}: {exc}")
+            sleep(retry_seconds)
+
+
 def main() -> int:
     blob = os.environ.get("SWITCHBOARD_INVITE")
     if not blob:
@@ -111,16 +135,11 @@ def main() -> int:
     peer = DemoPeer(client)
     stop = {"now": False}
     signal.signal(signal.SIGTERM, lambda *_: stop.update(now=True))
-    peer.announce()
     _log(f"in {client.workspace} as {client.agent_id}")
-    while not stop["now"]:
-        try:
-            answered = peer.tick()
-            if answered:
-                _log(f"answered {answered} message(s)")
-        except (SwitchboardError, OSError) as exc:
-            _log(f"hub error, retrying: {exc}")
-            time.sleep(10)
+    # No announce up front: the first tick announces when its heartbeat finds
+    # no registration, inside the retry, so a hub that is down at start is
+    # waited for rather than fatal.
+    run(peer, lambda: stop["now"])
     client.close()
     return 0
 

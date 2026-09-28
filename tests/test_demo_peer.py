@@ -88,3 +88,22 @@ def test_it_refreshes_only_when_due():
     now["t"] = demo.REFRESH_SECONDS + 1
     peer.tick(wait=0)
     assert fake.posts == 2
+
+
+def test_a_dropped_connection_is_retried_not_fatal():
+    # Observed live: "Server disconnected without sending a response" is an
+    # httpx error, not an OSError, and it ended the peer mid-recording.
+    httpx = pytest.importorskip("httpx")
+    ticks, sleeps = [], []
+
+    class Flaky:
+        def tick(self):
+            ticks.append(1)
+            if len(ticks) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            if len(ticks) == 2:
+                raise demo.SwitchboardError("hub said no")
+            return 0
+
+    demo.run(Flaky(), lambda: len(ticks) >= 3, sleep=sleeps.append, retry_seconds=1)
+    assert len(ticks) == 3 and sleeps == [1, 1]
