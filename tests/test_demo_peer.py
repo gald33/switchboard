@@ -90,6 +90,20 @@ def test_it_refreshes_only_when_due():
     assert fake.posts == 2
 
 
+def test_it_keeps_a_listener_parked_so_senders_know_it_answers(room):
+    # What the `dm` result reads: without this, ChatGPT is told the teammate
+    # "reads this on their next turn" and does not wait for the reply.
+    from switchboard import rendezvous
+    peer = demo.DemoPeer(room.client("demo-teammate"))
+    peer.tick(wait=0)
+    reviewer = room.client("reviewer")
+    parked = rendezvous.reachable_now(reviewer.board_list(prefix=rendezvous.LISTENER_PREFIX))
+    assert peer.client.agent_id in parked
+    peer.unpark()
+    parked = rendezvous.reachable_now(reviewer.board_list(prefix=rendezvous.LISTENER_PREFIX))
+    assert peer.client.agent_id not in parked
+
+
 def test_a_dropped_connection_is_retried_not_fatal():
     # Observed live: "Server disconnected without sending a response" is an
     # httpx error, not an OSError, and it ended the peer mid-recording.

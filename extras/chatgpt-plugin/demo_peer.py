@@ -31,6 +31,7 @@ from typing import Any
 
 import httpx
 
+from switchboard import rendezvous
 from switchboard.client import Client, SwitchboardError
 
 #: What a pass can fail with and still be worth retrying: the hub said no, or
@@ -48,6 +49,10 @@ PLAN = {
     "next": ["examples section", "link check"],
     "owner": NAME,
 }
+#: How long the parked-listener record outlives the last pass that wrote it.
+#: Well over one pass (a 25s inbox wait, or a 10s retry), so it never lapses
+#: while the peer runs, and gone within a minute and a half once it stops.
+LISTENER_TTL = 90.0
 #: How often to repost on `general` and rewrite the board. Well inside the
 #: hour a message lives and the day a board entry lives.
 REFRESH_SECONDS = 45 * 60
@@ -87,13 +92,30 @@ class DemoPeer:
                                     "DM me and I'll answer.")
         self._last_refresh = self._clock()
 
+    def park(self) -> None:
+        """Say a listener is parked for this agent, as `switchboard listen` does.
+
+        It is what a sender's `dm` result reads to decide between "an answer
+        can arrive within seconds" and "they read this on their next turn".
+        Without it ChatGPT is told the second, and has no reason to wait for
+        the reply this peer sends a few seconds later.
+        """
+        self.client.board_set(rendezvous.listener_key(self.client.agent_id), {
+            "waiting_on": "inbox", "room": "room",
+            "means": "a DM here is answered within about 30 seconds",
+        }, ttl=LISTENER_TTL)
+
+    def unpark(self) -> None:
+        self.client.board_delete(rendezvous.listener_key(self.client.agent_id))
+
     def tick(self, wait: float = 25.0) -> int:
-        """One pass: stay present, refresh when due, answer every DM. Returns
-        how many messages were answered."""
+        """One pass: stay present and parked, refresh when due, answer every
+        DM. Returns how many messages were answered."""
         try:
             self.client.heartbeat(task=f"editing {RESOURCE}", ttl=300)
         except SwitchboardError:
             self.announce()                # presence lapsed, or first run
+        self.park()
         if self._last_refresh is None or self._clock() - self._last_refresh > REFRESH_SECONDS:
             self.refresh()
         answered = 0
@@ -140,6 +162,10 @@ def main() -> int:
     # no registration, inside the retry, so a hub that is down at start is
     # waited for rather than fatal.
     run(peer, lambda: stop["now"])
+    try:
+        peer.unpark()                      # stopped on purpose: say so at once
+    except RETRYABLE:
+        pass                               # the record expires on its own anyway
     client.close()
     return 0
 
