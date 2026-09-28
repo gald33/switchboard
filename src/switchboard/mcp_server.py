@@ -2471,17 +2471,24 @@ class HostedFront:
             return entry[0], entry[2]
 
     def _link(self, headers: Any) -> Link | None:
-        """The sign-in a request carries, if any. A bearer token this bridge
-        does not recognise is refused at the HTTP layer, as the spec asks, so
-        the app refreshes it or signs in again."""
+        """The sign-in a request carries, if any.
+
+        A bearer token this bridge does not hold (expired, unlinked, from
+        before a restart that lost the store) counts as no sign-in at all,
+        not as an HTTP 401. Signing in is optional here: a 401 tells ChatGPT
+        the whole connection is dead, and it then sends the user to sign in
+        before it will call *any* tool, a throwaway room's full invite
+        included. Observed exactly so after `unlink_keys`. Answered as
+        anonymous, everything that needs no keys keeps working, and the
+        calls that do need them return the in-result sign-in request
+        (`_sign_in`), which is where re-authentication belongs.
+        """
         scheme, _, token = (headers.get("Authorization") or "").partition(" ")
         if self.oauth is None or scheme.lower() != "bearer" or not token.strip():
             return None
         link = self.oauth.store.open_access(token.strip())
         if link is None:
-            raise _Refused(401, {"error": "invalid_token"}, {
-                "WWW-Authenticate": self.oauth.challenge(
-                    "invalid_token", "The sign-in has expired or was revoked.")})
+            log("bearer token not held here (expired or unlinked); serving as signed out")
         return link
 
     def _sign_in(self, request_id: Any, detail: str) -> dict[str, Any]:

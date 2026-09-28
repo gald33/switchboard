@@ -435,11 +435,22 @@ def test_a_linked_room_answers_only_to_its_sign_in(signed, hub):  # noqa: F811
     assert result["isError"] and other["error"] == "sign_in_required"
 
 
-def test_an_unknown_token_is_a_401_that_points_at_the_sign_in(signed):
+def test_a_stale_token_is_signed_out_not_refused(signed, hub):  # noqa: F811
+    # Observed live: after unlink_keys, ChatGPT kept sending its old token.
+    # A 401 made it demand a sign-in before *any* call, a throwaway room's
+    # full invite included. Signing in is optional, so a token this bridge
+    # does not hold is just "not signed in".
     server, _, _ = signed
-    response = front(server, "roster", "not-a-token")
-    assert response.status_code == 401
-    assert "resource_metadata=" in response.headers["WWW-Authenticate"]
+    response = front(server, "join_room", "not-a-token", invite=invite_for(hub))
+    assert response.status_code == 200
+    data, result = payload(response)
+    assert not result["isError"] and data["key_from"] == "invite", data
+    # Only what needs linked keys asks for a sign-in, inside the result.
+    asked, result = payload(front(server, "join_room", "not-a-token",
+                                  invite=invite_for(hub, key=None)))
+    assert asked["error"] == "sign_in_required"
+    (challenge,) = result["_meta"]["mcp/www_authenticate"]
+    assert "resource_metadata=" in challenge
 
 
 def test_a_full_invite_still_needs_no_sign_in(signed, hub):  # noqa: F811
@@ -472,8 +483,10 @@ def test_a_refresh_over_http_rotates(signed, hub):  # noqa: F811
         "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"],
         "client_id": tokens["client_id"]}))
     assert refreshed.status_code == 200
-    assert front(server, "linked_keys", tokens["access_token"]).status_code == 401
-    assert front(server, "linked_keys", refreshed.json()["access_token"]).status_code == 200
+    old, _ = payload(front(server, "linked_keys", tokens["access_token"]))
+    assert old["error"] == "sign_in_required"          # the old one is spent
+    new, _ = payload(front(server, "linked_keys", refreshed.json()["access_token"]))
+    assert new["signed_in"] is True
 
 
 def test_without_a_store_there_is_no_sign_in(hub):  # noqa: F811
@@ -525,7 +538,10 @@ def test_unlinking_deletes_the_keys_at_once(signed, hub):  # noqa: F811
                             invite=invite_for(hub, key=None)))
     gone, _ = payload(front(server, "unlink_keys", tokens["access_token"]))
     assert gone["unlinked"] is True
-    assert front(server, "roster", tokens["access_token"], room=data["room"]).status_code == 401
+    # The rooms joined with those keys are forgotten with them: the old
+    # handle, old token and all, no longer reaches the room.
+    after, result = payload(front(server, "roster", tokens["access_token"], room=data["room"]))
+    assert result["isError"] and after["error"] == "room_expired"
     refreshed = send(server, path="/oauth/token", headers=FORM, body=urlencode({
         "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"],
         "client_id": tokens["client_id"]}))
