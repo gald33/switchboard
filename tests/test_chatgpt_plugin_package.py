@@ -123,3 +123,46 @@ def test_the_zip_is_reproducible(tmp_path):
     one = builder.build(tmp_path / "one.zip").read_bytes()
     two = builder.build(tmp_path / "two.zip").read_bytes()
     assert one == two
+
+
+# --- chatgpt-app-submission.json, the portal's import file --------------------
+
+SUBMISSION = ROOT / "chatgpt-app-submission.json"
+
+
+def _submission_builder():
+    spec = importlib.util.spec_from_file_location("build_submission",
+                                                  ROOT / "build_submission.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_submission_file_is_what_the_generator_writes():
+    # Regenerate with: python3 extras/chatgpt-plugin/build_submission.py
+    assert SUBMISSION.read_text(encoding="utf-8") == _submission_builder().render()
+
+
+def test_the_submission_file_validates_against_openais_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((ROOT / "chatgpt-app-submission.v1.schema.json").read_text())
+    data = json.loads(SUBMISSION.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(data)
+    assert data["$schema"] == schema["$id"]
+
+
+def test_the_submission_declares_exactly_the_tools_the_bridge_serves():
+    builder = _submission_builder()
+    served = {t["name"]: t["annotations"] for t in builder.hosted_tools()}
+    declared = json.loads(SUBMISSION.read_text(encoding="utf-8"))["tools"]
+    assert set(declared) == set(served)
+    for name, entry in declared.items():
+        for hint, value in entry["annotations"].items():
+            assert served[name][hint] is value, (name, hint)
+
+
+def test_the_listing_in_the_submission_matches_the_package():
+    info = json.loads(SUBMISSION.read_text(encoding="utf-8"))["app_info"]
+    assert info["display_name"] == INTERFACE["displayName"]
+    assert info["subtitle"] == INTERFACE["shortDescription"]
+    assert info["description"] == INTERFACE["longDescription"]
