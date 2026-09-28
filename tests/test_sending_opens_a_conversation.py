@@ -293,6 +293,14 @@ def test_the_unparked_sender_is_told_a_consequence_not_a_suggestion():
     assert "switchboard listen --until forecast:p50" in text
 
 
+def test_an_agent_that_cannot_listen_is_told_where_the_answer_waits():
+    # A hosted agent's host only calls tools. Telling it to start a process
+    # is advice it cannot take, and ChatGPT flags it as a smuggled instruction.
+    text = rendezvous.listener_advice(you_parked=False, peer_parked=True, can_listen=False)
+    assert "switchboard listen" not in text
+    assert text.endswith("an answer waits in your inbox until inbox or checkin reads it.")
+
+
 def test_the_recipients_half_is_omitted_when_there_is_no_recipient():
     """A channel post has no single recipient, so nothing may be claimed about
     one — including by a pronoun left over from the two-ended wording."""

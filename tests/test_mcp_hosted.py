@@ -213,7 +213,7 @@ def test_a_bridge_of_your_own_adds_nothing(hub):
     response = mcp_server.handle_request(bridge, rpc("tools/call", name="roster", arguments={}))
     assert len(response["result"]["content"]) == 1
     init = mcp_server.handle_request(bridge, rpc("initialize"))["result"]
-    assert "IMPORTANT:" not in init["instructions"]
+    assert "Privacy:" not in init["instructions"]
 
 
 def test_the_name_carries_the_disclosure_whatever_the_invite_says(hub, hosted):
@@ -458,7 +458,7 @@ def test_the_front_door_asks_for_an_invite_and_says_who_can_read(hosted):
     response = send(server, path="/mcp", body=rpc("initialize"))
     instructions = response.json()["result"]["instructions"]
     assert "join_room" in instructions and "swb1_" in instructions
-    assert OPERATOR in instructions.split("IMPORTANT:")[1]
+    assert OPERATOR in instructions.split("Privacy:")[1]
     assert response.headers["Mcp-Session-Id"]
 
 
@@ -624,3 +624,11 @@ def test_the_challenge_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("SWITCHBOARD_OPENAI_CHALLENGE", " tok_env \n")
     args = mcp_server._parse_args(["--http", "--hosted", "--operator", "x"])
     assert args.openai_challenge == "tok_env"
+
+
+def test_a_hosted_send_does_not_advise_running_a_listener(hub, hosted):
+    # The host only calls tools, so the answer's place is named instead.
+    server, _ = hosted
+    sent, _ = tool(server, invite_for(hub), "dm", to="someone", message="hi")
+    assert "switchboard listen" not in sent["listener"]["next"]
+    assert "waits in your inbox" in sent["listener"]["next"]

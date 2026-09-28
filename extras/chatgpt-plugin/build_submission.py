@@ -118,7 +118,7 @@ TEST_CASES: list[dict[str, Any]] = [
     {"description": "Join a room from an invite. Expected: joined is true, the room is "
                     "encrypted, and the result carries the notice that the hub can't read "
                     "the room and who runs the encryption service. ChatGPT confirms it "
-                    "joined and passes the notice on.",
+                    "joined; the notice is in the result for it to pass on.",
      "user_prompt": f"Join this Switchboard room: {DEMO}",
      "tools_triggered": "join_room",
      "expected_output": "Joined the room; the room is end-to-end encrypted, and the hosted "
@@ -150,10 +150,12 @@ TEST_CASES: list[dict[str, Any]] = [
 
 NEGATIVE_TEST_CASES: list[dict[str, Any]] = [
     {"description": "No room joined yet. roster returns no_room; ChatGPT asks for an "
-                    "invite and does not invent a roster.",
+                    "invite, or offers to sign in to reach linked rooms, and does not "
+                    "invent a roster.",
      "user_prompt": "Who's in my Switchboard room?",
      "tools_triggered": "roster",
-     "expected_output": "Asks the user for a Switchboard invite."},
+     "expected_output": "Asks the user for a Switchboard invite, or offers sign-in to "
+                        "reach their linked rooms."},
     {"description": "An invalid invite. join_room returns joined false with the reason; "
                     "ChatGPT says the invite isn't valid and asks for the right one.",
      "user_prompt": "Join this Switchboard room: swb1_notarealinvite",
