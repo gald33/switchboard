@@ -51,6 +51,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`an-empty-invite-is-not-no-invite`** — The same shape at the smallest possible scale. Every other silent failure on this board is a room you are alone in; this one is the flag that exists to prevent those, failing the same way. An empty `--invite` ran against whatever room the invocation would have resolved to anyway and exited 0.
   - ↔ related: **`identity-rebinds-on-branch-change`** — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - ↔ related: **`joining-agent-sees-empty-inbox`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
+  - ↔ related: **`listener-heartbeat-outlives-its-process`** — The same class. A session that trusts the heartbeat and parks nothing is unreachable, and a DM to it looks like a DM to an agent that is simply busy.
   - ↔ related: **`provisioned-token-is-stale-and-nothing-says-so`** — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
   - ↔ related: **`rootless-warning-false-positive`** — The inverse failure, and the reason this one is not cosmetic. That item is about seven real faults that say nothing; this is a correct setup that says something, which is what trains a reader to skip the line that would have named one of the seven.
   - ↔ related: **`selective-wake-for-the-listener`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
@@ -67,6 +68,9 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
   - ↔ related: **`identity-rebinds-on-branch-change`** — Same bug class one layer over: there, a working connection looks like a quiet room; here, one agent looks like two. Both are coordination primitives going inert or wrong without saying so, and in both the first symptom is a human or a coordinator reporting a confident wrong cause.
   - ↔ related: **`write-parity-across-surfaces`** — The subscription gap below is the same bug from the other side. That item is about a client that subscribed to nothing by default; this is about a surface where an agent cannot subscribe at all. Fix them together or the MCP half stays broken.
+- **`listener-heartbeat-outlives-its-process`** — A killed listener still reads as parked for up to 90 seconds, which is exactly when its session asks
+  - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — The same class. A session that trusts the heartbeat and parks nothing is unreachable, and a DM to it looks like a DM to an agent that is simply busy.
+  - ↔ related: **`selective-wake-for-the-listener`** — That item built the parked listener and its `listener/<id>` heartbeat. This one is about the heartbeat claiming more than it can: "it cannot outlive the process that keeps writing it" is false for one TTL, and the one reader that asks in that window is the session the dead listener belonged to.
 - **`presence-ttl-is-not-one-size`** — Let an agent state its own presence lifetime, before considering a longer default
   - ↔ related: **`write-parity-across-surfaces`** — Same gap, found the same way: a capability every other surface had, missing from MCP, where the agent that needs it cannot reach it. The MCP half is done; what remains here is the question of the default.
 - **`provisioned-token-is-stale-and-nothing-says-so`** — The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted
@@ -77,6 +81,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`cross-key-rendezvous`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - ↔ related: **`every-silent-failure-looks-like-a-quiet-room`** — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - ↔ related: **`known-rooms-address-book`** — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
+  - ↔ related: **`listener-heartbeat-outlives-its-process`** — That item built the parked listener and its `listener/<id>` heartbeat. This one is about the heartbeat claiming more than it can: "it cannot outlive the process that keeps writing it" is false for one TTL, and the one reader that asks in that window is the session the dead listener belonged to.
   - ↔ related: **`roles-and-authority-between-agents`** — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - ↔ related: **`timing-cold-start-in-ephemeral-environments`** — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - ↔ related: **`unread-dms-not-shown-outside-mcp`** — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.
@@ -152,6 +157,7 @@ graph TD
   intermittent_suite_failure["✓ Two pytest processes shared one signing socket, so a whisper opened with the wrong key"]:::done
   joining_agent_sees_empty_inbox["An agent that joins a busy room sees an inbox indistinguishable from a quiet one"]:::ready
   known_rooms_address_book["✓ An agent keeps the rooms it knows, sweeps them when looking for someone, and parks only where it suspects"]:::done
+  listener_heartbeat_outlives_its_process["A killed listener still reads as parked for up to 90 seconds, which is exactly when its session asks"]:::ready
   one_resolved_context_across_surfaces["Decide whether a session may change its room once, for every surface at once"]:::deferred
   presence_ttl_is_not_one_size["Let an agent state its own presence lifetime, before considering a longer default"]:::ready
   provisioned_token_is_stale_and_nothing_says_so["The hub's token has two sources that disagree, so which credential works depends on how the container was last restarted"]:::ready
@@ -199,6 +205,7 @@ graph TD
   discovery_is_uneven_and_delivery_is_unknowable -.- known_rooms_address_book
   every_silent_failure_looks_like_a_quiet_room -.- identity_rebinds_on_branch_change
   every_silent_failure_looks_like_a_quiet_room -.- joining_agent_sees_empty_inbox
+  every_silent_failure_looks_like_a_quiet_room -.- listener_heartbeat_outlives_its_process
   every_silent_failure_looks_like_a_quiet_room -.- provisioned_token_is_stale_and_nothing_says_so
   every_silent_failure_looks_like_a_quiet_room -.- rootless_warning_false_positive
   every_silent_failure_looks_like_a_quiet_room -.- selective_wake_for_the_listener
@@ -211,6 +218,7 @@ graph TD
   intermittent_suite_failure -.- web_page_tests_fail_under_load
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
   known_rooms_address_book -.- selective_wake_for_the_listener
+  listener_heartbeat_outlives_its_process -.- selective_wake_for_the_listener
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   read_only_rooms -.- roles_and_authority_between_agents
   roles_and_authority_between_agents -.- selective_wake_for_the_listener
@@ -998,6 +1006,7 @@ graph TD
   - `an-empty-invite-is-not-no-invite` — The same shape at the smallest possible scale. Every other silent failure on this board is a room you are alone in; this one is the flag that exists to prevent those, failing the same way. An empty `--invite` ran against whatever room the invocation would have resolved to anyway and exited 0.
   - `identity-rebinds-on-branch-change` — Two of the seven causes below are that item, met again from the other side: per-workspace blinding, and re-identification on a routine `git checkout`. Read it for the mechanism; this one is about why the mechanism costs hours rather than minutes.
   - `joining-agent-sees-empty-inbox` — One of the seven, already filed, and the first place this shape was named. This item is the generalisation: that bug is not a one-off, it is a class, and six more members of it were hit in a single day.
+  - `listener-heartbeat-outlives-its-process` — The same class. A session that trusts the heartbeat and parks nothing is unreachable, and a DM to it looks like a DM to an agent that is simply busy.
   - `provisioned-token-is-stale-and-nothing-says-so` — The symptom when this fires is a 401 on the published credential, which two agents spent a day mis-attributing — first to a stale client, then to a perimeter that had moved. Read that item for why a wrong credential is hard to tell from a quiet room.
   - `rootless-warning-false-positive` — The inverse failure, and the reason this one is not cosmetic. That item is about seven real faults that say nothing; this is a correct setup that says something, which is what trains a reader to skip the line that would have named one of the seven.
   - `selective-wake-for-the-listener` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
@@ -1913,6 +1922,66 @@ graph TD
 
 </details>
 
+### `listener-heartbeat-outlives-its-process`
+
+- **title:** A killed listener still reads as parked for up to 90 seconds, which is exactly when its session asks
+- **status:** ready
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `every-silent-failure-looks-like-a-quiet-room` — The same class. A session that trusts the heartbeat and parks nothing is unreachable, and a DM to it looks like a DM to an agent that is simply busy.
+  - `selective-wake-for-the-listener` — That item built the parked listener and its `listener/<id>` heartbeat. This one is about the heartbeat claiming more than it can: "it cannot outlive the process that keeps writing it" is false for one TTL, and the one reader that asks in that window is the session the dead listener belonged to.
+- **refs:**
+  - `src/switchboard/rendezvous.py`
+  - `src/switchboard/cli.py`
+  - `tests/test_wake_listener.py`
+
+<details><summary>evidence</summary>
+
+> **Measured by the methods role (Ida) in its own session, 2026-09-24 to 2026-09-29,
+> switchboard 2.5.0, org-core 0.31.5.**
+>
+> The session's container was restarted ten times in six days (2026-09-24 twice,
+> 09-25 08:29Z and 21:27Z, 09-26 10:23Z and 23:20Z, 09-27 12:16Z, 09-28 01:12Z and
+> 14:10Z, 09-29 03:08Z). After each restart, `org tempo register --role methods`
+> answered `listener_alive: true`, `park: "no — a listener is still running"`. On
+> every one of the ten, `ps` in the container showed no `switchboard listen` process.
+> The restart had killed it. On 2026-09-30 08:08Z, a scheduled wake with no restart
+> before it, `register` answered `listener_alive: false`, which was correct.
+>
+> What `register` reads (org-core 0.31.5, `org_core/cli.py` around line 525):
+> `alive = _board_get(manifest, f"listener/{aid}") is not None`. That key is written by
+> `switchboard listen` (`src/switchboard/cli.py`, `_heartbeat`, renewed each pass, TTL
+> `_LISTEN_TTL = 90.0` at line 2762). Read on 2026-09-30 08:10Z, the live key carried
+> `pid`, `pass`, `until`, `room`, `means`, and nothing that says which host or
+> container wrote it.
+>
+> From which I infer, unchecked: the runner re-invokes the session within seconds of a
+> restart, well inside the 90 s TTL. So the first thing the new turn reads is the last
+> heartbeat of a process that no longer exists. I did not time a restart against the
+> key's `expires_at`. That is the one-call check that would confirm it.
+>
+> The claim this breaks is written down. `rendezvous.py` line 171 says of the key:
+> "TTL'd, so the key existing *is* the liveness claim — it cannot outlive the process
+> that keeps writing it." It can, by up to one TTL. A clean exit deletes the key
+> (`cli.py` 3199 and 3367); a killed container never runs that path.
+>
+> Cost: org-core's skill tells a persistent role to park nothing when `listener_alive`
+> is true. A role that obeys is unreachable by DM until its next cron, up to a week for
+> a weekly role. The methods session was saved only because it checked `ps` by hand on
+> each restart.
+>
+> Where the fix lives is a decision for whoever builds this, not settled here. The
+> reader is in org-core, not this repo. What this repo owns is the heartbeat and the
+> sentence claiming it cannot outlive its writer. Two candidate shapes, neither tried:
+> (a) put a host or boot identity in the heartbeat value next to `pid`, so a reader on
+> the same machine can check that the pid is actually running; (b) have switchboard
+> answer the question itself, e.g. a `listen --status` that checks the local pid, so
+> org-core asks switchboard rather than reading a board key. Either way, correct the
+> docstring at `rendezvous.py:171`. If the fix turns out to belong wholly in org-core,
+> say so on the item and hand it to the operator; this repo cannot ship it.
+
+</details>
+
 ### `one-resolved-context-across-surfaces`
 
 - **title:** Decide whether a session may change its room once, for every surface at once
@@ -2452,6 +2521,7 @@ graph TD
   - `cross-key-rendezvous` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
   - `every-silent-failure-looks-like-a-quiet-room` — Cause 8 below is a defect in what that item builds on — a parked listener watches the inbox of the id it started under, and a `git checkout` re-derives that id without telling either side. The fix belongs in `listen`, not here.
   - `known-rooms-address-book` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
+  - `listener-heartbeat-outlives-its-process` — That item built the parked listener and its `listener/<id>` heartbeat. This one is about the heartbeat claiming more than it can: "it cannot outlive the process that keeps writing it" is false for one TTL, and the one reader that asks in that window is the session the dead listener belonged to.
   - `roles-and-authority-between-agents` — Where this surfaced. That item is the same shape one layer down — an agent publishing a stance (what will wake me, until when) that peers read and honour by choice. Roles are that pattern applied to work rather than to attention.
   - `timing-cold-start-in-ephemeral-environments` — Where this was found, and what would consume it: that item lets an agent park until a chosen quantile of its own forecast, which is a real measurement on a machine that accumulates history and a wide prior in a container that does not.
   - `unread-dms-not-shown-outside-mcp` — The same problem one layer up: that item is about an agent not being told something waits while it is still making calls, this one about not being told once it has stopped. Read that one first — its fix is what a filtered listener would be filtering.

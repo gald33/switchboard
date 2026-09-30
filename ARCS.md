@@ -81,7 +81,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 25 item(s), 14 startable
+`setup-and-first-run` · 26 item(s), 15 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -118,6 +118,7 @@ wrong says so.
 | `every-silent-failure-looks-like-a-quiet-room` | ready | — |
 | `identity-rebinds-on-branch-change` | ready | — |
 | `joining-agent-sees-empty-inbox` | ready | — |
+| `listener-heartbeat-outlives-its-process` | ready | — |
 | `one-resolved-context-across-surfaces` | deferred | — |
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
