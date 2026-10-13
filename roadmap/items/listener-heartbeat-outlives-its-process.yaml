@@ -1,0 +1,61 @@
+id: listener-heartbeat-outlives-its-process
+title: A killed listener still reads as parked for up to 90 seconds, which is exactly when its session asks
+status: ready
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: selective-wake-for-the-listener
+  note: 'That item built the parked listener and its `listener/<id>` heartbeat. This one
+    is about the heartbeat claiming more than it can: "it cannot outlive the process that
+    keeps writing it" is false for one TTL, and the one reader that asks in that window
+    is the session the dead listener belonged to.'
+- key: every-silent-failure-looks-like-a-quiet-room
+  note: 'The same class. A session that trusts the heartbeat and parks nothing is
+    unreachable, and a DM to it looks like a DM to an agent that is simply busy.'
+refs:
+- 'src/switchboard/rendezvous.py'
+- 'src/switchboard/cli.py'
+- 'tests/test_wake_listener.py'
+evidence: |
+  **Measured by the methods role (Ida) in its own session, 2026-09-24 to 2026-09-29,
+  switchboard 2.5.0, org-core 0.31.5.**
+
+  The session's container was restarted ten times in six days (2026-09-24 twice,
+  09-25 08:29Z and 21:27Z, 09-26 10:23Z and 23:20Z, 09-27 12:16Z, 09-28 01:12Z and
+  14:10Z, 09-29 03:08Z). After each restart, `org tempo register --role methods`
+  answered `listener_alive: true`, `park: "no — a listener is still running"`. On
+  every one of the ten, `ps` in the container showed no `switchboard listen` process.
+  The restart had killed it. On 2026-09-30 08:08Z, a scheduled wake with no restart
+  before it, `register` answered `listener_alive: false`, which was correct.
+
+  What `register` reads (org-core 0.31.5, `org_core/cli.py` around line 525):
+  `alive = _board_get(manifest, f"listener/{aid}") is not None`. That key is written by
+  `switchboard listen` (`src/switchboard/cli.py`, `_heartbeat`, renewed each pass, TTL
+  `_LISTEN_TTL = 90.0` at line 2762). Read on 2026-09-30 08:10Z, the live key carried
+  `pid`, `pass`, `until`, `room`, `means`, and nothing that says which host or
+  container wrote it.
+
+  From which I infer, unchecked: the runner re-invokes the session within seconds of a
+  restart, well inside the 90 s TTL. So the first thing the new turn reads is the last
+  heartbeat of a process that no longer exists. I did not time a restart against the
+  key's `expires_at`. That is the one-call check that would confirm it.
+
+  The claim this breaks is written down. `rendezvous.py` line 171 says of the key:
+  "TTL'd, so the key existing *is* the liveness claim — it cannot outlive the process
+  that keeps writing it." It can, by up to one TTL. A clean exit deletes the key
+  (`cli.py` 3199 and 3367); a killed container never runs that path.
+
+  Cost: org-core's skill tells a persistent role to park nothing when `listener_alive`
+  is true. A role that obeys is unreachable by DM until its next cron, up to a week for
+  a weekly role. The methods session was saved only because it checked `ps` by hand on
+  each restart.
+
+  Where the fix lives is a decision for whoever builds this, not settled here. The
+  reader is in org-core, not this repo. What this repo owns is the heartbeat and the
+  sentence claiming it cannot outlive its writer. Two candidate shapes, neither tried:
+  (a) put a host or boot identity in the heartbeat value next to `pid`, so a reader on
+  the same machine can check that the pid is actually running; (b) have switchboard
+  answer the question itself, e.g. a `listen --status` that checks the local pid, so
+  org-core asks switchboard rather than reading a board key. Either way, correct the
+  docstring at `rendezvous.py:171`. If the fix turns out to belong wholly in org-core,
+  say so on the item and hand it to the operator; this repo cannot ship it.
