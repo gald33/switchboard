@@ -156,13 +156,19 @@ CHANNEL = "pair"
 SIDE_TTL = MAX_BOARD_TTL
 SIDE_REFRESH = 86400
 SIDE_PREFIX = "coord/pair/side/"
-#: No sign of the other side for this long, and its record gone from the hub:
-#: the pair room has forgotten what generation it was on. See `_lapse`.
+#: This side has not read the pair room for this long, and the other side's
+#: record is gone from it: a heal made meanwhile could have expired unseen.
+#: See `_lapse_target`.
 STALE_AFTER = 6 * 86400
-#: How far a lapsed side jumps. Far enough that no run of single-step heals by
-#: the other side, in the week the hub forgot, could have reached it — so the
-#: room jumped to is guaranteed never to have been retired.
+#: The fixed part of a lapse: past any run of single-step heals in the week
+#: the hub forgot. `_lapse_target` adds a random amount below 2**32, so two
+#: lapses from one base do not pick the same room — a repeat is unlikely, not
+#: impossible.
 LAPSE_JUMP = 1 << 20
+#: How long a verdict — "the code leaked", "never sent" — outlives the pairing
+#: it ended, so the next look at this machine's pairs still says what happened
+#: even if the process that found out died before it could say so.
+VERDICT_KEEP = 3 * 86400
 
 #: The healing strategies this release understands. A record naming another
 #: one is refused rather than guessed at, which is what lets a later release
@@ -946,6 +952,42 @@ class PairStore:
         return sorted(p.stem for p in (self.path / "pending").glob("*.json")
                       if _NAME.fullmatch(p.stem))
 
+    # --- verdicts: how a pairing ended, kept so it is said at least once ---
+
+    def _verdict_path(self, name: str) -> Path:
+        return self._dir("voided") / f"{validate_name(name)}.json"
+
+    def verdict(self, name: str) -> dict[str, Any] | None:
+        """How a pairing under `name` ended, if this machine recorded it lately.
+
+        Holds no secret: a state, a sentence, and until when to keep saying it.
+        """
+        if self.path is None:
+            return None
+        data = self._read(self.path / "voided" / f"{validate_name(name)}.json")
+        return data if isinstance(data, dict) else None
+
+    def save_verdict(self, name: str, state: str, message: str, *, now: float) -> None:
+        self._write(self._verdict_path(name), {
+            "name": name, "state": state, "message": message, "at": now,
+            "until": now + VERDICT_KEEP,
+        })
+
+    def clear_verdict(self, name: str) -> bool:
+        if self.path is None:
+            return False
+        try:
+            (self.path / "voided" / f"{validate_name(name)}.json").unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def verdict_names(self) -> list[str]:
+        if self.path is None or not (self.path / "voided").is_dir():
+            return []
+        return sorted(p.stem for p in (self.path / "voided").glob("*.json")
+                      if _NAME.fullmatch(p.stem))
+
     def taken(self, name: str) -> str | None:
         """Why `name` cannot be used for a new pair, or None if it is free."""
         if self.get(name) is not None:
@@ -1252,6 +1294,7 @@ def start(base: ClientConfig, *, store: PairStore, connect: Connect = _default_c
         why = store.taken(name)
         if not why:
             store.save_pending(pending)
+            store.clear_verdict(name)
     if why:
         raise PairingError(f"{why}. Choose another with --name, or `switchboard pair "
                            f"forget {name}` first.", state="name_taken")
@@ -1392,6 +1435,7 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
                                        f"name {name!r} just now; nothing was sent",
                                        state="name_taken")
                 store.save(record)
+                store.clear_verdict(name)
         try:
             _send_answer(record, hub, base, store=store, connect=connect, now=local,
                          already_there=resuming)
@@ -1457,13 +1501,15 @@ def _send_answer(record: PairRecord, hub: Any, base: ClientConfig | None, *,
         pass
     elif after.flooded or after.aborted or after.consumed or \
             any(e != ours for e in after.answers):
-        _void(record, base, store=store, connect=connect, now=now)
-        raise AlreadyRedeemed(
+        message = (
             "somebody else answered this code at about the same time as this "
             "machine, so the code leaked. This side's pairing is void, and the pair "
             "room says so — if the other side had already collected this answer, it "
             "is told the pair ended. Start again with a fresh code, shared more "
             "narrowly.")
+        _void(record, base, store=store, connect=connect, now=now,
+              state="already_redeemed", message=message)
+        raise AlreadyRedeemed(message)
     record.sent = True
     with store.lock():
         store.save(record)
@@ -1507,7 +1553,8 @@ def _confirm(record: PairRecord, reveal: bytes) -> None:
 
 
 def _void(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
-          connect: Connect, now: float) -> None:
+          connect: Connect, now: float, state: str = "aborted",
+          message: str = "") -> None:
     """Drop a responder's pair that can never be confirmed, and say so.
 
     The record goes, and — best effort — the pair room gets this side's
@@ -1517,6 +1564,8 @@ def _void(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
     """
     with store.lock():
         store.delete(record.name)
+        if message:
+            store.save_verdict(record.name, state, message, now=now)
     with contextlib.suppress(*_hub_errors()):
         _publish_side(record, base, connect=connect, now=now, ended=True)
 
@@ -1562,6 +1611,11 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
             # Nothing to collect here — but a responder's record is not paired
             # until the initiator's proof has been read, and saying so matters.
             return Collected(name, "paired" if record.confirmed else "unconfirmed", record)
+        ended = store.verdict(name)
+        if ended is not None:
+            return Collected(name, str(ended.get("state") or "aborted"),
+                             message=str(ended.get("message") or ""))
+        store._require()
         raise PairingError(f"no pairing called {name!r} is waiting on this machine",
                            state="unknown")
     local = _now(now)
@@ -1573,12 +1627,14 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
                                  agent_id=agent_id, now=local)
             return Collected(record.name, "paired", record, warnings=warnings)
     if hub_now > pending.deadline:
-        with store.lock():
-            store.delete_pending(name)
-        return Collected(name, "expired", message=(
+        message = (
             f"no answer was collected by the deadline ({_iso(pending.deadline)}). If "
             f"the other side ran `pair accept`, its pairing is dead: it must run "
-            f"`switchboard pair forget {name}`, and you start a new one."))
+            f"`switchboard pair forget {name}`, and you start a new one.")
+        with store.lock():
+            store.delete_pending(name)
+            store.save_verdict(name, "expired", message, now=local)
+        return Collected(name, "expired", message=message)
 
     secret = _b64d(pending.secret)
     room = handshake_room(secret)
@@ -1598,6 +1654,9 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
                       ttl=_clamp_ttl(pending.deadline - hub_now + SKEW, MAX_MESSAGE_TTL))
             with store.lock():
                 store.delete_pending(name)
+                # Kept, without a key in it: a listener killed between this
+                # and its wake line must not leave "the code leaked" unsaid.
+                store.save_verdict(name, "aborted", message, now=local)
             return Collected(name, "aborted", warnings=warnings, message=message)
 
         if seen.flooded:
@@ -1616,12 +1675,14 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
             if hub_now > pending.expires_at + 2 * SKEW:
                 # No answer stamped in time can arrive any more, so there is no
                 # reason to keep the private key, or to call this "pending".
-                with store.lock():
-                    store.delete_pending(name)
-                return Collected(name, "expired", warnings=warnings, message=(
+                message = (
                     f"the code expired at {_iso(pending.expires_at)} unanswered. If "
                     "the other side ran `pair accept` too late, its pairing is dead: "
-                    f"it must run `switchboard pair forget {name}`."))
+                    f"it must run `switchboard pair forget {name}`.")
+                with store.lock():
+                    store.delete_pending(name)
+                    store.save_verdict(name, "expired", message, now=local)
+                return Collected(name, "expired", warnings=warnings, message=message)
             return Collected(name, "waiting", warnings=warnings, message=(
                 f"no answer yet; the code is redeemable until "
                 f"{_iso(pending.expires_at)}"))
@@ -1928,6 +1989,10 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
                     state="pending" if done.state == "waiting" else done.state)
             record = done.record
         else:
+            ended = store.verdict(name)
+            if ended is not None:
+                raise PairingError(str(ended.get("message") or f"pair {name!r} ended"),
+                                   state=str(ended.get("state") or "aborted"))
             # A disabled store hides every pair it would have held; "no such
             # pair" would send somebody looking for one that was never lost.
             store._require()
@@ -2039,7 +2104,8 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
     if peer is not None and peer.generation < record.generation:
         warnings.append(
             f"the other side has not moved to work room {record.generation} yet; "
-            f"it is still in {peer.generation} until it next runs")
+            f"it is still in {peer.generation} until it next uses the pair (an MCP "
+            "bridge may take up to 30 seconds more)")
     _env_warnings(record, warnings)
 
     record.last_used_at = local
@@ -2108,12 +2174,14 @@ def _resend(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
     if record.handshake is None or record.code_expires_at is None:
         return
     if now > record.code_expires_at + LOCAL_SLACK:
-        with store.lock():
-            store.delete(record.name)
-        raise PairingError(
+        message = (
             f"pair {record.name!r} never got its answer to the hub before the code "
             "expired, so the other side can never collect it. It is gone from this "
-            "machine; pair again with a fresh code.", state="unsent")
+            "machine; pair again with a fresh code.")
+        with store.lock():
+            store.delete(record.name)
+            store.save_verdict(record.name, "unsent", message, now=now)
+        raise PairingError(message, state="unsent")
     token, token_source = _token_for(record.token, record.url, base)
     try:
         with connect(_throwaway(handshake_room(_b64d(record.handshake)), record.url,
@@ -2162,20 +2230,23 @@ def _verdict(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
     if _collected_ours(record, seen):
         return True
     if seen.flooded or seen.aborted:
-        _void(record, base, store=store, connect=connect, now=now)
-        raise PairingError(
+        message = (
             f"pair {record.name!r} was voided: somebody holding the code interfered "
             "with the handshake (a second answer, a forged marker, or a flood), so it "
             "leaked. This side's record is gone, and the pair room says so in case "
-            "the other side had collected it. Pair again with a fresh code.",
-            state="aborted")
+            "the other side had collected it. Pair again with a fresh code.")
+        _void(record, base, store=store, connect=connect, now=now,
+              state="aborted", message=message)
+        raise PairingError(message, state="aborted")
     if any(marker.get("th") != record.transcript for marker in seen.consumed):
-        _void(record, base, store=store, connect=connect, now=now)
-        raise PairingError(
+        message = (
             f"pair {record.name!r} lost: the other side collected an answer that was "
             "not this machine's, so somebody else held the code. This side's record "
             "is gone. Tell the other side — it is paired with whoever that was — "
-            "and pair again.", state="superseded")
+            "and pair again.")
+        _void(record, base, store=store, connect=connect, now=now,
+              state="superseded", message=message)
+        raise PairingError(message, state="superseded")
     return False
 
 
@@ -2314,9 +2385,10 @@ def heal(name: str, base: ClientConfig | None = None, *, store: PairStore,
                             f"({exc.__class__.__name__})")
     warnings.append(
         f"the other side is still in work room {left_room} until it next reads the pair "
-        f"room — any use of {handle(record.name)} does, and a listener parked in the old "
-        "room wakes on the moved note. Until then the two sides are in different rooms "
-        "and do not exclude each other.")
+        f"room: a `switchboard` command on {handle(record.name)} follows at once, an MCP "
+        "bridge within about 30 seconds (at once if it reads the moved note), and a "
+        "listener parked in the old room wakes on that note. Until then the two sides "
+        "are in different rooms and do not exclude each other.")
     if left:
         warnings.append(
             f"{len(left)} lease(s) this agent held in work room {left_room} stay there "
@@ -2350,11 +2422,14 @@ def forget(name: str, base: ClientConfig | None = None, *, store: PairStore,
     record = store.get(name)
     pending = store.pending(name)
     if record is None and pending is None:
+        if store.clear_verdict(name):
+            return Forgotten(name, False, [])
         store._require()
         raise PairingError(f"no pair called {name!r} on this machine", state="unknown")
     with store.lock():
         store.delete(name)
         store.delete_pending(name)
+        store.clear_verdict(name)
     told, warnings = False, []
     if record is not None:
         try:
@@ -2385,7 +2460,8 @@ def status(base: ClientConfig | None = None, *, store: PairStore,
     — including the ones that failed, as rows rather than as an exception, so
     one dead pair (or one unreadable file) does not hide the others.
     """
-    names = [name] if name else sorted(set(store.names()) | set(store.pending_names()))
+    names = [name] if name else sorted(set(store.names()) | set(store.pending_names())
+                                       | set(store.verdict_names()))
     if not names and not store.enabled:
         store._require()
     rows: list[dict[str, Any]] = []
@@ -2406,6 +2482,13 @@ def _status_row(each: str, base: ClientConfig | None, *, store: PairStore,
                 connect: Connect, agent_id: str | None,
                 now: float | None) -> dict[str, Any]:
     pending = store.pending(each)
+    if pending is None and store.get(each) is None:
+        ended = store.verdict(each)
+        if ended is not None:
+            return {"name": each, "room": handle(each),
+                    "state": str(ended.get("state") or "aborted"),
+                    "error": str(ended.get("message") or ""),
+                    "until": ended.get("until")}
     if pending is not None and not pending.collected and store.get(each) is None:
         try:
             done = collect(each, base, store=store, connect=connect,
@@ -2451,6 +2534,13 @@ def sweep_expired(store: PairStore, *, now: float | None = None) -> list[str]:
                 dropped.append(name)
         except (PairingError, OSError):
             continue
+    try:
+        for name in store.verdict_names():
+            ended = store.verdict(name)
+            if ended is not None and local > float(ended.get("until") or 0):
+                store.clear_verdict(name)
+    except (PairingError, OSError, ValueError, TypeError):
+        pass
     return dropped
 
 

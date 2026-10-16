@@ -860,9 +860,12 @@ TOOLS: list[dict[str, Any]] = [
             "reads only what is left when it collects: put anything that must wait on "
             "the board. 'generation' is which work room the pair is on.\n\n"
             "A refusal comes back as paired:false with 'reason', 'state' and 'next'. "
-            "state 'already_redeemed' means somebody ELSE answered this code first: "
-            "it leaked on its way to you, nothing was sent, and the human needs to "
-            "hear that rather than a retry."
+            "state 'already_redeemed' means a machine other than this one answered "
+            "this code first: either it leaked on its way to you, or this session "
+            "redeemed it earlier in a container since replaced (a fresh container "
+            "keeps no pair it was not given). Nothing was sent; check whether you "
+            "called pair_accept with this code earlier in this conversation, and tell "
+            "the human which it was rather than retrying."
         ),
         "inputSchema": _schema({
             "code": {**_STR, "description": "the swbp1_… string, pasted whole"},

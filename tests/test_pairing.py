@@ -512,7 +512,8 @@ def test_a_responder_never_collected_is_told_at_the_deadline(a, b, h):
 def test_a_week_of_silence_moves_both_sides_somewhere_fresh(a, b, h):
     """The hub forgets everything within a week, including which work room is
     current. Resuming the last one could mean resuming a room a heal abandoned
-    because its key leaked — so a lapsed side jumps somewhere certainly fresh,
+    because its key leaked — so a side back from a week away, finding the other
+    side's record gone, jumps to a random room past everything it knows, once,
     and the other side follows the higher generation."""
     name, _ = paired(a, b)
     a.resolve(name)
@@ -900,7 +901,8 @@ def test_an_answer_that_is_not_a_key_aborts_rather_than_crashes(a, b, h, key):
         "t": "swbp1/answer", "e": key, "c": "x"})
     assert a.collect(started.name).state == "aborted"
     assert a.store.pending(started.name) is None
-    assert pairing.status(a.base, **a.kw()) == []
+    [row] = pairing.status(a.base, **a.kw())
+    assert row["state"] == "aborted", "status still works, and still says what happened"
 
 
 def test_a_code_that_expired_unanswered_is_not_reported_pending(a, h):
@@ -1046,3 +1048,50 @@ def test_pairing_messages_are_ordinary_notes_on_the_wire(a, b, h):
     with h.store._conn() as conn:
         types = {row[0] for row in conn.execute("SELECT DISTINCT type FROM messages")}
     assert types == {"note"}, "a `pair.*` type would tell the hub which rooms are handshakes"
+
+
+def test_the_verdict_outlives_the_process_that_found_it(a, b, h):
+    """"The code leaked" is the one thing a pairing must never fail to say. A
+    listener killed between collecting it and printing it would otherwise
+    leave `pair status` saying there are no pairs at all."""
+    started = a.start()
+    b.accept(started.code)
+    _code_holder(h, started.code).post(pairing.CHANNEL, _thief_answer(started.code))
+    assert a.collect(started.name).state == "aborted"
+    rows = {row["name"]: row for row in pairing.status(a.base, **a.kw())}
+    assert rows[started.name]["state"] == "aborted"
+    assert "leaked" in rows[started.name]["error"]
+    with pytest.raises(PairingError) as exc:
+        a.resolve(started.name)
+    assert exc.value.state == "aborted"
+    assert not a.forget(started.name).peer_told
+    assert pairing.status(a.base, **a.kw()) == []
+
+
+def test_a_verdict_is_kept_for_days_then_swept(a, h):
+    started = a.start(ttl=120)
+    h.advance(120 + 3 * pairing.SKEW)
+    assert a.collect(started.name).state == "expired"
+    assert a.store.verdict(started.name)["state"] == "expired"
+    h.advance(pairing.VERDICT_KEEP + 1)
+    pairing.sweep_expired(a.store, now=h.now)
+    assert a.store.verdict(started.name) is None
+
+
+def test_a_new_pairing_under_the_name_replaces_the_old_verdict(a, b, h):
+    started = a.start(name="again", ttl=120)
+    h.advance(120 + 3 * pairing.SKEW)
+    a.collect("again")
+    fresh = a.start(name="again")
+    assert a.store.verdict("again") is None
+    b.accept(fresh.code)
+    assert a.collect("again").state == "paired"
+    assert started.code != fresh.code
+
+
+def test_a_disabled_store_says_so_to_a_collect(h, tmp_path):
+    off = Machine(h, tmp_path, "off")
+    off.store = PairStore(env={pairing.ENV: ""})
+    with pytest.raises(PairingError) as exc:
+        off.collect("anything")
+    assert exc.value.state == "disabled"

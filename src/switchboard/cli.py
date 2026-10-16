@@ -5411,7 +5411,8 @@ def _pair_start(args: argparse.Namespace) -> int:
     The code is the artifact, so it is the only thing on stdout: a caller
     piping it somewhere gets the code and nothing that could be taken for part
     of it. The safety caveats go to stderr whatever `-q` says — a code is a
-    live credential until it is redeemed or expires, and the caller most
+    live credential until this machine collects the answer or it expires, and
+    the caller most
     likely to run this is an agent with no terminal to show a prompt on.
     `-q` drops only the how-to.
     """
@@ -5434,9 +5435,10 @@ def _pair_start(args: argparse.Namespace) -> int:
         print(started.code)
     fmt = Fmt(_use_color(sys.stderr))
     notes = [
-        fmt.yellow("This code is a credential") + " until it is redeemed or expires "
-        f"({_local_iso(started.expires_at)}): whoever runs `pair accept` with it first "
-        "is paired with this machine, so hand it to one place, once.",
+        fmt.yellow("This code is a credential") + " until this machine collects the "
+        f"answer or it expires ({_local_iso(started.expires_at)}): whoever runs `pair "
+        "accept` with it first is paired with this machine, so hand it to one place, "
+        "once.",
     ]
     if identity.kind == "cloud":
         notes.append(

@@ -3,7 +3,7 @@
 The point of pairing on this surface is the transcript. A model's
 conversation is a paper trail, and `keygen` or an invite puts a room's key in
 it. Here only the code ever appears — the short-lived part, the one that is
-worth nothing once redeemed — and every other tool reaches the pair's room by
+worth nothing once collected or expired — and every other tool reaches the pair's room by
 name, as `room="pair:<name>"`, with the key resolved on the machine.
 
 So these tests are mostly about what this surface can get wrong quietly: a

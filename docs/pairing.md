@@ -705,6 +705,13 @@ machine the human carried it to.
 Every refusal is a sentence that says what to do, and carries a
 machine-readable `state` (the CLI's `--json`, the MCP results):
 
+A pairing that ended badly — `aborted`, `superseded`, `expired`, `unsent`,
+`already_redeemed` after a race — leaves a short verdict behind on this
+machine (`~/.switchboard/pairs/voided/`, no key in it) for three days. So the
+verdict is said again by `pair status`, by `--room pair:<name>` and by the MCP
+bridge even if the process that found out died before it could say so;
+`pair forget <name>` clears it, and a new pairing under the name replaces it.
+
 | `state` | Means | Do |
 |---|---|---|
 | `already_redeemed` | this code was answered by a machine other than this one, or the handshake room is flooded, and this machine is not paired. Usually a leak; also what a cloud session sees redeeming the code again after its container was replaced, and what a rival answering at the same moment leaves this side with even though its answer was sent (the pair room is told). CLI exit 2 | the machine that made the code runs `pair forget` on what it paired, and you pair again with a fresh code, shared more narrowly |
