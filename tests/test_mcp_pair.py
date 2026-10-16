@@ -105,6 +105,31 @@ def work_room_bodies(h, bridge: Bridge, name: str, generation: int, channel: str
     return [unwrap_forecast(m["body"])[0] for m in reader.history(channel)]
 
 
+def work_workspace(bridge: Bridge, name: str, generation: int) -> str:
+    """The workspace of one of a pair's work rooms, as the bridge keys clients."""
+    record = bridge._pair_store.get(name)
+    return pairing.work_room(record.pair_secret, generation).workspace
+
+
+def rival_answers(h, code: str) -> None:
+    """A second answer in the handshake room, as anybody holding the code can
+    write — which makes the initiator's next collection abort: the code leaked."""
+    room = pairing.handshake_room(pairing.PairingCode.decode(code).secret)
+    rival = h.client("rival", workspace=room.workspace, key=room.key,
+                     write_key=room.write_key)
+    rival.post(pairing.CHANNEL, {"t": pairing.TAG_ANSWER,
+                                 "e": pairing._b64e(b"r" * 32), "c": "x"})
+
+
+def raw(bridge: Bridge, tool: str, /, **arguments):
+    """One tools/call straight through handle_request, letting a crash escape —
+    the stdio loop turns it into a JSON-RPC internal error, with no tool result."""
+    return handle_request(bridge, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    })
+
+
 # --- the round trip -------------------------------------------------------------
 
 
@@ -243,7 +268,7 @@ def test_a_heal_moves_the_handle_and_retires_the_old_rooms_client(laptop, cloud,
     assert (healed["from"], healed["to"], healed["room"]) == (0, 1, room)
     assert len(healed["left_behind"]) == 1, "the lease held in the old room is reported"
     assert "did not move" in healed["next"]
-    assert (name, 0) not in laptop._pair_clients, \
+    assert (name, work_workspace(laptop, name, 0)) not in laptop._pair_clients, \
         "a client for the retired room must not survive the heal that retired it"
 
     after, _ = call(laptop, "say", channel="build", message="after the heal", room=room)
@@ -256,7 +281,7 @@ def test_a_heal_moves_the_handle_and_retires_the_old_rooms_client(laptop, cloud,
 def test_a_heal_by_the_other_side_is_followed_here(laptop, cloud, h):
     """The bridge holds a client for the room it last resolved. The other
     side's heal is news only the pair room carries, so the cache has to be
-    keyed by generation — or this side keeps talking in the exposed room."""
+    keyed by the room — or this side keeps talking in the exposed one."""
     room = paired(laptop, cloud)
     name = pairing.parse_handle(room)
     before, _ = call(laptop, "roster", room=room)
@@ -269,7 +294,7 @@ def test_a_heal_by_the_other_side_is_followed_here(laptop, cloud, h):
     assert followed["pair"]["generation"] == 1
     assert any("leaked" in w for w in followed["pair"]["warnings"]), \
         "the other side's reason should reach this side's model"
-    assert set(laptop._pair_clients) == {(name, 1)}
+    assert set(laptop._pair_clients) == {(name, work_workspace(laptop, name, 1))}
     assert work_room_bodies(h, laptop, name, 1, "build") == ["followed"]
 
 
@@ -290,6 +315,291 @@ def test_a_pair_the_other_side_ended_stops_reaching_its_room(laptop, cloud, h):
         "the ended pair's client should be closed, not kept for the next call"
     cleared, _ = call(cloud, "pair_forget", name=name)
     assert cleared["forgotten"] is True
+
+
+# --- a name is not a pair -------------------------------------------------------------
+
+
+def test_a_pair_made_again_under_the_same_name_gets_its_own_room(h, tmp_path):
+    """The store is shared by every session of this OS user. Forget a pair in
+    one — the documented answer to a SAS mismatch — and pair again under the
+    same name, and a bridge still holding the old pair's client must not keep
+    writing to it: a new pair starts at generation 0 too, so a cache keyed by
+    (name, generation) handed back the old room, whose other side may be the
+    very party that raced the code, with every result saying all was well."""
+    laptop = machine(h, tmp_path, "laptop")
+    terminal = machine(h, tmp_path, "terminal")
+    terminal._pair_store = PairStore(laptop._pair_store.path, env={})
+    raced, fresh = (machine(h, tmp_path, label, kind="cloud") for label in ("raced", "fresh"))
+    room = paired(laptop, raced, name="review")
+    call(laptop, "say", channel="build", message="to the first pair", room=room)
+
+    call(terminal, "pair_forget", name="review")
+    again, _ = call(terminal, "pair_start", name="review")
+    call(fresh, "pair_accept", code=again["code"])
+    call(terminal, "pair_status")
+
+    sent, error = call(laptop, "say", channel="build", message="to the second pair", room=room)
+    assert error is False
+    assert work_room_bodies(h, terminal, "review", 0, "build") == ["to the second pair"]
+    assert work_room_bodies(h, raced, "review", 0, "build") == ["to the first pair"], \
+        "nothing more may reach the forgotten pair's room"
+    assert any("different pair" in w for w in sent["pair"]["warnings"]), \
+        "the agent should hear that the handle now means another pair"
+    heard, _ = call(fresh, "history", channel="build", room=room)
+    assert [m["body"] for m in heard["messages"]] == ["to the second pair"]
+
+
+def test_a_voided_pairing_accepted_again_under_its_name_gets_a_new_room(laptop, cloud, h):
+    """One bridge, no other process: the code leaks, the pairing is voided, and
+    the human starts again under the same name. The voided pair's client was
+    cached when the agent first worked in the room; a fresh accept must not be
+    answered with it, or the new pair's peer hears nothing this side says."""
+    started, _ = call(laptop, "pair_start", name="lab")
+    call(cloud, "pair_accept", code=started["code"])
+    call(cloud, "say", channel="pair", message="to the voided pair", room="pair:lab")
+    rival_answers(h, started["code"])
+    [aborted] = call(laptop, "pair_status")[0]["pairs"]
+    assert aborted["state"] == "aborted"
+    [voided] = call(cloud, "pair_status")[0]["pairs"]
+    assert voided["state"] == "aborted"
+
+    again, _ = call(laptop, "pair_start", name="lab")
+    call(cloud, "pair_accept", code=again["code"])
+    call(cloud, "say", channel="pair", message="to the new pair", room="pair:lab")
+    call(laptop, "pair_status")
+    heard, _ = call(laptop, "history", channel="pair", room="pair:lab")
+    assert "to the new pair" in [m["body"] for m in heard["messages"]]
+    assert "to the voided pair" not in [m["body"] for m in heard["messages"]]
+
+
+# --- what a call must not lose when it fails -------------------------------------------
+
+
+def test_a_leaked_code_found_by_a_call_that_fails_is_still_reported(laptop, cloud, h):
+    """Collecting deletes the pending handshake, so the verdict exists only on
+    the bridge until a response carries it. The call that collects is any
+    ordinary one, and as likely as any to fail — here, renewing a lease that
+    lapsed. If only a success could carry the news, a leaked code would never
+    be reported at all, and pair_status would say there is nothing here."""
+    started, _ = call(laptop, "pair_start")
+    call(cloud, "pair_accept", code=started["code"])
+    rival_answers(h, started["code"])
+
+    failed, error = call(laptop, "renew", resource="db/migrations")
+    assert error is True and failed["error"] == "hub_error"
+    [row] = failed["pairings"]
+    assert (row["name"], row["state"]) == (started["name"], "aborted")
+    assert "leaked" in row["message"]
+    again, _ = call(laptop, "whoami")
+    assert "pairings" not in again, "news once, on whichever response came first"
+
+
+def test_news_from_a_call_that_crashed_waits_for_the_next_response(laptop, cloud):
+    """A bug in a tool becomes a JSON-RPC internal error, which carries no
+    result at all. What the call collected before crashing is said on the
+    next response instead of being cleared when that call starts."""
+    started, _ = call(laptop, "pair_start")
+    call(cloud, "pair_accept", code=started["code"])
+
+    def crashes(**_):
+        laptop._touch()
+        raise RuntimeError("a bug in a tool")
+
+    laptop.roster = crashes
+    with pytest.raises(RuntimeError):
+        raw(laptop, "roster")
+    del laptop.roster
+
+    later, _ = call(laptop, "whoami")
+    [row] = later["pairings"]
+    assert (row["name"], row["state"]) == (started["name"], "paired")
+
+
+def test_collecting_never_breaks_an_unrelated_tool(laptop, cloud, h, monkeypatch):
+    """Collection runs inside every ordinary tool. Whatever goes wrong with
+    one pending name — an answer that is not a key, a bug nobody foresaw —
+    must cost that name a news row, not fail a `say` that has nothing to do
+    with pairing, and not starve the pairings sorted after it."""
+    first, _ = call(laptop, "pair_start", name="first")
+    call(laptop, "pair_start", name="second")
+    # Base64 that cannot decode: once enough to make collection raise.
+    room = pairing.handshake_room(pairing.PairingCode.decode(first["code"]).secret)
+    tamperer = h.client("tamperer", workspace=room.workspace, key=room.key,
+                        write_key=room.write_key)
+    tamperer.post(pairing.CHANNEL, {"t": pairing.TAG_ANSWER, "e": "a", "c": "x"})
+
+    said, error = call(laptop, "say", channel="build", message="unrelated")
+    assert error is False and said["posted"] is True, said
+    rows = {row["name"]: row for row in said["pairings"]}
+    assert rows["first"]["state"] == "aborted", "an answer that is not a key is a leak"
+    assert "second" not in rows, "still waiting is not news"
+
+    real = pairing.collect
+
+    def buggy(name, *args, **kwargs):
+        if name == "second":
+            raise ValueError("a bug nobody foresaw")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(pairing, "collect", buggy)
+    h.advance(PAIR_RECHECK)
+    roster, error = call(laptop, "roster")
+    assert error is False, roster
+    [row] = roster["pairings"]
+    assert (row["name"], row["state"]) == ("second", "error")
+    assert "ValueError" in row["message"] and "pair_status" in row["message"]
+
+
+def test_a_move_noticed_by_a_call_that_fails_is_still_reported(laptop, cloud, h):
+    """The most natural call after the other side heals is renewing the lease
+    this side holds in the room it no longer reaches — and it fails, by
+    design. The heal is adopted on the way in and the store moves at once, so
+    if the failing call does not say so, no later result ever will."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(laptop, "claim", resource="db/migrations", room=room)
+    call(cloud, "pair_heal", name=name, reason="invite leaked in #general")
+    h.advance(PAIR_RECHECK)
+
+    failed, error = call(laptop, "renew", resource="db/migrations", room=room)
+    assert error is True and failed["error"] == "hub_error"
+    assert failed["pair"]["generation"] == 1
+    assert any("invite leaked in #general" in w for w in failed["pair"]["warnings"])
+
+
+def test_a_move_whose_result_never_arrived_is_said_once_later(laptop, cloud, h):
+    """When the call that adopts a heal produces no result at all, the move
+    waits on the bridge: pair_status — the call a confused agent makes — says
+    it, even though the pair_* tool wipes the cache that held it, and it is
+    said once rather than on every result from then on."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(laptop, "roster", room=room)
+    call(cloud, "pair_heal", name=name, reason="work key pasted in a log")
+    h.advance(PAIR_RECHECK)
+
+    def crashes(**_):
+        raise RuntimeError("a bug in a tool")
+
+    laptop.roster = crashes
+    with pytest.raises(RuntimeError):
+        raw(laptop, "roster", room=room)
+    del laptop.roster
+
+    [row] = call(laptop, "pair_status")[0]["pairs"]
+    assert row["generation"] == 1
+    assert any("work key pasted in a log" in w for w in row["warnings"])
+    h.advance(PAIR_RECHECK)
+    later, _ = call(laptop, "roster", room=room)
+    assert not any("pasted" in w for w in later["pair"]["warnings"])
+
+
+# --- the 30-second window ------------------------------------------------------------
+
+
+def test_what_the_cache_sent_to_a_retired_room_is_said_when_the_move_is_noticed(
+        laptop, cloud, h):
+    """Between the other side's heal and this bridge's next look at the pair
+    room — up to PAIR_RECHECK — calls are served from the cache and land in
+    the retired room, where whoever the key leaked to reads them and the
+    other side does not. When the move is noticed, the agent is told what it
+    sent there, so it can say and claim it again where it counts."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(laptop, "roster", room=room)
+    call(cloud, "pair_heal", name=name, reason="invite leaked")
+
+    stranded, _ = call(laptop, "say", channel="pair", message="stranded", room=room)
+    assert stranded["pair"]["generation"] == 0, "the documented window"
+    call(laptop, "claim", resource="db/migrations", room=room)
+    h.advance(PAIR_RECHECK)
+    moved, _ = call(laptop, "say", channel="pair", message="after", room=room)
+
+    assert moved["pair"]["generation"] == 1
+    [said] = [w for w in moved["pair"]["warnings"] if "went to work room 0" in w]
+    assert "2 call(s)" in said and "claim" in said and "say" in said
+    assert "stranded" in work_room_bodies(h, laptop, name, 0, "pair")
+    assert "after" in work_room_bodies(h, laptop, name, 1, "pair")
+
+
+def test_a_moved_note_read_through_the_handle_moves_it_at_once(laptop, cloud, h):
+    """A heal leaves a moved note in the room it retires. When a read through
+    the handle brings it back, the cache is provably stale: answering that
+    result "generation 0, paired" beside a note saying the room is retired —
+    and sending the next write there — would be the bridge ignoring evidence
+    in its own hands. The note is told apart by its sealed tag; on the wire it
+    is an ordinary note."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(laptop, "roster", room=room)
+    call(cloud, "pair_heal", name=name, reason="invite leaked")
+
+    read, _ = call(laptop, "inbox", channels=[pairing.CHANNEL], room=room)
+    assert read["pair"]["generation"] == 1
+    assert any("moved from work room 0 to 1" in w for w in read["pair"]["warnings"])
+    assert any(m.get("pairing") == pairing.TAG_MOVED for m in read["messages"]), \
+        "the note itself should say it is a pairing message, not a stray dict"
+    call(laptop, "say", channel="pair", message="right room", room=room)
+    assert "right room" in work_room_bodies(h, laptop, name, 1, "pair")
+
+
+def test_an_ended_note_read_through_the_handle_says_the_pair_ended(laptop, cloud, h):
+    """The same evidence after a forget: the inbox that brings back "the other
+    side ended this pair" must not also say "paired", or the agent keeps
+    talking to a room nobody will read again."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(cloud, "roster", room=room)
+    call(laptop, "pair_forget", name=name)
+
+    read, error = call(cloud, "inbox", channels=[pairing.CHANNEL], room=room)
+    assert error is False
+    assert read["pair"]["state"] == "ended_by_peer"
+    assert any("ended pair" in w for w in read["pair"]["warnings"])
+    assert not any(key[0] == name for key in cloud._pair_clients), \
+        "the next write must not go to the ended pair's room"
+    assert any(m.get("pairing") == pairing.TAG_ENDED for m in read["messages"])
+
+
+# --- the pairing tools take no room -----------------------------------------------------
+
+
+def test_a_room_on_a_pairing_tool_is_ignored_not_resolved(laptop, cloud, h):
+    """An agent that has passed room='pair:lc' on every call passes it to the
+    pair_* tools too. Resolving it ran the pair before the tool did, so a pair
+    the other side ended made pair_forget — the call that clears it — and
+    pair_status fail with "ended", in a loop the agent could not see out of."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(cloud, "roster", room=room)
+    call(laptop, "pair_forget", name=name)
+    h.advance(PAIR_RECHECK)
+
+    status, error = call(cloud, "pair_status", room=room)
+    assert error is False
+    assert [row["state"] for row in status["pairs"]] == ["ended_by_peer"]
+    assert "room_ignored" in status
+    gone, error = call(cloud, "pair_forget", name=name, room=room)
+    assert error is False and gone["forgotten"] is True
+    assert "name=" in gone["room_ignored"]
+    keys, error = call(cloud, "keygen", room="pair:nobody")
+    assert error is False and keys["key"]
+
+
+def test_a_pairing_refusal_names_the_tool_not_only_the_command(laptop, cloud, h):
+    """The core's advice is written for a terminal — "run `switchboard pair
+    forget lc` here" — and an agent with only this surface may not have one.
+    Told nothing else, it asks the human to type a command it can run itself."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(cloud, "roster", room=room)
+    call(laptop, "pair_forget", name=name)
+    h.advance(PAIR_RECHECK)
+
+    refused, error = call(cloud, "say", channel="pair", message="anyone?", room=room)
+    assert error is True and refused["state"] == "ended_by_peer"
+    assert "pair_forget(name='NAME')" in refused["next"]
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -416,6 +726,51 @@ def test_the_room_parameter_documents_the_pair_handle():
     """An agent that cannot discover the handle will ask for the key instead."""
     roster = next(t for t in TOOLS if t["name"] == "roster")
     assert "pair:<name>" in roster["inputSchema"]["properties"]["room"]["description"]
+
+
+def test_the_pair_channel_is_named_wherever_the_handle_is(laptop, cloud):
+    """The other side's listener watches a pair's work room on one channel.
+    `say` needs a channel and inbox with none reads only DMs, so an agent
+    told only "work in room=pair:<name>" picks one — 'general', say — and the
+    two sides sit in one healthy-looking, silent room, each hearing nothing."""
+    channel = pairing.CHANNEL
+    roster = next(t for t in TOOLS if t["name"] == "roster")
+    assert f"channel '{channel}'" in roster["inputSchema"]["properties"]["room"]["description"]
+    started, _ = call(laptop, "pair_start")
+    accepted, _ = call(cloud, "pair_accept", code=started["code"])
+    for text in (started["next"], accepted["next"]):
+        assert f"channel '{channel}'" in text and f"inbox(channels=['{channel}']" in text
+
+    room = accepted["room"]
+    call(laptop, "pair_status")
+    call(cloud, "say", channel=channel, message="cloud: I take the tests", room=room)
+    heard, _ = call(laptop, "inbox", channels=[channel], room=room)
+    assert "cloud: I take the tests" in [m["body"] for m in heard["messages"]]
+
+
+def test_the_unconfirmed_side_is_not_promised_what_expires(laptop, cloud, h):
+    """The responder may wait hours to be collected; work-room messages last
+    one by default. Telling it "what you say meanwhile is read once it does"
+    is a promise the hub breaks in silence. What it is told instead — the
+    board keeps a day — is checked here against the hub itself."""
+    started, _ = call(laptop, "pair_start")
+    accepted, _ = call(cloud, "pair_accept", code=started["code"])
+    assert accepted["state"] == "unconfirmed"
+    accept = next(t for t in TOOLS if t["name"] == "pair_accept")
+    for text in (accepted["next"], accept["description"]):
+        assert "read once it does" not in text
+        assert "expire after an hour" in text and "board" in text
+
+    room = accepted["room"]
+    call(cloud, "say", channel=pairing.CHANNEL, message="plan: I take the tests", room=room)
+    call(cloud, "board_set", key="plan", value="I take the tests", room=room)
+    h.advance(2 * 3600)
+    [row] = call(laptop, "pair_status")[0]["pairs"]
+    assert row["state"] == "paired"
+    heard, _ = call(laptop, "history", channel=pairing.CHANNEL, room=room)
+    assert "plan: I take the tests" not in [m["body"] for m in heard["messages"]]
+    kept, _ = call(laptop, "board_get", key="plan", room=room)
+    assert kept["value"] == "I take the tests"
 
 
 # --- a hosted bridge ------------------------------------------------------------------
