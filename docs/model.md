@@ -31,10 +31,10 @@ announce, peers witness, and everything expires.
 | **write key** | proves a request may *change* a `ws_…` room; its public half is the room's token, so it names the room as well | anyone who may *write* the room — the key alone reads it | `SWITCHBOARD_WRITE_KEY_<ID>`, under the same id as the key |
 | **hub token** | gets you through the front door | everyone, or one operator's users | committed `.mcp.json` when public; the environment when it is a secret |
 | **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere — a rule about attribution keys; the one private key this package writes down is pairing's pending ephemeral key, below |
-| **pairing code** (`swbp1_…`) | names a handshake room and carries one half of a key exchange; a bearer credential until it is redeemed or expires (15 minutes by default), worth nothing after | whoever a human handed it to | wherever it was carried — a chat, a ticket — and expected to stay there |
+| **pairing code** (`swbp1_…`) | names a handshake room and carries one half of a key exchange; a bearer credential until the initiator collects the answer — anyone holding it can answer in place of the peer, or void the pairing — and worth nothing after that, or once it expires unanswered (15 minutes by default) | whoever a human handed it to | wherever it was carried — a chat, a ticket — and expected to stay there |
 | **pair secret** | agreed by two machines' handshake and never transmitted; the pair room and every work room derive from it | two machines | `~/.switchboard/pairs/` (owner-only), or `SWITCHBOARD_PAIR_<NAME>` from `pair export` |
 | **work-room key / write key** | seal and write-protect a pair's work room, generation *n*; derived from the pair secret and *n*, one-way | the two paired machines, and anyone handed a work-room invite until the next heal | nowhere: derived at each use |
-| **pending ephemeral key** | the initiator's half of the handshake | the machine that ran `pair start` | `~/.switchboard/pairs/pending/`, until the answer is collected; one never collected is deleted after its deadline (the code's expiry plus 12 hours) by the next parked listener, `pair start`, `pair status` or MCP call |
+| **pending ephemeral key** | the initiator's half of the handshake | the machine that ran `pair start` | `~/.switchboard/pairs/pending/`, until the answer is collected. One for a code nobody answered in time is deleted by the first collection a few minutes after the code expires; any other by the first parked listener, `pair start`, `pair status`, `pair wait` or MCP call after its deadline (the code's expiry plus 12 hours) |
 
 An **invite** is those first three bundled into one string, so the values that
 have to match a peer's cannot be assembled wrongly one at a time — every one
@@ -114,8 +114,9 @@ that set it up. An invite *is* the room, so whatever carried it — a chat, a
 ticket — holds the room for as long as the room lives. A pairing code is one
 half of a key exchange, redeemable for minutes: both machines derive the
 rooms they share from a secret neither ever sends, and the code is worth
-nothing once used. The two `pair:` rows in the table above are how those
-rooms are reached. See [pairing.md](pairing.md).
+nothing once the machine that made it has collected the other's answer. The
+two `pair:` rows in the table above are how those rooms are reached. See
+[pairing.md](pairing.md).
 
 ## The five rules
 
@@ -182,9 +183,10 @@ forward secrecy — the key derives every epoch, past and future.
 The same scope, stated for pairing: its **handshake has forward secrecy** and
 its **generations do not**. The handshake's keys are ephemeral and are
 deleted once used, so the pairing code and the hub's entire history together
-yield public keys and nothing else. But every work room derives from the pair
-secret, so a leaked pair secret opens every generation, past and future, and
-no heal helps; a heal rescues one leaked *work-room* key.
+yield public keys and proofs, and nothing that opens a room. But every work
+room derives from the pair secret, so a leaked pair secret opens every
+generation, past and future, and no heal helps; a heal rescues one leaked
+*work-room* key.
 
 **5. Attribution is witnessed, not certified.**
 Each agent process generates an Ed25519 keypair in memory and never writes it
@@ -227,7 +229,7 @@ server's memory. The OS user was always the boundary.
   message inside them is still rule 5's per-process signature, and every
   agent on either machine running as that user can use the pair. Nothing
   about it is registered on the hub, which holds two expiring records it
-  cannot read.
+  cannot read and sees every pairing message as an ordinary note.
 
 ## Decisions that were made and rejected
 
@@ -246,7 +248,13 @@ never on a clock; and what it strands is said rather than discovered. Leases,
 board entries and unread messages stay in the retired room, the healing agent
 is handed the list of leases it held there, and until the other side reads
 the pair room the two are in different rooms and do not exclude each other —
-which its resolution keeps saying until the other record catches up.
+which its resolution keeps saying until the other record catches up. A pair
+also rotates on one other event, and only that one: a side that has not read
+the pair room for six days, and finds the other side's record expired from
+it, cannot tell whether a heal happened while it was away, so it moves to a
+fresh room rather than risk resuming a leaked one. That is decided once per
+absence, from this side's own gap in reading — never on a side that kept
+working while its peer was idle — and said, like a heal.
 
 **An unversioned derivation for a pair's rooms**, as the lobby has. Rejected,
 although it looks like the same case: it is the opposite one. The lobby joins

@@ -218,8 +218,10 @@ switchboard --room pair:<name> say pair "hi"    # either side, from then on
 
 The code is one half of a key exchange, redeemable for fifteen minutes, and
 both machines derive the rooms they share from a secret neither ever sends —
-so once the code is used, finding it in a paper trail is worth nothing. Until
-then it is a credential: hand it to one place, once. `switchboard pair status`
+so once the machine that made the code has collected the answer, finding it
+in a paper trail is worth nothing. Until then it is a credential that can
+answer in place of the other machine or void the pairing: hand it to one
+place, once. `switchboard pair status`
 shows each pair and a short code to compare on both screens; `switchboard
 pair heal <name>` moves both sides to a fresh room if the current one's key
 gets out. MCP has `pair_start`, `pair_accept` and `room="pair:<name>"`. See

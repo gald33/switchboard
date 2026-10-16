@@ -369,7 +369,7 @@ be a hub that could hold them, which is the whole thing this avoids.
 
 The one exchange there is — pairing two machines, under
 [Paired machines](#paired-machines) below — keeps that rule rather than
-breaking it. The hub carries two ephemeral public keys and a proof, and each
+breaking it. The hub carries two ephemeral public keys and proofs, and each
 machine computes the secret itself, so the hub that carried the exchange
 still never holds what it produced. And it does not distribute *this* key:
 the rooms a pair shares are derived from its own secret, and the workspace
@@ -768,7 +768,7 @@ workspace key's, all of them derived and all write-protected:
 - the **handshake room**, named by the code's 32-byte secret `S`, which holds
   only public keys, proofs and markers;
 - the **pair room**, derived from the pair secret, where each side keeps one
-  sealed record of which generation it is on;
+  sealed record of which generation it is on and when it last used the pair;
 - **work room *n***, derived from the pair secret and *n*, which is where the
   two sides actually work — `--room pair:<name>`, `room="pair:<name>"`.
 
@@ -786,20 +786,23 @@ room key is derived with frozen, domain-separated labels
 the walkthrough and the full threat model.
 
 The property this is for: **a leak of the code and of the hub's entire
-history, together, yields two public keys and nothing else.** A design that
-sealed a room key into the handshake room would have made "that message was
-short-lived" a promise from the hub; this makes it a property, which is the
-only kind this document deals in.
+history, together, yields two public keys, the proofs that went with them,
+and nothing that opens a room.** A design that sealed a room key into the
+handshake room would have made "that message was short-lived" a promise from
+the hub; this makes it a property, which is the only kind this document
+deals in.
 
 What it costs, stated as plainly as everything above:
 
-- **The code is a live bearer credential until it is redeemed or expires.**
-  Whoever holds it in that window holds the handshake room's write key and can
-  answer in place of the intended peer. That is detected rather than
-  prevented — two answers void the pairing on both sides, a late redeemer is
-  told the code was used, an answer the hub stamped after expiry is ignored —
-  and the initiator's only defence against losing the race outright is
-  comparing the short authentication string both sides show (`NNNN-NNNN`).
+- **The code is a live bearer credential until the initiator collects the
+  answer**, or until it expires with nobody answering. Whoever holds it in
+  that window holds the handshake room's write key and can answer in place of
+  the intended peer. That is detected rather than prevented — two answers, a
+  forged marker or a flooded room void the pairing on both sides, a late
+  redeemer is told the code was used, an answer the hub stamped after expiry
+  is ignored — and the initiator's only defence against losing the race
+  outright is comparing the short authentication string both sides show
+  (`NNNN-NNNN`).
 - **The handshake has forward secrecy; the generations do not.** Every work
   room derives from the pair secret. `pair heal` moves both sides to the next
   generation, which rescues a leaked *work-room* key — an invite to the work
@@ -812,10 +815,12 @@ What it costs, stated as plainly as everything above:
 - **One private key is written to disk.** The initiator must survive its own
   process ending between printing the code and collecting the answer, so its
   ephemeral handshake key sits in `~/.switchboard/pairs/pending/` (0600) until
-  the answer is collected. One never collected is deleted once the deadline
-  — the code's expiry plus twelve hours — has passed, by the first parked
-  listener, `pair start`, `pair status` or MCP call on that machine. There is
-  no timer; a machine that runs none of them keeps the file until it does.
+  the answer is collected. One for a code nobody answered in time is deleted
+  by the first collection a few minutes after the code expires; any other
+  once the deadline — the code's expiry plus twelve hours — has passed, by
+  the first parked listener, `pair start`, `pair status`, `pair wait` or MCP
+  call on that machine. There is no timer; a machine that runs none of them
+  keeps the file until it does.
   `signing.py`'s rule that private keys are never written is about
   attribution keys, and still holds for them.
 - **The pair secret lives on two machines, in the clear, owner-only.**
@@ -826,7 +831,11 @@ What it costs, stated as plainly as everything above:
 - **The hub still sees the metadata** it sees for any room — three or more
   room identifiers instead of one, padded sizes, timing — and the rooms are
   unlinkable by name, not by traffic: the same machine touches all three
-  within seconds.
+  within seconds. Every pairing message is an ordinary `note` on the wire,
+  its step sealed inside the body, so the plaintext message type does not
+  name it. Order still does: the first post in a handshake room is the
+  initiator's, and a heal or a forget is one post in a work room followed by
+  quiet. [pairing.md](pairing.md#what-the-hub-sees) has the full list.
 
 ## Design notes
 

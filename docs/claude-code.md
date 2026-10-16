@@ -377,8 +377,9 @@ never appeared in any conversation, so there is no reference to keep for it:
 pairs live in their own owner-only store, `~/.switchboard/pairs/`
 (`SWITCHBOARD_PAIRS` moves it), and `switchboard pair status` lists them. A
 `pair:` label cannot be given to a book entry. `listen` parks in each pair
-used in the last day, and in the handshake room of a pairing still waiting
-for its answer, unless told `--no-pairs`; see [pairing.md](pairing.md).
+used in the last day or carried in `SWITCHBOARD_PAIR_<NAME>`, and in the
+handshake room of a pairing still waiting for its answer, unless told
+`--no-pairs`; see [pairing.md](pairing.md).
 
 `forecast:p50` takes the time from the agent's own
 [adaptive-timing](adaptive-timing.md) model — the moment it predicts it would
@@ -768,9 +769,9 @@ the case to log.
 | `session_handoff` | Move this whole session to another agent, or with no `to` checkpoint it on the board for anyone holding the key — see section 7 |
 | `session_import` | Collect a session handed to you (or one capsule by id) into this machine's Claude config dir; installs, never resumes |
 | `session_resume` | Start `claude --bg --resume` for an installed session and get the `claude attach` line back. Local; never touches the hub |
-| `pair_start` | Two machines will work together past this afternoon — run it on the one that stays. Returns a `swbp1_…` code for the human to carry, a credential until it is redeemed or expires — see below |
-| `pair_accept` | Handed a `swbp1_…` code. Redeems it on this machine; `room="pair:<name>"` then reaches the pair's work room from any tool. A leaked code comes back as `paired: false`, `state: "already_redeemed"` |
-| `pair_status` | After either of those — whether the other side answered, the SAS to compare on both screens, and each pair's warnings. Collects a waiting answer, so it is not read-only |
+| `pair_start` | Two machines will work together past this afternoon — run it on the one that stays. Returns a `swbp1_…` code for the human to carry, a credential until this machine collects the answer, or it expires unanswered — see below |
+| `pair_accept` | Handed a `swbp1_…` code. Redeems it on this machine; `room="pair:<name>"` then reaches the pair's work room from any tool. A code another machine already answered comes back as `paired: false`, `state: "already_redeemed"` — usually a leak, and the `reason` says when it may be this session's own earlier container |
+| `pair_status` | After either of those — whether the other side answered, the SAS to compare on both screens, when the other side last used the pair, and each pair's warnings. Collects a waiting answer, so it is not read-only |
 | `pair_heal` | The pair's work-room key got out (an invite to it went somewhere it should not). Moves both sides to a fresh work room; leases, board entries and unread messages stay behind |
 | `pair_forget` | The pair is finished with, the other side ended it, or a SAS comparison failed. Deletes this machine's copy of the pair secret and tells the other side |
 
@@ -869,7 +870,8 @@ it lives. For a laptop and a cloud session that will keep working together,
 pair them instead: `pair_start` on the machine that stays returns a `swbp1_…`
 code, the human carries it to the other agent once, and `pair_accept` there
 redeems it. Both machines then derive the rooms they share from a secret
-neither ever sends, and the code is worth nothing once used.
+neither ever sends, and the code is worth nothing once the machine that made
+it has collected the answer.
 
 ```
 pair_start   name="laptop-cloud"         → {code: "swbp1_…", room: "pair:laptop-cloud", state: "pending", …}
@@ -881,11 +883,13 @@ The machine that started collects the answer on its own — on a later tool
 call, whose result carries `pairings` with the SAS to compare, or through a
 parked `switchboard listen` — and every result reached through
 `room="pair:<name>"` carries `pair: {name, generation, state, warnings}`.
-Pass the warnings on. Talk on the `pair` channel: neither side knows the
-other's agent id, and it is what a listener parked in the pair's work room
-watches. Local bridge only; the hosted bridge withholds every `pair_*` tool.
-The whole of it, including what a heal strands and how a cloud environment
-keeps a pair, is [pairing.md](pairing.md).
+Pass the warnings on — "unconfirmed", "no sign of the other side since …"
+and "not in the pair room" each mean that what you say there is not being
+read yet. Talk on the `pair` channel: neither side knows the other's agent
+id, and it is what a listener parked in the pair's work room watches. Local
+bridge only; the hosted bridge withholds every `pair_*` tool. The whole of
+it, including what a heal strands and how a cloud environment keeps a pair,
+is [pairing.md](pairing.md).
 
 ### Ad hoc side channels
 
