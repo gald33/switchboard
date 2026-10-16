@@ -40,6 +40,13 @@ COMMANDS: list[list[str]] = [
     ["session", "handoff", "someone"],
     ["session", "receive"],
     ["session", "resume", "3c1f7c2e-4b6a-4e0e-9a3f-2f9d8a1b5c7d"],
+    ["pair", "start"],
+    ["pair", "accept", "swbp1_code"],
+    ["pair", "status"],
+    ["pair", "wait", "lab"],
+    ["pair", "heal", "lab"],
+    ["pair", "forget", "lab"],
+    ["pair", "export", "lab"],
 ]
 
 
@@ -62,6 +69,15 @@ def test_connection_options_are_accepted_after_the_subcommand(command):
         [*command, "--url", "http://example", "-w", "ws", "--token", "tok"]
     )
     assert (args.url, args.workspace, args.token) == ("http://example", "ws", "tok")
+
+
+@pytest.mark.parametrize("command", COMMANDS, ids=lambda c: "-".join(c[:2]))
+def test_the_room_is_accepted_after_the_subcommand(command):
+    """`--room pair:x` is the handle a pair is used through, and an agent told
+    to use it appends it. Left out of this list it was an unrecognised
+    argument — or, on `say`, words folded into the message."""
+    assert build_parser().parse_args([*command, "--room", "pair:lab"]).room == "pair:lab"
+    assert build_parser().parse_args(["--room", "pair:lab", *command]).room == "pair:lab"
 
 
 def test_quiet_works_in_both_positions():
@@ -127,6 +143,8 @@ def test_the_help_text_does_not_advertise_the_duplicates(capsys):
         ("tell", "dm <agent>"),
         ("roster", "agents"),           # the MCP tool name for the same thing
         ("board_set", "board set"),     # ...and one that is only spelled differently
+        ("pairing", "pair start"),      # the noun for the verb
+        ("pair_accept", "pair accept"),  # the MCP tool name again
     ],
 )
 def test_a_verb_we_do_not_have_says_which_one_to_use(typed, expected, capsys):
