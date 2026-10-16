@@ -39,6 +39,7 @@ from . import (
     holds,
     invite,
     knownrooms,
+    pairing,
     rendezvous,
     rooms,
     signing,
@@ -314,6 +315,7 @@ _TOKEN_SOURCES = {
     "settings.local.json": ".claude/settings.local.json in this checkout",
     "mcp.json": ".mcp.json in this checkout",
     "invite": "the invite you passed",
+    "pair": "the pairing code, which carried it (`pair start --with-token`)",
 }
 
 
@@ -350,6 +352,7 @@ def _tried(config: ClientConfig | None) -> str:
         "flag": "the --url flag", "env": "SWITCHBOARD_URL",
         "mcp.json": ".mcp.json", "rooms": "this repo's rooms file",
         "invite": "the invite", "default": "the built-in default",
+        "pair": "the pair's record (`switchboard pair status`)",
     }.get(config.url_source, config.url_source)
     return f"  tried {config.url} (from {where}) with {credential}."
 
@@ -477,15 +480,111 @@ def _note_peers(hub: Client, agents: list[dict[str, Any]]) -> None:
         pass
 
 
+def _pairing_now() -> float | None:
+    """The clock pairing reads its deadlines on: None, meaning this machine's.
+
+    A seam, and only for tests. A pairing compares this machine's clock with
+    the hub's timestamps, and the in-process test hub runs years behind the
+    wall clock on purpose — so a CLI test that could not hand pairing the
+    hub's now would see every code as long expired. Nothing in production
+    replaces it.
+    """
+    return None
+
+
+def _pair_store() -> pairing.PairStore:
+    """This machine's pairs, read from `SWITCHBOARD_PAIRS` when asked for.
+
+    Built per call rather than once, like the known-rooms book: the variable
+    is read at construction, and a process — or a test playing two machines —
+    that changes it between commands must get the store it now names.
+    """
+    return pairing.PairStore()
+
+
+def _pair_agent(args: argparse.Namespace) -> str:
+    return detect_identity(agent_id=getattr(args, "agent_id", None)).agent_id
+
+
+def _pair_base(args: argparse.Namespace) -> ClientConfig:
+    """This invocation's room with any `pair:` handle left out.
+
+    What a pair's own rooms are built on: the hub token this environment holds
+    and the local stores. Never another pair's work room — its token may be
+    one a code carried for that pair alone, and its key must not seed a lobby.
+    """
+    if pairing.parse_handle(getattr(args, "room", None)) is None:
+        return _make_config(args)
+    return _make_config(argparse.Namespace(**{**vars(args), "room": None}))
+
+
+def _cached_pair(args: argparse.Namespace) -> pairing.Resolution | None:
+    """The resolution `--room pair:<name>` produced in this invocation, if any."""
+    cached = getattr(args, "_pair_resolved", None)
+    return cached[1] if cached else None
+
+
+def _resolve_pair(args: argparse.Namespace, name: str,
+                  base: ClientConfig) -> pairing.Resolution:
+    """Where `--room pair:<name>` points right now, asked once per invocation.
+
+    Once, and kept on the arguments rather than in a module global, for two
+    reasons. `_make_config` runs several times in one command — `whoami`
+    calls it three times, and the error path once more — and each resolution
+    is a read of the pair room, sometimes a write; repeating it would also
+    repeat every warning. And a global would carry one command's pair into
+    the next `main()` in the same process, which is how `_for_report` once
+    leaked a config between two tests.
+
+    The warnings are printed here, on stderr, whatever the command: they say
+    the pair is unconfirmed, that the other side healed it, that a secret in
+    the environment is behind — and a command that worked in a room it should
+    not trust, without saying so, is the failure pairing exists to prevent.
+    """
+    cached = getattr(args, "_pair_resolved", None)
+    if cached is not None and cached[0] == name:
+        return cached[1]
+    resolution = pairing.resolve(name, base, store=_pair_store(), connect=Client,
+                                 agent_id=_pair_agent(args), now=_pairing_now())
+    for line in resolution.warnings:
+        print(f"pair: {line}", file=sys.stderr)
+    args._pair_resolved = (name, resolution)
+    return resolution
+
+
+def _refuse_pair_label(label: str | None, flag: str) -> None:
+    """Refuse a known-room label that would read as a pair handle.
+
+    `--room pair:<name>` resolves through the pair store and never through the
+    book, so a book room labelled `pair:x` could never be reached by its label
+    — and a pair called x would quietly answer to it instead.
+    """
+    if label and pairing.parse_handle(label.strip()) is not None:
+        raise SystemExit(
+            f"{flag} {label!r}: labels starting with `pair:` are reserved for "
+            "paired machines' rooms (`switchboard pair status` lists them), so a "
+            "known room cannot be called that. Choose a label without the prefix."
+        )
+
+
 def _apply_known_room(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
     """Fold `--room <label>` in: a room from the book, by the name this
-    machine gave it, resolved the way it was learned."""
+    machine gave it, resolved the way it was learned — or, for `pair:<name>`,
+    a paired machine's current work room, resolved through the pair room."""
     label = getattr(args, "room", None)
     if not label:
         return config
     if getattr(args, "invite", None) or getattr(args, "lobby", False):
         raise SystemExit("--room names a known room; it cannot be combined with "
                          "--invite or --lobby, which name others.")
+    pair_name = pairing.parse_handle(label)
+    if pair_name is not None:
+        # Never the book. A heal moves a pair to a new work room, and the book
+        # keys a room on its workspace — so a recorded work room is one the
+        # pair may already have left, its key exposed. Resolved fresh each
+        # invocation instead, and a copy, so nothing that edits the config it
+        # is handed can reach the cached resolution.
+        return replace(_resolve_pair(args, pair_name, config).config)
     book = knownrooms.Book()
     room = book.by_label(label)
     if room is None:
@@ -627,6 +726,11 @@ def _remember_repo_room(args: argparse.Namespace, config: ClientConfig) -> None:
     never as its value (knownrooms.py).
     """
     if any(getattr(args, flag, None) for flag in ("invite", "lobby", "room", "workspace")):
+        return
+    if config.workspace_source == "pair":
+        # Said separately from `--room` above, which already covers it today:
+        # a pair's work room is retired by every heal, so a book entry for one
+        # is a pointer into a room whose key may be in the wrong hands.
         return
     try:
         where = Path(".").resolve()
@@ -1143,6 +1247,7 @@ def _rooms_book(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     if args.label:
         workspace, _, name = args.label.partition("=")
+        _refuse_pair_label(name, "--label")
         if not name or not book.relabel(workspace, name):
             print(f"error: --label takes WORKSPACE=NAME for a room in the book "
                   f"(got {args.label!r})", file=sys.stderr)
@@ -1919,6 +2024,20 @@ def _rendezvous_notes(
 
 
 def cmd_whoami(args: argparse.Namespace) -> int:
+    pair_name = pairing.parse_handle(getattr(args, "room", None))
+    if pair_name is not None and (args.show_key or args.env):
+        # Refused before anything is resolved, and not merely because the
+        # environment's key below would be the wrong one to print. A work
+        # room's key is derived and never needs to travel; handing it out
+        # would make a heal the only way to take it back, so the one way out
+        # is the one that says so on the way: an invite, with its caveat.
+        print(
+            "error: a paired work room's key is not printed. It leaves only as an "
+            f"invite: `switchboard --room pair:{pair_name} invite`, and "
+            f"`switchboard pair heal {pair_name}` ejects whoever holds it.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
     directory = Path(".").resolve()
@@ -1948,7 +2067,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     # comment below describes, one flag later: the command you run to find out
     # where you are pointed, pointing somewhere else.
     resolved_room = _make_config(args)
-    if getattr(args, "lobby", False) or getattr(args, "invite", None):
+    if getattr(args, "lobby", False) or getattr(args, "invite", None) or pair_name:
         workspace = resolved_room.workspace
     else:
         workspace = (
@@ -2049,6 +2168,11 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         "in_repo": identity.in_repo,
         "meta": identity.meta,
     }
+    pair = _cached_pair(args) if pair_name else None
+    if pair is not None:
+        # The resolution's own summary, which carries no secret: which work
+        # room generation this is, whether the other side confirmed, the SAS.
+        payload["pair"] = pair.summary()
     if args.json:
         _print_json(payload)
         # Still worth saying under --json: a script parsing this is exactly
@@ -2104,6 +2228,9 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     print(f"{fmt.dim('encrypted'.rjust(10))}  "
           + (fmt.green("yes — the hub cannot read this workspace")
              if encrypted else "no"))
+    if pair is not None:
+        print(f"{fmt.dim('pair'.rjust(10))}  {pair.room}: work room {pair.generation}, "
+              f"{pair.state}" + (f", SAS {pair.record.sas}" if pair.record.sas else ""))
     # Last, and after `encrypted` on purpose: a sealed channel to a hub with
     # nobody else on it reads as reassurance, and this is the line that says
     # what that reassurance is worth.
@@ -2903,9 +3030,20 @@ class _Post:
         #: value this process wrote — see `_back_in`.
         self.declared_back: float | None = None
         self.back_written: float | None = None
+        #: A pair's room: the pair's name, and its work-room generation when
+        #: this is the work room (`_pair_post`). None for every other room.
+        self.pair: str | None = None
+        self.generation: int | None = None
+        #: A pending pairing's handshake room instead (`_handshake_post`):
+        #: watched without announcing anything, and collected in-process the
+        #: moment something other than the initiator's own hello lands there.
+        self.handshake = False
+        self.settle: Callable[[], dict[str, Any] | None] | None = None
+        #: What settling found, for the wake line.
+        self.outcome: dict[str, Any] | None = None
 
     def __str__(self) -> str:
-        return f"{self.workspace} [{self.role}]"
+        return f"{self.workspace} [{self.role}{' handshake' if self.handshake else ''}]"
 
 
 class _Wake:
@@ -2942,34 +3080,55 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     found while it works; `--lobby` on its own parks in the lobby alone, since
     then the lobby *is* the room named.
 
+    Pairs too, unless `--no-pairs`: each recently used pair's current work
+    room, on the pair channel, and each pending pairing's handshake room,
+    where the answer will land and is collected in-process (`_park`).
+
     One process rather than two, and that is the point of doing it here: the
     process is what decides which room's message is the wake when both have
     one (`_choose_wake`), and a rule that lives in the process can change
     without every agent that arms a listener learning a new habit.
     """
     book = knownrooms.Book()
+    store = _pair_store()
     only = list(getattr(args, "only_rooms", None) or [])
     if only:
         # A deliberate choice replaces the whole default: the named rooms and
-        # nothing else, the lobby included.
+        # nothing else, the lobby and the pairs included.
         posts = []
+        base = _pair_base(args) if any(map(pairing.parse_handle, only)) else None
         for label in only:
-            post = _known_post(book, label, identity)
+            post = _labelled_post(book, store, base, label, identity)
             if post is not None:
                 posts.append(post)
         if not posts:
             raise SystemExit("listen --only: none of the rooms named could be opened")
         return posts
     primary = _make_client(args)
+    pair_name = pairing.parse_handle(getattr(args, "room", None))
     if getattr(args, "lobby", False):
         role = "lobby"
     elif getattr(args, "invite", None):
         role = "invite"
+    elif pair_name is not None:
+        role = pairing.handle(pair_name)
     elif getattr(args, "room", None):
         role = str(args.room)
     else:
         role = "room"
-    posts = [_Post(role, primary, args.channel or None)]
+    # A paired work room is watched on the pair channel unless `-c` says
+    # otherwise: neither side knows the other's agent id — a cloud session's
+    # changes every session — so the channel is where the other side speaks,
+    # and this agent's own inbox there would wait for a DM nobody can address.
+    posts = [_Post(role, primary,
+                   args.channel or ([pairing.CHANNEL] if pair_name is not None else None))]
+    if pair_name is not None:
+        resolved = _cached_pair(args)
+        posts[0].pair = pair_name
+        posts[0].generation = resolved.generation if resolved is not None else None
+    # What every pair's rooms are built on: this environment's own hub token,
+    # never the token a code carried for one pair in particular.
+    base = primary.config if pair_name is None else _pair_base(args)
 
     def add(post: _Post | None) -> None:
         if post is None:
@@ -2984,14 +3143,31 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     # 2026-09-03 a session sat parked in two rooms while its peer waited in a
     # third it had been invited to an hour earlier (knownrooms.py).
     for label in getattr(args, "in_rooms", None) or []:
-        add(_known_post(book, label, identity))
+        add(_labelled_post(book, store, base, label, identity))
     for room in book.recent():
         add(_known_post(book, room.label, identity, quiet=True))
+    # Every pair used lately, in its current work room, and every pairing
+    # still waiting on an answer, in its handshake room. The second is what
+    # makes a turn-based initiator collect within seconds of the answer rather
+    # than whenever a human next types: it printed a code and ended its turn,
+    # and this is the process still running.
+    if not getattr(args, "no_pairs", False):
+        now = _pairing_now()
+        for name in pairing.active(store, now=now):
+            if name != pair_name:   # already parked in, as the room named
+                add(_pair_post(name, base, identity, store, quiet=args.quiet))
+        for name, config in pairing.pending_rooms(store, base, now=now):
+            add(_handshake_post(name, config, base, identity, store))
     # `getattr`, like the flags above: a caller building the namespace by hand
     # — a test, a wrapper — gets the default rather than a crash.
     if getattr(args, "no_lobby", False) or role == "lobby":
         return posts
-    key = getattr(primary.config, "key", None) or _saved_key(Path(".").resolve())
+    # Under `--room pair:<name>` the lobby is this environment's, from its own
+    # key — never one derived from the work room's. That key is the pair's,
+    # it opens one generation of one room, and a lobby computed from it is a
+    # room nobody else will ever be in.
+    lobby_base = primary.config if pair_name is None else base
+    key = getattr(lobby_base, "key", None) or _saved_key(Path(".").resolve())
     if not key:
         # The lobby is derived from the key, so without one there is no lobby
         # to compute — not a room we would park in unencrypted.
@@ -3003,12 +3179,146 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     if lobby_workspace == primary.config.workspace:
         return posts
     lobby = Client(
-        replace(primary.config, workspace=lobby_workspace, workspace_source="lobby",
+        replace(lobby_base, workspace=lobby_workspace, workspace_source="lobby",
                 key=key, write_key=None),
         agent_id=identity.agent_id,
     )
     posts.append(_Post("lobby", lobby, None))
     return posts
+
+
+def _labelled_post(book: knownrooms.Book, store: pairing.PairStore,
+                   base: ClientConfig | None, label: str,
+                   identity: Identity) -> _Post | None:
+    """A room named by `--in` / `--only`: a pair's through pairing, else the book's.
+
+    A `pair:` label never reaches the book (`_refuse_pair_label`), and a pair
+    is resolved fresh here for the reason `--room` resolves it fresh: a heal
+    moves its work room, and the book would still name the one left behind.
+    """
+    name = pairing.parse_handle(label)
+    if name is None:
+        return _known_post(book, label, identity)
+    assert base is not None
+    return _pair_post(name, base, identity, store)
+
+
+def _pair_post(name: str, base: ClientConfig, identity: Identity,
+               store: pairing.PairStore, *, quiet: bool = False) -> _Post | None:
+    """A pair's current work room to park in, or None with a line saying why.
+
+    Resolved through the pair room, so a heal by the other side is followed
+    before parking rather than discovered by waiting in a room it left. Fails
+    soft: a pair that cannot be resolved costs this one room, never the park.
+    A pairing still waiting on its answer is parked in its handshake room
+    instead, which is where that answer will land.
+    """
+    now = _pairing_now()
+    try:
+        resolution = pairing.resolve(name, base, store=store, connect=Client,
+                                     agent_id=identity.agent_id, now=now)
+    except pairing.PairingError as exc:
+        if exc.state == "pending":
+            for pending, config in pairing.pending_rooms(store, base, now=now):
+                if pending == name:
+                    return _handshake_post(name, config, base, identity, store)
+        if not quiet:
+            print(f"listen: not parking in {pairing.handle(name)}: {exc}", file=sys.stderr)
+        return None
+    except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+        if not quiet:
+            print(f"listen: not parking in {pairing.handle(name)}: could not reach the hub "
+                  f"to resolve it ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+        return None
+    for line in resolution.warnings:
+        print(f"listen: {resolution.room}: {line}", file=sys.stderr)
+    post = _Post(resolution.room, Client(resolution.config, agent_id=identity.agent_id),
+                 [pairing.CHANNEL])
+    post.pair, post.generation = resolution.name, resolution.generation
+    return post
+
+
+def _handshake_post(name: str, config: ClientConfig, base: ClientConfig,
+                    identity: Identity, store: pairing.PairStore) -> _Post:
+    """A pending pairing's handshake room, watched for the answer.
+
+    Watched under a throwaway agent id and without announcing anything — no
+    presence, no heartbeat. The handshake room is the one room whose name is
+    expected to end up in a paper trail, and anyone holding the code can read
+    it, so a roster row there would hand them this machine's name, branch and
+    host for nothing in return: the answer is a message on the pair channel,
+    and reading it needs no presence at all.
+    """
+    post = _Post(pairing.handle(name),
+                 Client(config, agent_id=f"pair-listen-{secrets.token_hex(4)}"),
+                 [pairing.CHANNEL])
+    post.pair, post.handshake = name, True
+    post.settle = lambda: _settle_handshake(name, base, identity, store)
+    return post
+
+
+def _settle_handshake(name: str, base: ClientConfig, identity: Identity,
+                      store: pairing.PairStore) -> dict[str, Any] | None:
+    """Collect a pairing whose handshake room just woke, in this process.
+
+    In-process because the woken session should come back holding the
+    outcome — paired, with the SAS to compare; or aborted, because the code
+    leaked — rather than having to run `pair status` to learn which. None when
+    there is still nothing to collect (an answer that came too late, say),
+    which keeps the listener parked: waking a session to tell it nothing is
+    how a listener teaches its session to ignore it.
+    """
+    room = pairing.handle(name)
+    try:
+        done = pairing.collect(name, base, store=store, connect=Client,
+                               agent_id=identity.agent_id, now=_pairing_now())
+    except pairing.PairingError as exc:
+        return {"name": name, "room": room, "handshake": True,
+                "state": exc.state or "error", "message": str(exc), "warnings": []}
+    except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+        return {"name": name, "room": room, "handshake": True, "state": "pending",
+                "warnings": [f"an answer may have arrived but could not be collected "
+                             f"({exc.__class__.__name__}: {exc}); run `switchboard pair "
+                             "status` to collect it"]}
+    if done.state == "waiting":
+        for line in done.warnings:
+            print(f"listen: {room}: {line}", file=sys.stderr)
+        return None
+    report: dict[str, Any] = {"name": done.name, "room": done.room, "handshake": True,
+                              "state": done.state}
+    if done.record is not None and done.record.sas:
+        report["sas"] = done.record.sas
+    if done.message:
+        report["message"] = done.message
+    report["warnings"] = list(done.warnings)
+    return report
+
+
+def _pair_wake(post: _Post, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the wake line says about a pair's room, beyond its messages.
+
+    A handshake wake carries what settling found. A work-room wake says how
+    to take delivery — the pair channel is read with `-c pair`, and a listener
+    only peeks, so a session that reads it any other way is woken by the same
+    message next time — and what a `pair.moved` or `pair.ended` means.
+    """
+    if post.handshake:
+        return dict(post.outcome or {"name": post.pair, "room": post.role,
+                                     "handshake": True, "state": "pending"})
+    room = pairing.handle(post.pair or "")
+    report: dict[str, Any] = {"name": post.pair, "room": room,
+                              "generation": post.generation,
+                              "next": f"switchboard --room {room} inbox -c {pairing.CHANNEL}"}
+    types = {m.get("type") for m in messages}
+    if "pair.moved" in types:
+        report["moved"] = True
+        report["next"] = (f"the pair was healed: run your next command with --room {room} "
+                          "and it resolves to the new work room; this one is retired")
+    if "pair.ended" in types:
+        report["ended"] = True
+        report["next"] = (f"the other side ended the pair: `switchboard pair forget "
+                          f"{post.pair}`, and pair again if it is still needed")
+    return report
 
 
 def _known_post(book: knownrooms.Book, label: str, identity: Identity,
@@ -3147,35 +3457,11 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                     events.put(("deadline", post, None))
                     return
             try:
-                # Presence as well as the board key. A parked agent is the
-                # most reachable an agent ever is, and without this the
-                # roster says it does not exist: `agents` comes back empty
-                # and `dm` warns the sender their message will be read by
-                # nobody. `back_in` says when to expect it (`_back_in`), so
-                # an empty roster can be told from one between turns.
-                hub.register(
-                    name=identity.name, kind=identity.kind,
-                    branch=identity.branch,
-                    # Deliberately no task. Presence is this process's
-                    # business; what the agent is working on is the agent's,
-                    # and a listener that rewrites it every pass turns the
-                    # roster into a fight between two writers under one id.
-                    # `back_in` already renders as "away 12m", which is the
-                    # fact a peer actually wants.
-                    # And deliberately no channels, even with `-c`: the
-                    # listener reads the channels it names by naming them on
-                    # `inbox`, and needs no subscription to do it. Sending
-                    # them here replaced the agent's own subscriptions with
-                    # the listener's for as long as it was parked.
-                    channels=None,
-                    meta=identity.meta, ttl=heartbeat_ttl,
-                    back_in=_back_in(post, deadline, time.time()),
-                )
-                if wake.types:
-                    _hold(post, deadline)
-                hub.board_set(post.heartbeat,
-                              _heartbeat(post, wake, deadline, described, source),
-                              ttl=heartbeat_ttl)
+                # Not in a handshake room: anyone holding the code reads it,
+                # and nobody there needs to find this agent (`_handshake_post`).
+                if not post.handshake:
+                    _announce_parked(post, identity, wake, deadline, described, source,
+                                     heartbeat_ttl)
                 # peek: this process shares a read cursor with the session
                 # it serves, so draining would consume the very message it
                 # woke that session to read. The woken session drains.
@@ -3205,11 +3491,23 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             post.fails = 0
             if not messages:
                 continue
-            matched = wake.select(messages)
+            if post.handshake:
+                # Protocol traffic, so do-not-disturb does not apply: the
+                # wake is anything but the initiator's own hello, which was
+                # there before this listener was, and it is a wake only once
+                # collecting it settles something (`_settle_handshake`).
+                matched = [m for m in messages if m.get("type") != "pair.hello"]
+                if matched and post.settle is not None:
+                    post.outcome = post.settle()
+                    if post.outcome is None:
+                        matched = []
+            else:
+                matched = wake.select(messages)
             if matched:
                 # What arrived alongside the wake and did not cause it is
                 # deferred too; the payload's count must include it.
-                post.skipped += len(messages) - len(matched)
+                if not post.handshake:
+                    post.skipped += len(messages) - len(matched)
                 events.put(("message", post, matched))
                 return
             # Nothing that wakes. Remember how far we looked, so the next
@@ -3218,7 +3516,8 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             seqs = [m["seq"] for m in messages if isinstance(m.get("seq"), int)]
             if seqs:
                 post.since = max([*seqs, post.since or 0])
-            post.skipped += len(messages)
+            if not post.handshake:
+                post.skipped += len(messages)
     except Exception as exc:  # noqa: BLE001 - reported, not swallowed
         # A thread that dies silently leaves `cmd_listen` waiting on a queue
         # nothing will ever write to: with no deadline, forever, which is the
@@ -3230,10 +3529,44 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
     finally:
         # Best effort, and only best effort: the TTL is what makes a dead
         # listener visible. This makes a deliberate stop visible sooner.
-        try:
-            hub.board_delete(post.heartbeat)
-        except (SwitchboardError, OSError, httpx.HTTPError):
-            pass
+        if not post.handshake:
+            try:
+                hub.board_delete(post.heartbeat)
+            except (SwitchboardError, OSError, httpx.HTTPError):
+                pass
+
+
+def _announce_parked(post: _Post, identity: Identity, wake: "_Wake",
+                     deadline: float | None, described: str, source: str,
+                     heartbeat_ttl: float) -> None:
+    """One pass's presence: the roster row, the held DMs and the heartbeat."""
+    hub = post.hub
+    # Presence as well as the board key. A parked agent is the most reachable
+    # an agent ever is, and without this the roster says it does not exist:
+    # `agents` comes back empty and `dm` warns the sender their message will
+    # be read by nobody. `back_in` says when to expect it (`_back_in`), so an
+    # empty roster can be told from one between turns.
+    hub.register(
+        name=identity.name, kind=identity.kind,
+        branch=identity.branch,
+        # Deliberately no task. Presence is this process's business; what the
+        # agent is working on is the agent's, and a listener that rewrites it
+        # every pass turns the roster into a fight between two writers under
+        # one id. `back_in` already renders as "away 12m", which is the fact a
+        # peer actually wants.
+        # And deliberately no channels, even with `-c`: the listener reads the
+        # channels it names by naming them on `inbox`, and needs no
+        # subscription to do it. Sending them here replaced the agent's own
+        # subscriptions with the listener's for as long as it was parked.
+        channels=None,
+        meta=identity.meta, ttl=heartbeat_ttl,
+        back_in=_back_in(post, deadline, time.time()),
+    )
+    if wake.types:
+        _hold(post, deadline)
+    hub.board_set(post.heartbeat,
+                  _heartbeat(post, wake, deadline, described, source),
+                  ttl=heartbeat_ttl)
 
 
 def _standing_name(hub: Client, identity: Identity) -> Identity:
@@ -3356,8 +3689,9 @@ def cmd_listen(args: argparse.Namespace) -> int:
     threads = [
         threading.Thread(
             target=_park,
-            args=(post, _standing_name(post.hub, identity), deadline, described,
-                  source, heartbeat_ttl, args.max_fails, stop, events, wake),
+            args=(post, identity if post.handshake else _standing_name(post.hub, identity),
+                  deadline, described, source, heartbeat_ttl, args.max_fails, stop,
+                  events, wake),
             daemon=True, name=f"listen:{post.role}",
         )
         for post in posts
@@ -3398,8 +3732,23 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     # `inbox` holds more than what woke it.
                     **({"deferred": sum(p.skipped for p in posts)}
                        if wake.types else {}),
+                    # A pair's room says what the wake means for the pair: a
+                    # handshake wake was collected in-process and carries the
+                    # outcome; a work-room wake says how to take delivery.
+                    **({"pair": _pair_wake(chosen, chosen_messages)}
+                       if chosen.pair is not None else {}),
                 })
-                if not args.quiet:
+                if chosen.handshake and chosen.outcome is not None:
+                    outcome = chosen.outcome
+                    for line in outcome.get("warnings") or []:
+                        print(f"listen: {chosen.role}: {line}", file=sys.stderr)
+                    print(f"listen: {outcome.get('room', chosen.role)} "
+                          f"{outcome.get('state')}"
+                          + (f" — SAS {outcome['sas']}; compare it with the other side's"
+                             if outcome.get("sas") else "")
+                          + (f": {outcome['message']}" if outcome.get("message") else ""),
+                          file=sys.stderr)
+                elif not args.quiet:
                     print(f"listen: message arrived in {chosen} on pass "
                           f"{chosen.passes} — waking the session", file=sys.stderr)
                 return EXIT_OK
@@ -3424,6 +3773,8 @@ def cmd_listen(args: argparse.Namespace) -> int:
         for post in posts:
             # The thread's own cleanup only runs once its poll returns, which
             # may be after this process is gone; do it from here as well.
+            if post.handshake:
+                continue
             try:
                 post.hub.board_delete(post.heartbeat)
             except (SwitchboardError, OSError, httpx.HTTPError):
@@ -4386,10 +4737,26 @@ def cmd_invite(args: argparse.Namespace) -> int:
         note=args.note or "", probe=probe,
     )
     handover, caveat = _handover(blob, args)
+    # A paired work room's invite is a different credential from a repo
+    # room's, and the usual note would misdescribe it: its key opens this one
+    # generation and nothing else, and what takes it back is a heal. Said on
+    # stderr even under --json, because the agent asked to "let the reviewer
+    # into our pair" is the caller least likely to read a field.
+    pair = _cached_pair(args)
+    pair_note = (
+        f"this invite opens work room generation {pair.generation} of pair "
+        f"{pair.name} only; it does not follow a heal, and `switchboard pair heal "
+        f"{pair.name}` is how you eject whoever holds it."
+    ) if pair is not None else ""
     if args.json:
         _print_json({"invite": blob.encode(), "describes": blob.redacted(),
                      **({"link": handover} if args.link else {}),
-                     **({"carries_key": INVITE_KEY_NOTE} if blob.key else {})})
+                     **({"carries_key": INVITE_KEY_NOTE} if blob.key and not pair else {}),
+                     **({"pair": {"name": pair.name, "room": pair.room,
+                                  "generation": pair.generation, "note": pair_note}}
+                        if pair is not None else {})})
+        if pair_note:
+            print(f"note: {pair_note}", file=sys.stderr)
         return EXIT_OK
     print(handover)
     # Not inside the prompt block below: that one is gated on a TTY, and a
@@ -4400,7 +4767,9 @@ def cmd_invite(args: argparse.Namespace) -> int:
     # Not gated either, and for the same reason: the one most likely to mint
     # an invite for a chat is an agent, with no TTY, asked to "give ChatGPT
     # access to the repo room".
-    if blob.key:
+    if pair_note:
+        print(f"\nnote: {pair_note}", file=sys.stderr)
+    elif blob.key:
         print(f"\nnote: {INVITE_KEY_NOTE}", file=sys.stderr)
     if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
         fmt = Fmt(_use_color(sys.stdout))
@@ -4445,6 +4814,7 @@ def cmd_join(args: argparse.Namespace) -> int:
     One implementation, one wording, in the place the SDK already tests it.
     """
     fmt = Fmt(_use_color(sys.stdout))
+    _refuse_pair_label(args.save, "--save")
     blob = getattr(args, "invite", None)
     if not blob:
         print("error: join needs the invite string — `switchboard join swb1_...`, "
@@ -4561,6 +4931,392 @@ def cmd_join(args: argparse.Namespace) -> int:
     # kind of overclaim that makes the whole check less worth trusting.
     print(f"\n{fmt.green('verified')} — {check.detail}."
           + (f"\n\n{room.note}" if room.note else ""), file=sys.stderr)
+    return EXIT_OK
+
+
+# --- pairing -----------------------------------------------------------------
+#
+# Two machines, one code carried once, and rooms neither ever sends. The
+# protocol is `pairing.py`, and every decision about what is safe lives there;
+# what lives here is the surface — the `pair` commands, their wording and
+# their exit codes. The handle every other command takes, `--room pair:<name>`,
+# is `_apply_known_room`'s, and a parked listener's share is `_listen_posts`'.
+
+
+def _local_iso(ts: float | None) -> str:
+    if ts is None:
+        return "-"
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+def cmd_pair(args: argparse.Namespace) -> int:
+    """Pair this machine with another, or look after a pair it already has.
+
+    Thin over `switchboard.pairing`, the way `session` is over `handoff`: the
+    CLI and the MCP bridge drive the same functions, so they cannot disagree
+    about what a code is worth. What this adds is the wording and exit codes a
+    loop can branch on — and that every refusal arrives as a sentence. A
+    `PairingError` is never the network's fault, and `main()` reporting one as
+    a hub that could not be reached would send somebody to debug a connection
+    for a code that leaked.
+    """
+    handlers: dict[str, Callable[[argparse.Namespace], int]] = {
+        "start": _pair_start, "accept": _pair_accept, "status": _pair_status,
+        "wait": _pair_wait, "heal": _pair_heal, "forget": _pair_forget,
+        "export": _pair_export,
+    }
+    try:
+        return handlers[args.pair_action](args)
+    except pairing.AlreadyRedeemed as exc:
+        # Its own exit code: the one refusal meaning somebody else holds the
+        # code. A script that retries on 1 must not retry its way past this.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_CONFLICT
+    except pairing.PairingError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        # The pair store, not the hub. A pair record is the only copy of its
+        # secret, so a write that fails stops the command — and `main()` would
+        # report it as "cannot reach hub", which for a full disk is exactly wrong.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def _pair_start(args: argparse.Namespace) -> int:
+    """`pair start`: the code on stdout, alone, and what it is worth on stderr.
+
+    The code is the artifact, so it is the only thing on stdout: a caller
+    piping it somewhere gets the code and nothing that could be taken for part
+    of it. The safety caveats go to stderr whatever `-q` says — a code is a
+    live credential until it is redeemed or expires, and the caller most
+    likely to run this is an agent with no terminal to show a prompt on.
+    `-q` drops only the how-to.
+    """
+    identity = detect_identity(agent_id=args.agent_id)
+    started = pairing.start(
+        _make_config(args), store=_pair_store(), connect=Client,
+        name=args.pair_name, note=args.note or "", ttl=args.ttl,
+        with_token=args.with_token, now=_pairing_now(),
+    )
+    describes = pairing.PairingCode.decode(started.code).redacted()
+    if args.json:
+        _print_json({
+            "code": started.code, "name": started.name, "room": started.room,
+            "expires_at": started.expires_at, "deadline": started.deadline,
+            "state": "pending", "verifiable": started.verifiable,
+            "describes": describes,
+            **({"unproven": started.unproven} if started.unproven else {}),
+        })
+    else:
+        print(started.code)
+    fmt = Fmt(_use_color(sys.stderr))
+    notes = [
+        fmt.yellow("This code is a credential") + " until it is redeemed or expires "
+        f"({_local_iso(started.expires_at)}): whoever runs `pair accept` with it first "
+        "is paired with this machine, so hand it to one place, once.",
+    ]
+    if identity.kind == "cloud":
+        notes.append(
+            fmt.yellow("warning:") + " this looks like a cloud session. Start a pairing on "
+            "the machine that stays and run `pair accept` here instead: the side that "
+            "starts keeps the handshake until it collects the answer, and a container "
+            "thrown away first takes the pairing with it."
+        )
+    if started.unproven:
+        notes.append(
+            fmt.yellow("warning:") + f" could not reach the hub ({started.unproven}), so "
+            "the code's expiry is this machine's clock and the other side cannot check "
+            "it is on the same hub. It still pairs once both sides reach that hub."
+        )
+    if not args.quiet:
+        notes.append(
+            "The other machine — the one that may not stay, like a cloud session — runs:\n"
+            "  switchboard pair accept <the code>\n"
+            "This machine collects the answer on its own: a parked `switchboard listen`, "
+            f"`switchboard pair status`, `switchboard pair wait {started.name}`, or any "
+            f"`--room {started.room}` command. Both sides then work in `--room "
+            f"{started.room}`; compare the SAS `pair status` shows on each side when it "
+            "matters which machine answered."
+        )
+    print("\n" + "\n\n".join(notes), file=sys.stderr)
+    if not args.json and _can_prompt(no_input=args.no_input, quiet=args.quiet,
+                                     as_json=args.json):
+        _offer_clipboard(started.code, "the code", args)
+    return EXIT_OK
+
+
+def _pair_accept(args: argparse.Namespace) -> int:
+    """`pair accept CODE`: the room handle on stdout, which is all that is needed.
+
+    The handle is the same string on both sides and on every surface, so it is
+    what a caller wants back; the pair secret itself never appears. Usable at
+    once and *unconfirmed* until the other side collects (`pairing.accept`),
+    and that is said, because a responder that starts talking into work room 0
+    before it is confirmed is talking to nobody yet.
+    """
+    accepted = pairing.accept(
+        args.code, _make_config(args), store=_pair_store(), connect=Client,
+        name=args.pair_name, note=args.note or "", agent_id=_pair_agent(args),
+        now=_pairing_now(),
+    )
+    record = accepted.record
+    if args.json:
+        _print_json({
+            "name": accepted.name, "room": accepted.room, "state": accepted.state,
+            "generation": record.generation, "deadline": record.deadline,
+            "warnings": list(accepted.warnings),
+        })
+        return EXIT_OK
+    print(accepted.room)
+    for line in accepted.warnings:
+        print(f"pair: {line}", file=sys.stderr)
+    if accepted.state == "unconfirmed":
+        print(
+            f"pair: unconfirmed — usable now as `--room {accepted.room}`, but the other "
+            "side is not in that room until it collects this answer, on its next `pair "
+            "status`, `pair wait` or parked listener (it can until "
+            f"{_local_iso(record.deadline)}). `switchboard pair wait {accepted.name}` "
+            "waits for that here.",
+            file=sys.stderr,
+        )
+    if record.peer_note and not args.quiet:
+        print(f"pair: the other side's note: {record.peer_note}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _pair_row_failed(row: dict[str, Any]) -> bool:
+    """Whether a `pairing.status` row is a pair that cannot be used."""
+    return "error" in row or row.get("state") in ("expired", "aborted")
+
+
+def _pair_status(args: argparse.Namespace) -> int:
+    """`pair status [NAME]`: every pair here, brought up to date.
+
+    Not read-only, deliberately: this is one of the touches a turn-based
+    initiator collects on (`pairing.status`). A dead pair is a row rather than
+    an exit, so one cannot hide the rest; the exit code fails only when the
+    one pair asked about by name is unusable, which is the question a script
+    passing a name was asking.
+    """
+    rows = pairing.status(
+        _make_config(args), store=_pair_store(), connect=Client,
+        name=args.pair_name, agent_id=_pair_agent(args), now=_pairing_now(),
+    )
+    code = EXIT_ERROR if args.pair_name and any(map(_pair_row_failed, rows)) else EXIT_OK
+    if args.json:
+        _print_json({"pairs": rows})
+        return code
+    if not rows:
+        print("no pairs on this machine — `switchboard pair start` begins one, and "
+              "`switchboard pair accept <code>` redeems one.")
+        return code
+    fmt = Fmt(_use_color(sys.stdout))
+    print(fmt.bold(f"{'NAME':<22} {'ROOM':<27} {'ROLE':<10} {'STATE':<15} {'GEN':>4}  SAS"))
+    for row in rows:
+        state = str(row.get("state") or "-")
+        paint = (fmt.green if state == "paired" else
+                 fmt.yellow if state in ("pending", "unconfirmed") else fmt.red)
+        generation = row.get("generation")
+        print(f"{str(row.get('name'))[:21]:<22} {str(row.get('room'))[:26]:<27} "
+              f"{str(row.get('role') or '-'):<10} {paint(f'{state:<15}')} "
+              f"{('-' if generation is None else generation):>4}  {row.get('sas') or '-'}")
+        for line in row.get("warnings") or []:
+            print(f"  {fmt.yellow('warning:')} {line}")
+        if row.get("error"):
+            print(f"  {fmt.red('error:')} {row['error']}")
+        elif row.get("message"):
+            print(f"  {row['message']}")
+    return code
+
+
+def _pair_check(name: str, base: ClientConfig, store: pairing.PairStore,
+                agent_id: str) -> tuple[dict[str, Any], ClientConfig | None]:
+    """One look at where a pairing stands, and the room to wait in for the next.
+
+    The initiator's next event is an answer in the handshake room; the
+    responder's is the initiator's hello in work room 0, posted as it
+    collects. None for the room means there is nothing left to wait for.
+    """
+    now = _pairing_now()
+    if store.pending(name) is not None or store.get(name) is None:
+        done = pairing.collect(name, base, store=store, connect=Client,
+                               agent_id=agent_id, now=now)
+        report: dict[str, Any] = {
+            "name": done.name, "room": done.room,
+            "state": "pending" if done.state == "waiting" else done.state,
+        }
+        if done.record is not None:
+            report.update(role=done.record.role, generation=done.record.generation,
+                          sas=done.record.sas)
+        if done.message:
+            report["message"] = done.message
+        report["warnings"] = list(done.warnings)
+        if done.state != "waiting":
+            return report, None
+        return report, dict(pairing.pending_rooms(store, base, now=now)).get(name)
+    resolution = pairing.resolve(name, base, store=store, connect=Client,
+                                 agent_id=agent_id, now=now)
+    return resolution.summary(), None if resolution.state == "paired" else resolution.config
+
+
+def _pair_wait(args: argparse.Namespace) -> int:
+    """`pair wait NAME`: block until the pairing settles, or the deadline does.
+
+    For the side with nothing else to do until it does — a script, or an
+    agent told "pair, then start". Each side parks where its next event will
+    land (`_pair_check`) on a long poll, not a sleep loop, so the wait ends a
+    moment after the other side acts rather than at the next tick.
+
+    Exit 0 paired; 2 the deadline came first and it is still pending, the
+    same 2 `listen` and `session receive --wait` mean "nothing yet" by; 1 it
+    can never pair — expired, aborted, voided.
+    """
+    if args.until <= 0:
+        raise SystemExit("--until is how many seconds to wait for the pairing to "
+                         "settle; give a positive number.")
+    deadline = time.time() + args.until
+    base, store, agent_id = _make_config(args), _pair_store(), _pair_agent(args)
+    since = 0
+    while True:
+        report, park = _pair_check(args.pair_name, base, store, agent_id)
+        state = report.get("state")
+        settled = state not in ("pending", "unconfirmed")
+        left = deadline - time.time()
+        if settled or left <= 0:
+            break
+        if park is None:
+            # Pending by the protocol's verdict, with no room left to park in
+            # (its own clock and the store's disagree at the edge): look again
+            # shortly rather than call it settled.
+            time.sleep(min(2.0, left))
+            continue
+        try:
+            with Client(park, agent_id=f"pair-wait-{secrets.token_hex(4)}") as hub:
+                messages = hub.inbox(channels=[pairing.CHANNEL], wait=min(25.0, left),
+                                     peek=True, since=since, limit=1000)
+        except (SwitchboardError, OSError, httpx.HTTPError):
+            time.sleep(min(2.0, max(0.0, left)))
+            continue
+        seqs = [m["seq"] for m in messages if isinstance(m.get("seq"), int)]
+        since = max([since, *seqs])
+    room = report.get("room") or pairing.handle(args.pair_name)
+    if args.json:
+        _print_json(report)
+    elif state == "paired":
+        print(f"{room} paired" + (f" — SAS {report['sas']}; compare it with the other "
+                                  "side's" if report.get("sas") else ""))
+    elif not settled:
+        print(f"{room} still {state} after {args.until:g}s")
+    else:
+        print(f"{room} {state}")
+    if not args.json:
+        for line in report.get("warnings") or []:
+            print(f"pair: {line}", file=sys.stderr)
+        if report.get("message"):
+            print(f"pair: {report['message']}", file=sys.stderr)
+    if state == "paired":
+        return EXIT_OK
+    return EXIT_DEADLINE if not settled else EXIT_ERROR
+
+
+def _pair_heal(args: argparse.Namespace) -> int:
+    """`pair heal NAME`: retire the work room, because its key got out.
+
+    The handle does not change — `--room pair:<name>` follows on both sides —
+    but the room does, and a heal is a room rotation with everything that
+    costs (`pairing.heal`): leases, board entries and unread messages stay
+    behind, and the other side is in the old room until it next reads the pair
+    room. Both are said, because a heal reported as clean is how two agents
+    end up in different rooms, each thinking the other went quiet.
+    """
+    healed = pairing.heal(
+        args.pair_name, _make_config(args), store=_pair_store(), connect=Client,
+        reason=args.reason or "", agent_id=_pair_agent(args), now=_pairing_now(),
+    )
+    room = pairing.handle(healed.name)
+    warnings = list(healed.warnings)
+    warnings.append(
+        f"the other side is still in work room {healed.from_generation} until it next "
+        f"resolves `--room {room}` — any command does, and a listener parked in the old "
+        "room wakes on the moved note left there. Until then the two sides are in "
+        "different rooms and do not exclude each other."
+    )
+    if healed.left_behind:
+        warnings.append(
+            f"{len(healed.left_behind)} lease(s) this agent held in work room "
+            f"{healed.from_generation} stay there until they expire, and exclude nobody "
+            f"in the new one: claim again with `--room {room}` what you still need."
+        )
+    if args.json:
+        _print_json({"name": healed.name, "room": room, "from": healed.from_generation,
+                     "to": healed.to_generation, "left_behind": healed.left_behind,
+                     "warnings": warnings})
+        return EXIT_OK
+    print(f"{room} → work room {healed.to_generation}")
+    for line in warnings:
+        print(f"pair: {line}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _pair_forget(args: argparse.Namespace) -> int:
+    """`pair forget NAME`: end the pair here, and tell the other side.
+
+    Forgotten here whatever the hub says (`pairing.forget`); whether the other
+    side was told is reported rather than assumed, because a peer that was not
+    told keeps working in a room nobody will read again.
+    """
+    forgotten = pairing.forget(
+        args.pair_name, _make_config(args), store=_pair_store(), connect=Client,
+        agent_id=_pair_agent(args), now=_pairing_now(),
+    )
+    if args.json:
+        _print_json({"name": forgotten.name, "forgotten": True,
+                     "peer_told": forgotten.peer_told, "warnings": list(forgotten.warnings)})
+        return EXIT_OK
+    print(f"forgot {pairing.handle(forgotten.name)}"
+          + ("; the other side was told" if forgotten.peer_told else ""))
+    for line in forgotten.warnings:
+        print(f"pair: {line}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _pair_export(args: argparse.Namespace) -> int:
+    """`pair export NAME [--peer]`: the pair as one environment variable.
+
+    For a container that does not keep its home directory. It is the one
+    deliberate way a pair secret leaves the store, so it says what it is on
+    stderr every time, `-q` or not. Resolved first, so what is exported is the
+    current generation rather than whatever this machine last saw — a stale
+    one starts every fresh container a heal behind. `--peer` exports the
+    *other* side's half: run on the machine that stays, it hands a cloud
+    environment its side without the secret passing through that session.
+    """
+    resolution = pairing.resolve(args.pair_name, _make_config(args), store=_pair_store(),
+                                 connect=Client, agent_id=_pair_agent(args),
+                                 now=_pairing_now())
+    record = resolution.record
+    variable = pairing.env_var_for(record.name)
+    value = pairing.export(record, for_peer=args.peer)
+    role = record.peer_role if args.peer else record.role
+    if args.json:
+        _print_json({"name": record.name, "variable": variable, "value": value,
+                     "role": role})
+    else:
+        print(f"{variable}={value}")
+        for line in resolution.warnings:
+            print(f"pair: {line}", file=sys.stderr)
+    print(
+        f"note: this is pair {record.name}'s long-lived secret ({role} side): every work "
+        "room the pair will ever have derives from it, and a heal does not take it back "
+        "— only `pair forget` on both sides does. Put it in the environment's secret "
+        "store, never in a conversation, a ticket or a commit."
+        + ("" if args.peer else
+           f" Prefer `switchboard pair export {record.name} --peer`, run on the machine "
+           "that stays: it hands the other side its half without the secret passing "
+           "through that side's own session."),
+        file=sys.stderr,
+    )
     return EXIT_OK
 
 
@@ -6661,6 +7417,10 @@ _GLOBAL_FLAGS: tuple[tuple[tuple[str, ...], dict[str, Any]], ...] = (
     (("--agent-id",), {}),
     (("--key",), {}),
     (("--invite",), {}),
+    # Here since pairing: `say --room pair:x …` is how an agent told "use
+    # --room pair:x" types it, and the room a command runs in is the one
+    # option whose misplacement must not read as a message to post.
+    (("--room",), {}),
     (("--json",), {"action": "store_true"}),
     (("-q", "--quiet"), {"action": "store_true"}),
 )
@@ -6743,6 +7503,13 @@ _MISTAKEN_VERBS = {
     "export": "session export",
     "resume": "session resume <session-id>",
     "receive": "session receive",
+    "pairing": "pair start on the machine that stays, or pair accept <code> on the other",
+    "paired": "pair status",
+    "pair_start": "pair start",
+    "pair_accept": "pair accept <code>",
+    "pair_status": "pair status",
+    "pair_heal": "pair heal <name>",
+    "pair_forget": "pair forget <name>",
 }
 
 
@@ -6806,7 +7573,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="run this command in a room this machine knows, by the label "
              "`switchboard rooms --known` shows. Resolved the way the room was "
              "learned — the invite it arrived as, the checkout `init` set up, the "
-             "variable that holds its key — never from a key typed here.",
+             "variable that holds its key — never from a key typed here. "
+             "`pair:NAME` is a paired machine's current work room (`switchboard "
+             "pair`), resolved through the pair room each time, so it follows a heal.",
     )
     parser.add_argument(
         "--lobby", action="store_true",
@@ -7143,6 +7912,64 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: 'invited')")
     p.set_defaults(func=cmd_join)
 
+    p = sub.add_parser(
+        "pair",
+        help="pair two machines with one code carried once, and rooms neither sends",
+        description="An invite is the room itself, so whatever carried it — a chat, a "
+                    "ticket — holds the room for as long as it lives. Pairing carries "
+                    "one short-lived code instead, and both machines derive the rooms "
+                    "they share from a secret neither ever sends: after the code is "
+                    "redeemed, finding it in a paper trail is worth nothing. Run "
+                    "`pair start` on the machine that stays and `pair accept` on the "
+                    "other; both then use `--room pair:NAME`.",
+    )
+    psub = p.add_subparsers(dest="pair_action", required=True)
+    s = psub.add_parser(
+        "start", help="begin a pairing on the machine that stays; prints the code")
+    s.add_argument("--name", dest="pair_name", metavar="NAME",
+                   help="what both sides call the pair (default: one derived from the "
+                        "code, so both sides arrive at the same name unasked)")
+    s.add_argument("--note", help="one line for whoever redeems the code: which machine "
+                                  "this is, and why")
+    s.add_argument("--ttl", type=float, default=pairing.DEFAULT_TTL, metavar="SECONDS",
+                   help=f"how long the code can be redeemed (default "
+                        f"{pairing.DEFAULT_TTL}, {pairing.MIN_TTL} to {pairing.MAX_TTL}). "
+                        "Short on purpose: the code is the part expected to leak")
+    s.add_argument("--with-token", action="store_true",
+                   help="let the code carry this hub's token, for a machine that does "
+                        "not hold it. The code is the part that ends up in a ticket, so "
+                        "only for a hub whose token is not a real secret")
+    s.add_argument("--no-input", action="store_true", help="never stop to ask")
+    s = psub.add_parser("accept", help="redeem a code on the machine that may not stay")
+    s.add_argument("code", help="the swbp1_ code `pair start` printed on the other side")
+    s.add_argument("--name", dest="pair_name", metavar="NAME",
+                   help="what to call the pair here (default: the name in the code)")
+    s.add_argument("--note", help="one line the other side sees about this machine")
+    s = psub.add_parser(
+        "status", help="every pair here, brought up to date — collects pending answers")
+    s.add_argument("pair_name", nargs="?", metavar="NAME", help="only this pair")
+    s = psub.add_parser(
+        "wait", help="block until a pairing settles: 0 paired, 2 still pending, 1 dead")
+    s.add_argument("pair_name", metavar="NAME")
+    s.add_argument("--until", type=float, default=60.0, metavar="SECONDS",
+                   help="how long to wait (default 60)")
+    s = psub.add_parser(
+        "heal", help="move the pair to a new work room, because the current one's key "
+                     "leaked; leases and unread messages stay behind")
+    s.add_argument("pair_name", metavar="NAME")
+    s.add_argument("--reason", help="one line the other side sees about why")
+    s = psub.add_parser("forget", help="end the pair here, and tell the other side")
+    s.add_argument("pair_name", metavar="NAME")
+    s = psub.add_parser(
+        "export", help="print the pair as SWITCHBOARD_PAIR_<NAME>=…, for a container's "
+                       "secret store — a long-lived secret")
+    s.add_argument("pair_name", metavar="NAME")
+    s.add_argument("--peer", action="store_true",
+                   help="export the other side's half instead: run on the machine that "
+                        "stays, so the secret never passes through the other side's "
+                        "own session")
+    p.set_defaults(func=cmd_pair)
+
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)
 
@@ -7379,7 +8206,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "than drains, so the woken session still calls `inbox` to "
                     "take delivery. One process parks in this room and in the "
                     "lobby every holder of your key shares, so you are findable "
-                    "from other repos while you wait (--no-lobby opts out). Exit "
+                    "from other repos while you wait (--no-lobby opts out), and in "
+                    "your paired machines' rooms (--no-pairs opts out). Exit "
                     "0 a message arrived, 2 the deadline passed, 1 it never "
                     "watched anything.",
     )
@@ -7416,12 +8244,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "peer on another repo can find you — this is for a session "
                         "that specifically does not want to be found while it works.")
     p.add_argument("--in", dest="in_rooms", action="append", metavar="LABEL",
-                   help="also park in a known room, by label (repeatable). Rooms this "
-                        "session joined, was invited into or minted in the last hour "
-                        "are parked in without asking.")
+                   help="also park in a known room, by label, or a pair's work room "
+                        "as pair:NAME (repeatable). Rooms this session joined, was "
+                        "invited into or minted in the last hour are parked in without "
+                        "asking.")
     p.add_argument("--only", dest="only_rooms", action="append", metavar="LABEL",
-                   help="park in these known rooms and nowhere else — not this room, "
-                        "not the lobby (repeatable)")
+                   help="park in these known rooms or pair:NAME rooms and nowhere else "
+                        "— not this room, not the lobby, not the other pairs (repeatable)")
+    p.add_argument("--no-pairs", action="store_true",
+                   help="do not park in paired rooms. By default one listener also "
+                        "parks in the work room of every pair used in the last day, "
+                        "waking on the pair channel, and in the handshake room of every "
+                        "pairing still waiting on its answer — which it collects the "
+                        "moment the answer lands, before waking you with the outcome.")
     p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")
@@ -7884,6 +8719,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Raised by `--invite` on any command, from inside `_make_config` — so
         # every command gets the parse error as a sentence rather than the
         # traceback each would otherwise have to catch for itself.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except pairing.AlreadyRedeemed as exc:
+        # The one pairing refusal that means "the code leaked" rather than
+        # "try again", so it exits with the conflict code a script can tell
+        # apart from a network failure. `cmd_pair` catches it first; this is
+        # for anything else that ever reaches the protocol.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_CONFLICT
+    except pairing.PairingError as exc:
+        # Raised by `--room pair:<name>` on any command, from inside
+        # `_make_config`: the other side ended the pair, it was never
+        # confirmed, the store is disabled. Each is a sentence with the way
+        # out, and none of them is a hub that could not be reached.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except KeyboardInterrupt:
