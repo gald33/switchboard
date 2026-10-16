@@ -31,11 +31,17 @@ from switchboard.mcp_server import (
     hosted_relay,
     make_hosted_server,
 )
+from switchboard.pairing import PairingCode
 from switchboard.testing import BASE_URL
 from switchboard.testing import hub as make_hub
 
 WS = "hosted-ws"
 OPERATOR = "Example Operator <ops@example.com>"
+
+#: The tools that reach for the bridge machine itself — its Claude Code
+#: transcripts, its pair store. A hosted bridge serves none of them.
+MACHINE_LOCAL = {"session_handoff", "session_import", "session_resume",
+                 "pair_start", "pair_accept", "pair_status", "pair_heal", "pair_forget"}
 
 
 @pytest.fixture
@@ -170,11 +176,16 @@ def test_machine_local_tools_are_withheld(hub, hosted):
     blob = invite_for(hub)
     tools = {t["name"]: t for t in send(server, path="/mcp", body=rpc(
         "tools/list")).json()["result"]["tools"]}
-    assert tools and not {"session_handoff", "session_import", "session_resume"} & set(tools)
+    assert tools and not MACHINE_LOCAL & set(tools)
     # join_room is there, but it is the front door's: the invite and nothing else.
     assert list(tools["join_room"]["inputSchema"]["properties"]) == ["invite"]
     payload, is_error = tool(server, blob, "session_handoff")
     assert is_error and "hosted bridge" in payload["detail"]
+    # Named, not merely absent: a model that read about pairing elsewhere and
+    # calls it anyway is told why, rather than that no such tool exists.
+    payload, is_error = tool(server, blob, "pair_start")
+    assert is_error and "hosted bridge" in payload["detail"]
+    assert "pairing secrets" in payload["detail"]
 
 
 # --- disclosure -------------------------------------------------------------
@@ -366,12 +377,16 @@ def test_nothing_is_written_to_the_operators_disk(hub, hosted, tmp_path, monkeyp
     # hosted bridge each would be a record of somebody else's room.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("SWITCHBOARD_STASH_DB", raising=False)
+    # And the pair store, the one that would hold secrets outright.
+    monkeypatch.delenv("SWITCHBOARD_PAIRS", raising=False)
     server, _ = hosted
     blob = invite_for(hub, note="disk")
     tool(server, blob, "say", channel="general", message="hi",
          execution_class="chat", effort="low")
     tool(server, blob, "inbox")
     tool(server, blob, "roster")
+    tool(server, blob, "pair_start")
+    tool(server, blob, "pair_status")
     assert list(tmp_path.iterdir()) == []
 
 
@@ -469,7 +484,23 @@ def test_the_front_door_lists_join_room_with_an_invite_parameter(hosted):
     assert tools["join_room"]["inputSchema"]["required"] == ["invite"]
     assert "room" in tools["roster"]["inputSchema"]["properties"]
     assert "room" not in tools["roster"]["inputSchema"]["required"]
-    assert not {"session_handoff", "session_import", "session_resume"} & set(tools)
+    assert not MACHINE_LOCAL & set(tools)
+
+
+def test_the_front_door_refuses_a_pairing_code_without_building_an_agent(hub, hosted):
+    """A code parsed as an invite would be its handshake room, joined in the
+    open on a server whose operator could then answer it in place of the
+    intended peer. Refused before anything is built for it."""
+    server, bridges = hosted
+    code = PairingCode(url=hub.url, secret=b"s" * 32, initiator=b"e" * 32,
+                       expires_at=2_000_000_000, commit=b"c" * 16).encode()
+    response = send(server, path="/mcp", body=rpc(
+        "tools/call", name="join_room", arguments={"invite": code}))
+    result = response.json()["result"]
+    payload = json.loads(result["content"][0]["text"])
+    assert result["isError"] and payload["joined"] is False
+    assert "pairing code" in payload["error"]
+    assert len(bridges) == 0
 
 
 def test_join_once_and_the_session_stays_in_that_room(hub, hosted):

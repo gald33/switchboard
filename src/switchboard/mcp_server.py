@@ -22,6 +22,7 @@ Over stdio, stdout is the protocol channel — every diagnostic goes to stderr.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import json
@@ -36,10 +37,12 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import urlsplit
 
-from . import __version__, claude_session, handoff, knownrooms, rendezvous, rooms
+import httpx
+
+from . import __version__, claude_session, handoff, knownrooms, pairing, rendezvous, rooms
 from .bridge_links import (
     DEFAULT_REDIRECT_HOSTS,
     SCOPE,
@@ -66,6 +69,7 @@ from .handoff import HandoffError
 from .holds import clear_own_declaration, declared_hold, holder
 from .holds import declare as declare_hold
 from .invite import Invite, InviteError
+from .pairing import AlreadyRedeemed, PairingError
 from .signing import RemoteSigningIdentity, SigningServer
 from .spec import SPEC_FILE, SpecError, roles_for
 from .timing import (
@@ -125,6 +129,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _iso_at(ts: float) -> str:
+    """A unix time in the same shape `_now_iso` gives, so the two compare."""
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+
+#: What pair_accept says to do after the refusals that have an obvious next
+#: step. The refusal's own message already says why; this is the one line a
+#: model acts on.
+_ACCEPT_NEXT = {
+    "expired": ("Ask for a fresh code (pair_start on the machine that stays), and do "
+                "not reuse this one: an expired code may already be in a paper trail."),
+    "wrong_hub": ("Nothing was sent. Check that this bridge reaches the hub the code was "
+                  "made on (SWITCHBOARD_URL), or ask for a fresh code."),
+    "name_taken": "Pass a different 'name', or pair_forget the existing pair first.",
+    "disabled": ("Pairing is switched off on this machine: SWITCHBOARD_PAIRS is empty in "
+                 "this bridge's environment. Unset it, or point it at a directory."),
+}
+
+
 # --- tool schemas -----------------------------------------------------------
 
 _STR = {"type": "string"}
@@ -135,14 +158,24 @@ _BOOL = {"type": "boolean"}
 #: Tools that act on a room, and therefore accept `room` to act on a joined
 #: one instead of the default. Added in one loop below rather than typed into
 #: fifteen schemas, so a tool added later is routable the moment it is
-#: room-scoped — the dispatcher already handles it.
-_ROOMLESS = {"help", "whoami", "keygen", "join_room", "session_resume"}
+#: room-scoped — the dispatcher already handles it. The pair_* tools are here
+#: because each picks its own rooms (a handshake room, a pair room) from the
+#: pair store, and a `room` on them would read as if it did something.
+_PAIRING_TOOLS = ("pair_start", "pair_accept", "pair_status", "pair_heal", "pair_forget")
+_ROOMLESS = {"help", "whoami", "keygen", "join_room", "session_resume", *_PAIRING_TOOLS}
 
 #: The one room handle that is not a join_room result. Derived from the key
 #: rather than handed over, so every holder of the key names the same room
 #: without agreeing anything — which is what makes it reachable from a repo
 #: whose agents have never met yours.
 LOBBY_ROOM = "lobby"
+
+#: How long a `pair:<name>` resolution — and a check for answers to a pairing
+#: this machine started — is trusted before the bridge asks the hub again.
+#: Each is a read of a room of its own, and an agent makes many calls a
+#: minute; this bounds both that cost and how long a heal by the other side
+#: goes unnoticed here. Any pair_* tool resets it.
+PAIR_RECHECK = 30.0
 
 _ROOM_PARAM = {
     "type": "string",
@@ -152,7 +185,12 @@ _ROOM_PARAM = {
         "is always valid without joining anything: the room every holder of "
         "your key already shares, and the only way to reach agents working a "
         "DIFFERENT repo — theirs is a separate room and they are not on your "
-        "roster. Meet there, then take the work to a room of its own."
+        "roster. Meet there, then take the work to a room of its own. "
+        "'pair:<name>' is the current work room of a pair this machine made with "
+        "pair_start or pair_accept: nothing to join, no key in the conversation, "
+        "and it follows a heal by either side on its own. A result reached that "
+        "way carries 'pair' (its generation, state and any warnings — pass the "
+        "warnings on)."
     ),
 }
 
@@ -668,7 +706,9 @@ TOOLS: list[dict[str, Any]] = [
             "opened a value only the right key can read, which is the ONLY thing that "
             "proves you are where the sender meant — a roster listing you both does "
             "not. If it is false, you are still in the room and can work, but say so "
-            "rather than assuming the coordination is real."
+            "rather than assuming the coordination is real.\n\n"
+            "A pairing code — a string starting 'swbp1_' — is not an invite and is "
+            "refused here untouched: it goes to pair_accept."
         ),
         "inputSchema": _schema({
             "invite": {**_STR, "description": "the swb1_… string, pasted whole"},
@@ -752,6 +792,132 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": _schema({}),
     },
+    {
+        "name": "pair_start",
+        "description": (
+            "Begin pairing THIS machine with another one, so the two share a private "
+            "room that lasts weeks without any invite, chat or ticket ever carrying "
+            "it. Use it when two machines will work together for longer than an "
+            "afternoon — typically a laptop and a cloud session — and run it on the "
+            "machine that STAYS: until the other side answers, this machine keeps the "
+            "only copy of the pairing, and a container that is thrown away takes it "
+            "along.\n\n"
+            "Returns 'code', a string starting 'swbp1_', for the human to carry to the "
+            "other machine, where an agent passes it to pair_accept. The code is a "
+            "CREDENTIAL until it is redeemed or 'expires_at' passes: whoever holds it "
+            "in that window can answer in place of the intended peer, so it goes to "
+            "one person, not a shared channel. After that it opens nothing, so a copy "
+            "left in a chat is harmless. 'name' is what both machines call the pair, "
+            "and 'room' (pair:<name>) is the handle to pass as room= on any other tool "
+            "once paired. 'verifiable' is false when the hub could not be reached to "
+            "anchor the code, and 'unproven' then says why.\n\n"
+            "Nothing to wait for: this machine collects the answer by itself on a "
+            "later tool call (that result then carries 'pairings'), and pair_status "
+            "reports it too."
+        ),
+        "inputSchema": _schema({
+            "name": {**_STR, "description": (
+                "what both machines will call the pair: lowercase letters, digits and "
+                "dashes, at most 32. Omit for one derived from the code, which both "
+                "sides arrive at without agreeing it"
+            )},
+            "note": {**_STR, "description": "a few words the other side is shown, e.g. "
+                                            "which machine this is"},
+            "ttl": {**_NUM, "description": (
+                f"seconds the code can be redeemed (default {pairing.DEFAULT_TTL}, "
+                f"{pairing.MIN_TTL} to {pairing.MAX_TTL}). Keep it short: the code is "
+                "the part expected to leak"
+            )},
+        }),
+    },
+    {
+        "name": "pair_accept",
+        "description": (
+            "Redeem a pairing code — a string starting 'swbp1_' that the human brought "
+            "from another machine's pair_start. Use it whenever you are handed one: it "
+            "is NOT a room invite, and join_room refuses it. This should be the "
+            "machine that may not stay, such as a cloud session; the machine that made "
+            "the code is the durable side.\n\n"
+            "Agrees a pair secret with the other machine without either one sending "
+            "it, keeps it on this machine only, and puts you straight into the pair's "
+            "first work room. 'room' (pair:<name>) is the handle to pass as room= on "
+            "every other tool; no key ever appears in a result. 'state' is "
+            "'unconfirmed' until the other machine collects the answer — you can work "
+            "in the room already, and what you say there is read once it does — and "
+            "'paired' after. 'generation' is which work room the pair is on.\n\n"
+            "A refusal comes back as paired:false with 'reason', 'state' and 'next'. "
+            "state 'already_redeemed' means somebody ELSE answered this code first: "
+            "it leaked on its way to you, nothing was sent, and the human needs to "
+            "hear that rather than a retry."
+        ),
+        "inputSchema": _schema({
+            "code": {**_STR, "description": "the swbp1_… string, pasted whole"},
+            "name": {**_STR, "description": (
+                "what to call the pair on this machine. Omit to use the one the code "
+                "carries, so both sides share it"
+            )},
+            "note": {**_STR, "description": "a few words the other side is shown"},
+        }, ["code"]),
+    },
+    {
+        "name": "pair_status",
+        "description": (
+            "Every pair and pending pairing on this machine, brought up to date. Use "
+            "it after pair_start to see whether the other side answered, after "
+            "pair_accept to see whether you are confirmed, and when a 'pair' field on "
+            "a result carries warnings. Not read-only: it collects an answer that has "
+            "arrived for a pairing this machine started, which completes it.\n\n"
+            "Each row has 'name', 'room' (the pair:<name> handle), 'role' ('initiator' "
+            "made the code, 'responder' redeemed it), 'state' ('pending' — no answer "
+            "yet; 'unconfirmed' — answered, not yet collected by the other side; "
+            "'paired'; or a failure such as 'expired', 'aborted' or 'ended_by_peer', "
+            "with 'error' saying what to do), 'generation' (the work room this side "
+            "is on; 'peer_generation' is the other side's), 'sas' and 'warnings'. "
+            "'sas' is a short string shown on BOTH machines: if the human compares "
+            "the two and they differ, this machine paired with somebody holding a "
+            "leaked code — pair_forget it and pair again. One failed row never hides "
+            "the others."
+        ),
+        "inputSchema": _schema({
+            "name": {**_STR, "description": "just this pair; omit for all of them"},
+        }),
+    },
+    {
+        "name": "pair_heal",
+        "description": (
+            "Move a pair to a fresh work room because the current one's key may have "
+            "leaked — an invite for the work room was handed out, say, or its key was "
+            "pasted somewhere. The handle room='pair:<name>' stays the same and now "
+            "reaches the new room; the other machine follows the next time it uses "
+            "the pair, and until then the two of you are in different rooms (the "
+            "'pair' field on results says so). Heal on evidence of exposure, not on a "
+            "schedule.\n\n"
+            "A heal is a room rotation: leases, board entries and unread messages in "
+            "the old room do NOT follow. 'left_behind' lists the leases this agent "
+            "held there, by the hub's ids — claim again what you still need. 'from' "
+            "and 'to' are the generations. It cannot help if this machine's pair "
+            "secret itself leaked: for that, pair_forget and pair again."
+        ),
+        "inputSchema": _schema({
+            "name": {**_STR, "description": "the pair, as pair_status names it"},
+            "reason": {**_STR, "description": "a few words the other side is shown "
+                                              "when it follows"},
+        }, ["name"]),
+    },
+    {
+        "name": "pair_forget",
+        "description": (
+            "End a pair on this machine and tell the other machine it ended. Use it "
+            "when the pairing is finished with, when a result says the other side "
+            "ended it, or when a SAS comparison failed. Deletes this machine's copy of "
+            "the pair secret, which cannot be undone: pairing again takes a new code. "
+            "'peer_told' is false when the hub could not be reached — the other side "
+            "keeps using the pair until it hears, so say so."
+        ),
+        "inputSchema": _schema({
+            "name": {**_STR, "description": "the pair, as pair_status names it"},
+        }, ["name"]),
+    },
 ]
 
 
@@ -772,8 +938,14 @@ _READ_ONLY = {"help", "whoami", "roster", "claims", "history", "board_get", "boa
 #: every lease at once, into whoever claims next), and handing a whole
 #: session away. Claiming, renewing, releasing one's own lease and
 #: (un)subscribing are ordinary, reversible bookkeeping.
+#:
+#: Of the pairing tools, `pair_accept` spends a one-time code, `pair_heal`
+#: abandons a work room and everything held in it, and `pair_forget` deletes
+#: the only copy of a pair secret. `pair_start` only mints a code nobody holds
+#: yet, and `pair_status` is in neither set: it completes a pairing that is
+#: waiting to be collected, which is a change — just not one to take back.
 _DESTRUCTIVE = {"say", "dm", "whisper", "rendezvous", "board_set", "board_delete", "leave",
-                "session_handoff"}
+                "session_handoff", "pair_accept", "pair_heal", "pair_forget"}
 
 for _tool in TOOLS:
     if _tool["name"] not in _ROOMLESS:
@@ -812,6 +984,29 @@ class Bridge:
     #: above.
     _withheld: frozenset[str] = frozenset()
 
+    #: This machine's pair store, opened on first use (`_pairs`) — never by a
+    #: hosted bridge, whose disk is somebody else's. A test gives each bridge
+    #: its own, which is how two bridges in one process are two machines.
+    _pair_store: pairing.PairStore | None = None
+
+    #: Work-room clients for `room="pair:<name>"`, keyed by (name, generation)
+    #: so a heal can never be answered from the room it retired, and each
+    #: name's last resolution: (when, generation, the `pair` note). Both are
+    #: created on first use rather than in __init__, for the same reasons as
+    #: above.
+    _pair_clients: dict[tuple[str, int], Client] | None = None
+    _pair_checked: dict[str, tuple[float, int, dict[str, Any]]] | None = None
+
+    #: When `_touch` last looked for answers to a pairing this machine started,
+    #: and what it found that is worth saying on the current call's result.
+    _pairings_checked_at: float = float("-inf")
+    _pairing_news: tuple[dict[str, Any], ...] = ()
+
+    #: The bridge's notion of now, for every pairing deadline and recheck. A
+    #: staticmethod so it stays a plain function on the class; a test sets the
+    #: hub's synthetic clock on the instance.
+    _clock: Callable[[], float] = staticmethod(time.time)
+
     def __init__(self, config: ClientConfig | None = None,
                  identity: Identity | None = None) -> None:
         self.config = config or ClientConfig.from_env()
@@ -827,6 +1022,8 @@ class Bridge:
 
     def close(self) -> None:
         for joined in self._rooms.values():
+            joined.close()
+        for joined in (self._pair_clients or {}).values():
             joined.close()
         self.client.close()
         self.timing.close()
@@ -1017,8 +1214,172 @@ class Bridge:
         self._rooms[LOBBY_ROOM] = client
         return client
 
+    # --- pairing plumbing ---
+
+    def _now(self) -> float:
+        return self._clock()
+
+    def _pairs(self) -> pairing.PairStore:
+        """This machine's pair store, refused outright on a hosted bridge.
+
+        The dispatcher already withholds every pair_* tool there; this is the
+        second lock on the same door, because the one thing a hosted bridge
+        promises is that nothing it serves is written to its operator's disk,
+        and a pair store is a directory of secrets.
+        """
+        if self._withheld:
+            raise PairingError(
+                f"pairing is not served by a hosted bridge: {HOSTED_WITHHELD['pair_start']}. "
+                "Pair from a bridge on your own machine, or with `switchboard pair`.",
+                state="withheld")
+        if self._pair_store is None:
+            self._pair_store = pairing.PairStore()
+        return self._pair_store
+
+    @contextlib.contextmanager
+    def _store_errors(self) -> Iterator[None]:
+        """An OSError from pairing, said as what it almost always is.
+
+        `_call_tool` reads a bare OSError as "hub unreachable", and the hub is
+        reached through httpx, whose errors are not OSErrors. What is left is
+        the pair store — the only copy of every pair secret — and an agent told
+        to retry against the hub would never look there.
+        """
+        try:
+            yield
+        except OSError as exc:
+            raise PairingError(
+                f"this machine's pair store could not be used ({exc}). It holds the only "
+                "copy of each pair secret, so nothing was overwritten: check that the "
+                f"directory in {pairing.ENV} (default {pairing.DEFAULT_DIR}) is "
+                "writable by this user.", state="store") from exc
+
+    def _drop_pair(self, name: str) -> None:
+        """Forget every client and resolution held for one pair, closing them."""
+        clients = self._pair_clients or {}
+        for key in [k for k in clients if k[0] == name]:
+            clients.pop(key).close()
+        if self._pair_checked:
+            self._pair_checked.pop(name, None)
+
+    def _pair_room(self, name: str) -> tuple[Client, dict[str, Any]]:
+        """A pair's current work room, for `room="pair:<name>"`.
+
+        Resolved from this machine's pair store, never from anything the model
+        passed: the handle names the pair and nothing else, so the work room's
+        key never enters the transcript — not even once, the way an invite's
+        does. Resolution reads the pair room, so it is trusted for
+        PAIR_RECHECK seconds (or until the next pair_* tool) rather than
+        repeated on every call; that bounds how long a heal by the other side
+        goes unnoticed here. The client is keyed by (name, generation), so a
+        heal — this side's or the other's — closes the old room's client and
+        opens the new one, rather than leaving this agent talking in the room
+        the heal retired.
+
+        Returns the client and the `pair` note every result reached through it
+        carries, because `pairing.resolve`'s warnings — unconfirmed, the other
+        side behind, the pair room unreadable — are things the model must be
+        able to pass on, and a result that dropped them would look healthy.
+        """
+        if self._withheld:
+            raise PairingError(
+                f"room='{pairing.handle(name)}' is not served by a hosted bridge: "
+                f"{HOSTED_WITHHELD['pair_start']}.", state="withheld")
+        if self._pair_clients is None:
+            self._pair_clients = {}
+        if self._pair_checked is None:
+            self._pair_checked = {}
+        now = self._now()
+        seen = self._pair_checked.get(name)
+        if seen is not None and now - seen[0] < PAIR_RECHECK:
+            cached = self._pair_clients.get((name, seen[1]))
+            if cached is not None:
+                return cached, seen[2]
+        try:
+            with self._store_errors():
+                resolution = pairing.resolve(
+                    name, self.config, store=self._pairs(), connect=Client,
+                    agent_id=self.identity.agent_id, now=now)
+        except PairingError:
+            # Ended, forgotten, voided: whatever the client was for, it is not
+            # a room this agent should keep talking in.
+            self._drop_pair(name)
+            raise
+        generation = resolution.generation
+        note = {"name": name, "generation": generation, "state": resolution.state,
+                "warnings": list(resolution.warnings)}
+        client = self._pair_clients.get((name, generation))
+        if client is None:
+            self._drop_pair(name)
+            client = Client(resolution.config, agent_id=self.identity.agent_id)
+            self._pair_clients[(name, generation)] = client
+        self._pair_checked[name] = (now, generation, note)
+        return client, note
+
+    def _collect_pairings(self) -> None:
+        """Finish any pairing this machine started whose answer has arrived.
+
+        The initiator is turn-based: it handed out a code, ended its turn, and
+        nothing promises it runs again before the human next types. So every
+        tool call looks, the way a parked listener would, and says so on the
+        result — a pairing completed in silence is a code the model still
+        believes is live. Cheap when nothing is pending (one listing of the
+        pending directory); otherwise at most once per PAIR_RECHECK, so a code
+        nobody redeems does not cost every call a hub round trip for the half
+        day it stays collectable. Never on a hosted bridge, which keeps nothing
+        on disk.
+
+        Fails soft, and reports only news: an unreachable hub is retried next
+        time, and "still waiting" on every result would be noise, which is how
+        the one result that matters stops being read.
+        """
+        if self._withheld:
+            return
+        try:
+            store = self._pairs()
+            names = store.pending_names()
+        except (PairingError, OSError):
+            return
+        now = self._now()
+        if not names or now - self._pairings_checked_at < PAIR_RECHECK:
+            return
+        self._pairings_checked_at = now
+        news: list[dict[str, Any]] = []
+        for name in names:
+            try:
+                done = pairing.collect(name, self.config, store=store, connect=Client,
+                                       agent_id=self.identity.agent_id, now=now)
+            except PairingError as exc:
+                news.append({"name": name, "room": pairing.handle(name),
+                             "state": exc.state or "error", "message": str(exc)})
+                continue
+            except (SwitchboardError, CryptoError, OSError, httpx.HTTPError):
+                continue
+            if done.state == "waiting" and not done.warnings:
+                continue
+            row: dict[str, Any] = {
+                "name": done.name, "room": done.room,
+                "state": "pending" if done.state == "waiting" else done.state,
+            }
+            if done.record is not None and done.record.sas:
+                row["sas"] = done.record.sas
+            if done.message:
+                row["message"] = done.message
+            if done.warnings:
+                row["warnings"] = list(done.warnings)
+            news.append(row)
+        self._pairing_news = (*self._pairing_news, *news)
+
     def join_room(self, invite: str) -> dict[str, Any]:
         """Take an invite and hold the room open for the rest of this session."""
+        if pairing.looks_like_code(invite):
+            # Before Invite.decode, which refuses it too, but in words meant
+            # for a terminal. Nothing is redeemed here: join_room promises an
+            # in-memory room for this session, and redeeming writes a pair
+            # secret to disk.
+            return {"joined": False, "error": "this is a pairing code, not a room invite",
+                    "next": "pass it to pair_accept, which pairs this machine with the "
+                            "one that made the code"}
         try:
             blob = Invite.decode(invite)
             # Inside the try as well: an invite that *names* a key without
@@ -1128,6 +1489,11 @@ class Bridge:
         one claim lapse while staying active elsewhere) and does NOT drain
         the inbox (that risks marking a message read before the agent ever
         saw it). Both stay behind the explicit `checkin`/`inbox` calls.
+
+        The one thing it adds on a bridge on the agent's own machine is
+        `_collect_pairings`: finishing a pairing is the other half of the same
+        promise — something waiting for this agent is noticed when it does
+        anything at all — and it reports on the result as 'pairings'.
         """
         self._ensure_registered()
         try:
@@ -1141,6 +1507,7 @@ class Bridge:
                 result = self.client.heartbeat(renew_leases=False)
             else:
                 raise
+        self._collect_pairings()
         return result.get("unread_dms", 0)
 
     # --- individual tools ---
@@ -1754,6 +2121,166 @@ class Bridge:
             raise HandoffError(f"local filesystem: {exc}") from exc
         return {**started, "now": _now_iso()}
 
+    # --- pairing ---
+    #
+    # None of these calls `_touch()`, so none carries `unread_dms`: they act on
+    # rooms of their own — a handshake room, the pair room, a work room —
+    # never the default one, and a default room that is down or misconfigured
+    # must not be what stops two machines pairing. A count is only honest if
+    # something asked the hub for it.
+
+    def pair_start(self, name: str | None = None, note: str | None = None,
+                   ttl: float | None = None) -> dict[str, Any]:
+        """Mint a code for the machine that stays, with its half saved first.
+
+        `pairing.start` saves the pending handshake before it returns, so the
+        code in this result is never one this machine could not collect.
+        """
+        with self._store_errors():
+            started = pairing.start(
+                self.config, store=self._pairs(), connect=Client, name=name or None,
+                note=note or "", ttl=pairing.DEFAULT_TTL if ttl is None else ttl,
+                now=self._now())
+        expires = _iso_at(started.expires_at)
+        out: dict[str, Any] = {
+            "code": started.code,
+            "name": started.name,
+            "room": started.room,
+            "expires_at": expires,
+            "state": "pending",
+            "verifiable": started.verifiable,
+            "now": _iso_at(self._now()),
+            "next": (
+                "Give 'code' to the human to carry to the other machine, where an agent "
+                "passes it to pair_accept (or runs `switchboard pair accept <code>`). "
+                f"Until {expires} it is a credential: one person, not a shared channel. "
+                "This machine collects the answer by itself on a later tool call — that "
+                f"result carries 'pairings' — and then room='{started.room}' reaches the "
+                "pair's work room from any tool."
+            ),
+        }
+        if started.unproven:
+            out["unproven"] = started.unproven
+        if getattr(self.identity, "kind", None) == "cloud":
+            # The CLI says the same: a cloud container is the side most likely
+            # to vanish, and until the answer is collected the pairing exists
+            # only here.
+            out["warning"] = (
+                "This session looks like a cloud container. The machine that starts a "
+                "pairing keeps its only copy until the answer is collected, so it should "
+                "be the one that stays: prefer running pair_start on the durable "
+                "machine and pair_accept here."
+            )
+        return out
+
+    def pair_accept(self, code: str, name: str | None = None,
+                    note: str | None = None) -> dict[str, Any]:
+        """Redeem a code; every refusal is an answer, not an error.
+
+        A leaked code, an expired one, a name already taken — each is something
+        the model has to say to a human, and an error result reads as a tool
+        that broke. The one distinguished case is `AlreadyRedeemed`, which
+        means somebody else holds the code.
+        """
+        try:
+            with self._store_errors():
+                accepted = pairing.accept(
+                    code, self.config, store=self._pairs(), connect=Client,
+                    name=name or None, note=note or "", agent_id=self.identity.agent_id,
+                    now=self._now())
+        except AlreadyRedeemed as exc:
+            return {"paired": False, "reason": str(exc), "state": exc.state, "next": (
+                "Do not retry this code. Tell the human it leaked between being made and "
+                "reaching you: the machine that made it should pair_forget whatever it "
+                "paired with, and start again with a fresh code, shared more narrowly."
+            )}
+        except PairingError as exc:
+            return {"paired": False, "reason": str(exc), "state": exc.state or "invalid",
+                    "next": _ACCEPT_NEXT.get(exc.state or "", (
+                        "Nothing was paired. 'reason' says why and what to do instead."))}
+        room = accepted.room
+        return {
+            "paired": True,
+            "name": accepted.name,
+            "room": room,
+            "state": accepted.state,
+            "generation": accepted.record.generation,
+            "warnings": list(accepted.warnings),
+            "next": (
+                f"Work in room='{room}' now. " + (
+                    "It is unconfirmed until the other machine collects the answer, "
+                    "which it does on its own; what you say meanwhile is read once it "
+                    "does. pair_status then shows 'paired' and a 'sas' — if the human "
+                    "can compare it with the other machine's, a mismatch means somebody "
+                    "else answered the code."
+                    if accepted.state == "unconfirmed" else "")
+            ).strip(),
+        }
+
+    def pair_status(self, name: str | None = None) -> dict[str, Any]:
+        """Every pair brought up to date — collecting is the point, so it
+        writes, and `pairing.status` turns each failure into a row."""
+        with self._store_errors():
+            rows = pairing.status(self.config, store=self._pairs(), connect=Client,
+                                  name=name or None, agent_id=self.identity.agent_id,
+                                  now=self._now())
+        for row in rows:
+            if isinstance(row.get("expires_at"), (int, float)):
+                row["expires_at"] = _iso_at(row["expires_at"])
+        out: dict[str, Any] = {"pairs": rows, "now": _iso_at(self._now())}
+        if not rows:
+            out["next"] = ("No pairs on this machine. pair_start makes one, on the "
+                           "machine that stays.")
+        return out
+
+    def pair_heal(self, name: str, reason: str | None = None) -> dict[str, Any]:
+        """Advance the pair's work room, and say what stayed behind.
+
+        The cached client for the retired room is closed here rather than on
+        the next resolve: between the two, a call with room='pair:<name>'
+        would otherwise land in the room this heal exists to leave.
+        """
+        try:
+            with self._store_errors():
+                healed = pairing.heal(name, self.config, store=self._pairs(),
+                                      connect=Client, reason=reason or "",
+                                      agent_id=self.identity.agent_id, now=self._now())
+        finally:
+            self._drop_pair(name)
+        room = pairing.handle(healed.name)
+        left = list(healed.left_behind)
+        return {
+            "name": healed.name,
+            "room": room,
+            "from": healed.from_generation,
+            "to": healed.to_generation,
+            "left_behind": left,
+            "warnings": list(healed.warnings),
+            "next": (
+                f"room='{room}' now reaches work room {healed.to_generation}; the other "
+                "machine follows the next time it uses the pair. Leases, board entries "
+                f"and unread messages in work room {healed.from_generation} did not "
+                "move" + (f" — {len(left)} lease(s) you held there are in 'left_behind'; "
+                          "claim again what you still need" if left else "") + "."
+            ),
+        }
+
+    def pair_forget(self, name: str) -> dict[str, Any]:
+        """End the pair here and tell the other side, best effort on the telling."""
+        try:
+            with self._store_errors():
+                gone = pairing.forget(name, self.config, store=self._pairs(),
+                                      connect=Client, agent_id=self.identity.agent_id,
+                                      now=self._now())
+        finally:
+            self._drop_pair(name)
+        out: dict[str, Any] = {"name": gone.name, "forgotten": True,
+                               "peer_told": gone.peer_told, "warnings": list(gone.warnings)}
+        if not gone.peer_told:
+            out["next"] = ("Tell the human the other machine was not told: it keeps "
+                           f"using pair:{gone.name} until it runs pair_forget too.")
+        return out
+
     @staticmethod
     def _msg(m: dict[str, Any]) -> dict[str, Any]:
         body, timing_forecast = unwrap_forecast(m["body"])
@@ -1820,13 +2347,38 @@ class Bridge:
             raise ValueError(f"{name} is not served by a hosted bridge: {HOSTED_WITHHELD[name]}")
         arguments = dict(arguments)
         room = arguments.pop("room", None)
+        self._pairing_news = ()
+        try:
+            result, note = self._routed(handler, room, arguments)
+        finally:
+            if name in _PAIRING_TOOLS:
+                # A pair_* tool may have healed, forgotten, accepted or
+                # collected; the next pair:<name> call must see that, not an
+                # answer cached from before it.
+                self._pair_checked = None
+                self._pairings_checked_at = float("-inf")
+        if isinstance(result, dict):
+            if note is not None:
+                result["pair"] = note
+            if self._pairing_news:
+                result["pairings"] = list(self._pairing_news)
+        return result
+
+    def _routed(self, handler: Callable[..., Any], room: str | None,
+                arguments: dict[str, Any]) -> tuple[Any, dict[str, Any] | None]:
+        """Run `handler` in the room `room` names, and the pair note if any."""
         if not room:
-            return handler(**arguments)
+            return handler(**arguments), None
         # Swapped here rather than threaded through every tool. One place to
         # get right, and a tool added next year is routable without anybody
         # remembering to add a parameter to it — the same reason the hub
         # enforces authorization in one dependency rather than 18 handlers.
-        joined = self._lobby() if room == LOBBY_ROOM else self._rooms.get(room)
+        note = None
+        pair_name = pairing.parse_handle(room)
+        if pair_name is not None:
+            joined, note = self._pair_room(pair_name)
+        else:
+            joined = self._lobby() if room == LOBBY_ROOM else self._rooms.get(room)
         if joined is None:
             raise ValueError(
                 f"not in room {room!r} — call join_room with the invite first. "
@@ -1834,7 +2386,7 @@ class Bridge:
         was = self.client
         self.client = joined
         try:
-            return handler(**arguments)
+            return handler(**arguments), note
         finally:
             self.client = was
 
@@ -1970,6 +2522,16 @@ def _call_tool(bridge: Bridge, request_id: Any, params: dict[str, Any]) -> dict[
         return _response(request_id, _tool_result(
             {"error": "unknown_role", "detail": str(exc)}, is_error=True
         ))
+    except PairingError as exc:
+        # Not a ValueError, and placed here so that never changes quietly: a
+        # pairing refusal — a pair the other side ended, a heal the hub cannot
+        # confirm, a name that is not a pair — says what to do in its message
+        # and its `state`. Reported as an unknown tool or a hub error, the
+        # model would look for the way out somewhere it is not.
+        return _response(request_id, _tool_result(
+            {"error": "pairing", "state": exc.state or "error", "message": str(exc)},
+            is_error=True
+        ))
     except ValueError as exc:
         return _response(request_id, _tool_result(
             {"error": "unknown_tool", "detail": str(exc)}, is_error=True
@@ -2070,6 +2632,11 @@ HOSTED_WITHHELD = {
         "it would fill gaps in the invite from the server's environment; the front "
         "door's own join_room, which takes nothing but the invite, replaces it"
     ),
+    # Pairing is the one feature whose whole value is a secret that lives on
+    # two machines and nowhere else; a hosted bridge is a third machine.
+    **{name: ("it keeps pairing secrets on the bridge's own machine, and a hosted "
+              "operator holding a code could answer it in place of the intended peer")
+       for name in _PAIRING_TOOLS},
 }
 
 #: What a hosted bridge says each tool does, in place of the descriptions
