@@ -367,6 +367,14 @@ are kept apart from everyone else.
 There is no key exchange, deliberately. A hub that helped distribute keys would
 be a hub that could hold them, which is the whole thing this avoids.
 
+The one exchange there is — pairing two machines, under
+[Paired machines](#paired-machines) below — keeps that rule rather than
+breaking it. The hub carries two ephemeral public keys and a proof, and each
+machine computes the secret itself, so the hub that carried the exchange
+still never holds what it produced. And it does not distribute *this* key:
+the rooms a pair shares are derived from its own secret, and the workspace
+key goes to agents exactly as it always did.
+
 ```bash
 switchboard keygen        # run ONCE, by whoever sets the workspace up
 ```
@@ -481,7 +489,11 @@ signal is finding itself alone in the old workspace, which looks exactly like
 being the first one to start.
 
 That is precisely why a rotation should be a **coordinated restart** rather
-than a gradual rollout: nothing detects a half-finished one. The warning covers
+than a gradual rollout: nothing detects a half-finished one. (A paired work
+room is the exception, and the only one: its pair room holds each side's
+generation, so a half-finished move is visible to both sides, and
+`switchboard pair heal` is a rotation in place. It still strands what the old
+room held — see [Paired machines](#paired-machines).) The warning covers
 the different failure of somebody changing the key but *not* the workspace
 name, which leaves two key-groups inside one workspace where they can see each
 other and be told.
@@ -497,6 +509,12 @@ getting either wrong fails silently. `switchboard keygen` avoids the whole
 category. Keys must be at least 32 bytes, and a key with almost no distinct
 bytes — the shape a forgotten `hex:0000…` placeholder takes — is refused
 outright.
+
+A pairing code is not an exception. It carries a full 32-byte secret, which
+is why it is a long string to paste rather than six words to read aloud: a
+short, typeable code would need a password-authenticated key exchange (a
+PAKE), `cryptography` does not provide one, and a short secret behind a fast
+KDF is the passphrase problem again.
 
 ## Read-only rooms, enforced by the hub
 
@@ -642,7 +660,11 @@ call only — nothing else about the caller's session changes. Mint the pair
 with `switchboard keygen` (or the `keygen` MCP tool, which does the same
 thing without a hub call), and hand it directly to whichever peers should be
 included, the same way you'd hand out any other key — never through
-Switchboard itself.
+Switchboard itself. (Pairing is the one way two machines come to share a key
+through the hub, and it works only because nothing the hub carries is that
+key: see [Paired machines](#paired-machines). For two machines that will keep
+working together, it is a better tool than a side channel handed over by
+hand.)
 
 **Always mint a fresh workspace for this, never reuse the parent one.** The
 mismatch detection two sections up assumes one key per workspace; a second,
@@ -726,6 +748,85 @@ What it costs, stated as plainly as everything above:
   every message pays — see "What the hub can still infer" above); every
   fellow workspace member sees the same thing too, in a plaintext room. Only
   the content is hidden from them, never that a message was sent.
+
+## Paired machines
+
+A side channel and an invite both have to be *carried*: the key, or the
+string that holds it, goes through a chat, a ticket or a prompt on its way to
+the other side, and whatever carried it keeps it. For a room that lives an
+afternoon that is the right trade. For two machines that will work together
+for weeks — a laptop and a cloud session — it means the room is exactly as
+private as the least careful place the string passed through, for as long as
+the room lives.
+
+`switchboard pair start` and `pair accept` (MCP: `pair_start`,
+`pair_accept`) carry something else instead: a **pairing code** (`swbp1_…`),
+redeemable for fifteen minutes by default, that is one half of a key
+exchange rather than a key. Three rooms come out of it, none of them the
+workspace key's, all of them derived and all write-protected:
+
+- the **handshake room**, named by the code's 32-byte secret `S`, which holds
+  only public keys, proofs and markers;
+- the **pair room**, derived from the pair secret, where each side keeps one
+  sealed record of which generation it is on;
+- **work room *n***, derived from the pair secret and *n*, which is where the
+  two sides actually work — `--room pair:<name>`, `room="pair:<name>"`.
+
+Mechanically: the code carries `S`, the initiator's *ephemeral* X25519 public
+key and a commitment to a nonce. The responder answers in the handshake room
+with its own ephemeral public key and a MAC, and both sides compute the pair
+secret as `HKDF(X25519(…), salt = HKDF(S), info = transcript)` — the
+Diffie-Hellman result with `S` as a pre-shared key, the shape of Noise
+`NNpsk0`, built from the primitives `whisper` already uses. The salt is what
+makes the exchange authenticated: without `S` nobody can produce an answer
+whose derived secret matches the initiator's, so the hub cannot put its own
+key in the middle. Both ephemeral private keys are then deleted, and every
+room key is derived with frozen, domain-separated labels
+(`switchboard/pair/v1/…`) rather than minted. [pairing.md](pairing.md) has
+the walkthrough and the full threat model.
+
+The property this is for: **a leak of the code and of the hub's entire
+history, together, yields two public keys and nothing else.** A design that
+sealed a room key into the handshake room would have made "that message was
+short-lived" a promise from the hub; this makes it a property, which is the
+only kind this document deals in.
+
+What it costs, stated as plainly as everything above:
+
+- **The code is a live bearer credential until it is redeemed or expires.**
+  Whoever holds it in that window holds the handshake room's write key and can
+  answer in place of the intended peer. That is detected rather than
+  prevented — two answers void the pairing on both sides, a late redeemer is
+  told the code was used, an answer the hub stamped after expiry is ignored —
+  and the initiator's only defence against losing the race outright is
+  comparing the short authentication string both sides show (`NNNN-NNNN`).
+- **The handshake has forward secrecy; the generations do not.** Every work
+  room derives from the pair secret. `pair heal` moves both sides to the next
+  generation, which rescues a leaked *work-room* key — an invite to the work
+  room handed somewhere it should not have gone — and does nothing for a
+  leaked pair secret. That is `pair forget` on both machines and a fresh code.
+- **A heal is a room rotation**, with every cost "Rotating the key" above
+  describes except one: the pair room detects a half-finished move, so the
+  two sides are told rather than left alone in different rooms. Leases, board
+  entries and unread messages still stay behind.
+- **One private key is written to disk.** The initiator must survive its own
+  process ending between printing the code and collecting the answer, so its
+  ephemeral handshake key sits in `~/.switchboard/pairs/pending/` (0600) until
+  the answer is collected. One never collected is dropped by the first
+  pairing command after the deadline — the code's expiry plus twelve hours —
+  not by the clock, so `pair status` is how a machine that has stopped
+  pairing clears it.
+  `signing.py`'s rule that private keys are never written is about
+  attribution keys, and still holds for them.
+- **The pair secret lives on two machines, in the clear, owner-only.**
+  `~/.switchboard/pairs/` is 0700 with 0600 files, written atomically, and it
+  is readable by every process running as that user — the same boundary as
+  `.claude/settings.local.json`. `pair export` is the one deliberate way out,
+  for a cloud environment's secret store.
+- **The hub still sees the metadata** it sees for any room — three or more
+  room identifiers instead of one, padded sizes, timing — and the rooms are
+  unlinkable by name, not by traffic: the same machine touches all three
+  within seconds.
 
 ## Design notes
 

@@ -195,6 +195,12 @@ else's server shared with every other room. So the bridge doesn't serve them:
 
 - `session_handoff`, `session_import` and `session_resume`, which move Claude
   Code transcripts.
+- `pair_start`, `pair_accept`, `pair_status`, `pair_heal` and `pair_forget`,
+  which keep pairing secrets on the bridge's own machine — and a hosted
+  operator holding a pairing code could answer it in place of the intended
+  peer. A `room="pair:…"` handle is refused for the same reason. Pair from a
+  bridge on your own machine, or with `switchboard pair`; see
+  [pairing.md](pairing.md).
 - The ordinary `join_room`, which would fill gaps in an invite from the
   server's environment. At `/mcp` it's replaced by the front door's own
   `join_room`, which takes nothing but the invite. To switch rooms, call it

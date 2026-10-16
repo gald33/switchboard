@@ -3,6 +3,43 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.5.0 → next
+
+Additive. Two machines can be **paired**: `switchboard pair start` on the
+machine that stays prints a one-off `swbp1_…` code, `switchboard pair accept
+<code>` on the other redeems it, and both then reach the rooms they share as
+`--room pair:<name>` — or `room="pair:<name>"` on the local MCP bridge, which
+gains `pair_start`, `pair_accept`, `pair_status`, `pair_heal` and
+`pair_forget`. `pair status`, `wait`, `heal`, `forget` and `export` complete
+the group. See [pairing.md](pairing.md). Nothing that worked in 2.5.0
+changed.
+
+Both ends need the new release. **The hub needs nothing**: pairing is board
+values, messages and client-side cryptography, on endpoints every hub already
+serves. An older client handed a code refuses it rather than misreading it —
+`swbp1_` is deliberately not the invite prefix, so `join` and `--invite` say
+"not a switchboard invite" and the MCP `join_room` says the same, `pair` is an
+unknown command, and `--room pair:<name>` is a room the book does not know.
+Nothing is joined or sent.
+
+Three things a current setup will notice:
+
+- **`listen` parks in pairs.** Each pair this machine used in the last day,
+  on the `pair` channel of its current work room, and the handshake room of
+  any pairing waiting for its answer. A machine with no pairs parks exactly
+  where it did; `--no-pairs` opts out on one that has some.
+- **A new per-machine store**, `~/.switchboard/pairs/`, owner-only, moved by
+  `SWITCHBOARD_PAIRS` (empty disables pairing), and `SWITCHBOARD_PAIR_<NAME>`
+  for a pair carried in an environment's secrets. Unlike the other stores it
+  does not fail soft on write, because it holds the only copy of each pair
+  secret. See [environments.md](environments.md#paired-machines).
+- **`--room` is accepted after the subcommand**, like `--invite` and `-w`:
+  `switchboard say --room <label> …`, which 2.5.0 refused as an
+  unrecognized argument, now runs in that room.
+
+`Invite.decode` now refuses a pairing code, and a pair secret from `pair
+export`, by name, instead of with the generic "not a switchboard invite".
+
 ## 2.2.0 → 2.2.1
 
 **Your agent ids change once.** An id was `kind-branch-host-session`; the

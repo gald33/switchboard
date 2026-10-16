@@ -1,0 +1,84 @@
+id: safe-pairing
+title: Two machines that will work together for weeks share rooms set up by one code carried once, which is worth nothing after
+status: done
+arc: setup-and-first-run
+blocked_on: []
+related_to:
+- key: cross-key-rendezvous
+  note: 'That one is two agents with no key in common and a human carrying the
+    coordinates, every time. This is the case where they will meet again and again:
+    the human carries one code, once, and the rooms that come out of it are derived
+    on both machines. It does not close that item — a stranger still needs a
+    published meeting room — but it ends the repeat trips for a pair that already
+    met.'
+- key: a-lobby-derived-from-the-key
+  note: 'The same move, a room derived rather than named, made for the opposite
+    audience. The lobby is for agents that agreed nothing, so its derivation carries
+    no version; a pair agreed a handshake, so its derivations are versioned per pair
+    (protocol 1, frozen labels) and an older client refuses a newer pair loudly.
+    docs/model.md records why the two differ.'
+- key: known-rooms-address-book
+  note: 'Pairs are deliberately outside the book. Its rule is that a key is stored
+    as the way it was acquired; a pair secret was never in any conversation, so it
+    has no such way, and lives in its own owner-only store instead. `listen` parks
+    in pairs the way it parks in rooms used lately.'
+refs:
+- 'docs/pairing.md'
+- 'docs/model.md'
+- 'docs/encryption.md'
+- 'src/switchboard/pairing.py'
+- 'tests/test_pairing.py'
+evidence: |
+  **Requested by the owner as a design sketch, and built after a review of
+  that sketch.** The failure is the paper trail. An invite (`swb1_…`) is the
+  room itself, so the chat, ticket or email that carried one holds the room
+  for as long as it lives — fine for an afternoon, wrong for a laptop and a
+  cloud session that work together for weeks.
+
+  **The sketch:** three throwaway rooms, none of them the team key's — a
+  handshake room named by a one-off code a human carries, a long-lived pair
+  room that keeps the two sides in step, and a work room that can be healed
+  when its key leaks. What shipped keeps all three. The review changed how
+  each is reached, in four places where the sketch's safety rested on the
+  hub's good behaviour or on a race:
+
+  - **D1. The pair secret is agreed, never sent.** The sketch sealed the pair
+    room's key into the handshake room under the code's key, so a leaked code
+    plus a hub that kept its history would open the pair. Now an ephemeral
+    X25519 exchange authenticated by the code's secret (Noise `NNpsk0`'s
+    shape) agrees it; the code and the hub's whole history yield public keys.
+  - **D2. The initiator's ephemeral key rides in the code**, so the responder
+    finishes in one step; the initiator writes only a sealed hello, which
+    anchors expiry on the hub's clock and turns "wrong hub" into a refusal.
+  - **D3. The answer is a message on an append-only channel.** Every code
+    holder holds the handshake room's write key, so a first-writer board
+    entry would exclude nobody who matters. Exactly one in-time answer pairs;
+    two abort both sides; a redeemer after collection is told "already used";
+    a late answer is ignored by both. Detection, not exclusion, with a
+    commitment-backed SAS for the case detection cannot reach.
+  - **D4. Work rooms are derived, `HKDF(P, n)`**, and each side writes only
+    its own record in the pair room. A heal is one integer, the current
+    generation is the higher of two, and the other side's record catching up
+    is the acknowledgement — nothing compare-and-set, nothing to race.
+
+  A review of the core before the surfaces were built found three more,
+  fixed in its second commit: an unsent answer saved under a name could be
+  resumed against a *different* code; `forget` reported the peer told when
+  the side record had not landed; and a work-room config without a base
+  quietly built a default one.
+
+  **What it deliberately does not do**, stated in `docs/pairing.md` and
+  `docs/model.md`: the code is a live bearer credential during its window
+  (detected, not prevented); a heal rescues a leaked work-room key and not a
+  leaked pair secret, which opens every generation — the record's strategy
+  field `s` is where a ratcheting heal would go; and a heal is a room
+  rotation, the decision `docs/model.md` rejects for periodic use, so it is
+  event-driven only and says what it strands.
+
+  **How you will know it worked**, asserted in `tests/test_pairing.py`
+  against a real hub with a moved clock: a code read after the pairing
+  opens nothing; the hub's database holds no plaintext tag, role or secret;
+  two redeemers void the pairing on both sides; a heal moves both sides to a
+  room the old key cannot open; a week of silence moves both sides to a
+  room nobody retired; and the v1 derivations are pinned by known answers,
+  so an edit that would split paired machines across an upgrade fails.
