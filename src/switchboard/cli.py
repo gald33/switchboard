@@ -2740,19 +2740,58 @@ def _listener_state(hub: Client, *, peer: str | None = None,
         return {}
     parked = rendezvous.reachable_now(entries)
     state: dict[str, Any] = {"you_parked": hub.agent_id in parked}
+    deaf: list[str] | None = None
     if peer is not None:
         state["peer_parked"] = peer in parked
+        deaf = _watching_instead_of_dms(entries, peer, hub) if state["peer_parked"] \
+            else None
         dnd = rendezvous.dnd_now(entries).get(peer)
-        if dnd and state["peer_parked"]:
+        if deaf is not None:
+            state["peer_watching"] = deaf
+            state["peer_advice"] = (
+                f"Their listener is parked but watches only {', '.join(deaf)}, not "
+                "their direct messages, so they read this on their next turn — post "
+                f"on {deaf[0]} instead if it cannot wait.")
+        elif dnd and state["peer_parked"]:
             state["peer_dnd"] = dnd
             state["peer_advice"] = rendezvous.dnd_advice(dnd, sent_type)
     # The prose comes from `rendezvous` so that `--json` here and the MCP
     # bridge's `listener` field are the same sentence, not two that drift.
     state["next"] = rendezvous.listener_advice(
-        you_parked=state["you_parked"], peer_parked=state.get("peer_parked"),
+        you_parked=state["you_parked"],
+        peer_parked=None if deaf is not None else state.get("peer_parked"),
         peer_dnd=state.get("peer_dnd"), sent_type=sent_type,
     )
+    if deaf is not None:
+        state["next"] = f"{state['peer_advice']} {state['next']}"
     return state
+
+
+def _watching_instead_of_dms(entries: Any, peer: str, hub: Client) -> list[str] | None:
+    """The channels a parked peer watches instead of its DMs, or None if it reads them.
+
+    A heartbeat names what its listener polls (`waiting_on`): "inbox" — the
+    agent's own channel and its subscriptions — or the channels `-c` chose.
+    The hub drops the agent's `@` channel whenever channels are named, so a
+    listener that names them never sees a DM unless it names that too. Being
+    parked used to be taken as reachable by DM regardless, which told a
+    sender an answer could arrive in seconds while the DM sat unread.
+    """
+    forms = {f"@{peer}"}
+    try:
+        forms.add(f"@{hub.peer_id(peer)}")
+    except Exception:  # noqa: BLE001 - advice: the plain form still matches
+        pass
+    key = rendezvous.listener_key(peer)
+    for entry in entries or ():
+        if not isinstance(entry, dict) or entry.get("key") != key:
+            continue
+        value = entry.get("value")
+        watching = value.get("waiting_on") if isinstance(value, dict) else None
+        if isinstance(watching, list) and watching and \
+                not forms & {str(c) for c in watching}:
+            return [str(c) for c in watching]
+    return None
 
 
 def _print_listener_advice(
@@ -3041,6 +3080,23 @@ class _Post:
         self.settle: Callable[[], dict[str, Any] | None] | None = None
         #: What settling found, for the wake line.
         self.outcome: dict[str, Any] | None = None
+        #: Held while settling runs, so the process can wait for an outcome
+        #: before it exits on another room's wake (`_outcomes_elsewhere`):
+        #: collecting deletes the pending handshake, so an outcome dropped on
+        #: the way out is one nothing on this machine can report again.
+        self.settling = threading.Lock()
+        #: A pair's work room: what to check a moved or ended note against —
+        #: the pair room, through `base`, and this machine's own `store`, where
+        #: a heal run here writes its new generation before anything else.
+        self.base: ClientConfig | None = None
+        self.store: pairing.PairStore | None = None
+        #: Channels polled only for the pair's own moved and ended notes — the
+        #: pair channel, under a `-c` that did not name it. Ordinary messages
+        #: there are not this listener's to wake on.
+        self.protocol_only: frozenset[str] = frozenset()
+        #: What following the pair found, when the wake is a heal or an end
+        #: rather than (only) a message (`_followed_pair`).
+        self.followed: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return f"{self.workspace} [{self.role}{' handshake' if self.handshake else ''}]"
@@ -3096,7 +3152,12 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
         # A deliberate choice replaces the whole default: the named rooms and
         # nothing else, the lobby and the pairs included.
         posts = []
-        base = _pair_base(args) if any(map(pairing.parse_handle, only)) else None
+        # `is not None`, not truthiness: `pair:` names the empty pair, which
+        # is falsy, and skipping `base` for it crashed on an assert instead of
+        # reaching the refusal that says the name is not usable.
+        base = (_pair_base(args)
+                if any(pairing.parse_handle(label) is not None for label in only)
+                else None)
         for label in only:
             post = _labelled_post(book, store, base, label, identity)
             if post is not None:
@@ -3116,19 +3177,15 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
         role = str(args.room)
     else:
         role = "room"
-    # A paired work room is watched on the pair channel unless `-c` says
-    # otherwise: neither side knows the other's agent id — a cloud session's
-    # changes every session — so the channel is where the other side speaks,
-    # and this agent's own inbox there would wait for a DM nobody can address.
-    posts = [_Post(role, primary,
-                   args.channel or ([pairing.CHANNEL] if pair_name is not None else None))]
-    if pair_name is not None:
-        resolved = _cached_pair(args)
-        posts[0].pair = pair_name
-        posts[0].generation = resolved.generation if resolved is not None else None
     # What every pair's rooms are built on: this environment's own hub token,
     # never the token a code carried for one pair in particular.
     base = primary.config if pair_name is None else _pair_base(args)
+    posts = [_Post(role, primary, None if pair_name is not None else args.channel)]
+    if pair_name is not None:
+        resolved = _cached_pair(args)
+        _watch_pair(posts[0], pair_name,
+                    resolved.generation if resolved is not None else None,
+                    base, store, chosen=args.channel)
 
     def add(post: _Post | None) -> None:
         if post is None:
@@ -3153,11 +3210,20 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     # and this is the process still running.
     if not getattr(args, "no_pairs", False):
         now = _pairing_now()
-        for name in pairing.active(store, now=now):
+        active = pairing.active(store, now=now)
+        for name in active:
             if name != pair_name:   # already parked in, as the room named
-                add(_pair_post(name, base, identity, store, quiet=args.quiet))
+                add(_pair_post(name, base, identity, store))
         for name, config in pairing.pending_rooms(store, base, now=now):
             add(_handshake_post(name, config, base, identity, store))
+        if not args.quiet:
+            # Not the active ones: those parked, or said why they could not.
+            _say_idle_pairs(store, {*active, *(p.pair for p in posts if p.pair)}, now)
+        # A pairing begun after this listener was armed — `pair start`, or
+        # `pair accept`, in the very turn that armed it — is picked up while
+        # parked (`_Rescan`), rather than collected by nobody until a re-arm.
+        args._listen_rescan = _Rescan(store, base, {*active, *(
+            [pair_name] if pair_name is not None else [])})
     # `getattr`, like the flags above: a caller building the namespace by hand
     # — a test, a wrapper — gets the default rather than a crash.
     if getattr(args, "no_lobby", False) or role == "lobby":
@@ -3204,7 +3270,7 @@ def _labelled_post(book: knownrooms.Book, store: pairing.PairStore,
 
 
 def _pair_post(name: str, base: ClientConfig, identity: Identity,
-               store: pairing.PairStore, *, quiet: bool = False) -> _Post | None:
+               store: pairing.PairStore) -> _Post | None:
     """A pair's current work room to park in, or None with a line saying why.
 
     Resolved through the pair room, so a heal by the other side is followed
@@ -3214,6 +3280,11 @@ def _pair_post(name: str, base: ClientConfig, identity: Identity,
     instead, which is where that answer will land.
     """
     now = _pairing_now()
+    # Whatever `-q` says, the reason a pair is not watched is printed: it is
+    # not success chatter. Under `-q` there is no "parked" line to show the
+    # gap either, and a refusal like "voided, the code leaked" comes from a
+    # resolution that has already deleted the record — so a line dropped here
+    # is a verdict nothing on this machine can report again.
     try:
         resolution = pairing.resolve(name, base, store=store, connect=Client,
                                      agent_id=identity.agent_id, now=now)
@@ -3222,20 +3293,134 @@ def _pair_post(name: str, base: ClientConfig, identity: Identity,
             for pending, config in pairing.pending_rooms(store, base, now=now):
                 if pending == name:
                     return _handshake_post(name, config, base, identity, store)
-        if not quiet:
-            print(f"listen: not parking in {pairing.handle(name)}: {exc}", file=sys.stderr)
+        print(f"listen: not parking in {pairing.handle(name)}: {exc}", file=sys.stderr)
         return None
     except (SwitchboardError, OSError, httpx.HTTPError) as exc:
-        if not quiet:
-            print(f"listen: not parking in {pairing.handle(name)}: could not reach the hub "
-                  f"to resolve it ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+        print(f"listen: not parking in {pairing.handle(name)}: could not reach the hub "
+              f"to resolve it ({exc.__class__.__name__}: {exc})", file=sys.stderr)
         return None
     for line in resolution.warnings:
         print(f"listen: {resolution.room}: {line}", file=sys.stderr)
     post = _Post(resolution.room, Client(resolution.config, agent_id=identity.agent_id),
-                 [pairing.CHANNEL])
-    post.pair, post.generation = resolution.name, resolution.generation
+                 None)
+    return _watch_pair(post, resolution.name, resolution.generation, base, store)
+
+
+def _watch_pair(post: _Post, name: str, generation: int | None, base: ClientConfig,
+                store: pairing.PairStore, *, chosen: Sequence[str] | None = None) -> _Post:
+    """Make `post` a pair's work room: what it polls, and what it can follow.
+
+    By default the pair channel *and* this agent's own direct messages. The
+    channel is where the other side speaks, since neither side knows the
+    other's agent id in advance — but the listener puts this agent on the work
+    room's roster every pass, so the other side can read the id off it and
+    `dm` it, and is then told a listener is parked. Watching the channel alone
+    made that a lie: the hub drops the agent's `@` channel whenever channels
+    are named, so the DM sat unread while the listener ran to its deadline.
+
+    Under `-c` the named channels are what wake it, and the pair channel is
+    polled too when they leave it out — for the pair's moved and ended notes
+    alone (`protocol_only`), so a heal or an end still reaches a listener that
+    chose to hear only `general`, without making every message on the pair
+    channel a wake it never asked for.
+    """
+    if chosen:
+        channels = list(dict.fromkeys(chosen))
+        if pairing.CHANNEL not in channels:
+            channels.append(pairing.CHANNEL)
+            post.protocol_only = frozenset({pairing.CHANNEL})
+    else:
+        channels = [pairing.CHANNEL, f"@{post.hub.agent_id}"]
+    post.channels = channels
+    post.pair, post.generation = name, generation
+    post.base, post.store = base, store
     return post
+
+
+def _say_idle_pairs(store: pairing.PairStore, parked: set[str | None],
+                    now: float | None) -> None:
+    """Name each pair this listener is leaving out, and how to add it.
+
+    A plain `listen` parks in the pairs used here in the last day. One left
+    out was left out in silence, and its work room looks exactly like a quiet
+    one — while the other side, which this machine cannot see using it, may
+    be talking there now. So each skipped pair is a line, with the flag that
+    adds it.
+    """
+    try:
+        names = store.names()
+    except (pairing.PairingError, OSError):
+        return
+    for name in names:
+        if name in parked:
+            continue
+        try:
+            record = store.get(name)
+        except (pairing.PairingError, OSError):
+            continue   # listed by `active` and reported when resolved
+        if record is None:
+            continue
+        since = record.last_used_at
+        print(f"listen: not parking in {pairing.handle(name)}: not used on this machine "
+              + (f"since {pairing.iso(since)}" if since else "lately")
+              + f"; add --in {pairing.handle(name)} to park there too", file=sys.stderr)
+
+
+#: How often a parked default listener looks for pairings begun after it was
+#: armed. A local directory read, so cheap; short enough that an answer is
+#: collected within seconds of landing, as `pair start` promises.
+_RESCAN_EVERY = 5.0
+
+
+class _Rescan:
+    """The pairs a listener armed before them should still park in.
+
+    `listen` chose its rooms once, at arming, so a `pair start` run in the
+    turn after it — the ordinary order, since sessions keep a listener armed
+    — left the handshake room unwatched while `pair start` said a parked
+    listener collects the answer. Nothing collected it; the responder sat
+    unconfirmed, its work room read by nobody, until somebody re-armed.
+
+    Pending handshakes are re-read every pass of the process loop: a local
+    read with no network. A pair that becomes active (a `pair accept` here)
+    is resolved once, the first time it is seen, and never retried — a pair
+    that cannot be parked in says why once, not every five seconds.
+    """
+
+    def __init__(self, store: pairing.PairStore, base: ClientConfig,
+                 tried: set[str]) -> None:
+        self.store, self.base, self.tried = store, base, set(tried)
+
+    def fresh(self, posts: list[_Post], identity: Identity) -> list[_Post]:
+        found: list[_Post] = []
+
+        def known(post: _Post) -> bool:
+            return any(p.pair == post.pair and p.handshake == post.handshake
+                       or (p.hub.config.url, p.workspace)
+                       == (post.hub.config.url, post.workspace)
+                       for p in [*posts, *found])
+
+        now = _pairing_now()
+        try:
+            pending = pairing.pending_rooms(self.store, self.base, now=now)
+            active = pairing.active(self.store, now=now)
+        except Exception:  # noqa: BLE001 - a missed rescan costs one slice, never the park
+            return found
+        for name, config in pending:
+            self.tried.add(name)
+            if any(p.handshake and p.pair == name for p in [*posts, *found]):
+                continue
+            post = _handshake_post(name, config, self.base, identity, self.store)
+            if not known(post):
+                found.append(post)
+        for name in active:
+            if name in self.tried:
+                continue
+            self.tried.add(name)
+            post = _pair_post(name, self.base, identity, self.store)
+            if post is not None and not known(post):
+                found.append(post)
+        return found
 
 
 def _handshake_post(name: str, config: ClientConfig, base: ClientConfig,
@@ -3298,9 +3483,11 @@ def _pair_wake(post: _Post, messages: list[dict[str, Any]]) -> dict[str, Any]:
     """What the wake line says about a pair's room, beyond its messages.
 
     A handshake wake carries what settling found. A work-room wake says how
-    to take delivery — the pair channel is read with `-c pair`, and a listener
-    only peeks, so a session that reads it any other way is woken by the same
-    message next time — and what a `pair.moved` or `pair.ended` means.
+    to take delivery — a listener only peeks, so a session that reads the
+    wrong view is woken by the same message next time, and `inbox -c pair`
+    does not show the direct message that woke it — and what a moved or ended
+    note means. The note is recognised by its sealed tag (`message_tag`):
+    on the wire every pairing message is an ordinary note.
     """
     if post.handshake:
         return dict(post.outcome or {"name": post.pair, "room": post.role,
@@ -3308,17 +3495,44 @@ def _pair_wake(post: _Post, messages: list[dict[str, Any]]) -> dict[str, Any]:
     room = pairing.handle(post.pair or "")
     report: dict[str, Any] = {"name": post.pair, "room": room,
                               "generation": post.generation,
-                              "next": f"switchboard --room {room} inbox -c {pairing.CHANNEL}"}
-    types = {m.get("type") for m in messages}
-    if "pair.moved" in types:
+                              "next": _take_delivery(room, messages)}
+    followed = post.followed or {}
+    tags = {pairing.message_tag(m) for m in messages}
+    if pairing.TAG_MOVED in tags or followed.get("moved"):
         report["moved"] = True
+        if followed.get("to_generation") is not None:
+            report["to_generation"] = followed["to_generation"]
         report["next"] = (f"the pair was healed: run your next command with --room {room} "
                           "and it resolves to the new work room; this one is retired")
-    if "pair.ended" in types:
+    if pairing.TAG_ENDED in tags or followed.get("ended"):
         report["ended"] = True
-        report["next"] = (f"the other side ended the pair: `switchboard pair forget "
-                          f"{post.pair}`, and pair again if it is still needed")
+        report["next"] = followed.get("message") or (
+            f"the other side ended the pair: `switchboard pair forget {post.pair}`, and "
+            "pair again if it is still needed")
+        if followed.get("state"):
+            report["state"] = followed["state"]
+    if followed.get("warnings"):
+        report["warnings"] = list(followed["warnings"])
     return report
+
+
+def _take_delivery(room: str, messages: list[dict[str, Any]]) -> str:
+    """The command that reads what woke a pair's work-room listener.
+
+    The pair channel needs `-c pair`; a direct message needs a plain `inbox`,
+    which reads the agent's own channel and not the pair's. Naming one when
+    the wake was the other sends the session to a view without the message.
+    """
+    named = sorted({str(m.get("channel")) for m in messages
+                    if m.get("channel") and not str(m.get("channel")).startswith("@")})
+    direct = any(str(m.get("channel") or "").startswith("@") for m in messages)
+    by_channel = f"switchboard --room {room} inbox " + " ".join(
+        f"-c {channel}" for channel in (named or [pairing.CHANNEL]))
+    if direct and not named:
+        return f"switchboard --room {room} inbox"
+    if direct:
+        return f"{by_channel}, then `switchboard --room {room} inbox` for the direct message"
+    return by_channel
 
 
 def _known_post(book: knownrooms.Book, label: str, identity: Identity,
@@ -3352,6 +3566,46 @@ def _choose_wake(pending: list[tuple[_Post, list[dict[str, Any]]]],
     and nowhere else.
     """
     return min(pending, key=lambda item: posts.index(item[0]))
+
+
+#: How long the process waits, on its way out, for a handshake still being
+#: collected in another room's thread. A collect is a few hub round trips.
+_SETTLE_GRACE = 10.0
+
+
+def _outcomes_elsewhere(posts: list[_Post], chosen: _Post) -> list[dict[str, Any]]:
+    """What handshakes other than the wake settled, waiting briefly for any mid-collect.
+
+    A handshake is collected inside its own room's thread, before anyone
+    decides which room's message is the wake. If another room won, the
+    process used to print that wake and exit, and the outcome — an "aborted,
+    the code leaked" included — went with it: the collect had already deleted
+    the pending handshake, so `pair status` afterwards said there were no
+    pairs at all. So every settled outcome rides on the wake, whichever room
+    won, after waiting (bounded) for a collect still in flight.
+    """
+    until = time.time() + _SETTLE_GRACE
+    found: list[dict[str, Any]] = []
+    for post in posts:
+        if not post.handshake or post is chosen:
+            continue
+        if post.settling.acquire(timeout=max(0.0, until - time.time())):
+            post.settling.release()
+        if post.outcome is not None:
+            found.append(dict(post.outcome))
+    return found
+
+
+def _say_outcome(outcome: dict[str, Any]) -> None:
+    """A collected handshake's outcome, on stderr, whatever `-q` says."""
+    room = outcome.get("room") or pairing.handle(str(outcome.get("name") or ""))
+    for line in outcome.get("warnings") or []:
+        print(f"listen: {room}: {line}", file=sys.stderr)
+    print(f"listen: {room} {outcome.get('state')}"
+          + (f" — SAS {outcome['sas']}; compare it with the other side's"
+             if outcome.get("sas") else "")
+          + (f": {outcome['message']}" if outcome.get("message") else ""),
+          file=sys.stderr)
 
 
 def _back_in(post: _Post, deadline: float | None, now: float) -> float | None:
@@ -3405,9 +3659,13 @@ def _heartbeat(post: _Post, wake: "_Wake", deadline: float | None, described: st
     whether that everything else is being kept alive until then. That is the
     question a peer about to post actually has.
     """
+    # The channels that wake it, not every channel polled: a pair channel
+    # read only for the pair's own notes (`protocol_only`) wakes nobody on an
+    # ordinary post, and a peer told otherwise would wait on one.
+    waking = [c for c in post.channels or () if c not in post.protocol_only]
     value: dict[str, Any] = {
         "pass": post.passes, "pid": os.getpid(),
-        "waiting_on": list(post.channels) if post.channels else "inbox",
+        "waiting_on": waking if post.channels else "inbox",
         "room": post.role,
         **({"until": described, "until_source": source} if deadline else {}),
         "means": _LISTEN_MEANS,
@@ -3422,6 +3680,112 @@ def _heartbeat(post: _Post, wake: "_Wake", deadline: float | None, described: st
         value["means"] = _DND_MEANS.format(
             types=", ".join(sorted(wake.types)), until=described)
     return value
+
+
+#: The longest one long-poll waits before the room's loop comes round again —
+#: to re-announce, and for a pair's work room to look at the local store.
+_PARK_POLL = 25.0
+
+#: The pair notes that retire the work room a listener is parked in.
+_PAIR_NOTES = frozenset({pairing.TAG_MOVED, pairing.TAG_ENDED})
+
+
+def _left_behind(post: _Post) -> bool:
+    """Whether this machine moved the pair on, or dropped it, since parking.
+
+    A heal run here saves the new generation to the local store before it
+    posts its moved note, so the store is the one record of it that does not
+    depend on the note arriving. A note that could not be posted — the hub
+    flickered — used to leave this machine's own listener parked in the room
+    the heal had just retired, waiting for a peer who had already followed.
+    Reading the store is a local file read, so it is done every pass. A pair
+    gone from the store was forgotten or voided here: nothing more will
+    arrive in its work room.
+    """
+    if post.store is None or post.pair is None or post.generation is None:
+        return False
+    try:
+        record = post.store.get(post.pair)
+    except (pairing.PairingError, OSError, ValueError):
+        return False   # reported by whatever next resolves the pair
+    if record is None:
+        post.followed = {"ended": True, "state": "gone", "message": (
+            f"pair {post.pair!r} is no longer on this machine — forgotten or voided "
+            "here since this listener parked — so nothing more arrives in its work "
+            "room. `switchboard pair status` says what is left.")}
+        return True
+    if record.generation > post.generation:
+        post.followed = {"moved": True, "to_generation": record.generation}
+        return True
+    return False
+
+
+def _pair_notes_wake(post: _Post, messages: list[dict[str, Any]],
+                     matched: list[dict[str, Any]],
+                     identity: Identity) -> list[dict[str, Any]]:
+    """`matched`, plus any moved or ended note the filter would have skipped.
+
+    Do-not-disturb and `-c` choose which conversation wakes the agent; a heal
+    or an end is not conversation. It retires the room being watched, so a
+    listener that let the note go by stayed parked in a room the peer had
+    left, and the urgent message it was promised a wake for landed in the new
+    one, which it could never see.
+
+    But a heal happens because the work room's key got out, and whoever holds
+    that key can post a note shaped like a moved one. So a note that gets
+    past the filter only because of what it claims is checked against the
+    pair first (`_followed_pair`): a note that is not true is not a wake,
+    and a forger cannot break do-not-disturb at will. Notes the filter let
+    through anyway — a plain listener wakes on everything — need no check.
+    """
+    taken = {id(m) for m in matched}
+    notes = [m for m in messages
+             if id(m) not in taken and pairing.message_tag(m) in _PAIR_NOTES]
+    if not notes or not _followed_pair(post, identity):
+        return matched
+    keep = taken | {id(m) for m in notes}
+    return [m for m in messages if id(m) in keep]
+
+
+def _followed_pair(post: _Post, identity: Identity) -> bool:
+    """Whether the pair really left this work room; what it found, on `post`.
+
+    True when this machine has moved on already, when the pair room shows a
+    newer generation, or when resolving says the pair cannot be used any more
+    (ended, voided, gone). Also true when the pair room cannot be read: a
+    true heal slept through strands the agent until its deadline, a false
+    one costs a wake, and only the second can be recovered from.
+    """
+    if _left_behind(post):
+        return True
+    if post.pair is None or post.base is None:
+        return True
+    try:
+        resolution = pairing.resolve(post.pair, post.base,
+                                     store=post.store or _pair_store(), connect=Client,
+                                     agent_id=identity.agent_id, now=_pairing_now())
+    except pairing.PairingError as exc:
+        post.followed = {"ended": True, "state": exc.state or "error",
+                         "message": str(exc)}
+        return True
+    except (SwitchboardError, OSError, httpx.HTTPError) as exc:
+        post.followed = {"warnings": [
+            f"woken by a note saying the pair moved or ended, which could not be "
+            f"checked against the pair room ({exc.__class__.__name__}): run your next "
+            f"command with --room {pairing.handle(post.pair)} to find out"]}
+        return True
+    if not resolution.checked:
+        post.followed = {"warnings": [
+            *resolution.warnings,
+            "woken by a note saying the pair moved or ended, which could not be checked "
+            f"against the pair room: run your next command with --room "
+            f"{pairing.handle(post.pair)} to find out"]}
+        return True
+    if resolution.generation != post.generation:
+        post.followed = {"moved": True, "to_generation": resolution.generation,
+                         "warnings": list(resolution.warnings)}
+        return True
+    return False
 
 
 def _park(post: _Post, identity: Identity, deadline: float | None, described: str,
@@ -3439,13 +3803,24 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
     not a wake. It is left exactly where it was — the read is a peek — and the
     next poll starts past it, so the long-poll waits for something new rather
     than returning the same skipped message every pass.
+
+    A pair's work room is the exception do-not-disturb and `-c` do not get to
+    make: the pair moving on (a heal) or ending wakes it whatever the filter
+    says (`_pair_notes_wake`), and so does this machine having moved the pair
+    on by itself (`_left_behind`). Either way the room being watched has been
+    retired, and the peer's urgent message lands in one this listener cannot
+    see — so staying parked would honour the filter by breaking its promise.
     """
     wake = wake or _Wake()
     hub = post.hub
+    work_room = post.pair is not None and not post.handshake
     try:
         while not stop.is_set():
             post.passes += 1
-            wait = 25.0
+            if work_room and _left_behind(post):
+                events.put(("message", post, []))
+                return
+            wait = _PARK_POLL
             if deadline:
                 left = deadline - time.time()
                 # Never poll past the deadline: an unclamped last wait
@@ -3469,9 +3844,12 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                 # starts past the newest message seen, so an urgent one that
                 # did not fit on this page would be stepped over, unread by
                 # the filter and unwoken-for.
+                # A channel polled for protocol notes alone is filtered the
+                # same way, and needs the same page.
                 messages = hub.inbox(channels=post.channels, wait=wait, peek=True,
                                      since=post.since,
-                                     limit=1000 if wake.types else 100)
+                                     limit=1000 if wake.types or post.protocol_only
+                                     else 100)
             except (SwitchboardError, OSError, httpx.HTTPError) as exc:
                 # httpx.HTTPError belongs here as much as the other two,
                 # and its absence killed a listener in production: one
@@ -3491,23 +3869,33 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             post.fails = 0
             if not messages:
                 continue
+            # Messages on a channel polled only for the pair's notes are not
+            # this listener's: never a wake on their own, and not counted as
+            # deferred, since the session never asked to read them.
+            ours = [m for m in messages if m.get("channel") not in post.protocol_only]
             if post.handshake:
                 # Protocol traffic, so do-not-disturb does not apply: the
                 # wake is anything but the initiator's own hello, which was
                 # there before this listener was, and it is a wake only once
-                # collecting it settles something (`_settle_handshake`).
-                matched = [m for m in messages if m.get("type") != "pair.hello"]
+                # collecting it settles something (`_settle_handshake`). The
+                # hello is told by its sealed tag: on the wire it is a note.
+                matched = [m for m in messages
+                           if pairing.message_tag(m) != pairing.TAG_HELLO]
                 if matched and post.settle is not None:
-                    post.outcome = post.settle()
+                    with post.settling:
+                        post.outcome = post.settle()
                     if post.outcome is None:
                         matched = []
             else:
-                matched = wake.select(messages)
+                matched = wake.select(ours)
+                if work_room:
+                    matched = _pair_notes_wake(post, messages, matched, identity)
             if matched:
                 # What arrived alongside the wake and did not cause it is
                 # deferred too; the payload's count must include it.
                 if not post.handshake:
-                    post.skipped += len(messages) - len(matched)
+                    post.skipped += len([m for m in ours
+                                         if not any(m is w for w in matched)])
                 events.put(("message", post, matched))
                 return
             # Nothing that wakes. Remember how far we looked, so the next
@@ -3517,7 +3905,7 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
             if seqs:
                 post.since = max([*seqs, post.since or 0])
             if not post.handshake:
-                post.skipped += len(messages)
+                post.skipped += len(ours)
     except Exception as exc:  # noqa: BLE001 - reported, not swallowed
         # A thread that dies silently leaves `cmd_listen` waiting on a queue
         # nothing will ever write to: with no deadline, forever, which is the
@@ -3686,28 +4074,41 @@ def cmd_listen(args: argparse.Namespace) -> int:
 
     events: "queue.Queue[tuple[str, _Post, Any]]" = queue.Queue()
     stop = threading.Event()
-    threads = [
+
+    def start(post: _Post) -> None:
         threading.Thread(
             target=_park,
             args=(post, identity if post.handshake else _standing_name(post.hub, identity),
                   deadline, described, source, heartbeat_ttl, args.max_fails, stop,
                   events, wake),
             daemon=True, name=f"listen:{post.role}",
-        )
-        for post in posts
-    ]
-    for thread in threads:
-        thread.start()
+        ).start()
+
+    for post in posts:
+        start(post)
     watching = list(posts)
+    rescan: _Rescan | None = getattr(args, "_listen_rescan", None)
     try:
         while True:
             # A little past the deadline, so the room that reaches it reports
             # first and the exit line can say which one; the clamp inside
             # `_park` is what keeps a poll from running past it.
             timeout = None if deadline is None else max(0.0, deadline - time.time()) + 2.0
+            if rescan is not None:
+                timeout = _RESCAN_EVERY if timeout is None else min(timeout, _RESCAN_EVERY)
             try:
                 kind, post, messages = events.get(timeout=timeout)
             except queue.Empty:
+                if rescan is not None and (deadline is None
+                                           or time.time() < deadline + 2.0):
+                    for new in rescan.fresh(posts, identity):
+                        posts.append(new)
+                        watching.append(new)
+                        start(new)
+                        if not args.quiet:
+                            print(f"listen: also parked in {new}, begun after this "
+                                  "listener was armed", file=sys.stderr)
+                    continue
                 kind, post, messages = "deadline", None, None
             if kind == "message":
                 pending = [(post, messages)]
@@ -3719,6 +4120,9 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     if other_kind == "message":
                         pending.append((other_post, other_messages))
                 chosen, chosen_messages = _choose_wake(pending, posts)
+                others = _outcomes_elsewhere(posts, chosen)
+                pair_report = (_pair_wake(chosen, chosen_messages)
+                               if chosen.pair is not None else None)
                 # To stdout, because the wake carries it: the session comes
                 # back already holding the event instead of having to ask.
                 # `messages` first and unchanged, so a reader written for the
@@ -3735,18 +4139,23 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     # A pair's room says what the wake means for the pair: a
                     # handshake wake was collected in-process and carries the
                     # outcome; a work-room wake says how to take delivery.
-                    **({"pair": _pair_wake(chosen, chosen_messages)}
-                       if chosen.pair is not None else {}),
+                    **({"pair": pair_report} if pair_report is not None else {}),
+                    # Handshakes that settled while another room won: their
+                    # outcome is reported here or nowhere, since collecting
+                    # deleted the pending handshake it came from.
+                    **({"pairings": others} if others else {}),
                 })
+                for outcome in others:
+                    _say_outcome(outcome)
                 if chosen.handshake and chosen.outcome is not None:
-                    outcome = chosen.outcome
-                    for line in outcome.get("warnings") or []:
+                    _say_outcome(chosen.outcome)
+                elif pair_report is not None and (pair_report.get("moved")
+                                                  or pair_report.get("ended")):
+                    # A heal or an end: said whatever `-q` says, because it is
+                    # what strands the agent's leases and its conversation.
+                    for line in pair_report.get("warnings") or []:
                         print(f"listen: {chosen.role}: {line}", file=sys.stderr)
-                    print(f"listen: {outcome.get('room', chosen.role)} "
-                          f"{outcome.get('state')}"
-                          + (f" — SAS {outcome['sas']}; compare it with the other side's"
-                             if outcome.get("sas") else "")
-                          + (f": {outcome['message']}" if outcome.get("message") else ""),
+                    print(f"listen: {pair_report['room']}: {pair_report['next']}",
                           file=sys.stderr)
                 elif not args.quiet:
                     print(f"listen: message arrived in {chosen} on pass "
@@ -4946,6 +5355,28 @@ def cmd_join(args: argparse.Namespace) -> int:
 _local_iso = pairing.iso
 
 
+def _pairing_refusal(args: argparse.Namespace, exc: pairing.PairingError) -> int:
+    """Report a pairing refusal: the sentence on stderr, and under `--json` the state.
+
+    The state is the half a script branches on — `expired` wants a fresh
+    code, `wrong_hub` a different URL, `ended_by_peer` a `pair forget` — and
+    with only an English sentence on stderr and nothing on stdout, a script
+    could tell them apart only by parsing prose that is free to change. So
+    `--json` gets one document on stdout carrying it, except on a command
+    whose stdout is a stream of its own (a listener's wake), where an error
+    object could be read as an event.
+
+    Already-redeemed keeps its own exit code: the one refusal meaning somebody
+    else holds the code, so a script that retries on 1 cannot retry its way
+    past it.
+    """
+    print(f"error: {exc}", file=sys.stderr)
+    if getattr(args, "json", False) and getattr(args, "func", None) not in (
+            cmd_listen, cmd_watch):
+        _print_json({"error": str(exc), "state": exc.state or "error"})
+    return EXIT_CONFLICT if isinstance(exc, pairing.AlreadyRedeemed) else EXIT_ERROR
+
+
 def cmd_pair(args: argparse.Namespace) -> int:
     """Pair this machine with another, or look after a pair it already has.
 
@@ -4964,14 +5395,8 @@ def cmd_pair(args: argparse.Namespace) -> int:
     }
     try:
         return handlers[args.pair_action](args)
-    except pairing.AlreadyRedeemed as exc:
-        # Its own exit code: the one refusal meaning somebody else holds the
-        # code. A script that retries on 1 must not retry its way past this.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_CONFLICT
     except pairing.PairingError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        return _pairing_refusal(args, exc)
     except OSError as exc:
         # The pair store, not the hub. A pair record is the only copy of its
         # secret, so a write that fails stops the command — and `main()` would
@@ -5030,7 +5455,9 @@ def _pair_start(args: argparse.Namespace) -> int:
         notes.append(
             "The other machine — the one that may not stay, like a cloud session — runs:\n"
             "  switchboard pair accept <the code>\n"
-            "This machine collects the answer on its own: a parked `switchboard listen`, "
+            "This machine collects the answer on its own: a parked `switchboard listen` "
+            "(one already parked picks this up within seconds, unless it was armed with "
+            "--only or --no-pairs), "
             f"`switchboard pair status`, `switchboard pair wait {started.name}`, or any "
             f"`--room {started.room}` command. Both sides then work in `--room "
             f"{started.room}`; compare the SAS `pair status` shows on each side when it "
@@ -5087,6 +5514,22 @@ def _pair_row_failed(row: dict[str, Any]) -> bool:
     return "error" in row or row.get("state") in ("expired", "aborted")
 
 
+def _peer_line(row: dict[str, Any]) -> str | None:
+    """When the other side last used the pair, for a resolved row; else None.
+
+    The one fact a status table otherwise hides: a pair can be `paired` and
+    healthy here while the other side has not touched it in days, and its
+    work room then looks exactly like a quiet one.
+    """
+    if "peer_present" not in row:
+        return None
+    seen = row.get("peer_active_at")
+    if row.get("peer_present"):
+        return f"peer: last active {seen}" if seen else "peer: in the pair room"
+    return ("peer: not in the pair room now"
+            + (f"; last active {seen}" if seen else ""))
+
+
 def _pair_status(args: argparse.Namespace) -> int:
     """`pair status [NAME]`: every pair here, brought up to date.
 
@@ -5118,6 +5561,9 @@ def _pair_status(args: argparse.Namespace) -> int:
         print(f"{str(row.get('name'))[:21]:<22} {str(row.get('room'))[:26]:<27} "
               f"{str(row.get('role') or '-'):<10} {paint(f'{state:<15}')} "
               f"{('-' if generation is None else generation):>4}  {row.get('sas') or '-'}")
+        peer = _peer_line(row)
+        if peer:
+            print(f"  {peer}")
         for line in row.get("warnings") or []:
             print(f"  {fmt.yellow('warning:')} {line}")
         if row.get("error"):
@@ -5137,8 +5583,25 @@ def _pair_check(name: str, base: ClientConfig, store: pairing.PairStore,
     """
     now = _pairing_now()
     if store.pending(name) is not None or store.get(name) is None:
-        done = pairing.collect(name, base, store=store, connect=Client,
-                               agent_id=agent_id, now=now)
+        try:
+            done = pairing.collect(name, base, store=store, connect=Client,
+                                   agent_id=agent_id, now=now)
+        except (SwitchboardError, httpx.HTTPError) as exc:
+            # One timeout used to end the whole wait with exit 1 — "it can
+            # never pair" — and no document under `--json`, so a script
+            # deciding on that exit threw away a pairing that was fine. A hub
+            # error says nothing about the pairing: report it still pending,
+            # unchecked, with the handshake room to keep waiting in.
+            if not _transient(exc):
+                raise
+            pending = store.pending(name)
+            return {
+                "name": name, "room": pairing.handle(name), "state": "pending",
+                "role": pairing.INITIATOR, "checked": False,
+                **({"expires_at": pending.expires_at} if pending is not None else {}),
+                "warnings": [f"could not check for an answer ({exc.__class__.__name__}: "
+                             f"{exc}); still pending as far as this machine knows"],
+            }, dict(pairing.pending_rooms(store, base, now=now)).get(name)
         report: dict[str, Any] = {
             "name": done.name, "room": done.room,
             "state": "pending" if done.state == "waiting" else done.state,
@@ -5152,9 +5615,38 @@ def _pair_check(name: str, base: ClientConfig, store: pairing.PairStore,
         if done.state != "waiting":
             return report, None
         return report, dict(pairing.pending_rooms(store, base, now=now)).get(name)
-    resolution = pairing.resolve(name, base, store=store, connect=Client,
-                                 agent_id=agent_id, now=now)
+    try:
+        resolution = pairing.resolve(name, base, store=store, connect=Client,
+                                     agent_id=agent_id, now=now)
+    except (SwitchboardError, httpx.HTTPError) as exc:
+        if not _transient(exc):
+            raise
+        record = store.get(name)
+        return {
+            "name": name, "room": pairing.handle(name),
+            "state": "paired" if record is not None and record.confirmed else "unconfirmed",
+            "role": record.role if record is not None else None, "checked": False,
+            "warnings": [f"could not check the pair ({exc.__class__.__name__}: {exc})"],
+        }, None
     return resolution.summary(), None if resolution.state == "paired" else resolution.config
+
+
+def _transient(exc: BaseException) -> bool:
+    """Whether a hub error can clear up on its own, so waiting through it is right.
+
+    A dropped connection, a timeout, a 429, a 5xx — a hub restarting looks
+    like all of them. Not a 401 or 403: a wrong token does not get better,
+    and turning it into ten minutes of "still pending" hides the one thing
+    to fix.
+    """
+    if isinstance(exc, httpx.HTTPError):
+        return True
+    if isinstance(exc, (LeaseHeld, ReadOnlyRoom, UnknownPeerExchangeKey)):
+        return False
+    if isinstance(exc, SwitchboardError):
+        status = getattr(exc, "status", None)
+        return status is None or status == 429 or status >= 500
+    return False
 
 
 def _pair_wait(args: argparse.Namespace) -> int:
@@ -5166,8 +5658,10 @@ def _pair_wait(args: argparse.Namespace) -> int:
     moment after the other side acts rather than at the next tick.
 
     Exit 0 paired; 2 the deadline came first and it is still pending, the
-    same 2 `listen` and `session receive --wait` mean "nothing yet" by; 1 it
-    can never pair — expired, aborted, voided.
+    same 2 `listen` and `session receive --wait` mean "nothing yet" by — a
+    hub that could not be reached included, since that says nothing about the
+    pairing; 1 it can never pair — expired, aborted, voided — or the store
+    could not save it.
     """
     if args.until <= 0:
         raise SystemExit("--until is how many seconds to wait for the pairing to "
@@ -5175,8 +5669,10 @@ def _pair_wait(args: argparse.Namespace) -> int:
     deadline = time.time() + args.until
     base, store, agent_id = _make_config(args), _pair_store(), _pair_agent(args)
     since = 0
+    reached = False
     while True:
         report, park = _pair_check(args.pair_name, base, store, agent_id)
+        reached = reached or report.get("checked", True) is not False
         state = report.get("state")
         settled = state not in ("pending", "unconfirmed")
         left = deadline - time.time()
@@ -5197,6 +5693,13 @@ def _pair_wait(args: argparse.Namespace) -> int:
             continue
         seqs = [m["seq"] for m in messages if isinstance(m.get("seq"), int)]
         since = max([since, *seqs])
+    if not reached:
+        # Not one look reached the hub: this is this machine's last word, not
+        # the hub's, and a wrong URL must not read as an ordinary pending.
+        report["warnings"] = [*(report.get("warnings") or []), (
+            "no check reached the hub during the whole wait, so this is what this "
+            "machine last knew, not what the hub says: check SWITCHBOARD_URL and that "
+            "the hub is up, then wait again")]
     room = report.get("room") or pairing.handle(args.pair_name)
     if args.json:
         _print_json(report)
@@ -5286,13 +5789,20 @@ def _pair_export(args: argparse.Namespace) -> int:
     variable = pairing.env_var_for(record.name)
     value = pairing.export(record, for_peer=args.peer)
     role = record.peer_role if args.peer else record.role
+    # What the resolution knows rides with the value in both modes. `--json`
+    # used to drop it entirely — no key, no stderr — and the warnings it drops
+    # are the ones that matter for a value headed into a secret store: "could
+    # not read the pair room; using generation N", "the other side has not
+    # moved yet". A stale export starts every fresh container a heal behind.
     if args.json:
         _print_json({"name": record.name, "variable": variable, "value": value,
-                     "role": role})
+                     "role": role, "generation": resolution.generation,
+                     "state": resolution.state, "checked": resolution.checked,
+                     "warnings": list(resolution.warnings)})
     else:
         print(f"{variable}={value}")
-        for line in resolution.warnings:
-            print(f"pair: {line}", file=sys.stderr)
+    for line in resolution.warnings:
+        print(f"pair: {line}", file=sys.stderr)
     print(
         f"note: this is pair {record.name}'s long-lived secret ({role} side): every work "
         "room the pair will ever have derives from it, and a heal does not take it back "
@@ -8708,20 +9218,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         # traceback each would otherwise have to catch for itself.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    except pairing.AlreadyRedeemed as exc:
-        # The one pairing refusal that means "the code leaked" rather than
-        # "try again", so it exits with the conflict code a script can tell
-        # apart from a network failure. `cmd_pair` catches it first; this is
-        # for anything else that ever reaches the protocol.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_CONFLICT
     except pairing.PairingError as exc:
         # Raised by `--room pair:<name>` on any command, from inside
         # `_make_config`: the other side ended the pair, it was never
         # confirmed, the store is disabled. Each is a sentence with the way
-        # out, and none of them is a hub that could not be reached.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        # out, and none of them is a hub that could not be reached; under
+        # `--json` it carries its state as well (`_pairing_refusal`). An
+        # already-redeemed code keeps the conflict exit code here too.
+        return _pairing_refusal(args, exc)
     except KeyboardInterrupt:
         return EXIT_OK
     except OSError as exc:

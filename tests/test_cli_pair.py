@@ -21,12 +21,13 @@ import json
 import threading
 import time
 
+import httpx
 import pytest
 
 import switchboard.cli as cli
 from switchboard import knownrooms, pairing, rooms
 from switchboard.cli import build_parser, main
-from switchboard.client import detect_identity
+from switchboard.client import SwitchboardError, detect_identity
 from switchboard.crypto import generate_key
 from switchboard.invite import Invite
 from switchboard.pairing import PairStore
@@ -303,7 +304,9 @@ def test_heal_moves_both_sides_and_says_the_other_is_behind_until_it_follows(run
     code, out, err = run("laptop", "pair", "heal", "lab", "--reason", "invite leaked")
     assert code == 0
     assert out == "pair:lab → work room 1\n"
-    assert "still in work room 0" in err
+    # Said once: `pairing.heal` words what a heal strands, and a surface
+    # adding its own copy is how two sentences end up disagreeing.
+    assert err.count("still in work room 0") == 1
 
     code, _, err = run("cloud", "--room", "pair:lab", "say", "pair", "on the new one")
     assert code == 0
@@ -508,7 +511,11 @@ def test_listen_parks_in_pending_handshakes_and_paired_work_rooms_by_default(
     posts = _posts(["--url", BASE_URL, "-w", WS, "listen", "--no-lobby"])
     by_role = {(p.role, p.handshake): p for p in posts}
     assert ("pair:lab", False) in by_role and ("pair:next", True) in by_role
-    assert by_role[("pair:lab", False)].channels == ["pair"]
+    work = by_role[("pair:lab", False)]
+    # The pair channel and this agent's own DMs: the listener puts its id on
+    # the work room's roster, so the other side can address it there.
+    assert work.channels == ["pair", f"@{work.agent_id}"]
+    # A handshake room is read for the answer alone, under a throwaway id.
     assert by_role[("pair:next", True)].channels == ["pair"]
 
     posts = _posts(["--url", BASE_URL, "-w", WS, "listen", "--no-lobby", "--no-pairs"])
@@ -527,7 +534,8 @@ def test_listen_under_a_pair_handle_takes_the_lobby_from_its_own_key(
     _be("laptop", tmp_path, monkeypatch)
     monkeypatch.setenv("SWITCHBOARD_KEY", own_key)
     posts = _posts(["--url", BASE_URL, "--room", "pair:lab", "listen", "--no-pairs"])
-    assert posts[0].role == "pair:lab" and posts[0].channels == ["pair"]
+    assert posts[0].role == "pair:lab"
+    assert posts[0].channels == ["pair", f"@{posts[0].agent_id}"]
     [lobby] = [p for p in posts if p.role == "lobby"]
     work_key = store_of(tmp_path, "laptop").get("lab")
     assert lobby.workspace == rooms.lobby(own_key).workspace
@@ -617,6 +625,464 @@ def test_a_listener_in_a_retired_work_room_wakes_on_the_heal(
     _join(thread)
     assert not thread.is_alive() and result.get("code") == 0, result
     wake = json.loads(out + capsys.readouterr().out)
-    assert wake["messages"][0]["type"] == "pair.moved"
+    # On the wire the note is an ordinary one; only its sealed tag says what
+    # it is, and that is what the listener must have recognised.
+    assert wake["messages"][0]["type"] == "note"
+    assert pairing.message_tag(wake["messages"][0]) == pairing.TAG_MOVED
     assert (wake["pair"]["generation"], wake["pair"]["moved"]) == (0, True)
     assert "--room pair:lab" in wake["pair"]["next"]
+
+
+# --- the work room's listener: who can wake it, and what retires it -----------------
+
+
+def _listening(capsys, tmp_path, monkeypatch, machine: str,
+               *argv: str) -> tuple[threading.Thread, dict, str]:
+    """Arm `listen` as `machine` on a thread; return once it says it parked."""
+    _be(machine, tmp_path, monkeypatch)
+    thread, result = _in_thread(["--url", BASE_URL, *argv])
+    out, _ = _wait_for(capsys, "listen: parked")
+    return thread, result, out
+
+
+def _work_room(h, tmp_path, machine: str = "cloud"):
+    """`machine`'s client in the pair's current work room, as its next command sees it."""
+    resolved = pairing.resolve("lab", h.client_config(), store=store_of(tmp_path, machine),
+                               connect=h.client_class(), agent_id=machine, now=h.now)
+    return h.client_class()(resolved.config, agent_id=machine)
+
+
+def _until(check, *, timeout: float = 10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = check()
+        if value:
+            return value
+        time.sleep(0.05)
+    raise AssertionError("never happened")
+
+
+def _other_on_roster(peer) -> str:
+    """The id the other side's listener put on the work room's roster."""
+    return _until(lambda: next((a["agent_id"] for a in peer.agents()
+                                if a["agent_id"] != peer.agent_id), None))
+
+
+def _parked_state(peer, other: str) -> dict:
+    """`_listener_state` for a DM to `other`, once its heartbeat is up."""
+    def look():
+        state = cli._listener_state(peer, peer=other)
+        return state if state.get("peer_parked") else None
+    return _until(look)
+
+
+def test_a_listener_in_a_work_room_wakes_on_a_direct_message(
+        run, h, tmp_path, monkeypatch, capsys):
+    """The listener puts this agent on the work room's roster every pass, so
+    the other side can read the id there and `dm` it — and is then told a
+    listener is parked. Watching the pair channel alone made that a lie: the
+    hub drops an agent's own channel whenever channels are named, so the DM
+    sat unread while the listener ran to its deadline and exited 2. And the
+    wake must name a view that shows the DM: `inbox -c pair` does not."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop",
+                                     "listen", "--only", "pair:lab", "--until", "+8")
+    with _work_room(h, tmp_path) as peer:
+        laptop = _other_on_roster(peer)
+        assert "peer_watching" not in _parked_state(peer, laptop)
+        peer.send(laptop, "ping")
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    wake = json.loads(out + capsys.readouterr().out)
+    assert wake["messages"][0]["body"] == "ping"
+    assert wake["pair"]["next"] == "switchboard --room pair:lab inbox"
+
+
+def test_dm_advice_says_when_a_parked_listener_is_not_reading_dms(
+        run, h, tmp_path, monkeypatch, capsys):
+    """`listen -c general` names its channels, so the hub never hands it a DM.
+    A sender used to be told "their listener is parked, so an answer can
+    arrive within seconds" all the same; the heartbeat says what it watches,
+    and the advice now reads it. The pair channel, polled under `-c` only for
+    the pair's own notes, is not advertised as a way to reach the agent."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, _ = _listening(
+        capsys, tmp_path, monkeypatch, "laptop", "--room", "pair:lab", "listen",
+        "-c", "general", "--no-lobby", "--no-pairs", "--until", "+3")
+    with _work_room(h, tmp_path) as peer:
+        state = _parked_state(peer, _other_on_roster(peer))
+    _join(thread)
+    assert result.get("code") == cli.EXIT_DEADLINE, result
+    assert state["peer_watching"] == ["general"]
+    assert "watches only general" in state["next"] and "next turn" in state["next"]
+    assert "within seconds" not in state["next"]
+
+
+def test_a_heal_run_here_wakes_this_machines_own_listener(
+        run, h, tmp_path, monkeypatch, capsys):
+    """The session's `pair heal` and its background listener share one agent
+    id, and a listener never wakes on its own agent's messages — so a heal run
+    here left this machine's listener in the retired room while the peer
+    followed to the new one, though the heal said a parked listener wakes."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop",
+                                     "listen", "--only", "pair:lab", "--until", "+8")
+    healed = pairing.heal("lab", h.client_config(), store=store_of(tmp_path, "laptop"),
+                          connect=h.client_class(), agent_id="laptop", now=h.now)
+    assert healed.to_generation == 1
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    wake = json.loads(out + capsys.readouterr().out)
+    assert wake["pair"]["moved"] is True and wake["pair"]["generation"] == 0
+
+
+def test_a_listener_follows_a_heal_here_whose_note_never_landed(
+        run, h, tmp_path, monkeypatch, capsys):
+    """A heal saves its new generation here before it posts the moved note,
+    and the note is best effort: a hub that flickered at that moment used to
+    leave this machine's listener parked in the retired room for its whole
+    window. The local store says the pair moved whether or not the note
+    arrived, so the listener reads it each pass and wakes on it."""
+    monkeypatch.setattr(cli, "_PARK_POLL", 0.3)
+    pair_up(run)
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop",
+                                     "listen", "--only", "pair:lab", "--until", "+8")
+    store = store_of(tmp_path, "laptop")
+    record = store.get("lab")
+    record.generation = 1   # what `pairing.heal` saves, without the note it posts
+    store.save(record)
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    captured = capsys.readouterr()
+    wake = json.loads(out + captured.out)
+    assert wake["messages"] == []
+    assert (wake["pair"]["moved"], wake["pair"]["to_generation"]) == (True, 1)
+    assert "pair:lab: the pair was healed" in captured.err
+
+
+def test_a_do_not_disturb_listener_still_wakes_on_a_heal(
+        run, h, tmp_path, monkeypatch, capsys):
+    """Do-not-disturb chooses which conversation wakes the agent; a heal is not
+    conversation. Filtered out with everything else, the moved note left a
+    `--type urgent` listener parked in the retired room while the peer's
+    urgent message landed in the new one, which it could never see."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(
+        capsys, tmp_path, monkeypatch, "laptop", "--room", "pair:lab", "listen",
+        "--type", "urgent", "--no-lobby", "--no-pairs", "--until", "+8")
+    pairing.heal("lab", h.client_config(), store=store_of(tmp_path, "cloud"),
+                 connect=h.client_class(), agent_id="cloud", now=h.now)
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    wake = json.loads(out + capsys.readouterr().out)
+    assert pairing.message_tag(wake["messages"][0]) == pairing.TAG_MOVED
+    assert (wake["pair"]["moved"], wake["pair"]["to_generation"]) == (True, 1)
+    assert any("healed" in line for line in wake["pair"]["warnings"])
+
+
+def test_a_channel_listener_in_a_work_room_wakes_on_a_heal_and_nothing_else_there(
+        run, h, tmp_path, monkeypatch, capsys):
+    """`-c general` replaced the pair channel, so the moved note — posted on
+    it — was never even polled. The pair channel is polled again under `-c`,
+    for the pair's notes alone: ordinary chatter there is still not this
+    listener's to wake on, because it asked for `general`."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(
+        capsys, tmp_path, monkeypatch, "laptop", "--room", "pair:lab", "listen",
+        "-c", "general", "--no-lobby", "--no-pairs", "--until", "+8")
+    with _work_room(h, tmp_path) as peer:
+        peer.post(pairing.CHANNEL, "chatter on the pair channel")
+    time.sleep(1.0)
+    assert thread.is_alive(), "an ordinary pair-channel message woke a -c general listener"
+    pairing.heal("lab", h.client_config(), store=store_of(tmp_path, "cloud"),
+                 connect=h.client_class(), agent_id="cloud", now=h.now)
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    wake = json.loads(out + capsys.readouterr().out)
+    assert [pairing.message_tag(m) for m in wake["messages"]] == [pairing.TAG_MOVED]
+    assert wake["pair"]["moved"] is True
+
+
+def test_a_forged_moved_note_does_not_break_do_not_disturb(
+        run, h, tmp_path, monkeypatch, capsys):
+    """A heal happens because the work room's key got out, and whoever holds
+    it can post a note shaped like a moved one. A note that gets past the
+    filter only because of what it claims is checked against the pair room
+    first: one that is not true is not a wake."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(
+        capsys, tmp_path, monkeypatch, "laptop", "--room", "pair:lab", "listen",
+        "--type", "urgent", "--no-lobby", "--no-pairs", "--until", "+3")
+    with _work_room(h, tmp_path) as holder_of_the_key:
+        holder_of_the_key.post(pairing.CHANNEL, {"t": pairing.TAG_MOVED, "note": "move!"})
+    _join(thread)
+    assert result.get("code") == cli.EXIT_DEADLINE, result
+    assert (out + capsys.readouterr().out) == ""
+
+
+# --- pairings begun, or settled, while a listener is parked --------------------------
+
+
+def test_a_listener_armed_before_pair_start_still_collects_the_answer(
+        run, h, tmp_path, monkeypatch, capsys):
+    """Sessions keep a listener armed, so `pair start` usually runs with one
+    already parked — and the listener chose its rooms once, at arming. The
+    handshake room went unwatched while `pair start` said a parked listener
+    collects the answer; nothing did, and the responder sat unconfirmed."""
+    monkeypatch.setattr(cli, "_RESCAN_EVERY", 0.2)
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop", "-w", WS,
+                                     "listen", "--no-lobby", "--until", "+10")
+    started = pairing.start(h.client_config(), store=store_of(tmp_path, "laptop"),
+                            connect=h.client_class(), name="lab", now=h.now)
+    more, _ = _wait_for(capsys, "[pair:lab handshake], begun after this listener was armed")
+    pairing.accept(started.code, h.client_config(), store=store_of(tmp_path, "cloud"),
+                   connect=h.client_class(), agent_id="cloud", now=h.now)
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    wake = json.loads(out + more + capsys.readouterr().out)
+    assert wake["role"] == "pair:lab"
+    assert (wake["pair"]["state"], wake["pair"]["handshake"]) == ("paired", True)
+
+
+def test_a_handshake_settled_while_another_room_wins_is_still_reported(
+        run, h, tmp_path, monkeypatch, capsys):
+    """A handshake is collected inside its own room's thread, and collecting
+    deletes the pending handshake. When another room's message won the wake,
+    the outcome — "aborted, the code leaked" as much as "paired" — went with
+    the process, and `pair status` afterwards said there were no pairs."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    blob = out.strip()
+    collecting = threading.Event()
+    real = cli._settle_handshake
+
+    def slow(*args, **kwargs):
+        collecting.set()
+        time.sleep(1.0)   # a collect is several hub round trips
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_settle_handshake", slow)
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop", "-w", WS,
+                                     "listen", "--no-lobby", "--until", "+10")
+    pairing.accept(blob, h.client_config(), store=store_of(tmp_path, "cloud"),
+                   connect=h.client_class(), agent_id="cloud", now=h.now)
+    assert collecting.wait(5)
+    h.client("teammate").send("laptop", "a question, meanwhile")
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    captured = capsys.readouterr()
+    wake = json.loads(out + captured.out)
+    assert wake["role"] == "room" and wake["messages"][0]["body"] == "a question, meanwhile"
+    [settled] = wake["pairings"]
+    assert (settled["name"], settled["state"]) == ("lab", "paired") and settled["sas"]
+    assert "pair:lab paired — SAS" in captured.err
+
+
+def test_a_quiet_listener_still_says_a_pair_was_voided(run, h, tmp_path):
+    """`-q` drops success chatter. "Voided: the code leaked" is not chatter —
+    and the resolution that says so has already deleted the record, so a line
+    dropped here is a verdict nothing on this machine can report again."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    assert run("cloud", "pair", "accept", out.strip())[0] == 0
+    [(_, handshake)] = pairing.pending_rooms(store_of(tmp_path, "laptop"),
+                                             h.client_config(), now=h.now)
+    with h.client_class()(handshake, agent_id="stranger") as stranger:
+        stranger.post(pairing.CHANNEL, {"t": pairing.TAG_ABORTED, "why": "a second holder"})
+    code, out, err = run("cloud", "-q", "-w", WS, "listen", "--no-lobby", "--until", "+1")
+    assert code == cli.EXIT_DEADLINE and out == ""
+    assert "not parking in pair:lab" in err and "voided" in err and "leaked" in err
+
+
+# --- which pairs a plain listener parks in ---------------------------------------------
+
+
+def test_a_fresh_container_parks_in_a_pair_exported_days_ago(run, h, tmp_path, monkeypatch):
+    """The documented cloud setup: the export sits in the environment's secrets
+    for good, and every new container's first act is `listen`. The export
+    used to carry the exporting machine's last use, so once it was a day old
+    every container skipped the pair in silence."""
+    pair_up(run)
+    _, out, _ = run("laptop", "pair", "export", "lab", "--peer")
+    variable, _, value = out.strip().partition("=")
+    h.advance(3 * 86400)
+    monkeypatch.setenv(variable, value)
+    _be("container", tmp_path, monkeypatch)
+    posts = _posts(["--url", BASE_URL, "-w", WS, "listen", "--no-lobby"])
+    assert [(p.role, p.pair) for p in posts if p.pair] == [("pair:lab", "lab")]
+
+
+def test_listen_names_each_pair_it_leaves_out(run, h, tmp_path, monkeypatch, capsys):
+    """A pair idle here for a day is not parked in, and its work room looks
+    exactly like a quiet one — while the other side, whose use this machine
+    cannot see, may be talking there. So the skip is a line, with the flag
+    that adds the pair back."""
+    pair_up(run)
+    h.advance(2 * 86400)
+    _be("laptop", tmp_path, monkeypatch)
+    capsys.readouterr()
+    posts = _posts(["--url", BASE_URL, "-w", WS, "listen", "--no-lobby"])
+    assert not any(p.pair for p in posts)
+    err = capsys.readouterr().err
+    assert "not parking in pair:lab: not used on this machine since" in err
+    assert "add --in pair:lab" in err
+
+    posts = _posts(["--url", BASE_URL, "-w", WS, "listen", "--no-lobby", "--in", "pair:lab"])
+    assert [p.pair for p in posts if p.pair] == ["lab"]
+    assert "not parking in pair:lab" not in capsys.readouterr().err
+
+
+def test_listen_only_with_an_empty_pair_name_refuses_in_a_sentence(run, capsys):
+    """`pair:` names the empty pair, which is falsy, and the check for "any pair
+    named" used truthiness — so the pair base was never built and the command
+    died on an assert, with a traceback, instead of the refusal."""
+    with pytest.raises(SystemExit, match="none of the rooms named could be opened"):
+        run("laptop", "listen", "--only", "pair:", "--until", "+1")
+    assert "not a usable pair name" in capsys.readouterr().err
+
+
+# --- what a code holder can write into the handshake room ----------------------------
+
+
+def test_a_malformed_answer_aborts_the_pairing_without_hiding_the_others(run, h, tmp_path):
+    """Anyone holding the code can write an answer, and one that is not a key
+    used to crash `pair status` with a traceback — taking every other pair's
+    row with it. It is what it looks like: tampering, so the pairing aborts."""
+    pair_up(run, "other")
+    run("laptop", "pair", "start", "--name", "lab")
+    [(_, handshake)] = pairing.pending_rooms(store_of(tmp_path, "laptop"),
+                                             h.client_config(), now=h.now)
+    with h.client_class()(handshake, agent_id="stranger") as stranger:
+        stranger.post(pairing.CHANNEL, {"t": pairing.TAG_ANSWER, "e": "A", "c": "AAAA"})
+    code, out, err = run("laptop", "--json", "pair", "status")
+    assert code == 0 and "Traceback" not in err
+    rows = {row["name"]: row for row in json.loads(out)["pairs"]}
+    assert rows["lab"]["state"] == "aborted" and rows["other"]["state"] == "paired"
+    assert store_of(tmp_path, "laptop").pending("lab") is None
+
+
+# --- pair wait through a hub that is not answering -----------------------------------------
+
+
+def test_wait_rides_out_hub_errors_and_exits_2_still_pending(run, monkeypatch):
+    """Exit 1 is "it can never pair", and a script acts on it by throwing the
+    pairing away. One timeout used to produce it, with no document under
+    `--json`; a hub error says nothing about the pairing, so the wait goes on
+    to its deadline and reports pending — and that it never reached the hub."""
+    run("laptop", "pair", "start", "--name", "lab")
+
+    def down(*args, **kwargs):
+        raise httpx.ReadTimeout("the hub is restarting")
+
+    monkeypatch.setattr(pairing, "collect", down)
+    code, out, _ = run("laptop", "--json", "pair", "wait", "lab", "--until", "1")
+    assert code == cli.EXIT_DEADLINE
+    report = json.loads(out)
+    assert (report["state"], report["checked"]) == ("pending", False)
+    assert any("could not check for an answer" in w for w in report["warnings"])
+    assert any("no check reached the hub" in w for w in report["warnings"])
+
+
+def test_wait_survives_one_hub_error_and_still_pairs(run, monkeypatch):
+    """The other half: a hub that answers again is waited for, not given up on."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    run("cloud", "pair", "accept", out.strip())
+    real, calls = pairing.collect, []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("one slow moment")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pairing, "collect", flaky)
+    code, out, _ = run("laptop", "--json", "pair", "wait", "lab", "--until", "10")
+    assert code == 0 and json.loads(out)["state"] == "paired"
+
+
+def test_wait_does_not_wait_out_a_refused_token(run, monkeypatch):
+    """A 401 does not get better: waiting through it would turn the one thing
+    to fix into minutes of "still pending"."""
+    run("laptop", "pair", "start", "--name", "lab")
+
+    def refused(*args, **kwargs):
+        raise SwitchboardError("unauthorized", status=401)
+
+    monkeypatch.setattr(pairing, "collect", refused)
+    started = time.time()
+    code, _, _ = run("laptop", "pair", "wait", "lab", "--until", "30")
+    assert code == 1 and time.time() - started < 10
+
+
+# --- export, status and refusals carry what a script needs ----------------------------------
+
+
+def test_export_json_carries_what_the_resolution_warned(run):
+    """`export --json` dropped every resolution warning — not in the document,
+    not on stderr — and those are the ones that matter for a value headed
+    into a secret store: the other side is behind, the generation is stale."""
+    pair_up(run)
+    run("laptop", "pair", "heal", "lab")
+    code, out, err = run("laptop", "--json", "pair", "export", "lab", "--peer")
+    assert code == 0
+    doc = json.loads(out)
+    assert (doc["generation"], doc["checked"], doc["state"]) == (1, True, "paired")
+    assert any("not moved to work room 1" in w for w in doc["warnings"])
+    assert "not moved to work room 1" in err
+
+
+def test_export_json_says_when_it_could_not_read_the_pair_room(run, monkeypatch):
+    pair_up(run)
+    bound = cli.Client
+
+    class PairRoomDown(bound):
+        def board_list(self, **kwargs):
+            if kwargs.get("prefix") == pairing.SIDE_PREFIX:
+                raise httpx.ConnectError("the pair room is unreachable")
+            return super().board_list(**kwargs)
+
+    monkeypatch.setattr(cli, "Client", PairRoomDown)
+    code, out, err = run("laptop", "--json", "pair", "export", "lab", "--peer")
+    assert code == 0
+    doc = json.loads(out)
+    assert doc["checked"] is False
+    assert any("could not read the pair room" in w for w in doc["warnings"])
+    assert "could not read the pair room" in err
+
+
+def test_status_says_when_the_other_side_last_used_the_pair(run):
+    """`paired` here says nothing about whether the other side has touched the
+    pair in days, and its work room then looks exactly like a quiet one."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    code, out, _ = run("laptop", "pair", "status", "lab")
+    assert code == 0 and "peer: last active " in out
+    _, out, _ = run("laptop", "--json", "pair", "status", "lab")
+    [row] = json.loads(out)["pairs"]
+    assert row["peer_present"] is True and row["peer_active_at"]
+
+
+def test_a_refusal_under_json_is_one_document_carrying_its_state(run):
+    """A script told only "error: <sentence>" on stderr can tell `expired` from
+    `wrong_hub` from `ended_by_peer` only by parsing English. Under `--json`
+    the state comes as a document — except where stdout is a listener's wake,
+    which an error object must not be mistaken for."""
+    code, out, err = run("laptop", "--json", "pair", "heal", "nosuch")
+    assert code == 1 and err.startswith("error: ")
+    doc = json.loads(out)
+    assert doc["state"] == "unknown" and "no pair called 'nosuch'" in doc["error"]
+
+    blob = pair_up(run)
+    code, out, _ = run("stranger", "--json", "pair", "accept", blob)
+    assert code == 2 and json.loads(out)["state"] == "already_redeemed"
+
+    code, out, _ = run("laptop", "--json", "--room", "pair:nosuch", "whoami")
+    assert code == 1 and json.loads(out)["state"] == "unknown"
+
+    code, out, err = run("laptop", "--json", "--room", "pair:nosuch", "listen",
+                         "--until", "+1")
+    assert code == 1 and out == "" and "no pair called 'nosuch'" in err
