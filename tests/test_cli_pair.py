@@ -275,6 +275,19 @@ def test_a_second_answer_before_collection_is_refused_as_a_leak(run):
     assert code == 2 and "leaked" in err
 
 
+def test_pair_help_says_a_code_is_live_until_collected_not_until_redeemed(capsys):
+    """`pair --help` said a code found in a paper trail was worth nothing once
+    redeemed. Between `pair accept` and the initiator collecting, one junk
+    answer from anyone holding it voids both sides — so a reader told
+    otherwise leaves it in a chat through the very window it can do harm."""
+    with pytest.raises(SystemExit):
+        main(["pair", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "after the code is redeemed" not in text
+    assert ("live credential until the machine that made it has collected the "
+            "answer, or until it expires unanswered") in text
+
+
 def test_a_pairing_code_is_refused_by_name_where_an_invite_goes(run, capsys):
     """Joined as an invite, a pairing code would be a handshake room entered in
     the open and written into the book. Refused — and the refusal says what
@@ -826,6 +839,87 @@ def test_a_forged_moved_note_does_not_break_do_not_disturb(
     assert (out + capsys.readouterr().out) == ""
 
 
+def test_a_forged_ended_note_does_not_tell_a_plain_listener_to_forget_the_pair(
+        run, h, tmp_path, monkeypatch, capsys):
+    """Only a filtered listener used to check a pairing note. A plain one took
+    the tag at its word: anyone holding the leaked work-room key posted an
+    ended note, and the session was woken with "the other side ended the
+    pair: `switchboard pair forget lab`" — on stderr even under `-q` — and a
+    session that obeyed destroyed a healthy pair on both sides. Checked
+    against the pair room, a note that is not true is not a wake at all."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(
+        capsys, tmp_path, monkeypatch, "laptop", "--room", "pair:lab", "listen",
+        "--no-lobby", "--no-pairs", "--until", "+3")
+    with _work_room(h, tmp_path) as holder_of_the_key:
+        holder_of_the_key.post(pairing.CHANNEL, {"t": pairing.TAG_ENDED, "note": "over"})
+        holder_of_the_key.post(pairing.CHANNEL, {"t": pairing.TAG_MOVED, "note": "move!"})
+    _join(thread)
+    captured = capsys.readouterr()
+    assert result.get("code") == cli.EXIT_DEADLINE, result
+    assert (out + captured.out) == ""
+    assert "pair forget" not in captured.err and "retired" not in captured.err
+    code, out, _ = run("laptop", "--json", "pair", "status", "lab")
+    assert code == 0 and json.loads(out)["pairs"][0]["state"] == "paired"
+
+
+def test_a_forget_run_here_is_not_reported_as_the_other_sides_doing(
+        run, h, tmp_path, monkeypatch, capsys):
+    """`pair forget` deletes the record here, then posts an ended note that
+    wakes this machine's own listener. The wake said "the other side ended
+    the pair: `switchboard pair forget lab`" — false, and followed, it fails
+    with "no pair called 'lab'". Checked, it says the pair is gone from this
+    machine, and that nothing more arrives in that room."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop",
+                                     "listen", "--only", "pair:lab", "--until", "+8")
+    pairing.forget("lab", h.client_config(), store=store_of(tmp_path, "laptop"),
+                   connect=h.client_class(), agent_id="laptop", now=h.now)
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    captured = capsys.readouterr()
+    wake = json.loads(out + captured.out)
+    assert (wake["pair"]["ended"], wake["pair"]["state"]) == (True, "gone")
+    assert "no longer on this machine" in wake["pair"]["next"]
+    assert "the other side ended" not in wake["pair"]["next"] + captured.err
+
+
+def test_a_note_that_cannot_be_checked_wakes_as_a_message_not_as_a_heal(
+        run, h, tmp_path, monkeypatch, capsys):
+    """With the pair room unreadable a moved note still wakes — a true heal
+    slept through strands the agent until its deadline — but on a forger's
+    say-so the wake used to announce "the pair was healed; this one is
+    retired". It is a message, with a warning that it could not be checked
+    and how to find out — in the wake, and on stderr."""
+    pair_up(run)
+    run("cloud", "pair", "status", "lab")
+    down = threading.Event()
+    bound = cli.Client
+
+    class PairRoomDown(bound):
+        def board_list(self, **kwargs):
+            if down.is_set() and kwargs.get("prefix") == pairing.SIDE_PREFIX:
+                raise httpx.ConnectError("the pair room is unreachable")
+            return super().board_list(**kwargs)
+
+    monkeypatch.setattr(cli, "Client", PairRoomDown)
+    thread, result, out = _listening(capsys, tmp_path, monkeypatch, "laptop",
+                                     "listen", "--only", "pair:lab", "--until", "+8")
+    down.set()
+    with _work_room(h, tmp_path) as holder_of_the_key:
+        holder_of_the_key.post(pairing.CHANNEL, {"t": pairing.TAG_MOVED, "note": "move!"})
+    _join(thread)
+    assert not thread.is_alive() and result.get("code") == 0, result
+    captured = capsys.readouterr()
+    wake = json.loads(out + captured.out)
+    assert "moved" not in wake["pair"] and "ended" not in wake["pair"]
+    assert wake["pair"]["next"] == "switchboard --room pair:lab inbox -c pair"
+    assert any("could not be checked" in w for w in wake["pair"]["warnings"])
+    assert "could not be checked" in captured.err and "retired" not in captured.err
+
+
 # --- pairings begun, or settled, while a listener is parked --------------------------
 
 
@@ -1018,6 +1112,120 @@ def test_wait_does_not_wait_out_a_refused_token(run, monkeypatch):
     assert code == 1 and time.time() - started < 10
 
 
+_REFUSED = "invalid or missing bearer token"
+
+
+def test_the_responders_wait_does_not_wait_out_a_refused_token(run, monkeypatch):
+    """The responder's twin of the test above. Its first look is a resolve,
+    and `resolve` fails soft on the pair room — so the hub's 401 came back as
+    "unchecked", the wait ran its whole length, exited 2 "still unconfirmed"
+    and said to check the URL: a script retrying on 2 never learned the token
+    was wrong. (Refused at the pair room only, so it is that look that has to
+    notice.)"""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    assert run("cloud", "pair", "accept", out.strip())[0] == 0
+
+    class Refused(cli.Client):
+        def board_list(self, **kwargs):
+            raise SwitchboardError(_REFUSED, status=401)
+
+    monkeypatch.setattr(cli, "Client", Refused)
+    started = time.time()
+    code, out, err = run("cloud", "pair", "wait", "lab", "--until", "20")
+    assert code == 1 and time.time() - started < 10
+    assert "still unconfirmed" not in out
+    assert _REFUSED in err and "SWITCHBOARD_TOKEN" in err
+
+
+def test_a_token_refused_mid_wait_ends_the_wait(run, monkeypatch):
+    """A token rotated while `pair wait` is parked: the pair room read fine,
+    and the refusal comes on the long poll — where it was swallowed like a
+    timeout, and the wait ran to its deadline as "still unconfirmed"."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    assert run("cloud", "pair", "accept", out.strip())[0] == 0
+
+    class RotatedMidWait(cli.Client):
+        def inbox(self, *args, **kwargs):
+            raise SwitchboardError(_REFUSED, status=401)
+
+    monkeypatch.setattr(cli, "Client", RotatedMidWait)
+    started = time.time()
+    code, out, err = run("cloud", "pair", "wait", "lab", "--until", "20")
+    assert code == 1 and time.time() - started < 10
+    assert _REFUSED in err and "SWITCHBOARD_TOKEN" in err
+
+
+def test_a_dropped_connection_mid_wait_is_waited_through_not_blamed_on_the_store(
+        run, monkeypatch):
+    """Only a refusal ends the wait early. A socket that fails on the long
+    poll is an OSError, and re-raised with the refusals it would land in the
+    handler `pair` keeps for the store's OSErrors — "the pair store could not
+    be used" for a hub that is restarting. It is waited through, as pending."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    assert run("cloud", "pair", "accept", out.strip())[0] == 0
+
+    class Dropped(cli.Client):
+        def inbox(self, *args, **kwargs):
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+    monkeypatch.setattr(cli, "Client", Dropped)
+    code, out, err = run("cloud", "--json", "pair", "wait", "lab", "--until", "1")
+    assert code == cli.EXIT_DEADLINE
+    assert json.loads(out)["state"] == "unconfirmed"
+    assert "pair store" not in err
+
+
+def _accept_unsent(run, blob: str, monkeypatch) -> tuple[int, str, str]:
+    """`pair accept` while the hub answers the first read and then goes: the
+    answer's post fails, and so does the look that would say whether it
+    landed. The answer is kept, unsent, to be retried on the next use."""
+    real_post, real_read = pairing._post, pairing._read_handshake
+    reads: list[int] = []
+
+    def post(hub, body, **kwargs):
+        if body.get("t") == pairing.TAG_ANSWER:
+            raise httpx.ReadTimeout("the hub went away")
+        return real_post(hub, body, **kwargs)
+
+    def read(hub, expires_at):
+        reads.append(1)
+        if len(reads) > 1:
+            raise httpx.ReadTimeout("the hub went away")
+        return real_read(hub, expires_at)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(pairing, "_post", post)
+        patched.setattr(pairing, "_read_handshake", read)
+        return run("cloud", "--json", "pair", "accept", blob)
+
+
+def test_wait_on_a_leaked_code_exits_1_not_still_pending(run, tmp_path, monkeypatch):
+    """`pair wait`'s 2 is "still pending at the deadline", which a script
+    retries on — and a leaked code is refused with the conflict code, which is
+    2 as well. So a responder whose answer never reached the hub, waiting
+    after somebody else had answered the code, was told 2 and looped. It can
+    never pair: 1, in the wait's own one-document shape — the same document
+    the next wait gives from the verdict the refusal left behind."""
+    _, out, _ = run("laptop", "pair", "start", "--name", "lab")
+    blob = out.strip()
+    code, out, _ = _accept_unsent(run, blob, monkeypatch)
+    assert code == 1 and json.loads(out)["state"] == "unsent"
+    assert store_of(tmp_path, "cloud").get("lab").sent is False
+    assert run("thief", "pair", "accept", blob)[0] == 0
+    assert run("laptop", "pair", "status", "lab")[0] == 0
+
+    code, out, _ = run("cloud", "--json", "pair", "wait", "lab", "--until", "30")
+    assert code == cli.EXIT_ERROR
+    refused = json.loads(out)
+    assert (refused["room"], refused["state"]) == ("pair:lab", "already_redeemed")
+    assert "leaked" in refused["message"]
+
+    code, out, _ = run("cloud", "--json", "pair", "wait", "lab", "--until", "30")
+    assert code == cli.EXIT_ERROR and json.loads(out) == refused
+    code, out, _ = run("cloud", "pair", "wait", "lab", "--until", "30")
+    assert code == cli.EXIT_ERROR and out == "pair:lab already_redeemed\n"
+
+
 # --- export, status and refusals carry what a script needs ----------------------------------
 
 
@@ -1086,3 +1294,43 @@ def test_a_refusal_under_json_is_one_document_carrying_its_state(run):
     code, out, err = run("laptop", "--json", "--room", "pair:nosuch", "listen",
                          "--until", "+1")
     assert code == 1 and out == "" and "no pair called 'nosuch'" in err
+
+
+def _unwritable(store_dir) -> None:
+    """Make a pair store refuse every write, on the real filesystem.
+
+    Every write takes the store's lock first, and a lock that is a directory
+    cannot be opened — not by root either, which these tests may run as, and
+    for whom a read-only mode refuses nothing.
+    """
+    lock = store_dir / ".lock"
+    if lock.exists():
+        lock.unlink()
+    lock.mkdir()
+
+
+def test_a_store_that_cannot_be_written_is_a_refusal_not_the_hub(run, tmp_path):
+    """Every `--room pair:` command writes the store — `inbox` too — and its
+    OSError reached `main()` as "cannot reach hub: [Errno 28] …", which sends
+    somebody to debug a connection for a disk that is full; a `pair` command
+    put it on stderr alone, so `--json` had an empty stdout. Either way it is
+    a refusal now: the sentence says where to look, `--json` carries the
+    `store` state, and nothing is sent."""
+    pair_up(run)
+    _unwritable(tmp_path / "cloud" / "pairs")
+    code, out, err = run("cloud", "--room", "pair:lab", "say", "pair", "from-a-full-disk")
+    assert code == 1 and out == ""
+    assert "cannot reach hub" not in err
+    assert err.startswith("error: the pair store could not be used")
+    code, out, err = run("cloud", "--json", "--room", "pair:lab", "inbox")
+    assert code == 1 and json.loads(out)["state"] == "store"
+    assert "cannot reach hub" not in err
+    code, out, _ = run("cloud", "--json", "pair", "heal", "lab")
+    assert code == 1 and json.loads(out)["state"] == "store"
+    code, out, _ = run("laptop", "--room", "pair:lab", "history", "pair")
+    assert code == 0 and "from-a-full-disk" not in out
+
+    _unwritable(tmp_path / "laptop" / "pairs")
+    code, out, _ = run("laptop", "--json", "pair", "start", "--name", "next")
+    doc = json.loads(out)
+    assert code == 1 and doc["state"] == "store" and "SWITCHBOARD_PAIRS" in doc["error"]
