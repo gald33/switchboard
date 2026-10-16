@@ -689,3 +689,45 @@ def test_the_hub_holds_nothing_it_could_read(a, b, h):
     dump = json.dumps([list(row) for row in rows], default=str)
     for word in ("swbp1/", "initiator", "responder", record.secret, "laptop"):
         assert word not in dump
+
+
+def test_an_unsent_answer_is_never_resumed_against_another_code(a, b, h):
+    """A retry reuses the saved answer — but only for the code it was made
+    for. Reusing it for a second code under the same name would answer that
+    code with the first code's key, and pair with nobody."""
+    first = a.start()
+    real = b.connect
+
+    class Down(real):
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError("hub went away")
+
+        def history(self, *args, **kwargs):
+            if getattr(self, "_seen", False):
+                raise httpx.ConnectError("hub went away")
+            self._seen = True
+            return super().history(*args, **kwargs)
+
+    b.connect = Down
+    with pytest.raises(httpx.ConnectError):
+        b.accept(first.code, name="shared")
+    assert not b.store.get("shared").sent
+    b.connect = real
+    second = a.start(name="second")
+    with pytest.raises(PairingError, match="already has a pair called 'shared'"):
+        b.accept(second.code, name="shared")
+    assert b.accept(first.code, name="shared").state == "unconfirmed"
+
+
+def test_forgetting_while_the_hub_is_down_says_the_peer_was_not_told(a, b):
+    name, _ = paired(a, b)
+
+    class Down(a.connect):
+        def board_set(self, *args, **kwargs):
+            raise httpx.ConnectError("no route")
+
+    a.connect = Down
+    gone = a.forget(name)
+    assert not gone.peer_told
+    assert any("was not told" in w for w in gone.warnings)
+    assert a.store.get(name) is None

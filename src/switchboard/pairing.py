@@ -936,17 +936,18 @@ def export(record: PairRecord, *, for_peer: bool = False) -> str:
     session's own transcript.
     """
     data = record.to_json()
+    # The answer only mattered until it was sent; the reveal is public once
+    # published, so an initiator's own copy keeps it to publish again.
     data.pop("answer", None)
-    data.pop("reveal", None)
     if for_peer:
         data["role"] = record.peer_role
         data["confirmed"] = record.role == INITIATOR or record.confirmed
         data["peer_generation"] = record.generation
         data["peer_note"], data["note"] = record.note, record.peer_note
-        if record.role == RESPONDER:
-            # The initiator's reveal is not ours to reconstruct; a re-imported
-            # initiator half republishes what it can and says the rest.
-            data["reveal"] = None
+        # Each side's handshake leftovers are its own: the responder's copy of
+        # the code's secret, the initiator's SAS nonce.
+        for leftover in ("handshake", "code_expires_at", "reveal", "commit"):
+            data[leftover] = None
     data["sent"] = True
     raw = json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
     return SECRET_PREFIX + _b64e(raw)
@@ -1018,8 +1019,7 @@ def work_config(record: PairRecord, base: ClientConfig | None = None,
                      else generation)
     token, token_source = _token_for(record.token, record.url, base)
     if base is None:
-        return replace(_throwaway(room, record.url, token, token_source),
-                       peer_log=ClientConfig().peer_log)
+        return _throwaway(room, record.url, token, token_source)
     return replace(
         base, url=record.url, url_source="pair", token=token, token_source=token_source,
         workspace=room.workspace, workspace_source="pair", key=room.key,
@@ -1208,6 +1208,11 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
 
     with store.lock():
         existing = store.get(name)
+        if existing is not None and not existing.sent and \
+                existing.handshake != _b64e(code.secret):
+            # An unsent answer saved for a *different* code under this name.
+            # Resuming it would answer this code with that code's key.
+            existing = replace(existing, sent=True)
         if existing is not None and existing.sent:
             raise PairingError(
                 f"this machine already has a pair called {name!r}. Pass --name to "
@@ -1929,13 +1934,18 @@ def forget(name: str, base: ClientConfig | None = None, *, store: PairStore,
         try:
             _publish_side(record, base, connect=connect, now=local, ended=True)
             told = True
-            with connect(work_config(record, base), agent_id=agent_id or _agent()) as hub:
-                hub.post(CHANNEL, {"t": _T_ENDED,
-                                   "note": "the other side ended this pair"},
-                         type="pair.ended")
         except _hub_errors() as exc:
             warnings.append(f"the other side was not told ({exc.__class__.__name__}); "
                             f"it will keep using pair {name!r} until it is")
+        if told:
+            # Only a wake for a listener parked in the work room; the side
+            # record above is what the other side's next resolution reads.
+            with contextlib.suppress(*_hub_errors()):
+                with connect(work_config(record, base),
+                             agent_id=agent_id or _agent()) as hub:
+                    hub.post(CHANNEL, {"t": _T_ENDED,
+                                       "note": "the other side ended this pair"},
+                             type="pair.ended")
     with store.lock():
         store.delete(name)
         store.delete_pending(name)
