@@ -34,7 +34,7 @@ announce, peers witness, and everything expires.
 | **pairing code** (`swbp1_…`) | names a handshake room and carries one half of a key exchange; a bearer credential until it is redeemed or expires (15 minutes by default), worth nothing after | whoever a human handed it to | wherever it was carried — a chat, a ticket — and expected to stay there |
 | **pair secret** | agreed by two machines' handshake and never transmitted; the pair room and every work room derive from it | two machines | `~/.switchboard/pairs/` (owner-only), or `SWITCHBOARD_PAIR_<NAME>` from `pair export` |
 | **work-room key / write key** | seal and write-protect a pair's work room, generation *n*; derived from the pair secret and *n*, one-way | the two paired machines, and anyone handed a work-room invite until the next heal | nowhere: derived at each use |
-| **pending ephemeral key** | the initiator's half of the handshake | the machine that ran `pair start` | `~/.switchboard/pairs/pending/`, until the answer is collected; one never collected is dropped by the first pairing command after its deadline, the code's expiry plus 12 hours |
+| **pending ephemeral key** | the initiator's half of the handshake | the machine that ran `pair start` | `~/.switchboard/pairs/pending/`, until the answer is collected; one never collected is deleted after its deadline (the code's expiry plus 12 hours) by the next parked listener, `pair start`, `pair status` or MCP call |
 
 An **invite** is those first three bundled into one string, so the values that
 have to match a peer's cannot be assembled wrongly one at a time — every one

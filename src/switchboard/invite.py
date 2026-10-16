@@ -166,8 +166,9 @@ class Invite:
                     "both machines, and pair again."
                 )
             raise InviteError(
-                "this is a pairing code, not an invite — redeem it with "
-                "`switchboard pair accept <code>` (MCP: `pair_accept`)."
+                "this is a pairing code, not an invite. Pairing happens on your own "
+                "machine, which keeps the pair: redeem it there with `switchboard "
+                "pair accept <code>`, or the local MCP bridge's `pair_accept`."
             )
         if not text.startswith(PREFIX):
             raise InviteError(

@@ -254,7 +254,7 @@ two machines only.
 | each side's record | pair room board, `coord/pair/side/<role>` | 7 days, the board ceiling; rewritten at most once a day while the pair is used |
 | the *paired*, *moved* and *ended* notes | a work room, `pair` channel | an hour, like any message |
 | what agents put in a work room | work room *n* | what it would anywhere: messages an hour, board entries a day (seven at most), leases their TTL |
-| the pending handshake — `S`, the initiator's ephemeral private key, the nonce | the initiator only, `~/.switchboard/pairs/pending/<name>.json` | until the answer is collected and announced; a handshake never collected is dropped by the first collect after its deadline |
+| the pending handshake — `S`, the initiator's ephemeral private key, the nonce | the initiator only, `~/.switchboard/pairs/pending/<name>.json` | until the answer is collected and announced; one never collected is deleted at its deadline (the code's expiry plus 12 hours) by the first thing on this machine to pass — a parked listener, `pair start`, `pair status`, the MCP bridge |
 | the pair record — `P`, the transcript, the generation, the SAS | both machines, `~/.switchboard/pairs/<name>.json`, or `SWITCHBOARD_PAIR_<NAME>` | until `pair forget` |
 | the responder's copy of `S` | inside its pair record | until it is confirmed — it reads the handshake room for the initiator's verdict meanwhile |
 
@@ -396,10 +396,11 @@ Stated as plainly as the rest of the docs state theirs:
   the place for anything that has to wait. Parking a listener on the
   initiator is what makes "collected" mean seconds.
 - **One private key on disk**, on the initiator, between printing the code
-  and collecting the answer. A handshake never collected is dropped by the
-  first pairing command after its deadline — `pair status`, an MCP call —
-  rather than by the clock, so a machine that has stopped pairing keeps the
-  file until it next runs one.
+  and collecting the answer. One never collected is deleted once its
+  deadline passes (the code's expiry plus 12 hours) by the first thing on
+  this machine to pass by — a parked listener, `pair start`, `pair status`,
+  the MCP bridge. Not by a timer: a machine that runs none of those keeps the
+  file until it does.
 - **The pair secret on two disks**, owner-only and in the clear, for as long
   as the pair lives — or in an environment's secret store, after `pair
   export`.

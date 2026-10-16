@@ -731,3 +731,37 @@ def test_forgetting_while_the_hub_is_down_says_the_peer_was_not_told(a, b):
     assert not gone.peer_told
     assert any("was not told" in w for w in gone.warnings)
     assert a.store.get(name) is None
+
+
+def test_an_expired_handshake_leaves_no_private_key_where_a_listener_passes(a, h):
+    """The pending handshake is the one private key this package writes down.
+    Past its deadline it can collect nothing, so the first listener, or the next
+    `pair start`, drops it — the docs' bound is a property, not a hope."""
+    started = a.start()
+    h.advance(pairing.DEFAULT_TTL + pairing.COLLECT_WINDOW + 1)
+    assert pairing.pending_rooms(a.store, a.base, now=h.now) == []
+    assert a.store.pending(started.name) is None
+    other = a.start(name="other")
+    h.advance(pairing.DEFAULT_TTL + pairing.COLLECT_WINDOW + 1)
+    a.start(name="third")
+    assert a.store.pending(other.name) is None
+
+
+def test_a_responder_with_nothing_to_collect_is_not_reported_paired(a, b):
+    started = a.start()
+    b.accept(started.code)
+    assert b.collect(started.name).state == "unconfirmed"
+
+
+def test_a_heal_says_what_it_strands_on_every_surface(a, b):
+    name, _ = paired(a, b)
+    healed = a.heal(name)
+    assert any("still in work room 0" in w for w in healed.warnings)
+
+
+def test_a_disabled_store_says_so_instead_of_no_such_pair(h, tmp_path):
+    off = Machine(h, tmp_path, "off")
+    off.store = PairStore(env={pairing.ENV: ""})
+    with pytest.raises(PairingError) as exc:
+        off.resolve("anything")
+    assert exc.value.state == "disabled"

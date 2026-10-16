@@ -248,6 +248,16 @@ def _hub_errors() -> tuple[type[BaseException], ...]:
     return (SwitchboardError, OSError, httpx.HTTPError)
 
 
+def hub_errors() -> tuple[type[BaseException], ...]:
+    """The exceptions that mean *the hub*, not the protocol.
+
+    Public so a surface that fails soft on the hub — a listener, the MCP
+    bridge's background collection — catches exactly what this module does,
+    rather than a second list that drifts from it.
+    """
+    return _hub_errors()
+
+
 # --- encoding and primitives ------------------------------------------------
 
 
@@ -590,8 +600,14 @@ def looks_like_secret(text: str | None) -> bool:
     return isinstance(text, str) and text.strip().startswith(SECRET_PREFIX)
 
 
-def _iso(ts: float) -> str:
+def iso(ts: float | None) -> str:
+    """A pairing deadline as local time, the one way every surface shows it."""
+    if ts is None:
+        return "-"
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+_iso = iso
 
 
 # --- what each machine keeps ---------------------------------------------------
@@ -1112,6 +1128,7 @@ def start(base: ClientConfig, *, store: PairStore, connect: Connect = _default_c
     if not MIN_TTL <= ttl <= MAX_TTL:
         raise PairingError(f"--ttl must be between {MIN_TTL} and {MAX_TTL} seconds; "
                            f"the code is the part expected to leak, so keep it short")
+    sweep_expired(store, now=now)
     secret = secrets.token_bytes(32)
     chosen = validate_name(name) if name else ""
     name = chosen or default_name(secret)
@@ -1325,7 +1342,7 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
 @dataclass
 class Collected:
     name: str
-    state: str  # waiting | paired | expired | aborted
+    state: str  # waiting | paired | unconfirmed | expired | aborted
     record: PairRecord | None = None
     message: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -1351,7 +1368,9 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
     if pending is None:
         record = store.get(name)
         if record is not None:
-            return Collected(name, "paired", record)
+            # Nothing to collect here — but a responder's record is not paired
+            # until the initiator's proof has been read, and saying so matters.
+            return Collected(name, "paired" if record.confirmed else "unconfirmed", record)
         raise PairingError(f"no pairing called {name!r} is waiting on this machine",
                            state="unknown")
     local = _now(now)
@@ -1657,6 +1676,9 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
                     state="pending" if done.state == "waiting" else done.state)
             record = done.record
         else:
+            # A disabled store hides every pair it would have held; "no such
+            # pair" would send somebody looking for one that was never lost.
+            store._require()
             raise PairingError(
                 f"no pair called {name!r} on this machine — `switchboard pair "
                 "status` lists them.", state="unknown")
@@ -1903,6 +1925,16 @@ def heal(name: str, base: ClientConfig | None = None, *, store: PairStore,
     except _hub_errors() as exc:
         warnings.append(f"could not leave a moved note in the old room "
                         f"({exc.__class__.__name__})")
+    warnings.append(
+        f"the other side is still in work room {old} until it next reads the pair room "
+        f"— any use of {handle(record.name)} does, and a listener parked in the old room "
+        "wakes on the moved note. Until then the two sides are in different rooms and do "
+        "not exclude each other.")
+    if left:
+        warnings.append(
+            f"{len(left)} lease(s) this agent held in work room {old} stay there until "
+            f"they expire and exclude nobody in the new one: claim again with "
+            f"{handle(record.name)} what you still need.")
     resolution = Resolution(record, work_config(record, base), current.state,
                             [], moved_from=old, peer_generation=record.peer_generation)
     return Healed(name, old, record.generation, resolution, left, warnings)
@@ -1999,6 +2031,30 @@ def status(base: ClientConfig | None = None, *, store: PairStore,
     return rows
 
 
+def sweep_expired(store: PairStore, *, now: float | None = None) -> list[str]:
+    """Delete pending handshakes past their deadline; return their names.
+
+    Nothing can be collected after the deadline, so all an expired pending
+    handshake still does is keep a private key on disk. Run wherever this
+    machine already passes — `start`, a parked listener — so the bound in the
+    docs ("the code's lifetime plus the collect window") is a property rather
+    than a hope that somebody runs `pair status`.
+    """
+    local = _now(now)
+    dropped: list[str] = []
+    try:
+        for name in store.pending_names():
+            pending = store.pending(name)
+            if pending is not None and not pending.collected and \
+                    local + pending.hub_offset > pending.deadline:
+                with store.lock():
+                    store.delete_pending(name)
+                dropped.append(name)
+    except (PairingError, OSError):
+        return dropped
+    return dropped
+
+
 def active(store: PairStore, *, within: float = 86400.0,
            now: float | None = None) -> list[str]:
     """Pairs worth parking a listener in: used lately, or still being made.
@@ -2031,8 +2087,15 @@ def pending_rooms(store: PairStore, base: ClientConfig | None = None,
     try:
         for name in store.pending_names():
             pending = store.pending(name)
-            if pending is None or pending.collected or \
-                    local + pending.hub_offset > pending.deadline:
+            if pending is None or pending.collected:
+                continue
+            if local + pending.hub_offset > pending.deadline:
+                # Past its deadline nothing can be collected, and the file holds
+                # the one private key this package writes down: drop it where
+                # every parked listener passes, rather than waiting for a
+                # collect that a machine done pairing never runs.
+                with store.lock():
+                    store.delete_pending(name)
                 continue
             token, token_source = _token_for(pending.token, pending.url, base)
             found.append((name, _throwaway(handshake_room(_b64d(pending.secret)),

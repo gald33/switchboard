@@ -40,8 +40,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import urlsplit
 
-import httpx
-
 from . import __version__, claude_session, handoff, knownrooms, pairing, rendezvous, rooms
 from .bridge_links import (
     DEFAULT_REDIRECT_HOSTS,
@@ -1353,7 +1351,7 @@ class Bridge:
                 news.append({"name": name, "room": pairing.handle(name),
                              "state": exc.state or "error", "message": str(exc)})
                 continue
-            except (SwitchboardError, CryptoError, OSError, httpx.HTTPError):
+            except (CryptoError, *pairing.hub_errors()):
                 continue
             if done.state == "waiting" and not done.warnings:
                 continue

@@ -812,10 +812,10 @@ What it costs, stated as plainly as everything above:
 - **One private key is written to disk.** The initiator must survive its own
   process ending between printing the code and collecting the answer, so its
   ephemeral handshake key sits in `~/.switchboard/pairs/pending/` (0600) until
-  the answer is collected. One never collected is dropped by the first
-  pairing command after the deadline — the code's expiry plus twelve hours —
-  not by the clock, so `pair status` is how a machine that has stopped
-  pairing clears it.
+  the answer is collected. One never collected is deleted once the deadline
+  — the code's expiry plus twelve hours — has passed, by the first parked
+  listener, `pair start`, `pair status` or MCP call on that machine. There is
+  no timer; a machine that runs none of them keeps the file until it does.
   `signing.py`'s rule that private keys are never written is about
   attribution keys, and still holds for them.
 - **The pair secret lives on two machines, in the clear, owner-only.**

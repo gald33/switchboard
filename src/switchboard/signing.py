@@ -32,9 +32,9 @@ The package writes down exactly one private key elsewhere: pairing's
 ephemeral handshake key (`pairing.py`), kept by the machine that ran `pair
 start` only until it collects the code's answer — a turn-based initiator has
 to survive its own process ending in between — or, never collected, until
-the first pairing command after the deadline drops it. It is never used to
-sign anything. It is the exception to "no private key on disk", not to this
-module's rule.
+a listener or pairing command passing after the deadline deletes it. It is
+never used to sign anything. It is the exception to "no private key on
+disk", not to this module's rule.
 
 The honest limit: the OS user is the real boundary. A process running as the
 same user can read another's memory, so this is not a defence against a

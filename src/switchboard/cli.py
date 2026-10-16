@@ -4943,10 +4943,7 @@ def cmd_join(args: argparse.Namespace) -> int:
 # is `_apply_known_room`'s, and a parked listener's share is `_listen_posts`'.
 
 
-def _local_iso(ts: float | None) -> str:
-    if ts is None:
-        return "-"
-    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+_local_iso = pairing.iso
 
 
 def cmd_pair(args: argparse.Namespace) -> int:
@@ -5235,19 +5232,9 @@ def _pair_heal(args: argparse.Namespace) -> int:
         reason=args.reason or "", agent_id=_pair_agent(args), now=_pairing_now(),
     )
     room = pairing.handle(healed.name)
+    # What a heal strands is said by `pairing.heal` itself, so the CLI and the
+    # MCP bridge cannot word it differently — or one of them forget it.
     warnings = list(healed.warnings)
-    warnings.append(
-        f"the other side is still in work room {healed.from_generation} until it next "
-        f"resolves `--room {room}` — any command does, and a listener parked in the old "
-        "room wakes on the moved note left there. Until then the two sides are in "
-        "different rooms and do not exclude each other."
-    )
-    if healed.left_behind:
-        warnings.append(
-            f"{len(healed.left_behind)} lease(s) this agent held in work room "
-            f"{healed.from_generation} stay there until they expire, and exclude nobody "
-            f"in the new one: claim again with `--room {room}` what you still need."
-        )
     if args.json:
         _print_json({"name": healed.name, "room": room, "from": healed.from_generation,
                      "to": healed.to_generation, "left_behind": healed.left_behind,
