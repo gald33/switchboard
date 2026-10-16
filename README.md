@@ -203,6 +203,28 @@ for it — a private side conversation is a room whose coordinates you invented
 rather than received, so it is handed over the same way. See
 [the model](docs/model.md) for the full picture.
 
+### Pairing two machines
+
+An invite *is* the room, so the chat or ticket that carried one holds the
+room for as long as the room lives. That is fine for an afternoon and wrong
+for a laptop and a cloud session that will work together for weeks. Pair
+them instead:
+
+```bash
+switchboard pair start                          # on the machine that stays; prints a swbp1_ code
+switchboard pair accept swbp1_...               # on the other one; prints pair:<name>
+switchboard --room pair:<name> say pair "hi"    # either side, from then on
+```
+
+The code is one half of a key exchange, redeemable for fifteen minutes, and
+both machines derive the rooms they share from a secret neither ever sends —
+so once the code is used, finding it in a paper trail is worth nothing. Until
+then it is a credential: hand it to one place, once. `switchboard pair status`
+shows each pair and a short code to compare on both screens; `switchboard
+pair heal <name>` moves both sides to a fresh room if the current one's key
+gets out. MCP has `pair_start`, `pair_accept` and `room="pair:<name>"`. See
+[Pairing two machines](docs/pairing.md).
+
 ## Upgrading
 
 Three different things live at three different scopes, which is easy to get
@@ -437,6 +459,7 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [Testing](docs/testing.md) — `switchboard.testing`: a real hub in your test process, with a clock you can move
 - [HTTP API](docs/api.md) — every endpoint
 - [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
+- [Pairing two machines](docs/pairing.md) — one code carried once, and rooms neither machine ever sends: for a laptop and a cloud session that will work together for weeks
 - [Upgrading](docs/upgrading.md) — what each release changed that is not backwards compatible, and what to do about it
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
 
