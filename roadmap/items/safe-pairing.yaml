@@ -1,5 +1,5 @@
 id: safe-pairing
-title: Two machines that will work together for weeks share rooms set up by one code carried once, which is worth nothing after
+title: Two machines that will work together for weeks share rooms set up by one code carried once, which is worth nothing once collected
 status: done
 arc: setup-and-first-run
 blocked_on: []
@@ -53,13 +53,16 @@ evidence: |
   - **D3. The answer is a message on an append-only channel.** Every code
     holder holds the handshake room's write key, so a first-writer board
     entry would exclude nobody who matters. Exactly one in-time answer pairs;
-    two abort both sides; a redeemer after collection is told "already used";
-    a late answer is ignored by both. Detection, not exclusion, with a
-    commitment-backed SAS for the case detection cannot reach.
+    two abort both sides, and so do a marker the initiator did not write or a
+    room flooded past what one read returns; a redeemer after collection is
+    told "already used"; a late answer is ignored by both. Detection, not
+    exclusion, with a commitment-backed SAS for the case detection cannot
+    reach.
   - **D4. Work rooms are derived, `HKDF(P, n)`**, and each side writes only
     its own record in the pair room. A heal is one integer, the current
     generation is the higher of two, and the other side's record catching up
-    is the acknowledgement — nothing compare-and-set, nothing to race.
+    is the acknowledgement — between the two machines, nothing
+    compare-and-set and nothing to race.
 
   A review of the core before the surfaces were built found three more,
   fixed in its second commit: an unsent answer saved under a name could be
@@ -67,18 +70,36 @@ evidence: |
   the side record had not landed; and a work-room config without a base
   quietly built a default one.
 
+  A review of the built feature found more, all fixed in the core before the
+  docs were held to it: 499 filler posts or one forged marker let a code
+  holder win, or split the two sides, without the two-redeemer abort firing
+  — now a full read or a marker the initiator did not write aborts both, and
+  a *consumed* marker confirms only with the initiator's MAC; a rival after
+  collection voided the responder alone; once the other side's record
+  lapsed, every read jumped another 2²⁰ rooms, and lapses from one stale
+  export all landed in the same one — now a jump happens once per absence
+  of *this* side, to a random room; an answer the hub never acknowledged
+  was shown as waiting; an export taken unconfirmed was later called never
+  confirmed; a dead peer looked healthy for 13 days; and every pairing
+  message carried a plaintext `pair.*` type.
+
   **What it deliberately does not do**, stated in `docs/pairing.md` and
-  `docs/model.md`: the code is a live bearer credential during its window
-  (detected, not prevented); a heal rescues a leaked work-room key and not a
-  leaked pair secret, which opens every generation — the record's strategy
-  field `s` is where a ratcheting heal would go; and a heal is a room
+  `docs/model.md`: the code is a live bearer credential until the answer is
+  collected (detected, not prevented); a heal rescues a leaked work-room key
+  and not a leaked pair secret, which opens every generation — the record's
+  strategy field `s` is where a ratcheting heal would go; and a heal is a room
   rotation, the decision `docs/model.md` rejects for periodic use, so it is
   event-driven only and says what it strands.
 
   **How you will know it worked**, asserted in `tests/test_pairing.py`
   against a real hub with a moved clock: a code read after the pairing
-  opens nothing; the hub's database holds no plaintext tag, role or secret;
-  two redeemers void the pairing on both sides; a heal moves both sides to a
-  room the old key cannot open; a week of silence moves both sides to a
-  room nobody retired; and the v1 derivations are pinned by known answers,
-  so an edit that would split paired machines across an upgrade fails.
+  opens nothing; the hub's database holds no plaintext tag, role or secret,
+  and every pairing message is an ordinary note; two redeemers, a flood or a
+  forged marker void the pairing on both sides; a heal moves both sides to a
+  room the old key cannot open; a side back from a week away moves both
+  sides to a fresh room once, and lapses from one stale export never share
+  a room; a side that keeps working while its peer is idle never moves and
+  is told the peer has gone quiet; and the v1 derivations are pinned by
+  known answers, so an edit that would split paired machines across an
+  upgrade fails. `tests/test_pairing_docs.py` holds `docs/pairing.md`'s
+  lifetimes, states and claims to the code.

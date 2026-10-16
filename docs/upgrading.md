@@ -24,10 +24,11 @@ Nothing is joined or sent.
 
 Three things a current setup will notice:
 
-- **`listen` parks in pairs.** Each pair this machine used in the last day,
-  on the `pair` channel of its current work room, and the handshake room of
-  any pairing waiting for its answer. A machine with no pairs parks exactly
-  where it did; `--no-pairs` opts out on one that has some.
+- **`listen` parks in pairs.** Each pair this machine used in the last day
+  or carries in `SWITCHBOARD_PAIR_<NAME>`, on the `pair` channel of its
+  current work room, and the handshake room of any pairing waiting for its
+  answer. A machine with no pairs parks exactly where it did; `--no-pairs`
+  opts out on one that has some.
 - **A new per-machine store**, `~/.switchboard/pairs/`, owner-only, moved by
   `SWITCHBOARD_PAIRS` (empty disables pairing), and `SWITCHBOARD_PAIR_<NAME>`
   for a pair carried in an environment's secrets. Unlike the other stores it

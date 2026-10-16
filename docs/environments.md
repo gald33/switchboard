@@ -225,7 +225,7 @@ between machines, not between processes.
 
 | Variable | What it does |
 |---|---|
-| `SWITCHBOARD_PAIRS` | moves the store; the empty string disables pairing on this machine, and the `pair` commands refuse rather than pair into nowhere |
+| `SWITCHBOARD_PAIRS` | moves the store; the empty string disables pairing on this machine. `pair start`, `accept`, `heal`, `forget`, `export` and `--room pair:<name>` then refuse with `disabled` rather than pair into nowhere — or report "no such pair" about one that is sitting on disk unread — and `pair status` lists only pairs carried in `SWITCHBOARD_PAIR_<NAME>`, refusing with `disabled` when there are none |
 | `SWITCHBOARD_PAIR_<NAME>` | one pair carried in the environment instead (`swbsecret1_…`, from `switchboard pair export`), for a machine that does not keep its home directory. Dashes in the name become underscores: pair `laptop-cloud` is `SWITCHBOARD_PAIR_LAPTOP_CLOUD` |
 
 When a pair is in both, they must be the same pair: two different secrets
@@ -246,12 +246,19 @@ directory goes with the container, and so does anything in it:
   the cloud environment's secret settings. `--peer` exports the other side's
   half, so the secret goes from the machine that stays into the secret store
   without passing through the cloud session's own transcript. Every container
-  that environment starts then comes up paired.
+  that environment starts then comes up paired, and its listener parks in the
+  pair whatever the export says about when the laptop last used it. Export
+  once the laptop has collected the answer: a responder's own `pair export`
+  refuses while unconfirmed, because a copy frozen that way would later be
+  told the pair was never confirmed.
 - It is a long-lived secret — every work room the pair will ever have derives
   from it — so it belongs in the secret store and nowhere else: not a
   committed file, not a conversation. After a `pair heal`, a container
   started from the exported value catches up on its first use and warns that
-  the variable is behind; exporting again refreshes it.
+  the variable is behind. The fix it names is the same as the first time:
+  `switchboard pair export <name> --peer` on the durable machine, and the
+  secret store's value replaced with what it prints — never a bare `pair
+  export` in the container, which would print the secret into its session.
 
 CI is the same case as a cloud session, with one more reason to think twice:
 a pair exported into a CI provider's secrets is reachable by every job that
