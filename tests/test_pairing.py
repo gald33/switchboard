@@ -265,7 +265,7 @@ def test_a_second_redeemer_is_refused_and_the_first_still_pairs(a, b, h, tmp_pat
     started = a.start()
     b.accept(started.code)
     thief = Machine(h, tmp_path, "thief")
-    with pytest.raises(AlreadyRedeemed, match="somebody else already answered"):
+    with pytest.raises(AlreadyRedeemed, match="already answered by a machine other"):
         thief.accept(started.code)
     assert thief.store.get(started.name) is None
     assert a.collect(started.name).state == "paired"
@@ -279,7 +279,7 @@ def test_a_redeemer_after_collection_is_told_the_code_was_used(a, b, h, tmp_path
     b.accept(started.code)
     a.collect(started.name)
     late = Machine(h, tmp_path, "late")
-    with pytest.raises(AlreadyRedeemed, match="already been used"):
+    with pytest.raises(AlreadyRedeemed, match="answered and collected"):
         late.accept(started.code)
     assert late.store.get(started.name) is None
 
@@ -429,9 +429,12 @@ def test_the_responder_learns_it_was_collected_before_the_proof_lands(a, b, h):
 
     a.connect = NoSide
     a.collect(started.name)
+    # The consumed marker carries the same proof the side record would, so the
+    # responder confirms from the handshake room alone — and a code holder,
+    # who cannot compute that proof, cannot fake it.
     still = b.resolve(started.name)
-    assert still.state == "unconfirmed"
-    assert any("collected this answer" in w for w in still.warnings)
+    assert still.state == "paired"
+    assert still.record.sas == a.store.get(started.name).sas
 
 
 def test_an_answer_that_does_not_verify_pairs_nobody(a, b, h):
@@ -516,9 +519,12 @@ def test_a_week_of_silence_moves_both_sides_somewhere_fresh(a, b, h):
     b.resolve(name)
     h.advance(pairing.SIDE_TTL + 3600)
     jumped = a.resolve(name)
-    assert jumped.generation == pairing.LAPSE_JUMP
-    assert any("forgotten both sides" in w for w in jumped.warnings)
-    assert b.resolve(name).generation == pairing.LAPSE_JUMP
+    assert jumped.generation >= pairing.LAPSE_JUMP
+    assert any("moved to a fresh work room" in w for w in jumped.warnings)
+    assert a.resolve(name).generation == jumped.generation, "a lapse happens once"
+    followed = b.resolve(name)
+    assert followed.generation == jumped.generation
+    assert any("came back to a pair room" in w for w in followed.warnings)
 
 
 def test_records_in_use_are_refreshed_before_the_hub_forgets_them(a, b, h):
@@ -653,7 +659,7 @@ def test_a_pair_exported_to_another_environment_keeps_working(a, b, h, tmp_path)
     a.heal(name)
     moved = container.resolve(name)
     assert moved.generation == 1
-    assert any("re-run `switchboard pair export" in w for w in moved.warnings)
+    assert any("pair export" in w and "--peer" in w for w in moved.warnings)
 
 
 def test_an_environment_and_a_store_naming_different_pairs_is_refused(a, b, h, tmp_path):
@@ -709,8 +715,9 @@ def test_an_unsent_answer_is_never_resumed_against_another_code(a, b, h):
             return super().history(*args, **kwargs)
 
     b.connect = Down
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(PairingError) as exc:
         b.accept(first.code, name="shared")
+    assert exc.value.state == "unsent"
     assert not b.store.get("shared").sent
     b.connect = real
     second = a.start(name="second")
@@ -765,3 +772,277 @@ def test_a_disabled_store_says_so_instead_of_no_such_pair(h, tmp_path):
     with pytest.raises(PairingError) as exc:
         off.resolve("anything")
     assert exc.value.state == "disabled"
+
+
+# --- what the second review found -------------------------------------------------------
+
+
+def _code_holder(h, code: str, label: str = "holder"):
+    """A client in the handshake room, as anybody reading the code has."""
+    room = pairing.handshake_room(PairingCode.decode(code).secret)
+    return h.client(label, workspace=room.workspace, key=room.key,
+                    write_key=room.write_key)
+
+
+def _thief_answer(code: str) -> dict:
+    """A well-formed answer a code holder could write: its own key and proof."""
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    parsed = PairingCode.decode(code)
+    mine = X25519PrivateKey.generate()
+    public = pairing._x25519_public(mine)
+    th = pairing.transcript(parsed.initiator, public, parsed.commit)
+    secret = pairing.derive_pair_secret(
+        pairing._exchange(mine, parsed.initiator), parsed.secret, th)
+    return {"t": "swbp1/answer", "e": pairing._b64e(public),
+            "c": pairing._b64e(pairing.confirmation(secret, pairing.RESPONDER, th))}
+
+
+def test_a_flooded_handshake_room_aborts_instead_of_pairing_the_last_answer(a, b, h):
+    """The hub's channel read is newest-first and capped. A code holder who
+    pushes the real answer out of the window with filler, then answers, must
+    not be the one paired — a full read is treated as the attack it is."""
+    started = a.start()
+    b.accept(started.code)
+    holder = _code_holder(h, started.code)
+    for _ in range(pairing._HISTORY):
+        holder.post(pairing.CHANNEL, {"t": "swbp1/hello"})
+    holder.post(pairing.CHANNEL, _thief_answer(started.code))
+    done = a.collect(started.name)
+    assert done.state == "aborted"
+    assert "full of messages" in done.message
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "aborted"
+
+
+def test_a_forged_aborted_marker_aborts_both_sides_alike(a, b, h):
+    """One side voiding while the other pairs is the worst split there is: a
+    pair alone in a quiet room. A marker the initiator never wrote aborts it
+    too, so both sides reach the same verdict."""
+    started = a.start()
+    b.accept(started.code)
+    _code_holder(h, started.code).post(pairing.CHANNEL, {"t": "swbp1/aborted"})
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "aborted"
+    done = a.collect(started.name)
+    assert done.state == "aborted"
+    assert a.store.get(started.name) is None
+
+
+def test_a_forged_consumed_marker_confirms_nothing(a, b, h):
+    """The marker names a transcript anyone can compute — but its proof needs
+    the pair secret. Without the proof it neither confirms the responder nor
+    holds it past its deadline."""
+    started = a.start()
+    b.accept(started.code)
+    record = b.store.get(started.name)
+    _code_holder(h, started.code).post(pairing.CHANNEL, {
+        "t": "swbp1/consumed", "th": record.transcript, "ci": "AAAA", "r": "AAAA"})
+    assert b.resolve(started.name).state == "unconfirmed"
+    h.advance(pairing.DEFAULT_TTL + pairing.COLLECT_WINDOW + pairing.SKEW + 1)
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "never_confirmed"
+
+
+def test_a_rival_after_collection_does_not_void_the_responder(a, b, h, monkeypatch):
+    """The initiator collected this answer; a second redeemer then answers.
+    That redeemer is refused on its own side — the pair that was made stands."""
+    started = a.start()
+    original = pairing._read_handshake
+    calls = {"n": 0}
+
+    def collected_in_between(hub, expires_at):
+        calls["n"] += 1
+        if calls["n"] == 2:  # after this side posted, before it re-reads
+            a.collect(started.name)
+            _code_holder(h, started.code, "rival").post(
+                pairing.CHANNEL, _thief_answer(started.code))
+        return original(hub, expires_at)
+
+    monkeypatch.setattr(pairing, "_read_handshake", collected_in_between)
+    accepted = b.accept(started.code)
+    assert accepted.state == "paired"
+    monkeypatch.setattr(pairing, "_read_handshake", original)
+    assert a.resolve(started.name).state == b.resolve(started.name).state == "paired"
+
+
+def test_a_responder_voided_after_collection_tells_the_initiator(a, b, h):
+    started = a.start()
+    b.accept(started.code)
+
+    class Quiet(a.connect):
+        def post(self, channel, body, **kwargs):
+            if isinstance(body, dict) and body.get("t") == "swbp1/consumed":
+                raise httpx.ConnectError("lost")
+            return super().post(channel, body, **kwargs)
+
+        def board_set(self, *args, **kwargs):
+            raise httpx.ConnectError("lost")
+
+    a.connect = Quiet
+    assert a.collect(started.name).state == "paired"
+    a.connect = Machine(h, b.store.path.parent.parent, "x").connect
+    _code_holder(h, started.code).post(pairing.CHANNEL, {"t": "swbp1/aborted"})
+    with pytest.raises(PairingError):
+        b.resolve(started.name)
+    with pytest.raises(PairingError) as exc:
+        a.resolve(started.name)
+    assert exc.value.state == "ended_by_peer"
+
+
+@pytest.mark.parametrize("key", ["a", "AAAA", pairing._b64e(b"x" * 31)])
+def test_an_answer_that_is_not_a_key_aborts_rather_than_crashes(a, b, h, key):
+    started = a.start()
+    _code_holder(h, started.code).post(pairing.CHANNEL, {
+        "t": "swbp1/answer", "e": key, "c": "x"})
+    assert a.collect(started.name).state == "aborted"
+    assert a.store.pending(started.name) is None
+    assert pairing.status(a.base, **a.kw()) == []
+
+
+def test_a_code_that_expired_unanswered_is_not_reported_pending(a, h):
+    started = a.start(ttl=120)
+    h.advance(120 + 3 * pairing.SKEW)
+    done = a.collect(started.name)
+    assert done.state == "expired"
+    assert a.store.pending(started.name) is None
+
+
+def test_an_answer_that_never_reached_the_hub_is_resent_on_next_use(a, b, h):
+    started = a.start()
+
+    class Down(b.connect):
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError("hub went away")
+
+        def history(self, *args, **kwargs):
+            if getattr(self, "_seen", False):
+                raise httpx.ConnectError("hub went away")
+            self._seen = True
+            return super().history(*args, **kwargs)
+
+    real = b.connect
+    b.connect = Down
+    with pytest.raises(PairingError) as exc:
+        b.accept(started.code)
+    assert exc.value.state == "unsent"
+    b.connect = real
+    assert b.resolve(started.name).state == "unconfirmed"
+    assert b.store.get(started.name).sent
+    assert a.collect(started.name).state == "paired"
+    assert b.resolve(started.name).state == "paired"
+
+
+def test_an_answer_that_missed_the_code_is_dropped_not_left_waiting(a, b, h):
+    started = a.start()
+
+    class Down(b.connect):
+        def post(self, *args, **kwargs):
+            raise httpx.ConnectError("hub went away")
+
+        def history(self, *args, **kwargs):
+            if getattr(self, "_seen", False):
+                raise httpx.ConnectError("hub went away")
+            self._seen = True
+            return super().history(*args, **kwargs)
+
+    real = b.connect
+    b.connect = Down
+    with pytest.raises(PairingError):
+        b.accept(started.code)
+    b.connect = real
+    h.advance(pairing.DEFAULT_TTL + pairing.LOCAL_SLACK + 1)
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "unsent"
+    assert b.store.get(started.name) is None
+
+
+def test_an_active_side_with_an_idle_peer_never_lapses(a, b, h):
+    """Only a gap in *this* side's reading can hide a heal. A side that keeps
+    working while its peer sleeps for a fortnight stays in its room — and is
+    told the peer is quiet, then absent, rather than nothing."""
+    name, _ = paired(a, b)
+    a.resolve(name)
+    b.resolve(name)
+    said = []
+    for _ in range(14):
+        h.advance(86400)
+        resolution = a.resolve(name)
+        assert resolution.generation == 0
+        said += resolution.warnings
+    assert any("no sign of the other side" in w for w in said)
+    assert any("not in the pair room" in w for w in said)
+    assert b.resolve(name).generation == 0
+
+
+def test_lapses_from_one_stale_export_do_not_land_in_the_same_room(a, b, h, tmp_path):
+    name, _ = paired(a, b)
+    a.resolve(name)
+    blob = pairing.export(a.store.get(name), for_peer=True)
+    targets = set()
+    for i in range(3):
+        h.advance(pairing.SIDE_TTL + 3600)
+        fresh = Machine(h, tmp_path, f"container-{i}", env={pairing.env_var_for(name): blob})
+        targets.add(fresh.resolve(name).generation)
+    assert len(targets) == 3, "each lapse picks a room no earlier lapse could have"
+
+
+def test_a_side_that_ended_here_is_not_resurrected_by_a_racing_resolve(a, b, h):
+    name, _ = paired(a, b)
+    record = a.store.get(name)
+    a.store.delete(name)
+    with pytest.raises(PairingError) as exc:
+        pairing._keep(a.store, record)
+    assert exc.value.state == "ended"
+    assert a.store.get(name) is None
+
+
+def test_a_lower_generation_never_overwrites_a_higher_one_on_disk(a, b):
+    name, _ = paired(a, b)
+    stale = a.store.get(name)
+    healed = a.heal(name)
+    assert healed.to_generation == 1
+    pairing._keep(a.store, stale)
+    assert a.store.get(name).generation == 1
+
+
+def test_this_sides_own_ended_record_finishes_the_forget(a, b, h):
+    name, _ = paired(a, b)
+    pairing._publish_side(a.store.get(name), a.base, connect=a.connect, now=h.now,
+                          ended=True)
+    with pytest.raises(PairingError) as exc:
+        a.resolve(name)
+    assert exc.value.state == "ended"
+    assert a.store.get(name) is None
+
+
+def test_an_unconfirmed_pair_is_not_exported_frozen(a, b):
+    started = a.start()
+    b.accept(started.code)
+    with pytest.raises(PairingError) as exc:
+        pairing.export(b.store.get(started.name))
+    assert exc.value.state == "unconfirmed"
+
+
+def test_a_heal_wakes_this_machines_own_listener_too(a, b, h):
+    """The moved note goes out under a throwaway id: a listener never wakes on
+    its own agent's messages, and this machine's own listener is parked in the
+    room being left as surely as the other side's is."""
+    name, _ = paired(a, b)
+    old = a.resolve(name).config
+    a.heal(name)
+    with a.connect(old, agent_id="laptop") as mine:
+        tags = [pairing.message_tag(m) for m in mine.inbox(channels=["pair"])]
+    assert "swbp1/moved" in tags
+
+
+def test_pairing_messages_are_ordinary_notes_on_the_wire(a, b, h):
+    name, _ = paired(a, b)
+    a.heal(name)
+    with h.store._conn() as conn:
+        types = {row[0] for row in conn.execute("SELECT DISTINCT type FROM messages")}
+    assert types == {"note"}, "a `pair.*` type would tell the hub which rooms are handshakes"
