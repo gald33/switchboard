@@ -184,8 +184,10 @@ def test_machine_local_tools_are_withheld(hub, hosted):
     # Named, not merely absent: a model that read about pairing elsewhere and
     # calls it anyway is told why, rather than that no such tool exists.
     payload, is_error = tool(server, blob, "pair_start")
-    assert is_error and "hosted bridge" in payload["detail"]
-    assert "pairing secrets" in payload["detail"]
+    assert is_error and (payload["error"], payload["state"]) == ("pairing", "withheld")
+    assert "hosted bridge" in payload["message"] and "pairing secrets" in payload["message"]
+    assert "`switchboard pair" not in payload["message"], \
+        "no pointer at commands this surface does not serve"
 
 
 # --- disclosure -------------------------------------------------------------

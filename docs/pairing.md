@@ -52,9 +52,10 @@ into it.
 1. **The handshake room**, named by the code. The code is the one thing a
    human carries, so it is the thing most likely to be disclosed later. The
    room is short-lived and is built to hold nothing that would help whoever
-   finds it: two public keys, two proofs, and a marker saying which answer was
-   collected — with the nonce behind the SAS, disclosed once it can no longer
-   be used to cheat.
+   finds it: the responder's public key and proof, and a marker saying which
+   answer was collected, which carries the initiator's proof and — disclosed
+   once it can no longer be used to cheat — the nonce behind the SAS. The
+   initiator's public key is never in the room; it travels only in the code.
 2. **The pair room**, derived from the pair secret. Long-lived in the sense
    that the secret is; on the hub it holds two sealed records, one per side,
    each rewritten while the pair is in use. It is used for nothing but keeping
@@ -104,10 +105,14 @@ anything.
    If the hub fails after the pair is saved, the answer may never have
    arrived. The pair is kept as *unsent*, `accept` says so (`state:
    "unsent"`), and re-running it with the same code — or any use of the pair
-   at all, `pair status` included — sends the saved answer again, until
-   fifteen minutes past the code's expiry. After that the answer can never
-   count, so the pair is deleted and reported `unsent` rather than shown as
-   waiting on a side that never received it.
+   at all, `pair status` included — sends the saved answer again. It counts
+   only if the hub receives it within two minutes of the code's expiry; the
+   retries go on a little longer than that only so a responder whose clock
+   runs fast is not refused early. Every use first checks whether the answer
+   did arrive after all — a post whose reply was lost, a proof from the
+   initiator in the pair room — and only an empty handshake room past the
+   code's life deletes the pair, reported `unsent`. If somebody else's answer
+   is there instead, it is said as the leak it is (`already_redeemed`).
 3. **Collection, on the initiator's next touch.** Exactly one in-time answer
    pairs, and anything else in the handshake room is read as what it is —
    proof that somebody else holds the code — and aborts on both sides: a
@@ -197,13 +202,14 @@ sides call the pair the same thing; without one, both derive the same
 Exit 2, not 1, means the code was answered by a machine other than this one,
 and this machine is not paired. Usually that is the leak it sounds like —
 somebody else holds the code, and the person who carried it needs to hear
-that rather than see a retry. Two other ways to get here are not leaks, and
-the refusal says so: a cloud session redeeming the same code again from its
-transcript after its container was replaced (the first answer was the old
-container's, and that pair went with it), and a rival answering at the same
-moment as this machine, which voids this side even though its answer was
-sent — the pair room is told, so an initiator that had collected it hears the
-pair ended. In every case the machine that made the code should `pair forget`
+that rather than see a retry. One way to get here is not a leak, and the
+refusal says so: a cloud session redeeming the same code again from its
+transcript after its container was replaced, within the code's life (the
+first answer was the old container's, and that pair went with it). And one
+leak looks different: a rival answering at the same moment as this machine
+voids this side even though its answer was sent — the pair room is told, so
+an initiator that had collected it hears the pair ended. In every case the
+machine that made the code should `pair forget`
 it and make a fresh one.
 
 Exit 1 with `unsent` means the pair is saved here but the hub never
@@ -238,7 +244,9 @@ move, and it is what a listener parked in a pair's work room watches. A plain
 pair carried in `SWITCHBOARD_PAIR_<NAME>` — a fresh container's export says
 when the *exporting* machine last used it, which is no reason to skip it —
 alongside the rooms it always parks in. A pair it cannot read or resolve costs
-only its own room, with a line on stderr saying why unless `-q`. `--only
+only its own room, with a line on stderr saying why — even under `-q`, since
+that is a failure, not chatter; only the hint about a pair skipped for being
+idle, naming the `--in` flag that adds it, is dropped by `-q`. `--only
 pair:laptop-cloud` parks there alone, `--in pair:laptop-cloud` adds one that
 has been quiet, and `--no-pairs` leaves pairs out. `--room` may come after
 the subcommand as well as before it.
@@ -487,9 +495,11 @@ environment that looks like a cloud session, and so does `pair_start`.
 The responder's pair record lives in `~/.switchboard/pairs/`, which a cloud
 container does not keep either. A replacement container has no pair at all —
 `--room pair:<name>` says so — and the code still in the session's
-transcript cannot bring it back: redeeming it again is refused as
-`already_redeemed`, because the answer the laptop holds was the old
-container's and its key went with it. On the laptop that shows as the other
+transcript cannot bring it back: redeeming it again is refused — almost
+always as `expired`, since a container is rarely replaced within fifteen
+minutes of the code's expiry, and as `already_redeemed` if it is — because the
+answer the laptop holds was the old container's and its key went with it.
+Both refusals say so. On the laptop that shows as the other
 side going quiet, then gone (above). If the pair should outlive the session,
 put it in the cloud environment's secrets. Run this **on the laptop**, once
 `pair status` there shows the pair as paired:
@@ -714,11 +724,11 @@ bridge even if the process that found out died before it could say so;
 
 | `state` | Means | Do |
 |---|---|---|
-| `already_redeemed` | this code was answered by a machine other than this one, or the handshake room is flooded, and this machine is not paired. Usually a leak; also what a cloud session sees redeeming the code again after its container was replaced, and what a rival answering at the same moment leaves this side with even though its answer was sent (the pair room is told). CLI exit 2 | the machine that made the code runs `pair forget` on what it paired, and you pair again with a fresh code, shared more narrowly |
+| `already_redeemed` | this code was answered by a machine other than this one, or the handshake room holds what no honest handshake writes (a flood, a message the code cannot open), and this machine is not paired. A leak — including a rival answering at the same moment, which voids this side even though its answer was sent (the pair room is told) — except when a cloud session redeems the code again within its life after its container was replaced. CLI exit 2 (1 from `pair wait`) | the machine that made the code runs `pair forget` on what it paired, and you pair again with a fresh code, shared more narrowly |
 | `aborted` | the handshake was interfered with — two answers, a marker the initiator did not write, an answer that is not a key or does not verify, a flooded room — so the code leaked and nothing was paired. A responder's record is gone and marked ended | pair again with a fresh code |
-| `superseded` | the initiator collected an answer that was not this machine's; this side's record is gone | tell the other side — it is paired with whoever that was — and pair again |
-| `expired` | the code expired — unanswered, or the hub received the answer too late | ask for a fresh code; do not reuse the old one, which may already be in a paper trail |
-| `unsent` | this side saved the pair but its answer has not reached the hub. From `pair accept`: re-run it, or use the pair, before the code expires. From any later use: the code expired first, so the pair is gone | retry while the code is live; after that, pair again |
+| `superseded` | the handshake room says the initiator collected an answer that was not this machine's, naming an answer that is really there; this side's record is gone. (A marker naming no answer in the room is a forgery, reported `aborted`, which is what the initiator concludes too) | check `pair status` on the other side — it may be paired with whoever that was — have it `pair forget` that, and pair again |
+| `expired` | the code expired — unanswered, or the hub received the answer too late. Also what a replaced cloud container usually sees redeeming the code again from its transcript | ask for a fresh code; do not reuse the old one, which may already be in a paper trail |
+| `unsent` | this side saved the pair but its answer has not reached the hub. From `pair accept`: re-run it, or use the pair, before the code expires. From any later use: the handshake room showed no answer from this side past the code's life, so the pair is gone | retry while the code is live; after that, pair again |
 | `wrong_hub` | the code says a hello was left, and this machine cannot see it: an expired code, or a different hub at that address — a container's own `127.0.0.1` | nothing was sent; check `SWITCHBOARD_URL`, or ask for a fresh code |
 | `unconfirmed` | the initiator has not collected this side's answer yet. As a refusal, from `pair export` without `--peer`, which will not freeze the pair unconfirmed | wait (`pair wait <name>`), or export with `--peer` from the other machine once it has collected |
 | `never_confirmed` | the initiator could have collected until its deadline and did not. For a pair loaded from `SWITCHBOARD_PAIR_<NAME>`, the variable predates the confirmation and the proof has since expired, so this side cannot tell | `pair forget` here and pair again — for a variable, first check `pair status` on the other machine, and re-export with `--peer` there if it shows paired |
@@ -731,8 +741,8 @@ bridge even if the process that found out died before it could say so;
 | `tampered` | the pair room holds a record that is not what either side wrote | nothing was changed; suspect the hub |
 | `upgrade` | the other side moved the pair on with a healing strategy this release does not know | upgrade agent-switchboard here |
 | `disabled` | `SWITCHBOARD_PAIRS` is the empty string on this machine | unset it, or point it at a directory |
-| `store` | the MCP bridge could not read or write the pair store, which holds the only copy of each pair secret, so nothing was overwritten | make the directory in `SWITCHBOARD_PAIRS` (default `~/.switchboard/pairs`) writable by this user |
-| `withheld` | a hosted bridge was asked to pair, or to reach a `pair:` room | pair from a bridge on your own machine, or with `switchboard pair` |
+| `store` | the pair store could not be read or written (a full disk, a read-only directory) — from the MCP bridge, the CLI's `pair` commands and `--room pair:<name>`. It holds the only copy of each pair secret, so nothing was overwritten | make the directory in `SWITCHBOARD_PAIRS` (default `~/.switchboard/pairs`) writable by this user, with space left |
+| `withheld` | a hosted bridge was asked to pair (any `pair_*` tool), or to reach a `pair:` room | pair from a bridge on your own machine, or with `switchboard pair` |
 | `unknown` | no pair by that name on this machine | `pair status` lists them |
 | `error` | a `pair status` row that failed for a reason with no state of its own — an unreadable file, say | its `error` says what; the other rows are unaffected |
 

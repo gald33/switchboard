@@ -369,8 +369,10 @@ be a hub that could hold them, which is the whole thing this avoids.
 
 The one exchange there is — pairing two machines, under
 [Paired machines](#paired-machines) below — keeps that rule rather than
-breaking it. The hub carries two ephemeral public keys and proofs, and each
-machine computes the secret itself, so the hub that carried the exchange
+breaking it. The hub carries one ephemeral public key (the responder's — the
+initiator's travels only in the code), the two proofs, and the nonce behind
+the SAS once it can no longer be used to cheat, and each machine computes the
+secret itself, so the hub that carried the exchange
 still never holds what it produced. And it does not distribute *this* key:
 the rooms a pair shares are derived from its own secret, and the workspace
 key goes to agents exactly as it always did.

@@ -298,6 +298,22 @@ def test_a_heal_by_the_other_side_is_followed_here(laptop, cloud, h):
     assert work_room_bodies(h, laptop, name, 1, "build") == ["followed"]
 
 
+def test_a_move_is_said_once_not_on_every_cached_call(laptop, cloud, h):
+    """The move warning tells the model what it sent to the retired room and to
+    do it again here. Repeated from the cache on every call for thirty
+    seconds, it would have the model redo the same calls over and over."""
+    room = paired(laptop, cloud)
+    name = pairing.parse_handle(room)
+    call(laptop, "roster", room=room)
+    call(cloud, "pair_heal", name=name)
+    h.advance(PAIR_RECHECK)
+    first, _ = call(laptop, "roster", room=room)
+    assert any("moved from work room 0" in w for w in first["pair"]["warnings"])
+    again, _ = call(laptop, "roster", room=room)
+    assert not any("moved from work room 0" in w for w in again["pair"]["warnings"])
+    assert again["pair"]["generation"] == 1
+
+
 def test_a_pair_the_other_side_ended_stops_reaching_its_room(laptop, cloud, h):
     room = paired(laptop, cloud)
     name = pairing.parse_handle(room)
@@ -791,7 +807,8 @@ def test_a_hosted_bridge_neither_pairs_nor_resolves_a_pair_handle(h, tmp_path, m
 
     assert not set(PAIR_TOOLS) & {t["name"] for t in bridge.tools()}
     started, error = call(bridge, "pair_start")
-    assert error is True and "hosted bridge" in started["detail"]
+    assert error is True and (started["error"], started["state"]) == ("pairing", "withheld")
+    assert "hosted bridge" in started["message"]
     routed, error = call(bridge, "roster", room="pair:review")
     assert error is True
     assert (routed["error"], routed["state"]) == ("pairing", "withheld")

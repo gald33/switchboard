@@ -814,10 +814,12 @@ TOOLS: list[dict[str, Any]] = [
             "along.\n\n"
             "Returns 'code', a string starting 'swbp1_', for the human to carry to the "
             "other machine, where an agent passes it to pair_accept. The code is a "
-            "CREDENTIAL until it is redeemed or 'expires_at' passes: whoever holds it "
-            "in that window can answer in place of the intended peer, so it goes to "
-            "one person, not a shared channel. After that it opens nothing, so a copy "
-            "left in a chat is harmless. 'name' is what both machines call the pair, "
+            "CREDENTIAL until this machine has collected the answer (it does so by "
+            "itself, on a later tool call), or until 'expires_at' passes with nobody "
+            "having answered. Until then whoever holds it can answer in place of the "
+            "intended peer, or void the pairing, so it goes to one person, not a shared "
+            "channel. After that it opens nothing, so a copy left in a chat is "
+            "harmless. 'name' is what both machines call the pair, "
             "and 'room' (pair:<name>) is the handle to pass as room= on any other tool "
             f"once paired; the two sides talk there on channel '{pairing.CHANNEL}'. "
             "'verifiable' is false when the hub could not be reached to "
@@ -1422,8 +1424,13 @@ class Bridge:
         record = resolution.record
         workspace = resolution.config.workspace
         warnings = list(resolution.warnings)
+        standing_count = len(warnings)
         use = self._pair_used.get(name)
         moved = self._pair_moved(name, use, resolution, warnings)
+        # Said once: the core's move warnings and the bridge's own, about calls
+        # stranded in the old room. A cached note repeating them would have the
+        # model redo the same stranded calls on every call for thirty seconds.
+        one_shot = [*resolution.move_warnings, *warnings[standing_count:]]
         if moved:
             # Said on the next response that carries this pair's note, or in
             # pair_status — not only on this one, which may never reach the
@@ -1432,7 +1439,7 @@ class Bridge:
             # resolution would say it again.
             unseen = self._pair_unseen if self._pair_unseen is not None else {}
             held = unseen.get(name, ())
-            unseen[name] = (*held, *(w for w in warnings if w not in held))
+            unseen[name] = (*held, *(w for w in one_shot if w not in held))
             self._pair_unseen = unseen
         client = self._pair_clients.get((name, workspace))
         if client is None:
@@ -1441,7 +1448,8 @@ class Bridge:
             self._pair_clients[(name, workspace)] = client
         note = {"name": name, "generation": record.generation, "state": resolution.state,
                 "warnings": warnings}
-        self._pair_checked[name] = _PairChecked(now, workspace, note, record.transcript,
+        standing = {**note, "warnings": [w for w in warnings if w not in one_shot]}
+        self._pair_checked[name] = _PairChecked(now, workspace, standing, record.transcript,
                                                 record.generation)
         if resolution.checked:
             self._pair_used[name] = _PairUse(record.transcript, record.generation, now)
@@ -2412,7 +2420,8 @@ class Bridge:
             "next": (
                 "Give 'code' to the human to carry to the other machine, where an agent "
                 "passes it to pair_accept (or runs `switchboard pair accept <code>`). "
-                f"Until {expires} it is a credential: one person, not a shared channel. "
+                "It is a credential until this machine collects the answer, or until "
+                f"{expires} if nobody answers: one person, not a shared channel. "
                 "This machine collects the answer by itself on a later tool call — that "
                 f"result carries 'pairings' — and then room='{started.room}' reaches the "
                 "pair's work room from any tool. Talk there on channel "
@@ -2452,9 +2461,13 @@ class Bridge:
                     now=self._now())
         except AlreadyRedeemed as exc:
             return {"paired": False, "reason": str(exc), "state": exc.state, "next": (
-                "Do not retry this code. Tell the human it leaked between being made and "
-                "reaching you: the machine that made it should pair_forget whatever it "
-                "paired with, and start again with a fresh code, shared more narrowly."
+                "Do not retry this code. If you called pair_accept with this same code "
+                "earlier in this conversation, in a container since replaced, tell the "
+                "human that earlier answer was this session's and its pair went with the "
+                "container. Otherwise tell the human the code leaked between being made "
+                "and reaching you. Either way the machine that made it should pair_forget "
+                "whatever it paired with, and start again with a fresh code, shared more "
+                "narrowly."
             )}
         except PairingError as exc:
             return {"paired": False, "reason": str(exc), "state": exc.state or "invalid",
@@ -2648,6 +2661,13 @@ class Bridge:
         if handler is None or name.startswith("_") or name not in {t["name"] for t in TOOLS}:
             raise ValueError(f"unknown tool: {name}")
         if name in self._withheld:
+            if name.startswith("pair_"):
+                # A refusal with a state the model can act on, not an unknown
+                # tool; and no pointer at commands this surface does not serve.
+                raise PairingError(
+                    f"{name} is not served by a hosted bridge: {HOSTED_WITHHELD[name]}. "
+                    "Pairing happens on the machine that keeps the pair — a bridge or "
+                    "the CLI running there.", state="withheld")
             raise ValueError(f"{name} is not served by a hosted bridge: {HOSTED_WITHHELD[name]}")
         arguments = dict(arguments)
         room = arguments.pop("room", None)

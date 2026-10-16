@@ -100,8 +100,12 @@ LIFETIMES = [
     # which is what bounds the pending private key for the common case.
     ("an unanswered code's margin", 2 * pairing.SKEW, 4 * 60,
      "its expiry plus four minutes"),
+    # Retries go on this long past expiry, for a responder whose clock runs
+    # fast — but an answer only *counts* within SKEW of it, and a page that
+    # implied the longer window would invite retries the hub then judges late.
     ("LOCAL_SLACK", pairing.LOCAL_SLACK, 15 * 60,
-     "until fifteen minutes past the code's expiry"),
+     "within fifteen minutes of the code's expiry"),
+    ("SKEW", pairing.SKEW, 2 * 60, "within two minutes of the code's expiry"),
     ("a handshake read", pairing._HISTORY, 500, "500 messages, newest first"),
 ]
 
