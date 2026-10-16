@@ -811,7 +811,7 @@ def test_a_flooded_handshake_room_aborts_instead_of_pairing_the_last_answer(a, b
     holder.post(pairing.CHANNEL, _thief_answer(started.code))
     done = a.collect(started.name)
     assert done.state == "aborted"
-    assert "full of messages" in done.message
+    assert "no honest handshake writes" in done.message
     with pytest.raises(PairingError) as exc:
         b.resolve(started.name)
     assert exc.value.state == "aborted"
@@ -1072,10 +1072,12 @@ def test_a_verdict_is_kept_for_days_then_swept(a, h):
     started = a.start(ttl=120)
     h.advance(120 + 3 * pairing.SKEW)
     assert a.collect(started.name).state == "expired"
-    assert a.store.verdict(started.name)["state"] == "expired"
+    assert a.store.verdict(started.name, now=h.now)["state"] == "expired"
+    assert [r["state"] for r in pairing.status(a.base, **a.kw())] == ["expired"]
     h.advance(pairing.VERDICT_KEEP + 1)
+    assert pairing.status(a.base, **a.kw()) == [], "a lapsed verdict is not reported"
     pairing.sweep_expired(a.store, now=h.now)
-    assert a.store.verdict(started.name) is None
+    assert a.store.verdict_names() == []
 
 
 def test_a_new_pairing_under_the_name_replaces_the_old_verdict(a, b, h):
@@ -1095,3 +1097,177 @@ def test_a_disabled_store_says_so_to_a_collect(h, tmp_path):
     with pytest.raises(PairingError) as exc:
         off.collect("anything")
     assert exc.value.state == "disabled"
+
+
+
+# --- what the third review found -------------------------------------------------------
+
+
+def test_an_answer_whose_reply_was_lost_is_not_deleted_after_the_code_expires(a, b, h):
+    """The answer landed; only the reply was lost, so this side recorded it as
+    unsent. The initiator collected it. Coming back after the code expired,
+    this side must find the initiator's proof — not delete a working pair on
+    the strength of its own clock."""
+    started = a.start()
+
+    class LostReply(b.connect):
+        def post(self, channel, body, **kwargs):
+            result = super().post(channel, body, **kwargs)
+            if isinstance(body, dict) and body.get("t") == "swbp1/answer":
+                raise httpx.ReadTimeout("reply lost")
+            return result
+
+        def read_channels(self, *args, **kwargs):
+            if getattr(self, "_reads", 0) >= 1:
+                raise httpx.ReadTimeout("hub went away")
+            self._reads = getattr(self, "_reads", 0) + 1
+            return super().read_channels(*args, **kwargs)
+
+    real = b.connect
+    b.connect = LostReply
+    with pytest.raises(PairingError) as exc:
+        b.accept(started.code)
+    assert exc.value.state == "unsent"
+    b.connect = real
+    assert a.collect(started.name).state == "paired"
+    h.advance(pairing.DEFAULT_TTL + pairing.LOCAL_SLACK + 60)
+    resolved = b.resolve(started.name)
+    assert resolved.state == "paired"
+    assert resolved.record.sent and resolved.record.sas == a.store.get(started.name).sas
+
+
+def test_two_collectors_on_one_machine_do_not_call_each_other_a_leak(a, b, h, monkeypatch):
+    """A parked listener and `pair wait`, woken by the same answer. The one that
+    reads second sees the first one's marker — and must recognise it as this
+    machine's own decision, not a forgery."""
+    started = a.start()
+    b.accept(started.code)
+    original = pairing._read_handshake
+    raced = {"done": False}
+
+    def other_collector_wins(hub, expires_at):
+        seen = original(hub, expires_at)
+        if not raced["done"]:
+            raced["done"] = True
+            assert a.collect(started.name).state == "paired"   # the other process
+            return original(hub, expires_at)
+        return seen
+
+    monkeypatch.setattr(pairing, "_read_handshake", other_collector_wins)
+    second = a.collect(started.name)
+    monkeypatch.setattr(pairing, "_read_handshake", original)
+    assert second.state == "paired"
+    assert a.store.verdict(started.name, now=h.now) is None
+    assert b.resolve(started.name).state == "paired"
+
+
+def test_one_unreadable_message_aborts_rather_than_crashing_both_sides(a, b, h):
+    """A message sealed under some other key, planted in the handshake room by
+    a code holder or the hub. Reading the room message by message, it is
+    counted as interference: both sides abort, and nobody sees a traceback."""
+    started = a.start()
+    b.accept(started.code)
+    from switchboard.crypto import WorkspaceCipher, generate_key
+
+    holder = _code_holder(h, started.code)
+    foreign = WorkspaceCipher.from_key(generate_key(), holder.workspace)
+    # Onto the room's own blinded channel, sealed under a key nobody here holds.
+    holder._call("POST", "/messages", cipher=None, json={
+        "workspace": holder.workspace, "channel": holder._blind_channel(pairing.CHANNEL),
+        "agent_id": holder.agent_id, "type": "note", "thread": None, "ttl": None,
+        "body": foreign.seal({"t": "swbp1/answer", "e": "x"}, "message.body"),
+    })
+    assert a.collect(started.name).state == "aborted"
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "aborted"
+
+
+def test_a_stale_copy_never_overwrites_a_confirmation_saved_meanwhile(a, b, h):
+    started = a.start()
+    b.accept(started.code)
+    stale = b.store.get(started.name)
+    a.collect(started.name)
+    fresh = b.resolve(started.name)
+    assert fresh.record.sas
+    stale.last_used_at = h.now
+    pairing._keep(b.store, stale)
+    kept = b.store.get(started.name)
+    assert kept.confirmed and kept.sas == fresh.record.sas and kept.handshake is None
+
+
+def test_a_swept_handshake_leaves_its_verdict(a, h):
+    a.start(name="swept")
+    h.advance(pairing.DEFAULT_TTL + pairing.COLLECT_WINDOW + 1)
+    a.start(name="next")
+    assert a.store.verdict("swept", now=h.now)["state"] == "expired"
+
+
+def test_a_heal_names_the_room_the_other_side_is_really_in(a, b):
+    name, _ = paired(a, b)
+    a.resolve(name)
+    b.heal(name)                     # the other side moved to 1 first
+    healed = a.heal(name)            # this side adopts 1, then moves to 2
+    assert healed.to_generation == 2
+    assert any("still in work room 1" in w for w in healed.warnings)
+
+
+def test_a_marker_naming_no_answer_in_the_room_is_called_forged_not_superseded(a, b, h):
+    """`superseded` tells the human the other side is paired with somebody else.
+    A marker naming a transcript that matches no answer actually in the room is
+    a forgery — the initiator aborts on it — so this side must say aborted."""
+    started = a.start()
+    b.accept(started.code)
+    _code_holder(h, started.code).post(pairing.CHANNEL, {
+        "t": "swbp1/consumed", "th": pairing._b64e(b"t" * 32), "ci": "x", "r": "x"})
+    with pytest.raises(PairingError) as exc:
+        b.resolve(started.name)
+    assert exc.value.state == "aborted"
+    assert a.collect(started.name).state == "aborted"
+
+
+def test_a_collected_handshake_whose_announce_kept_failing_is_dropped_at_its_deadline(a, b, h):
+    started = a.start()
+    b.accept(started.code)
+
+    class NoAnnounce(a.connect):
+        def board_set(self, *args, **kwargs):
+            raise httpx.ConnectError("down")
+
+    real = a.connect
+    a.connect = NoAnnounce
+    a.collect(started.name)
+    assert a.store.pending(started.name).collected
+    a.connect = real
+    h.advance(pairing.DEFAULT_TTL + pairing.COLLECT_WINDOW + 1)
+    pairing.sweep_expired(a.store, now=h.now)
+    assert a.store.pending(started.name) is None, "the private key does not outlive the deadline"
+    assert a.store.get(started.name) is not None
+
+
+def test_a_move_is_said_once_by_a_surface_that_caches(a, b):
+    name, _ = paired(a, b)
+    b.heal(name)
+    moved = a.resolve(name)
+    assert moved.move_warnings and set(moved.move_warnings) <= set(moved.warnings)
+    assert a.resolve(name).move_warnings == []
+
+
+def test_a_refused_token_reaches_the_surface_as_the_error_it_is(a, b):
+    from switchboard.client import SwitchboardError
+
+    name, _ = paired(a, b)
+
+    class Refused(a.connect):
+        def board_list(self, *args, **kwargs):
+            raise SwitchboardError("invalid or missing bearer token", status=401)
+
+    a.connect = Refused
+    resolution = a.resolve(name)
+    assert not resolution.checked and resolution.hub_error.status == 401
+    assert any("401" in w for w in resolution.warnings)
+
+
+def test_a_store_failure_is_a_refusal_with_its_own_state():
+    error = pairing.store_failure(OSError(28, "No space left on device"))
+    assert error.state == "store" and "only copy" in str(error)

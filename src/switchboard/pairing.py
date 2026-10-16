@@ -234,6 +234,20 @@ class PairingError(Exception):
         self.state = state
 
 
+def store_failure(exc: OSError) -> PairingError:
+    """A pair store that cannot be read or written, as the refusal it is.
+
+    Never "the hub could not be reached": the store holds the only copy of each
+    pair secret, and somebody sent to debug a connection would not look at the
+    disk that is full or the directory that is read-only.
+    """
+    return PairingError(
+        f"the pair store could not be used ({exc.__class__.__name__}: {exc}). It holds "
+        "the only copy of each pair secret, so nothing was overwritten; check that "
+        f"{ENV} (or ~/.switchboard/pairs) is a writable directory with space left.",
+        state="store")
+
+
 class AlreadyRedeemed(PairingError):
     """Somebody other than this caller answered the code.
 
@@ -642,6 +656,10 @@ class PairRecord:
     sas: str | None = None
     #: The initiator's commitment, kept by the responder to check the reveal.
     commit: str | None = None
+    #: The initiator's ephemeral public key, kept by the responder while
+    #: unconfirmed, so a "collected" marker naming another transcript can be
+    #: checked against the answers actually in the handshake room.
+    initiator: str | None = None
     #: The initiator's reveal, kept by the initiator to publish it.
     reveal: str | None = field(default=None, repr=False)
     created_at: float = 0.0
@@ -957,15 +975,25 @@ class PairStore:
     def _verdict_path(self, name: str) -> Path:
         return self._dir("voided") / f"{validate_name(name)}.json"
 
-    def verdict(self, name: str) -> dict[str, Any] | None:
+    def verdict(self, name: str, *, now: float | None = None) -> dict[str, Any] | None:
         """How a pairing under `name` ended, if this machine recorded it lately.
 
         Holds no secret: a state, a sentence, and until when to keep saying it.
+        Past that, it is not reported — and is deleted on the way past.
         """
         if self.path is None:
             return None
         data = self._read(self.path / "voided" / f"{validate_name(name)}.json")
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        try:
+            expired = _now(now) > float(data.get("until") or 0)
+        except (TypeError, ValueError):
+            expired = True
+        if expired:
+            self.clear_verdict(name)
+            return None
+        return data
 
     def save_verdict(self, name: str, state: str, message: str, *, now: float) -> None:
         self._write(self._verdict_path(name), {
@@ -1172,11 +1200,22 @@ class _Channel:
     late: int = 0
     #: The read came back full, so what it did not show cannot be known.
     flooded: bool = False
+    #: Messages this room's key cannot open. Only a code holder can write here
+    #: under the room's write key — or the hub, which can store anything — so
+    #: one of these is interference, read the same way as a flood.
+    unreadable: int = 0
+
+    @property
+    def interfered(self) -> bool:
+        return self.flooded or self.unreadable > 0
 
 
 def _read_channel(history: list[dict[str, Any]], expires_at: float) -> _Channel:
     seen = _Channel(flooded=len(history) >= _HISTORY)
     for message in history:
+        if message.get("unreadable"):
+            seen.unreadable += 1
+            continue
         tag = message_tag(message)
         body = message.get("body")
         if tag == _T_HELLO:
@@ -1195,7 +1234,15 @@ def _read_channel(history: list[dict[str, Any]], expires_at: float) -> _Channel:
 
 
 def _read_handshake(hub: Any, expires_at: float) -> _Channel:
-    return _read_channel(hub.history(CHANNEL, limit=_HISTORY), expires_at)
+    """The whole handshake channel, one message at a time.
+
+    Through `read_channels`, which pages forward and marks a message it cannot
+    open rather than failing the whole read — so a single foreign ciphertext
+    planted here costs the planter an abort, not this machine a crash that
+    hides every readable marker behind it.
+    """
+    channel = hub._blind_channel(CHANNEL)
+    return _read_channel(hub.read_channels([channel], limit=_HISTORY), expires_at)
 
 
 def _post(hub: Any, body: dict[str, Any], *, ttl: float | None = None) -> dict[str, Any]:
@@ -1339,11 +1386,12 @@ _ANSWERED_ELSEWHERE = (
 
 def _refuse_used(seen: _Channel, code: PairingCode) -> None:
     """Refuse, before anything is sent, a code somebody else has spent."""
-    if seen.flooded:
+    if seen.interfered:
         raise AlreadyRedeemed(
-            "the handshake room is full of messages — somebody holding the code is "
-            "interfering with it. Nothing was sent; pair again with a fresh code, "
-            "shared more narrowly.")
+            "the handshake room holds messages no honest handshake writes (too many "
+            "of them, or ones this code cannot open) — somebody holding the code, or "
+            "the hub, is interfering with it. Nothing was sent; pair again with a "
+            "fresh code, shared more narrowly.")
     if seen.consumed or seen.aborted:
         raise AlreadyRedeemed(_ANSWERED_ELSEWHERE.replace(
             "already answered", "already answered and collected", 1))
@@ -1377,7 +1425,10 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
         raise PairingError(
             f"this pairing code expired at {_iso(code.expires_at)}. Ask for a new "
             "one — and since an expired code may already be in a paper trail, "
-            "do not reuse the old one.", state="expired")
+            "do not reuse the old one. If this session redeemed it before, in a "
+            "container since replaced, that pair went with the container: the "
+            "machine that made the code should `switchboard pair forget` it.",
+            state="expired")
     name = validate_name(name or code.pair_name)
     token, token_source = _token_for(code.token, code.url, base)
     room = handshake_room(code.secret)
@@ -1405,7 +1456,16 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
         resuming = (existing is not None and existing.answer is not None
                     and existing.answer.get("e") in seen.answers)
         if not resuming:
-            _refuse_used(seen, code)
+            try:
+                _refuse_used(seen, code)
+            except AlreadyRedeemed as exc:
+                if existing is not None:
+                    # This code's own unsent answer, overtaken: say so for good
+                    # rather than leave a record a later use calls "unsent".
+                    with store.lock():
+                        store.delete(name)
+                        store.save_verdict(name, "already_redeemed", str(exc), now=local)
+                raise
 
         if existing is not None and existing.answer is not None:
             record = existing
@@ -1419,8 +1479,9 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
             record = PairRecord(
                 name=name, role=RESPONDER, secret=_b64e(pair_secret),
                 transcript=_b64e(th), url=code.url, token=code.token,
-                commit=_b64e(code.commit), created_at=local,
-                deadline=code.deadline, note=note, peer_note=code.note,
+                commit=_b64e(code.commit), initiator=_b64e(code.initiator),
+                created_at=local, deadline=code.deadline, note=note,
+                peer_note=code.note,
                 answer={"t": _T_ANSWER, "e": _b64e(mine),
                         "c": _b64e(confirmation(pair_secret, RESPONDER, th)),
                         **({"n": note[:200]} if note else {})},
@@ -1437,8 +1498,8 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
                 store.save(record)
                 store.clear_verdict(name)
         try:
-            _send_answer(record, hub, base, store=store, connect=connect, now=local,
-                         already_there=resuming)
+            sent_warnings = _send_answer(record, hub, base, store=store, connect=connect,
+                                         now=local, already_there=resuming)
         except AlreadyRedeemed:
             raise
         except PairingError:
@@ -1451,7 +1512,7 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
                 "the pair at all (`pair status` will do) — either resends it.",
                 state="unsent") from exc
 
-    warnings = []
+    warnings = list(sent_warnings)
     try:
         _publish_side(record, base, connect=connect, now=local)
     except _hub_errors() as exc:
@@ -1462,13 +1523,15 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
 
 def _send_answer(record: PairRecord, hub: Any, base: ClientConfig | None, *,
                  store: PairStore, connect: Connect, now: float,
-                 already_there: bool = False) -> None:
+                 already_there: bool = False) -> list[str]:
     """Get this side's saved answer onto the hub, then check nobody beat it.
 
     Shared by `accept` and by the resend a later resolution does, so the two
     reach the same verdict. Raises `AlreadyRedeemed` (having dropped the
     record) when somebody else got there; raises the hub's own error when the
-    outcome is unknown, leaving the record saved and unsent for a retry.
+    post's outcome is unknown, leaving the record saved and unsent for a
+    retry. Once the post has landed the record says so at once — a failure of
+    the check that follows is a warning, never "the answer did not arrive".
     """
     assert record.answer is not None and record.code_expires_at is not None
     expires_at = record.code_expires_at
@@ -1486,20 +1549,28 @@ def _send_answer(record: PairRecord, hub: Any, base: ClientConfig | None, *,
                 raise
             stamp = found.answers[ours].get("_at")
         if stamp is not None and stamp > expires_at + SKEW:
+            message = ("too late: the hub received the answer after the code expired, "
+                       "so the other side will not accept it. Ask for a new code.")
             with store.lock():
                 store.delete(record.name)
-            raise PairingError(
-                "too late: the hub received the answer after the code expired, "
-                "so the other side will not accept it. Ask for a new code.",
-                state="expired")
+                store.save_verdict(record.name, "expired", message, now=now)
+            raise PairingError(message, state="expired")
+    if not record.sent:
+        record.sent = True
+        with store.lock():
+            store.save(record)
     # Read again: a second redeemer who got in at the same moment is only
     # visible after the fact, and both sides must reach the same verdict.
-    after = _read_handshake(hub, expires_at)
+    try:
+        after = _read_handshake(hub, expires_at)
+    except _hub_errors() as exc:
+        return [f"the answer reached the hub, but checking for a rival answer failed "
+                f"({exc.__class__.__name__}); the next use of the pair checks again"]
     if _collected_ours(record, after):
         # The initiator committed to this answer already; a rival arriving
         # after that is a late redeemer, refused on its own side.
         pass
-    elif after.flooded or after.aborted or after.consumed or \
+    elif after.interfered or after.aborted or after.consumed or \
             any(e != ours for e in after.answers):
         message = (
             "somebody else answered this code at about the same time as this "
@@ -1510,9 +1581,9 @@ def _send_answer(record: PairRecord, hub: Any, base: ClientConfig | None, *,
         _void(record, base, store=store, connect=connect, now=now,
               state="already_redeemed", message=message)
         raise AlreadyRedeemed(message)
-    record.sent = True
     with store.lock():
         store.save(record)
+    return []
 
 
 def _collected_ours(record: PairRecord, seen: _Channel) -> bool:
@@ -1550,6 +1621,7 @@ def _confirm(record: PairRecord, reveal: bytes) -> None:
     record.reveal = _b64e(reveal)
     record.sas = sas(record.pair_secret, record.th, reveal)
     record.handshake = None
+    record.initiator = None
 
 
 def _void(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
@@ -1611,7 +1683,7 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
             # Nothing to collect here — but a responder's record is not paired
             # until the initiator's proof has been read, and saying so matters.
             return Collected(name, "paired" if record.confirmed else "unconfirmed", record)
-        ended = store.verdict(name)
+        ended = store.verdict(name, now=now)
         if ended is not None:
             return Collected(name, str(ended.get("state") or "aborted"),
                              message=str(ended.get("message") or ""))
@@ -1623,14 +1695,18 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
     if pending.collected:
         record = store.get(pending.paired_as or name)
         if record is not None:
+            if hub_now > pending.deadline:
+                # The handshake room has expired, so the marker has no reader
+                # left, and the side record — republished on every use — carries
+                # the proof. Nothing is lost by dropping the private key now.
+                with store.lock():
+                    store.delete_pending(name)
+                return Collected(record.name, "paired", record)
             warnings = _announce(pending, record, base, store=store, connect=connect,
                                  agent_id=agent_id, now=local)
             return Collected(record.name, "paired", record, warnings=warnings)
     if hub_now > pending.deadline:
-        message = (
-            f"no answer was collected by the deadline ({_iso(pending.deadline)}). If "
-            f"the other side ran `pair accept`, its pairing is dead: it must run "
-            f"`switchboard pair forget {name}`, and you start a new one.")
+        message = _deadline_passed(pending)
         with store.lock():
             store.delete_pending(name)
             store.save_verdict(name, "expired", message, now=local)
@@ -1646,9 +1722,13 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
         if seen.late:
             warnings.append(
                 f"{seen.late} answer(s) reached the hub after the code expired and "
-                "were ignored — the code was used late, so treat it as leaked")
+                "were ignored. Possibly the intended machine retrying late, possibly "
+                "somebody who found the code: either way, do not reuse it")
 
         def abort(why: str, message: str) -> Collected:
+            decided = _decided_here(store, name, local)
+            if decided is not None:
+                return decided
             with contextlib.suppress(*_hub_errors()):
                 _post(hub, {"t": _T_ABORTED, "why": why},
                       ttl=_clamp_ttl(pending.deadline - hub_now + SKEW, MAX_MESSAGE_TTL))
@@ -1659,14 +1739,22 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
                 store.save_verdict(name, "aborted", message, now=local)
             return Collected(name, "aborted", warnings=warnings, message=message)
 
-        if seen.flooded:
+        if seen.interfered:
             return abort("flooded", (
-                "the handshake room is full of messages, so this machine cannot tell "
-                "who answered first — somebody holding the code is interfering. "
-                "Nothing was paired; start again with a fresh code."))
+                "the handshake room holds messages no honest handshake writes (too "
+                "many to read whole, or ones this code cannot open), so this machine "
+                "cannot tell who answered first — somebody holding the code, or the "
+                "hub, is interfering. Nothing was paired; start again with a fresh "
+                "code."))
         if seen.aborted or seen.consumed:
-            # This machine writes those only after deciding, so finding one
-            # while still undecided means a code holder wrote it.
+            # This machine writes those only after deciding — so either another
+            # process here decided while this one was reading (a listener and
+            # `pair wait`, woken by the same answer), or a code holder wrote it.
+            # The store says which: this machine saves its decision before it
+            # posts a marker.
+            decided = _decided_here(store, name, local)
+            if decided is not None:
+                return decided
             return abort("forged marker", (
                 "somebody holding the code wrote in the handshake room as if they "
                 "were this machine, so the code leaked. Nothing was paired; start "
@@ -1731,6 +1819,32 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
     warnings += _announce(pending, record, base, store=store, connect=connect,
                           agent_id=agent_id, now=local)
     return Collected(record.name, "paired", record, warnings=warnings)
+
+
+def _deadline_passed(pending: PendingHandshake) -> str:
+    return (f"no answer was collected by the deadline ({_iso(pending.deadline)}). If "
+            f"the other side ran `pair accept`, its pairing is dead: it must run "
+            f"`switchboard pair forget {pending.name}`, and you start a new one.")
+
+
+def _decided_here(store: PairStore, name: str, now: float) -> Collected | None:
+    """What another process on this machine decided about `name`, if it has."""
+    with store.lock():
+        pending = store.pending(name)
+        if pending is not None and pending.collected:
+            record = store.get(pending.paired_as or name)
+            if record is not None:
+                return Collected(record.name, "paired", record)
+        if pending is None:
+            record = store.get(name)
+            if record is not None:
+                return Collected(name, "paired" if record.confirmed else "unconfirmed",
+                                 record)
+            ended = store.verdict(name, now=now)
+            if ended is not None:
+                return Collected(name, str(ended.get("state") or "aborted"),
+                                 message=str(ended.get("message") or ""))
+    return None
 
 
 def _free_name(store: PairStore, name: str) -> str:
@@ -1929,6 +2043,13 @@ class Resolution:
     #: The revision of this side's record as last read or written, for a
     #: conditional write that follows (a heal).
     own_revision: int | None = field(default=None, repr=False)
+    #: The warnings about a move this resolution made — said once, by a
+    #: surface that caches resolutions, rather than on every cached call.
+    move_warnings: list[str] = field(default_factory=list)
+    #: The error that kept the pair room from being read, when it was not;
+    #: a surface decides from it whether waiting could ever help (a refused
+    #: token cannot).
+    hub_error: BaseException | None = field(default=None, repr=False)
 
     @property
     def name(self) -> str:
@@ -1989,7 +2110,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
                     state="pending" if done.state == "waiting" else done.state)
             record = done.record
         else:
-            ended = store.verdict(name)
+            ended = store.verdict(name, now=local)
             if ended is not None:
                 raise PairingError(str(ended.get("message") or f"pair {name!r} ended"),
                                    state=str(ended.get("state") or "aborted"))
@@ -2005,21 +2126,37 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
         # the responder's proof lands before this side starts working.
         collect(name, base, store=store, connect=connect, agent_id=agent_id, now=local)
     warnings: list[str] = []
-    if record.role == RESPONDER and not record.sent:
-        _resend(record, base, store=store, connect=connect, now=local, warnings=warnings)
     try:
         with connect(_pair_config(record, base), agent_id=_agent()) as hub:
             sides = _read_sides(hub.board_list(prefix=SIDE_PREFIX))
     except _hub_errors() as exc:
+        status = getattr(exc, "status", None)
         warnings.append(
-            f"could not read the pair room ({exc.__class__.__name__}); using "
-            f"generation {record.generation}, the last this machine saw")
+            f"could not read the pair room ({exc.__class__.__name__}"
+            f"{f' {status}' if status else ''}: {exc}); using generation "
+            f"{record.generation}, the last this machine saw")
         state = "paired" if record.confirmed else "unconfirmed"
         return Resolution(record, work_config(record, base), state, warnings,
-                          peer_generation=record.peer_generation, checked=False)
+                          peer_generation=record.peer_generation, checked=False,
+                          hub_error=exc)
 
     peer = sides.get(record.peer_role)
     own = sides.get(record.role)
+    if record.role == RESPONDER and (not record.sent or
+                                     (record.confirmed and record.sas is None)):
+        # The pair room first: an initiator's proof there means the answer did
+        # arrive, whatever this machine recorded — a post whose reply was lost,
+        # or a lost update from another process here. Only without it is the
+        # handshake room asked.
+        proof = next((side for side in (peer, own)
+                      if side is not None and _proves(record, side.confirm, side.reveal)),
+                     None)
+        if proof is not None:
+            _confirm(record, proof.reveal or b"")
+            record.sent = True
+        elif not record.sent:
+            _resend(record, base, store=store, connect=connect, now=local,
+                    warnings=warnings)
     last_read = max(record.room_read_at or record.created_at, own.at if own else 0.0)
     gap = local - last_read
     record.room_read_at = local
@@ -2057,7 +2194,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
     generation = record.generation
     if own is not None:
         generation = max(generation, own.generation)
-    peer_quiet = None
+    peer_quiet, lapse_note = None, None
     if peer is not None:
         generation = max(generation, peer.generation)
         record.peer_seen_at = local
@@ -2071,11 +2208,12 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
     elif gap > STALE_AFTER and record.confirmed:
         generation = _lapse_target(record, generation)
         record.moved_reason = "lapsed"
-        warnings.append(
+        lapse_note = (
             f"this side had not read the pair room for {_days(gap)} and the other "
             "side's record has expired from it, so a heal made meanwhile could have "
             "been lost: this side moved to a fresh work room. The other side follows "
             "the next time it runs; anything left in the old room stays there.")
+        warnings.append(lapse_note)
     elif record.confirmed:
         peer_quiet = (
             "the other side's record is not in the pair room: it has not used this "
@@ -2086,6 +2224,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
         warnings.append(peer_quiet)
 
     moved_from = None
+    before_move = len(warnings)
     if generation > record.generation:
         moved_from = record.generation
         if peer is not None and peer.generation == generation:
@@ -2101,6 +2240,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
                                 f"the other side healed the pair{why}")
             record.moved_reason = peer.reason
         record.generation = generation
+    move_warnings = ([lapse_note] if lapse_note else []) + list(warnings[before_move:])
     if peer is not None and peer.generation < record.generation:
         warnings.append(
             f"the other side has not moved to work room {record.generation} yet; "
@@ -2132,7 +2272,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
     return Resolution(record, work_config(record, base), state, warnings,
                       moved_from=moved_from, peer_generation=record.peer_generation,
                       peer_present=peer is not None, peer_active_at=record.peer_at,
-                      own_revision=own_revision)
+                      own_revision=own_revision, move_warnings=move_warnings)
 
 
 def _never_confirmed(record: PairRecord) -> str:
@@ -2170,33 +2310,64 @@ def _env_warnings(record: PairRecord, warnings: list[str]) -> None:
 
 def _resend(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
             connect: Connect, now: float, warnings: list[str]) -> None:
-    """Finish an `accept` whose answer never reached the hub, while it still can."""
+    """Finish an `accept` whose answer may never have reached the hub.
+
+    Decided from what the handshake room shows, never from the clock alone:
+    the answer may have landed with only its reply lost, and the initiator
+    may have collected it. So the room is read first — our answer there, or a
+    marker proving the initiator took it, means it arrived; somebody else's
+    answer or markers mean the code was spent elsewhere, said as a leak; and
+    only an empty room past the code's life means it truly never arrived.
+    A room that cannot be read decides nothing: the record is kept and the
+    next use asks again.
+    """
     if record.handshake is None or record.code_expires_at is None:
         return
-    if now > record.code_expires_at + LOCAL_SLACK:
-        message = (
-            f"pair {record.name!r} never got its answer to the hub before the code "
-            "expired, so the other side can never collect it. It is gone from this "
-            "machine; pair again with a fresh code.")
-        with store.lock():
-            store.delete(record.name)
-            store.save_verdict(record.name, "unsent", message, now=now)
-        raise PairingError(message, state="unsent")
+    past = now > record.code_expires_at + LOCAL_SLACK
     token, token_source = _token_for(record.token, record.url, base)
     try:
         with connect(_throwaway(handshake_room(_b64d(record.handshake)), record.url,
                                 token, token_source), agent_id=_agent()) as hub:
             seen = _read_handshake(hub, record.code_expires_at)
             ours = (record.answer or {}).get("e")
-            if ours not in seen.answers:
-                _refuse_used(seen, replace(_code_stub(record), hello=False))
-            _send_answer(record, hub, base, store=store, connect=connect, now=now,
-                         already_there=ours in seen.answers)
+            if _collected_ours(record, seen) or ours in seen.answers:
+                record.sent = True
+                with store.lock():
+                    store.save(record)
+                return
+            if seen.interfered or seen.aborted or seen.consumed or seen.answers:
+                message = (
+                    f"pair {record.name!r} never got its answer to the hub, and the "
+                    "code was answered by a machine other than this one — so somebody "
+                    "else held it: treat it as leaked. This side's record is gone; the "
+                    "machine that made the code should `switchboard pair forget "
+                    f"{record.name}` and make a fresh one.")
+                with store.lock():
+                    store.delete(record.name)
+                    store.save_verdict(record.name, "already_redeemed", message, now=now)
+                raise AlreadyRedeemed(message)
+            if past:
+                message = (
+                    f"pair {record.name!r} never got its answer to the hub before the "
+                    "code expired, so the other side can never collect it. It is gone "
+                    "from this machine; pair again with a fresh code.")
+                _void(record, base, store=store, connect=connect, now=now,
+                      state="unsent", message=message)
+                raise PairingError(message, state="unsent")
+            warnings.extend(_send_answer(record, hub, base, store=store,
+                                         connect=connect, now=now))
     except _hub_errors() as exc:
-        warnings.append(
-            f"the answer has not reached the hub yet ({exc.__class__.__name__}), so "
-            "the other side cannot collect it; it is retried on every use until "
-            f"{_iso(record.code_expires_at)}")
+        if past:
+            warnings.append(
+                f"could not read the handshake room ({exc.__class__.__name__}), so this "
+                "side cannot tell whether its answer ever reached the hub; the pair is "
+                "kept and checked again on next use")
+        else:
+            warnings.append(
+                f"the answer has not reached the hub yet ({exc.__class__.__name__}), so "
+                "the other side cannot collect it. It is retried on every use, and "
+                f"counts only if the hub receives it by "
+                f"{_iso(record.code_expires_at + SKEW)}")
 
 
 def _code_stub(record: PairRecord) -> PairingCode:
@@ -2229,7 +2400,7 @@ def _verdict(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
         return False
     if _collected_ours(record, seen):
         return True
-    if seen.flooded or seen.aborted:
+    if seen.interfered or seen.aborted:
         message = (
             f"pair {record.name!r} was voided: somebody holding the code interfered "
             "with the handshake (a second answer, a forged marker, or a flood), so it "
@@ -2238,16 +2409,39 @@ def _verdict(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
         _void(record, base, store=store, connect=connect, now=now,
               state="aborted", message=message)
         raise PairingError(message, state="aborted")
-    if any(marker.get("th") != record.transcript for marker in seen.consumed):
+    foreign = [m for m in seen.consumed if m.get("th") != record.transcript]
+    if foreign:
+        if record.initiator and record.commit and not any(
+                _b64e(transcript(_b64d(record.initiator), _b64d(e),
+                                 _b64d(record.commit))) == m.get("th")
+                for m in foreign for e in seen.answers if _decodes(e)):
+            # Names no answer that is actually in the room: a code holder's
+            # forgery, which the initiator reads the same way and aborts on.
+            message = (
+                f"pair {record.name!r} was voided: somebody holding the code forged a "
+                "marker in the handshake room, so it leaked, and the other side "
+                "aborted too. This side's record is gone; pair again with a fresh "
+                "code.")
+            _void(record, base, store=store, connect=connect, now=now,
+                  state="aborted", message=message)
+            raise PairingError(message, state="aborted")
         message = (
-            f"pair {record.name!r} lost: the other side collected an answer that was "
-            "not this machine's, so somebody else held the code. This side's record "
-            "is gone. Tell the other side — it is paired with whoever that was — "
-            "and pair again.")
+            f"pair {record.name!r} lost: the handshake room says the other side "
+            "collected an answer that was not this machine's, so somebody else held "
+            "the code. This side's record is gone. The other side may be paired with "
+            "whoever that was: check `switchboard pair status` there, have it `pair "
+            "forget` what it paired, and pair again.")
         _void(record, base, store=store, connect=connect, now=now,
               state="superseded", message=message)
         raise PairingError(message, state="superseded")
     return False
+
+
+def _decodes(key: str) -> bool:
+    try:
+        return len(_b64d(key)) == 32
+    except (ValueError, TypeError):
+        return False
 
 
 def _lapse_target(record: PairRecord, generation: int) -> int:
@@ -2295,8 +2489,20 @@ def _keep(store: PairStore, record: PairRecord) -> None:
                 f"pair {record.name!r} was forgotten on this machine while this was "
                 "using it; nothing was brought back.", state="ended")
         if disk is not None:
-            record.generation = max(record.generation, disk.generation)
-            record.confirmed = record.confirmed or disk.confirmed
+            # Another process may have moved, confirmed or sent this pair while
+            # this one held an older copy: take whatever only ever moves forward.
+            if disk.generation > record.generation:
+                record.generation = disk.generation
+                record.moved_reason = disk.moved_reason
+                record.peer_generation = disk.peer_generation
+            if disk.confirmed and not record.confirmed:
+                record.confirmed, record.sas = True, disk.sas
+                record.reveal, record.handshake = disk.reveal, None
+            record.sent = record.sent or disk.sent
+            for stamp in ("room_read_at", "peer_at", "peer_seen_at", "last_used_at"):
+                values = [v for v in (getattr(record, stamp), getattr(disk, stamp))
+                          if v is not None]
+                setattr(record, stamp, max(values) if values else None)
         try:
             store.save(record)
         except OSError:
@@ -2383,8 +2589,9 @@ def heal(name: str, base: ClientConfig | None = None, *, store: PairStore,
         except _hub_errors() as exc:
             warnings.append(f"could not leave a moved note in work room {room} "
                             f"({exc.__class__.__name__})")
+    peer_room = record.peer_generation if record.peer_generation is not None else left_room
     warnings.append(
-        f"the other side is still in work room {left_room} until it next reads the pair "
+        f"the other side is still in work room {peer_room} until it next reads the pair "
         f"room: a `switchboard` command on {handle(record.name)} follows at once, an MCP "
         "bridge within about 30 seconds (at once if it reads the moved note), and a "
         "listener parked in the old room wakes on that note. Until then the two sides "
@@ -2468,7 +2675,9 @@ def status(base: ClientConfig | None = None, *, store: PairStore,
     for each in names:
         try:
             rows.append(_status_row(each, base, store=store, connect=connect,
-                                    agent_id=agent_id, now=now))
+                                    agent_id=agent_id, now=now, listed=name is None))
+        except _Gone:
+            continue
         except PairingError as exc:
             rows.append({"name": each, "room": handle(each),
                          "state": exc.state or "error", "error": str(exc)})
@@ -2478,17 +2687,24 @@ def status(base: ClientConfig | None = None, *, store: PairStore,
     return rows
 
 
+class _Gone(Exception):
+    """A name whose only trace was a verdict that has now lapsed."""
+
+
 def _status_row(each: str, base: ClientConfig | None, *, store: PairStore,
                 connect: Connect, agent_id: str | None,
-                now: float | None) -> dict[str, Any]:
+                now: float | None, listed: bool = False) -> dict[str, Any]:
     pending = store.pending(each)
     if pending is None and store.get(each) is None:
-        ended = store.verdict(each)
+        ended = store.verdict(each, now=now)
         if ended is not None:
             return {"name": each, "room": handle(each),
                     "state": str(ended.get("state") or "aborted"),
                     "error": str(ended.get("message") or ""),
                     "until": ended.get("until")}
+        if listed:
+            # Listed only for a verdict that has just lapsed: nothing left to say.
+            raise _Gone
     if pending is not None and not pending.collected and store.get(each) is None:
         try:
             done = collect(each, base, store=store, connect=connect,
@@ -2527,19 +2743,22 @@ def sweep_expired(store: PairStore, *, now: float | None = None) -> list[str]:
     for name in names:
         try:
             pending = store.pending(name)
-            if pending is not None and not pending.collected and \
-                    local + pending.hub_offset > pending.deadline:
-                with store.lock():
-                    store.delete_pending(name)
-                dropped.append(name)
+            if pending is None or local + pending.hub_offset <= pending.deadline:
+                continue
+            with store.lock():
+                if not pending.collected:
+                    store.save_verdict(name, "expired", _deadline_passed(pending),
+                                       now=local)
+                elif store.get(pending.paired_as or name) is None:
+                    continue
+                store.delete_pending(name)
+            dropped.append(name)
         except (PairingError, OSError):
             continue
     try:
         for name in store.verdict_names():
-            ended = store.verdict(name)
-            if ended is not None and local > float(ended.get("until") or 0):
-                store.clear_verdict(name)
-    except (PairingError, OSError, ValueError, TypeError):
+            store.verdict(name, now=local)  # deletes it once past its keep
+    except (PairingError, OSError):
         pass
     return dropped
 
