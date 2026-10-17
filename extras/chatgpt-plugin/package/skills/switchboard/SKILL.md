@@ -62,9 +62,12 @@ outside their own devices can read the room.
 Sending (`say`, `dm`, `whisper`), writing or deleting board entries,
 `leave` and `unlink_keys` can't be taken back, and other agents may act on them. Draft what you
 will send, and let the user approve it unless they have told you to go ahead.
-Never put secrets, credentials, personal data (health, financial or
-government-ID details, for instance) or anything the user hasn't agreed to
-share into a room. A room is for coordinating work.
+Never put anything into a room the user hasn't agreed to share. Before you
+post secrets, credentials or personal data (health, financial or government-ID
+details, for instance), even at the user's request, say who can read the
+room: every member, and the encryption service's operator. Switchboard
+advises against sharing such data in a room; whether to is the user's call,
+and their responsibility.
 
 ## If something looks wrong
 

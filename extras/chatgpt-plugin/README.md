@@ -276,8 +276,9 @@ nowhere else:
   signed in, it is `invite_carries_secret`, naming the linked rooms.
 - `keygen` isn't served, and no tool has a `custom_scope` parameter.
 - Every tool declares `oauth2` only.
-- The bundled skill tells the model never to ask for a key, and never to put
-  personal data in a room.
+- The bundled skill tells the model never to ask for a key, and to say who
+  can read a room before it posts personal data or a credential the user
+  gives it.
 
 `tests/test_mcp_hosted.py` and `tests/test_bridge_links.py` hold these,
 including a check that no served tool has a parameter named like a
@@ -314,8 +315,9 @@ In the manifest, as `defaultPrompt` (the portal allows three):
 > refuses an invite that carries a key. The key-generating tool is gone,
 > and so is the parameter that took a key. We also replaced the negative test
 > case that typed an example API key into the chat. The plugin asks for no
-> personal data, and its privacy policy and terms now say rooms are not for
-> it. The demo account's password (the full demo invite) goes on the sign-in
+> personal data. Its privacy policy and terms advise users against sharing
+> any in a room, and say that what they share there is their responsibility.
+> The demo account's password (the full demo invite) goes on the sign-in
 > page when ChatGPT asks you to sign in.
 
 ## 8. Screenshots
