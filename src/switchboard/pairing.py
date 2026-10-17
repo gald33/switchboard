@@ -13,8 +13,12 @@ So pairing uses three throwaway rooms, none of them the team key's:
 1. **The handshake room.** Its code is the one thing a human carries, so it is
    the thing most likely to be disclosed later. It is short-lived, and it
    carries nothing that would help whoever finds it.
-2. **The pair room.** Long-lived, and used for nothing but keeping the pair
-   in step: which work room is current, and whether either side has left.
+2. **The pair room.** Long-lived, and used for keeping the pair in step:
+   which work room is current, and whether either side has left. It also
+   carries, deliberately, the shared rooms each side offers the other
+   (`sharing.py`) — minted rooms, not derived ones, sealed under this room's
+   key. So a pair secret opens every room currently offered over the pair as
+   well as its own; a heal does not change that, a fresh pairing does.
 3. **The work room.** Where the two sides actually coordinate. When its key is
    exposed, the pair room heals the connection by moving both sides to a new
    one — `heal`.
@@ -203,6 +207,7 @@ _T_SIDE = "swbp1/side"
 _T_PAIRED = "swbp1/paired"
 _T_MOVED = "swbp1/moved"
 _T_ENDED = "swbp1/ended"
+_T_SHARED = "swbp1/shared"
 
 # --- frozen derivation labels (protocol 1) ----------------------------------
 _L = "switchboard/pair/v1/"
@@ -1192,6 +1197,13 @@ def _token_for(carried: str | None, url: str, base: ClientConfig | None) -> tupl
     return None, "none"
 
 
+#: Public under its own name because a shared room (`sharing.py`) arrives with
+#: a URL another machine chose, and must pick its token by this same rule —
+#: never the invite path's `token or config.token`, which would hand this
+#: environment's token to whatever host the offer named.
+token_for = _token_for
+
+
 def _throwaway(room: RoomSpec, url: str, token: str | None, token_source: str) -> ClientConfig:
     """A config for a handshake or pair room: no local stores, nothing remembered."""
     return ClientConfig(
@@ -1201,8 +1213,19 @@ def _throwaway(room: RoomSpec, url: str, token: str | None, token_source: str) -
     )
 
 
-def _agent(prefix: str = "pair") -> str:
+def throwaway_agent(prefix: str = "pair") -> str:
+    """An agent id used for one connection and never again.
+
+    Every write to a handshake or pair room goes out under one of these, so
+    the hub cannot tie those rooms to the agent that works in the pair's work
+    room — and a note posted under one wakes this machine's *own* parked
+    listener, which never wakes on its own agent's messages. Public because
+    sharing's writes and wakes need the same two properties.
+    """
     return f"{prefix}-{secrets.token_hex(4)}"
+
+
+_agent = throwaway_agent
 
 
 def work_config(record: PairRecord, base: ClientConfig | None = None,
@@ -1224,9 +1247,20 @@ def work_config(record: PairRecord, base: ClientConfig | None = None,
     )
 
 
-def _pair_config(record: PairRecord, base: ClientConfig | None) -> ClientConfig:
+def pair_room_config(record: PairRecord, base: ClientConfig | None = None) -> ClientConfig:
+    """The pair room as a `ClientConfig`: no local stores, nothing remembered.
+
+    Public because the pair room has a second tenant, by design: sharing
+    keeps its records there (`coord/share/…`), beside the side records, so
+    they need no room of their own and reach exactly the two machines that
+    hold the pair secret. Anything else written here is read by `resolve` as
+    nothing; only `coord/pair/side/` is the pair's own.
+    """
     token, token_source = _token_for(record.token, record.url, base)
     return _throwaway(pair_room(record.pair_secret), record.url, token, token_source)
+
+
+_pair_config = pair_room_config
 
 
 # --- handshake channel -------------------------------------------------------------
@@ -1249,6 +1283,11 @@ TAG_ABORTED = _T_ABORTED
 TAG_PAIRED = _T_PAIRED
 TAG_MOVED = _T_MOVED
 TAG_ENDED = _T_ENDED
+#: The wake `sharing.py` posts in a pair's work room after it writes a share
+#: record. It carries nothing else — no rid, no name — because the work room
+#: is the room whose key is expected to leak, and the reader re-reads the
+#: whole pair room anyway. A wake means "look", never "this changed".
+TAG_SHARED = _T_SHARED
 
 
 def message_tag(message: Any) -> str | None:
@@ -2042,6 +2081,29 @@ class _Side:
     revision: int | None
 
 
+#: The latest time a record may carry and still count as one — around the
+#: year 5138. Past it `datetime.fromtimestamp` refuses the value, and a time
+#: the other side wrote must never be able to take a command down.
+LATEST = 1e11
+
+
+def record_time(value: Any) -> float:
+    """A time read from a record the other side wrote, or 0.0 for none usable.
+
+    Whatever JSON can carry arrives here: an integer too large for a float,
+    NaN, a negative number, a year past the calendar. Each is "no time" —
+    never an exception out of a resolution, and never a value that breaks
+    `iso` later, in a status line that has nothing to do with it.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        value = float(value)
+    except OverflowError:
+        return 0.0
+    return value if 0.0 < value < LATEST else 0.0
+
+
 def _read_sides(entries: list[dict[str, Any]]) -> dict[str, _Side]:
     """The two side records, each checked against the slot it was read from.
 
@@ -2084,11 +2146,9 @@ def _read_sides(entries: list[dict[str, Any]]) -> dict[str, _Side]:
             except (ValueError, TypeError):
                 return None
 
-        at = value.get("at")
         revision = entry.get("revision")
         sides[slot] = _Side(
-            role=slot, generation=g, strategy=strategy,
-            at=float(at) if isinstance(at, (int, float)) else 0.0,
+            role=slot, generation=g, strategy=strategy, at=record_time(value.get("at")),
             ended=bool(value.get("ended")), reason=str(value.get("why") or ""),
             confirm=raw("ci"), reveal=raw("r"),
             expires_in=entry.get("expires_in"),
@@ -2168,7 +2228,8 @@ def _days(seconds: float) -> str:
 
 def resolve(name: str, base: ClientConfig | None = None, *, store: Store,
             connect: Connect = _default_connect, agent_id: str | None = None,
-            now: float | None = None, _retry: bool = True) -> Resolution:
+            now: float | None = None, mark_used: bool = True,
+            _retry: bool = True) -> Resolution:
     """The pair's current work room, after one read of the pair room.
 
     Reads both side records, adopts the higher generation, checks the
@@ -2178,6 +2239,12 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: Store,
     other side is acknowledged. If the pair room cannot be read the last known
     generation is used and the result says so; it never fails closed on a
     flaky hub, and never pretends a stale answer is a fresh one.
+
+    `mark_used=False` is for a caller that resolves every pair on a schedule
+    of its own — the share touch, which a bridge runs every minute — rather
+    than because somebody is working over this one: it does everything else,
+    but leaves `last_used_at`, which is what a listener parks by
+    (`active`). Stamped by a sweep, every pair would read as used lately.
     """
     _need_crypto()
     local = _now(now)
@@ -2330,7 +2397,8 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: Store,
             "bridge may take up to 30 seconds more)")
     _env_warnings(record, warnings)
 
-    record.last_used_at = local
+    if mark_used:
+        record.last_used_at = local
     stale = (own is None or own.generation != record.generation
              or local - own.at > SIDE_REFRESH
              or ((record.role == INITIATOR or record.confirmed) and own.confirm is None))
@@ -2346,7 +2414,8 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: Store,
                 # between our read and our write — a heal, a forget. Its view
                 # is newer than ours: read again rather than write over it.
                 return resolve(name, base, store=store, connect=connect,
-                               agent_id=agent_id, now=now, _retry=False)
+                               agent_id=agent_id, now=now, mark_used=mark_used,
+                               _retry=False)
             warnings.append(f"could not refresh this side's record "
                             f"({exc.__class__.__name__})")
     _keep(store, record)
