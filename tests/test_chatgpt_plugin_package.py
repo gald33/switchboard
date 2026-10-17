@@ -116,13 +116,54 @@ def test_the_skill_is_where_portable_packages_look():
     assert re.search(r"^description: .+", front, re.M)
 
 
-def test_the_zip_has_the_plugin_at_its_root_and_no_mcp_config(tmp_path):
+def test_the_zip_has_the_plugin_and_its_mcp_at_its_root(tmp_path):
     out = _builder().build(tmp_path / "plugin.zip")
     with zipfile.ZipFile(out) as archive:
         names = archive.namelist()
-    assert "plugin.json" in names and "skills/switchboard/SKILL.md" in names
-    assert not {"mcp.json", ".mcp.json", ".app.json"} & {Path(n).name for n in names}
+    assert {"plugin.json", "mcp.json", "skills/switchboard/SKILL.md"} <= set(names)
+    # ZIP uploads must not carry `.app.json`; `.mcp.json` is derived from mcp.json.
+    assert not {".mcp.json", ".app.json"} & {Path(n).name for n in names}
     assert all(not n.startswith("/") and ".." not in n.split("/") for n in names)
+
+
+def test_the_builder_refuses_a_package_without_its_mcp(tmp_path):
+    import shutil
+    root = tmp_path / "package"
+    shutil.copytree(PACKAGE, root)
+    (root / "mcp.json").unlink()
+    with pytest.raises(SystemExit, match="mcp.json"):
+        _builder().build(tmp_path / "plugin.zip", root)
+
+
+#: Where the listing's MCP server lives. The listing was created With MCP at
+#: this URL, and an update that drops or moves it is refused.
+BRIDGE_URL = "https://bridge.agentswitchboard.org/mcp"
+
+
+def test_mcp_json_declares_the_hosted_bridge():
+    mcp = json.loads((PACKAGE / "mcp.json").read_text(encoding="utf-8"))
+    assert mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    (server,) = mcp["mcpServers"].values()
+    assert server["type"] == "streamable-http" and server["url"] == BRIDGE_URL
+    # Public submission rejects nonempty server headers.
+    assert not server.get("headers")
+    auth = server["extensions"]["com.openai"]["auth"]
+    # The bridge registers clients itself (/oauth/register) and publishes its
+    # endpoints for discovery, so nothing else is declared: no client id, no
+    # endpoint overrides that could drift from what it serves.
+    assert auth == {"type": "oauth", "client": {"mode": "dcr"}}
+
+
+def test_the_declared_auth_is_what_the_bridge_requires():
+    # "oauth" means every tool needs the sign-in; a tool open without one
+    # would make it "mixed". Read from the bridge's own tool list, so the two
+    # cannot disagree.
+    schemes = [t["securitySchemes"] for t in _submission_builder().hosted_tools()]
+    anonymous = any({"type": "noauth"} in s for s in schemes)
+    mcp = json.loads((PACKAGE / "mcp.json").read_text(encoding="utf-8"))
+    (server,) = mcp["mcpServers"].values()
+    assert server["extensions"]["com.openai"]["auth"]["type"] == (
+        "mixed" if anonymous else "oauth")
 
 
 def test_the_zip_is_reproducible(tmp_path):

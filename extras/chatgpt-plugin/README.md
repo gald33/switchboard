@@ -6,6 +6,7 @@ portal reads, and the rest is ready to paste. What's here:
 | File | For |
 |---|---|
 | `package/plugin.json` | The manifest: name, descriptions, developer, category, URLs, starter prompts, brand colours and logo, under `extensions.com.openai.interface`. |
+| `package/mcp.json` | The MCP server: the hosted bridge at `https://bridge.agentswitchboard.org/mcp`, OAuth with dynamic client registration. |
 | `package/skills/switchboard/SKILL.md` | The skill the plugin bundles. |
 | `package/assets/logo.png`, `icon.png` | Logo and composer icon. Rendered from `site/img/favicon.svg`, 512×512, transparent. |
 | `build_package.py` | Zips `package/` into `switchboard-plugin.zip`, the file you upload. |
@@ -133,9 +134,18 @@ submission, `app-6ab96f15ca248191968b43eb0c01ac10`: an update with any other
 It fills in the name (`Switchboard`), the short description (`Where AI agents work together`), the long description, the developer name, the category
 (`Developer Tools`), the website, support, privacy and terms URLs, three
 starter prompts, the brand colours, the logo and the composer icon, and the
-bundled skill. The package carries no `mcp.json` or `.app.json`: a remote
-server goes in the **With MCP** form, and the portal refuses a package that
-bundles one.
+bundled skill.
+
+**The MCP server is in the package too**, in `mcp.json`: the hosted bridge, as
+a `streamable-http` server with `auth.type: "oauth"` and `client.mode: "dcr"`.
+Nothing else is declared, because the bridge registers clients itself and
+publishes its endpoints for discovery. The listing was created **With MCP**,
+and the portal refuses an update that leaves the server out ("Removing the
+MCP isn't supported"). `.app.json` is the opposite: ZIP uploads must not
+carry one. `build_package.py` refuses a package that has `.app.json` or
+lacks `mcp.json`, and the package test holds the declared auth type to
+the bridge's own tools: `oauth` while every tool needs the sign-in, `mixed`
+if one ever doesn't.
 
 **Developer name.** The manifest says `agentswitchboard.org`. If the portal
 insists on the name of the identity you verified, it asks to use that for
