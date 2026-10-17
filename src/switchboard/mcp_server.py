@@ -59,7 +59,13 @@ from .client import (
     relay_notice,
     relay_of,
 )
-from .config import MANAGED_HUB_URL, ClientConfig, isolation_warning, rooms_warning
+from .config import (
+    MANAGED_HUB_TOKEN,
+    MANAGED_HUB_URL,
+    ClientConfig,
+    isolation_warning,
+    rooms_warning,
+)
 from .crypto import CryptoError, generate_key
 from .guidance import skill_text
 from .handoff import HandoffError
@@ -2061,11 +2067,14 @@ BRIDGE_IMAGE = "ghcr.io/gald33/switchboard-bridge"
 #: Tools a hosted bridge does not serve, with the reason a caller is given.
 #: Each one reaches for the machine the bridge runs on — its Claude Code
 #: transcripts, its environment's keys — which on a hosted bridge is somebody
-#: else's server, shared with every other room it serves.
+#: else's server, shared with every other room it serves. `keygen` is here
+#: for the other half of that: a hosted app's tool calls are a conversation,
+#: and no tool on a hosted bridge puts a key into one or takes one out of it.
 HOSTED_WITHHELD = {
     "session_handoff": "it moves Claude Code transcripts on the bridge's own machine",
     "session_import": "it moves Claude Code transcripts on the bridge's own machine",
     "session_resume": "it moves Claude Code transcripts on the bridge's own machine",
+    "keygen": "it returns new keys into the conversation",
     "join_room": (
         "it would fill gaps in the invite from the server's environment; the front "
         "door's own join_room, which takes nothing but the invite, replaces it"
@@ -2175,21 +2184,14 @@ HOSTED_DESCRIPTIONS = {
         "requests. 'show' picks which notes come back, and whatever it leaves out is "
         "counted under 'hidden'. room='lobby' reaches agents working other repos."
     ),
-    "keygen": (
-        "Generates a new key, write key and workspace for a private side room, "
-        "locally: nothing is sent to the hub. The peers given all three pass them as "
-        "custom_scope on say, dm, inbox, claim and release; a peer given the key "
-        "without the write key can read that room but not write to it."
-    ),
 }
+
+#: Parameters a hosted bridge does not offer. `custom_scope` names a side
+#: room by its key, which would make the key a tool argument.
+HOSTED_DROPPED_PARAMETERS = {"custom_scope"}
 
 #: Parameter descriptions a hosted bridge replaces, for the same reason.
 HOSTED_PARAMETERS = {
-    ("*", "custom_scope"): (
-        "Advanced and rarely used: sends this one call to a private workspace and key "
-        "(from keygen) already shared among the agents involved, instead of this room. "
-        "Other calls are unaffected."
-    ),
     ("*", "execution_class"): (
         "Optional label for the work before this agent next reads its messages, e.g. "
         "'coding' or 'research'. Looked up in local timing history to estimate that "
@@ -2226,6 +2228,12 @@ HOSTED_PARAMETERS = {
         "what the meeting is about, the same string on both sides; without one, the "
         "reserved 'open' topic, which needs no agreement"
     ),
+    # A board entry's "key" is its name. Said so, since on a tool list that
+    # never takes a secret, a bare "key" reads as one.
+    ("board_set", "key"): "the entry's name, e.g. 'migration/plan'",
+    ("board_get", "key"): "the entry's name, e.g. 'migration/plan'",
+    ("board_delete", "key"): "the name of the entry to delete",
+    ("board_list", "prefix"): "only entries whose name starts with this, e.g. 'migration/'",
 }
 
 
@@ -2235,15 +2243,9 @@ def hosted_tool(tool: dict[str, Any]) -> dict[str, Any]:
     schema = tool["inputSchema"]
     properties = {}
     for param, spec in schema["properties"].items():
+        if param in HOSTED_DROPPED_PARAMETERS:
+            continue
         text = HOSTED_PARAMETERS.get((name, param)) or HOSTED_PARAMETERS.get(("*", param))
-        if param == "custom_scope":
-            spec = {**spec, "properties": {
-                **spec["properties"],
-                "key": {**_STR, "description": "the shared private key; without one, "
-                                               "the side room is unencrypted"},
-                "write_key": {**_STR, "description": "the room's write key, from the "
-                                                     "same keygen result; the hub "
-                                                     "refuses writes without it"}}}
         properties[param] = {**spec, "description": text} if text else spec
     return {**tool, "description": HOSTED_DESCRIPTIONS.get(name, tool["description"]),
             "inputSchema": {**schema, "properties": properties}}
@@ -2513,10 +2515,38 @@ FRONT_MAX_SESSIONS = 4096
 FRONT_MAX_ROOMS = 1024
 
 
-#: Signing in is optional: throwaway rooms work from an invite alone, and
-#: only a key-less invite needs the keys a sign-in links.
-_SECURITY_EITHER = [{"type": "noauth"}, {"type": "oauth2", "scopes": [SCOPE]}]
+#: With sign-in on, keys reach the bridge through the sign-in page and no
+#: other way, so every room is opened with linked keys and every tool needs
+#: the sign-in.
 _SECURITY_SIGNED_IN = [{"type": "oauth2", "scopes": [SCOPE]}]
+
+#: The front door's `join_room` with sign-in on. Nothing in it takes a key:
+#: a name, or an invite that leaves the key out.
+_SIGNED_IN_JOIN_DESCRIPTION = (
+    "Opens a Switchboard room for this conversation, by the name of a room the user "
+    "linked by signing in ('lobby' is the meeting place of everyone holding their "
+    "team key, and linked_keys lists the rest), or from a key-less invite: a string "
+    "starting 'swb1_', made with `switchboard invite --no-key`, which names a room "
+    "and the id of its key. The bridge opens it with the keys the user linked on "
+    "its sign-in page. Keys are not tool arguments, and an invite that carries one "
+    "is refused. Once a room is open, every tool acts in it for the rest of this "
+    "conversation. Returns a room handle, which is the `room` argument where the "
+    "host keeps no session, or a sign-in request when the user is not signed in."
+)
+
+
+def _carried_secrets(invite: Invite) -> list[str]:
+    """The credentials an invite carries, named for the person who made it.
+
+    Its key and write key always are. So is a hub token, except the one the
+    managed hub publishes, which every client ships with.
+    """
+    carried = [name for name, value in (("the room's key", invite.key),
+                                        ("its write key", invite.write_key)) if value]
+    if invite.token and not (invite.url.rstrip("/") == MANAGED_HUB_URL
+                             and invite.token == MANAGED_HUB_TOKEN):
+        carried.append("a hub token")
+    return carried
 
 LINKED_KEYS_TOOL: dict[str, Any] = {
     "name": "linked_keys",
@@ -2656,13 +2686,12 @@ class HostedFront:
 
         A bearer token this bridge does not hold (expired, unlinked, from
         before a restart that lost the store) counts as no sign-in at all,
-        not as an HTTP 401. Signing in is optional here: a 401 tells ChatGPT
-        the whole connection is dead, and it then sends the user to sign in
-        before it will call *any* tool, a throwaway room's full invite
-        included. Observed exactly so after `unlink_keys`. Answered as
-        anonymous, everything that needs no keys keeps working, and the
-        calls that do need them return the in-result sign-in request
-        (`_sign_in`), which is where re-authentication belongs.
+        not as an HTTP 401. A 401 tells ChatGPT the whole connection is
+        dead, and it then sends the user to sign in before it will call
+        *any* tool, with no word of why. Observed exactly so after
+        `unlink_keys`. Answered as anonymous, the call that needs keys
+        returns the in-result sign-in request (`_sign_in`), which says what
+        the sign-in is for: that is where re-authentication belongs.
         """
         scheme, _, token = (headers.get("Authorization") or "").partition(" ")
         if self.oauth is None or scheme.lower() != "bearer" or not token.strip():
@@ -2733,14 +2762,17 @@ class HostedFront:
                 # serves (see HOSTED_DESCRIPTIONS): ChatGPT flags text that
                 # prescribes the model's behaviour as a suspicious instruction.
                 "Switchboard is a shared room where AI agents work together. The tools "
-                "act in a room once join_room has opened one from a Switchboard invite, "
-                "a string starting 'swb1_' that the user makes with `switchboard "
-                "invite`. roster shows who is there; subscribe, inbox, say and dm carry "
-                "the conversation; claim and release divide the work."
-                + (" An invite made with --no-key leaves the room's key out, and "
-                   "join_room fills it in from the keys the user linked by signing in, "
-                   "so keys don't need to appear in the conversation."
-                   if self.oauth else "")
+                + ("act in a room once join_room has opened one: by the name of a room "
+                   "the user linked by signing in, or from a key-less invite, a string "
+                   "starting 'swb1_' that the user makes with `switchboard invite "
+                   "--no-key`. Keys are linked on the bridge's sign-in page, not passed "
+                   "as tool arguments."
+                   if self.oauth else
+                   "act in a room once join_room has opened one from a Switchboard "
+                   "invite, a string starting 'swb1_' that the user makes with "
+                   "`switchboard invite`.")
+                + " roster shows who is there; subscribe, inbox, say and dm carry the "
+                "conversation; claim and release divide the work."
                 + f"\n\nPrivacy: {_front_notice(self.bridges.relay, bool(self.oauth))}"
             ),
         })
@@ -2761,26 +2793,20 @@ class HostedFront:
             }})
         if self.oauth is None:
             return out
-        return [{**tool, "securitySchemes": _SECURITY_EITHER} for tool in out] + [
+        return [{**tool, "securitySchemes": _SECURITY_SIGNED_IN} for tool in out] + [
             LINKED_KEYS_TOOL, UNLINK_KEYS_TOOL]
 
     def _join_tool(self) -> dict[str, Any]:
         if self.oauth is None:
             return FRONT_JOIN_TOOL
-        schema = FRONT_JOIN_TOOL["inputSchema"]
-        return {**FRONT_JOIN_TOOL, "description": FRONT_JOIN_TOOL["description"] + (
-            " An invite made with `switchboard invite --no-key` names the room but not "
-            "its key: the bridge opens it with the key the user linked by signing in, "
-            "and returns a sign-in request when there is none. With a sign-in, `name` "
-            "opens a linked room without an invite: 'lobby', the meeting place of "
-            "everyone holding the user's team key, or a name linked_keys lists. Keys "
-            "don't need to appear in the conversation."),
-            "inputSchema": {**schema, "required": [], "properties": {
-                **schema["properties"],
-                "name": {**_STR, "description": (
-                    "a linked room's name, e.g. 'lobby', in place of an invite; "
-                    "needs a sign-in")},
-            }}}
+        return {**FRONT_JOIN_TOOL, "description": _SIGNED_IN_JOIN_DESCRIPTION,
+                "inputSchema": _schema({
+                    "name": {**_STR, "description": (
+                        "a linked room's name, e.g. 'lobby', in place of an invite")},
+                    "invite": {**_STR, "description": (
+                        "a key-less invite, starting 'swb1_', from `switchboard invite "
+                        "--no-key`")},
+                }, [])}
 
     def _request(self, request: dict[str, Any], session: dict[str, Any] | None,
                  headers: Any, link: Link | None = None) -> dict[str, Any] | None:
@@ -2803,22 +2829,36 @@ class HostedFront:
             return self._linked_keys(request_id, link)
         if params.get("name") == UNLINK_KEYS_TOOL["name"] and self.oauth is not None:
             return self._unlink_keys(request_id, link)
+        dropped = sorted(HOSTED_DROPPED_PARAMETERS & set(arguments))
+        if dropped:
+            # Not in any schema this door serves; refused rather than passed
+            # through for a client that sends it anyway.
+            return _response(request_id, _tool_result({
+                "error": "unsupported_parameter",
+                "detail": f"{', '.join(dropped)} is not served by a hosted bridge: it "
+                          "names a side room by its key, which would put the key in a "
+                          "tool call.",
+            }, is_error=True))
 
         handle = arguments.pop("room", None) or (session or {}).get("room")
         if not handle:
             return _response(request_id, _tool_result({
                 "error": "no_room",
-                "detail": "No room joined yet. join_room opens one from a Switchboard "
-                          "invite, a string starting 'swb1_' that the user makes with "
-                          "`switchboard invite`.",
+                "detail": "No room joined yet. join_room opens one "
+                          + ("by the name of a room linked by signing in, or from a "
+                             "key-less invite, a string starting 'swb1_' that the user "
+                             "makes with `switchboard invite --no-key`."
+                             if self.oauth is not None else
+                             "from a Switchboard invite, a string starting 'swb1_' that "
+                             "the user makes with `switchboard invite`."),
             }, is_error=True))
         held = self._blob_for(handle)
         if held is None:
             return _response(request_id, _tool_result({
                 "error": "room_expired",
                 "detail": "That room handle is no longer held here (idle too long, or "
-                          "the bridge restarted). join_room with the same invite opens "
-                          "it again.",
+                          "the bridge restarted). join_room with the same invite, or "
+                          "the same room name, opens it again.",
             }, is_error=True))
         blob, owner = held
         if owner is not None and (link is None or link.link_id != owner):
@@ -2858,13 +2898,41 @@ class HostedFront:
                       "with them. Key-less invites need a new sign-in.",
         }))
 
+    def _carries_secrets(self, request_id: Any, carried: list[str],
+                         link: Link | None) -> dict[str, Any]:
+        """An invite with a credential in it, refused before anything is
+        built from it: with sign-in on, keys come in on the sign-in page.
+
+        Signed out, this is the sign-in request, since that page is where
+        this invite belongs. Signed in, the rooms the sign-in already opens
+        are named, and so is the invite that would carry none.
+        """
+        what = ", ".join(carried[:-1]) + " and " + carried[-1] if len(carried) > 1 \
+            else carried[0]
+        detail = (f"This invite carries {what}. This connector takes those on its "
+                  "sign-in page, not in a tool call, so nothing was opened with it.")
+        if link is None:
+            return self._sign_in(request_id, detail + (
+                " Pasting the invite on the sign-in page links it, and the room then "
+                "opens by its name."))
+        # --no-key drops the write key with the key; a token has its own flag.
+        flags = (["--no-key"] if set(carried) - {"a hub token"} else []) + (
+            ["--no-token"] if "a hub token" in carried else [])
+        return _response(request_id, _tool_result({
+            "joined": False,
+            "error": "invite_carries_secret",
+            "detail": detail + (
+                " join_room(name=...) opens a room linked to this sign-in, and "
+                f"`switchboard invite {' '.join(flags)}` makes an invite without them."),
+            "rooms": link.keyring.room_names(),
+        }, is_error=True))
+
     def _join(self, request_id: Any, arguments: dict[str, Any],
               session: dict[str, Any] | None, headers: Any,
               link: Link | None = None) -> dict[str, Any]:
         blob = arguments.get("invite")
         name = arguments.get("name")
         seed = link.link_id if link is not None else None
-        tip = None
         if (not isinstance(blob, str) or not blob.strip()) and isinstance(name, str) \
                 and name.strip() and self.oauth is not None:
             if link is None:
@@ -2881,16 +2949,18 @@ class HostedFront:
                                 "your linked keys")
         if not isinstance(blob, str) or not blob.strip():
             return _response(request_id, _tool_result({
-                "joined": False, "error": "join_room needs the invite, a string starting "
-                                          "'swb1_' that the user makes with `switchboard "
-                                          "invite`."}, is_error=True))
+                "joined": False, "error": (
+                    "join_room needs a linked room's name, or a key-less invite: a "
+                    "string starting 'swb1_' that the user makes with `switchboard "
+                    "invite --no-key`." if self.oauth is not None else
+                    "join_room needs the invite, a string starting 'swb1_' that the "
+                    "user makes with `switchboard invite`.")}, is_error=True))
         blob = blob.strip()
         try:
             invite = Invite.decode(blob)
-            if link is not None and link.keyring.holds(invite.key):
-                tip = ("This invite carried a key the user has already linked. An invite "
-                       "made with `switchboard invite --no-key` opens the same room and "
-                       "keeps the key out of the conversation.")
+            carried = _carried_secrets(invite) if self.oauth is not None else []
+            if carried:
+                return self._carries_secrets(request_id, carried, link)
             if not invite.key and self.oauth is not None:
                 if link is None:
                     return self._sign_in(request_id, (
@@ -2902,12 +2972,11 @@ class HostedFront:
             return _response(request_id, _tool_result(
                 {"joined": False, "error": str(exc)}, is_error=True))
         return self._joined(request_id, bridge, lock, blob, seed, session, headers,
-                            "invite" if seed is None or invite.key else "your linked keys",
-                            tip)
+                            "invite" if seed is None or invite.key else "your linked keys")
 
     def _joined(self, request_id: Any, bridge: Bridge, lock: threading.Lock, blob: str,
                 seed: str | None, session: dict[str, Any] | None, headers: Any,
-                key_from: str, tip: str | None = None) -> dict[str, Any]:
+                key_from: str) -> dict[str, Any]:
         handle = self._handle_for(blob, seed)
         client = (session or {}).get("client")
         if client is None:
@@ -2932,8 +3001,6 @@ class HostedFront:
                          if session is not None else
                          f"Other tool calls reach this room with room='{handle}'."),
             }
-            if tip:
-                payload["tip"] = tip
             notice = _hosted_notice(bridge)
         if session is not None:
             with self._lock:

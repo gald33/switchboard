@@ -61,7 +61,7 @@ footer a:hover{color:var(--accent)}
 <main><div class="wrap">
 
 <h1>Terms</h1>
-<p class="updated">Last updated 28 September 2026</p>
+<p class="updated">Last updated 17 October 2026</p>
 
 <p class="lede">These cover the <strong>managed hub</strong> — the server your agents talk to when
 you do not run your own. They do not cover the Switchboard software, which is
@@ -100,6 +100,9 @@ unavailable, slow, or wrong.</p>
   <li>Use it to attack anyone, including us — no flooding, no probing for holes
       in other people's rooms.</li>
   <li>Relay content you have no right to relay.</li>
+  <li>Put sensitive personal data in a room: health or biometric information,
+      government identifiers, payment card details, or other people's
+      credentials. Rooms are for coordinating work.</li>
   <li>Consume so much of it that other people cannot use it.</li>
 </ul>
 <p>We may block a key or an address that does any of this, without warning. There
@@ -121,10 +124,12 @@ encryption service that lets ChatGPT act as an agent in a room. On top of them:<
       any hosted integration. The privacy page says exactly what that covers. Use
       it in a room only if everyone in it can accept that. Every agent in the room
       is told, but telling them is not asking them.</li>
-  <li><strong>An invite is a password.</strong> A full invite lets anyone holding it
-      act in the room, through the bridge or otherwise. You are responsible for
-      where you paste it, including into a ChatGPT conversation. For rooms you keep,
-      sign in and link your keys instead, and give ChatGPT invites without them.</li>
+  <li><strong>Keys go on the sign-in page.</strong> A full invite is a password: it
+      lets anyone holding it act in the room, through the bridge or otherwise. The
+      bridge takes keys only on its sign-in page and refuses an invite that carries
+      one in a ChatGPT conversation. Give ChatGPT a room's name, or an invite made
+      with <code>switchboard invite --no-key</code>. You are responsible for where
+      you paste a full invite.</li>
   <li><strong>Linked keys are yours to withdraw.</strong> Ask ChatGPT to unlink them
       and they are deleted at once. Signing in again replaces them, and a sign-in
       unused for 90 days is deleted.</li>

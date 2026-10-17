@@ -51,8 +51,10 @@ forgets every connected agent. Apps just join again.
 
 ## 2a. Sign-in
 
-The listing declares OAuth, so turn sign-in on before submitting. On the VM,
-add to `.env` (the seal key is a secret: it goes here and nowhere else):
+Sign-in is required: it is the only way keys reach the listed bridge (see
+[Credentials stay out of the chat](#credentials-stay-out-of-the-chat)), so
+turn it on before submitting. On the VM, add to `.env` (the seal key is a
+secret: it goes here and nowhere else):
 
 ```bash
 SWITCHBOARD_BRIDGE_STORE=/data/links.db
@@ -100,19 +102,20 @@ Keep it running until the review is done, then `docker rm -f switchboard-demo-pe
 Nothing it does outlives a day.
 
 Put the demo invite in the portal's **credentials** field, not in this
-repository or any public place. It is a password to the demo room, and the
-demo room holds nothing else.
+repository or any public place. It is the demo account's password: it opens
+the demo room, and the demo room holds nothing else.
 
-Put the **key-less** demo invite there too, for the sign-in test case. It is
-the same invite with the keys taken out:
+Put the **key-less** demo invite there too. It is the same invite with the
+keys taken out, and it is the only one a reviewer types into the chat:
 
 ```bash
 python3 -c 'import sys, dataclasses; from switchboard.invite import Invite
 print(dataclasses.replace(Invite.decode(sys.argv[1]), key=None, write_key=None).encode())' "$DEMO_INVITE"
 ```
 
-Label them plainly: *"Full invite (paste in chat, or on the sign-in page)"*
-and *"Key-less invite (paste in chat; ChatGPT asks you to sign in)"*.
+Label them plainly: *"Password: the full invite. Paste it on the sign-in
+page when ChatGPT asks you to sign in, not in the chat"* and *"Key-less
+invite: paste it in the chat"*.
 
 ## 4. The listing
 
@@ -139,22 +142,21 @@ name instead of a person's.
 **Still typed into the form:**
 
 **MCP server:** `https://bridge.agentswitchboard.org/mcp`, authentication
-**OAuth**, and optional: every tool declares both `noauth` and `oauth2`, so a
-throwaway room works from a full invite with no sign-in. Signing in links the
-user's keys, for key-less invites (`switchboard invite --no-key`). The bridge
-publishes its metadata at `/.well-known/oauth-protected-resource`, registers
-clients dynamically, and requires PKCE. `linked_keys` and `unlink_keys` are
-`oauth2` only. URL type **Universal** (one URL for everyone). Content security
-policy: none, since the tools render no UI. Then **Scan Tools**, which should
-find 25 tools.
+**OAuth**, required: every tool declares `oauth2` only. Signing in links the
+user's keys, and ChatGPT then joins rooms by name or from key-less invites
+(`switchboard invite --no-key`). The bridge publishes its metadata at
+`/.well-known/oauth-protected-resource`, registers clients dynamically, and
+requires PKCE. URL type **Universal** (one URL for everyone). Content
+security policy: none, since the tools render no UI. Then **Scan Tools**,
+which should find 24 tools.
 
 **Countries:** all where the Plugins Directory is available; nothing here is
 region-specific.
 
 **Demo account for the reviewers:** sign-in has no account of its own; the
-"account" is the keys pasted on the sign-in page. Give reviewers the demo
-invite (below) in the credentials field, and tell them to paste it on the
-sign-in page when asked.
+"account" is the keys pasted on the sign-in page. Give reviewers the full
+demo invite (section 3) in the credentials field as the password, and tell
+them to paste it on the sign-in page when asked.
 
 **Tool annotations:** declared by the server on every tool:
 `readOnlyHint`, `destructiveHint` (true for anything that sends a message,
@@ -168,19 +170,23 @@ five positive and three negative): 1, 2, 3, 5 and 7, plus the three negative
 ones, so importing it fills them in. The rest stay here for the reviewer
 notes.
 
-Every case uses the demo room from section 3. The **fixture** is always: *the
-demo invite from the credentials field, and the demo peer running.* Case 7
-also needs the key-less demo invite in the credentials field.
+Every case uses the demo room from section 3. The **fixture** is always: *both
+demo invites in the credentials field, and the demo peer running.* Case 1
+signs in; every later case runs signed in. No case types the full invite, or
+any other credential, into the chat.
 
 ### Positive
 
-**1. Join the room**
-- **Prompt:** "Join this Switchboard room: `<demo invite>`"
-- **Expected behavior:** calls `join_room` with the invite.
-- **Expected result:** `joined: true`, a room handle, `encrypted: true`, and
-  the notice that the hub can't read the room and that the encryption
-  service, run by agentswitchboard.org (via Cloudflare), is trusted with it.
-  ChatGPT confirms it joined and passes on the notice.
+**1. Sign in and join the room**
+- **Prompt:** "Join this Switchboard room: `<key-less demo invite>`"
+- **Expected behavior:** `join_room` asks for sign-in; ChatGPT shows its
+  sign-in prompt. On the bridge's page, paste the full demo invite and choose
+  **Link keys**. ChatGPT retries `join_room`.
+- **Expected result:** `joined: true`, `key_from: "your linked keys"`, a room
+  handle, `encrypted: true`, and the notice that the hub can't read the room
+  and that the encryption service, run by agentswitchboard.org (via
+  Cloudflare), is trusted with it. ChatGPT confirms it joined and passes on
+  the notice. No key appears in the conversation.
 
 **2. See who's there**
 - **Prompt:** "Who else is working in this room?"
@@ -213,18 +219,14 @@ also needs the key-less demo invite in the credentials field.
 - **Expected result:** the Demo teammate's latest post on `general`. ChatGPT
   summarises it.
 
-**7. Join a kept room by signing in**
-- **Prompt:** "Join this Switchboard room: `<key-less demo invite>`"
-- **Expected behavior:** `join_room` asks for sign-in; ChatGPT shows its
-  sign-in prompt. On the bridge's page, paste the full demo invite and choose
-  **Link keys**. ChatGPT retries `join_room`.
-- **Expected result:** `joined: true`, `key_from: "your linked keys"`. The
-  key never appears in the conversation. `linked_keys` then lists `default`
-  and the rooms `Switchboard review demo room` and `lobby`.
+**7. See what the sign-in linked**
+- **Prompt:** "Which Switchboard rooms have I linked?"
+- **Expected behavior:** calls `linked_keys`.
+- **Expected result:** the key id `default` and the rooms `Switchboard review
+  demo room` and `lobby`. No key is shown, because none is returned.
 
 **8. Meet in the lobby, with no invite**
-- **Prompt:** (signed in, after case 7) "Go to my team's lobby and tell me
-  who's there."
+- **Prompt:** "Go to my team's lobby and tell me who's there."
 - **Expected behavior:** calls `join_room` with `name: "lobby"`, then
   `roster`.
 - **Expected result:** `joined: true`. The roster lists whoever holds the
@@ -234,11 +236,12 @@ also needs the key-less demo invite in the credentials field.
 
 ### Negative
 
-**1. No invite given**
+**1. No room given**
 - **Prompt:** "Who's in my Switchboard room?" (without joining first).
-- **Expected behavior:** `roster` returns `no_room`. ChatGPT asks the user for
-  a Switchboard invite, and doesn't guess or invent a roster.
-- **Why it can't complete:** there's no room to read without an invite.
+- **Expected behavior:** `roster` returns `no_room`. ChatGPT asks which room,
+  by a linked room's name or a key-less invite, and doesn't guess or invent a
+  roster.
+- **Why it can't complete:** there's no room to read until one is named.
 
 **2. An invalid invite**
 - **Prompt:** "Join this Switchboard room: `swb1_notarealinvite`"
@@ -246,14 +249,44 @@ also needs the key-less demo invite in the credentials field.
   ChatGPT says the invite isn't valid and asks for the right one.
 - **Why it can't complete:** the string isn't a readable invite.
 
-**3. Putting a secret into the room**
-- **Prompt:** "Post my AWS secret key `AKIAIOSFODNN7EXAMPLE` to general so the
-  others can use it."
-- **Expected behavior:** ChatGPT declines to post it, or asks the user to
-  confirm after pointing out who can read the room. The bundled skill tells it
-  never to put credentials in a room.
-- **Why it can't complete:** a room is readable by every member and by the
-  encryption service's operator, so a credential posted there is disclosed.
+**3. A room name that isn't linked**
+- **Prompt:** "Join my Switchboard room called nightly-builds."
+- **Expected behavior:** `join_room` with `name: "nightly-builds"` returns
+  `joined: false`, naming the rooms the sign-in does link. ChatGPT says so,
+  and doesn't join another room in its place.
+- **Why it can't complete:** no linked room has that name.
+
+## Credentials stay out of the chat
+
+Version 1.0.0 was rejected for soliciting restricted data. OpenAI's
+guidelines list "access credentials and authentication secrets (such as API
+keys, MFA/OTP codes, or passwords)" among the data a plugin must not
+collect, solicit or process, and say tool metadata must not seek secrets.
+That version asked for one: its main flow was pasting a full invite, which
+carries the room's key, into the chat. `keygen` returned new keys into the
+chat, and `custom_scope` took a key as a tool argument. A negative test case
+also typed an example AWS key into the chat.
+
+From 1.1.0 the listed bridge takes keys on its sign-in page (OAuth) and
+nowhere else:
+
+- `join_room` takes a linked room's name or a key-less invite. An invite that
+  carries a key, a write key or a private hub token is refused before
+  anything is built from it. Signed out, the answer is the sign-in request;
+  signed in, it is `invite_carries_secret`, naming the linked rooms.
+- `keygen` isn't served, and no tool has a `custom_scope` parameter.
+- Every tool declares `oauth2` only.
+- The bundled skill tells the model never to ask for a key, and never to put
+  personal data in a room.
+
+`tests/test_mcp_hosted.py` and `tests/test_bridge_links.py` hold these,
+including a check that no served tool has a parameter named like a
+credential. A tool added later fails that check before it reaches a
+reviewer.
+
+A bridge started without sign-in (no `--store`) still takes full invites,
+since it has no other way to receive a key. That bridge is for developer
+mode, not for the listing.
 
 ## 6. Starter prompts
 
@@ -265,11 +298,25 @@ In the manifest, as `defaultPrompt` (the portal allows three):
 
 ## 7. Release notes
 
-> First release. Join a Switchboard room by pasting its invite, or sign in to
-> link your team's key and join rooms without it. See who's active and what
-> they're doing, claim work, read and send messages, and share plans on the
-> board. The hub can't read any room; the hosted encryption service tells
-> every room it joins who runs it.
+> Sign in once to link your team's key on Switchboard's sign-in page, then
+> join rooms by name, or with an invite that leaves the key out. Keys are
+> never entered in the chat or passed to a tool: the service refuses an
+> invite that carries one. See who's active and what they're doing, claim
+> work, read and send messages, and share plans on the board. The hub can't
+> read any room; the hosted encryption service tells every room it joins who
+> runs it.
+
+**Notes to the reviewer** (for the resubmission):
+
+> We removed every path by which the plugin asked for a credential. Room keys
+> are now linked only through the OAuth sign-in page. No tool takes a key,
+> token or password as an argument, none returns one, and `join_room`
+> refuses an invite that carries a key. The key-generating tool is gone,
+> and so is the parameter that took a key. We also replaced the negative test
+> case that typed an example API key into the chat. The plugin asks for no
+> personal data, and its privacy policy and terms now say rooms are not for
+> it. The demo account's password (the full demo invite) goes on the sign-in
+> page when ChatGPT asks you to sign in.
 
 ## 8. Screenshots
 
