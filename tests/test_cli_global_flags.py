@@ -47,6 +47,11 @@ COMMANDS: list[list[str]] = [
     ["pair", "heal", "lab"],
     ["pair", "forget", "lab"],
     ["pair", "export", "lab"],
+    # `--with` takes one or more pairs; a global flag after it must still end it.
+    ["share", "new", "core", "--with", "lab"],
+    ["share", "accept", "lab/core"],
+    ["share", "leave", "core"],
+    ["share", "status"],
 ]
 
 

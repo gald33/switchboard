@@ -243,6 +243,10 @@ def test_the_handle_is_resolved_at_most_once_per_recheck(laptop, cloud, monkeypa
     recheck bounds that — and any pair_* tool ends it early, because it may
     just have changed what the handle should resolve to."""
     room = paired(laptop, cloud)
+    # The share sweep reads every pair on its own, once a minute, through a
+    # resolve of its own (test_mcp_share.py bounds that); this counts the
+    # handle's.
+    laptop._shares_swept_at = float("inf")
     calls = []
     real = pairing.resolve
     monkeypatch.setattr(pairing, "resolve", lambda *a, **k: calls.append(1) or real(*a, **k))

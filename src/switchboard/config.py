@@ -995,6 +995,8 @@ def isolation_warning(config: ClientConfig, kind: str) -> str | None:
         "rooms": "this repo's rooms file",
         "invite": "the invite this agent was given",
         "pair": "the pairing code this machine's pair was made from",
+        "shared": "the shared room, minted on the hub of whichever machine created "
+                  "it (`switchboard share status` shows its origin)",
     }.get(config.url_source, "the built-in default")
     corroboration = ""
     if config.token or config.key:

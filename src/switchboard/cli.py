@@ -42,6 +42,7 @@ from . import (
     pairing,
     rendezvous,
     rooms,
+    sharing,
     signing,
 )
 from .client import (
@@ -316,6 +317,7 @@ _TOKEN_SOURCES = {
     "mcp.json": ".mcp.json in this checkout",
     "invite": "the invite you passed",
     "pair": "the pairing code, which carried it (`pair start --with-token`)",
+    "shared": "the shared room's offer, which carried it (`share new --with-token`)",
 }
 
 
@@ -353,6 +355,7 @@ def _tried(config: ClientConfig | None) -> str:
         "mcp.json": ".mcp.json", "rooms": "this repo's rooms file",
         "invite": "the invite", "default": "the built-in default",
         "pair": "the pair's record (`switchboard pair status`)",
+        "shared": "the shared room's record (`switchboard share status`)",
     }.get(config.url_source, config.url_source)
     return f"  tried {config.url} (from {where}) with {credential}."
 
@@ -502,18 +505,44 @@ def _pair_store() -> pairing.Store:
     return pairing.PairStore()
 
 
+def _share_store() -> sharing.Store:
+    """This machine's shared rooms, beside its pairs; built per call, as `_pair_store` is."""
+    return sharing.ShareStore()
+
+
+def _shares_kept(store: sharing.Store) -> bool:
+    """Whether this machine keeps a share store at all, asked without opening it.
+
+    A listener asks on every machine, and most never shared anything. The
+    store's own reads take its lock, which creates the pair directory and a
+    lock file in it — for a machine with no rooms and no offers to park for.
+    A store this code cannot look inside (an embedder's) is assumed to exist.
+    """
+    if not store.enabled:
+        return False
+    path = getattr(store, "path", None)
+    return path is None or (Path(path) / sharing.STORE_FILE).exists()
+
+
 def _pair_agent(args: argparse.Namespace) -> str:
     return detect_identity(agent_id=getattr(args, "agent_id", None)).agent_id
 
 
-def _pair_base(args: argparse.Namespace) -> ClientConfig:
-    """This invocation's room with any `pair:` handle left out.
+def _is_handle(label: str | None) -> bool:
+    """Whether `label` is a `pair:` or `shared:` handle — never a book label."""
+    return (pairing.parse_handle(label) is not None
+            or sharing.parse_handle(label) is not None)
 
-    What a pair's own rooms are built on: the hub token this environment holds
-    and the local stores. Never another pair's work room — its token may be
-    one a code carried for that pair alone, and its key must not seed a lobby.
+
+def _pair_base(args: argparse.Namespace) -> ClientConfig:
+    """This invocation's room with any `pair:` or `shared:` handle left out.
+
+    What a pair's own rooms are built on, and a shared room is minted on: the
+    hub token this environment holds and the local stores. Never another
+    pair's work room or a shared room — either one's token may be one a code
+    or an offer carried for that room alone, and its key must not seed a lobby.
     """
-    if pairing.parse_handle(getattr(args, "room", None)) is None:
+    if not _is_handle(getattr(args, "room", None)):
         return _make_config(args)
     return _make_config(argparse.Namespace(**{**vars(args), "room": None}))
 
@@ -563,25 +592,70 @@ def _resolve_pair(args: argparse.Namespace, name: str,
     return resolution
 
 
-def _refuse_pair_label(label: str | None, flag: str) -> None:
-    """Refuse a known-room label that would read as a pair handle.
+def _cached_shared(args: argparse.Namespace) -> sharing.SharedRoom | None:
+    """The room `--room shared:<name>` resolved to in this invocation, if any."""
+    cached = getattr(args, "_shared_resolved", None)
+    return cached[1] if cached else None
 
-    `--room pair:<name>` resolves through the pair store and never through the
-    book, so a book room labelled `pair:x` could never be reached by its label
-    — and a pair called x would quietly answer to it instead.
+
+def _resolve_shared(args: argparse.Namespace, name: str,
+                    base: ClientConfig) -> sharing.SharedRoom:
+    """Where `--room shared:<name>` points, read from the share store once per invocation.
+
+    From the store, never the book: a terminal here can leave the room, or
+    accept another under the name, between two commands, and a recorded copy
+    would keep pointing at the old one. Once per invocation and kept on the
+    arguments, for `_resolve_pair`'s reasons — `_make_config` runs several
+    times in one command, and the refresh below is hub traffic.
+
+    The refresh is what keeps a machine that only ever *works* in a shared
+    room — no `share` command, no listener on its pairs — from letting its
+    records lapse: when they were last refreshed over a day ago, the pairs on
+    the room's list are read and written again (`sharing.touch`). Best effort:
+    a pair room that cannot be reached is the touch's own note, and the
+    command still runs in the room.
     """
-    if label and pairing.parse_handle(label.strip()) is not None:
+    cached = getattr(args, "_shared_resolved", None)
+    if cached is not None and cached[0] == name:
+        return cached[1]
+    store = _share_store()
+    room = sharing.resolve_room(name, base, store=store, now=_pairing_now())
+    if room.refresh_due:
+        try:
+            touched = sharing.touch(base, rooms=[name], store=store, pair_store=_pair_store(),
+                                    connect=Client, now=_pairing_now())
+        except (pairing.PairingError, OSError) as exc:
+            print(f"shared: could not refresh {room.room}'s records with its pairs ({exc})",
+                  file=sys.stderr)
+        else:
+            for note in touched.summary()["notes"]:
+                print(f"shared: {note['text']}", file=sys.stderr)
+    args._shared_resolved = (name, room)
+    return room
+
+
+def _refuse_reserved_label(label: str | None, flag: str) -> None:
+    """Refuse a known-room label that would read as a pair or shared-room handle.
+
+    `--room pair:<name>` resolves through the pair store and `--room
+    shared:<name>` through the share store, never through the book, so a book
+    room labelled `pair:x` or `shared:x` could never be reached by its label —
+    and a pair or a shared room called x would quietly answer to it instead.
+    """
+    if label and _is_handle(label.strip()):
         raise SystemExit(
-            f"{flag} {label!r}: labels starting with `pair:` are reserved for "
-            "paired machines' rooms (`switchboard pair status` lists them), so a "
-            "known room cannot be called that. Choose a label without the prefix."
+            f"{flag} {label!r}: labels starting with `pair:` or `shared:` are reserved "
+            "for paired machines' rooms and shared rooms (`switchboard pair status` and "
+            "`switchboard share status` list them), so a known room cannot be called "
+            "that. Choose a label without the prefix."
         )
 
 
 def _apply_known_room(config: ClientConfig, args: argparse.Namespace) -> ClientConfig:
     """Fold `--room <label>` in: a room from the book, by the name this
     machine gave it, resolved the way it was learned — or, for `pair:<name>`,
-    a paired machine's current work room, resolved through the pair room."""
+    a paired machine's current work room, resolved through the pair room, and
+    for `shared:<name>` a shared room, resolved from the share store."""
     label = getattr(args, "room", None)
     if not label:
         return config
@@ -596,6 +670,14 @@ def _apply_known_room(config: ClientConfig, args: argparse.Namespace) -> ClientC
         # invocation instead, and a copy, so nothing that edits the config it
         # is handed can reach the cached resolution.
         return replace(_resolve_pair(args, pair_name, config).config)
+    shared_name = sharing.parse_handle(label)
+    if shared_name is not None:
+        # Never the book either: a shared room's key arrived sealed in a pair
+        # room and was never in a conversation, so there is no way it was
+        # acquired for an entry to point back at (knownrooms.py). Its token
+        # follows pairing's rule (`sharing._room_config`), not the book's
+        # `token or config.token`: the URL is one another machine chose.
+        return replace(_resolve_shared(args, shared_name, config).config)
     book = knownrooms.Book()
     room = book.by_label(label)
     if room is None:
@@ -738,10 +820,11 @@ def _remember_repo_room(args: argparse.Namespace, config: ClientConfig) -> None:
     """
     if any(getattr(args, flag, None) for flag in ("invite", "lobby", "room", "workspace")):
         return
-    if config.workspace_source == "pair":
+    if config.workspace_source in ("pair", "shared"):
         # Said separately from `--room` above, which already covers it today:
         # a pair's work room is retired by every heal, so a book entry for one
-        # is a pointer into a room whose key may be in the wrong hands.
+        # is a pointer into a room whose key may be in the wrong hands; and a
+        # shared room's key has no reference the book could keep instead.
         return
     try:
         where = Path(".").resolve()
@@ -1258,7 +1341,7 @@ def _rooms_book(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     if args.label:
         workspace, _, name = args.label.partition("=")
-        _refuse_pair_label(name, "--label")
+        _refuse_reserved_label(name, "--label")
         if not name or not book.relabel(workspace, name):
             print(f"error: --label takes WORKSPACE=NAME for a room in the book "
                   f"(got {args.label!r})", file=sys.stderr)
@@ -2049,6 +2132,20 @@ def cmd_whoami(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_ERROR
+    shared_name = sharing.parse_handle(getattr(args, "room", None))
+    if shared_name is not None and (args.show_key or args.env):
+        # The same rule as a work room's, and the same one way out. A shared
+        # room's keys travel sealed through pair rooms so that no conversation
+        # ever holds them; printing them here would put them in this one, and
+        # nothing revokes a shared room.
+        print(
+            "error: a shared room's key is not printed. It leaves only as an invite: "
+            f"`switchboard --room shared:{shared_name} invite` — and nothing revokes it "
+            f"once out; `switchboard share new NAME --from {shared_name}` is how to work "
+            "without whoever holds it.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     identity = detect_identity(agent_id=args.agent_id)
     config = ClientConfig.from_env()
     directory = Path(".").resolve()
@@ -2078,7 +2175,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     # comment below describes, one flag later: the command you run to find out
     # where you are pointed, pointing somewhere else.
     resolved_room = _make_config(args)
-    if getattr(args, "lobby", False) or getattr(args, "invite", None) or pair_name:
+    if getattr(args, "lobby", False) or getattr(args, "invite", None) or pair_name \
+            or shared_name is not None:
         workspace = resolved_room.workspace
     else:
         workspace = (
@@ -2184,6 +2282,10 @@ def cmd_whoami(args: argparse.Namespace) -> int:
         # The resolution's own summary, which carries no secret: which work
         # room generation this is, whether the other side confirmed, the SAS.
         payload["pair"] = pair.summary()
+    shared = _cached_shared(args) if shared_name is not None else None
+    if shared is not None:
+        # Which room the handle names right now, and over which pairs; no key.
+        payload["shared"] = shared.summary()
     if args.json:
         _print_json(payload)
         # Still worth saying under --json: a script parsing this is exactly
@@ -3108,6 +3210,10 @@ class _Post:
         #: What following the pair found, when the wake is a heal or an end
         #: rather than (only) a message (`_followed_pair`).
         self.followed: dict[str, Any] | None = None
+        #: A pair's work room: the share reader a `swbp1/shared` note there
+        #: is checked with (`_share_notes_wake`). Shared by every room of one
+        #: listener, so "not seen before" means by this listener.
+        self.shares: _ShareWatch | None = None
 
     def __str__(self) -> str:
         return f"{self.workspace} [{self.role}{' handshake' if self.handshake else ''}]"
@@ -3147,9 +3253,10 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     found while it works; `--lobby` on its own parks in the lobby alone, since
     then the lobby *is* the room named.
 
-    Pairs too, unless `--no-pairs`: each recently used pair's current work
-    room, on the pair channel, and each pending pairing's handshake room,
-    where the answer will land and is collected in-process (`_park`).
+    Pairs too, unless `--no-pairs`: the current work room of each pair used
+    lately or carrying shared rooms, on the pair channel, and each pending
+    pairing's handshake room, where the answer will land and is collected
+    in-process (`_park`). And shared rooms used here lately, as pairs are.
 
     One process rather than two, and that is the point of doing it here: the
     process is what decides which room's message is the wake when both have
@@ -3158,6 +3265,7 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     """
     book = knownrooms.Book()
     store = _pair_store()
+    shares = _share_store()
     only = list(getattr(args, "only_rooms", None) or [])
     if only:
         # A deliberate choice replaces the whole default: the named rooms and
@@ -3166,18 +3274,19 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
         # `is not None`, not truthiness: `pair:` names the empty pair, which
         # is falsy, and skipping `base` for it crashed on an assert instead of
         # reaching the refusal that says the name is not usable.
-        base = (_pair_base(args)
-                if any(pairing.parse_handle(label) is not None for label in only)
-                else None)
+        base = _pair_base(args) if any(_is_handle(label) for label in only) else None
         for label in only:
-            post = _labelled_post(book, store, base, label, identity)
+            post = _labelled_post(book, store, base, label, identity, shares)
             if post is not None:
                 posts.append(post)
         if not posts:
             raise SystemExit("listen --only: none of the rooms named could be opened")
+        if base is not None and shares.enabled:
+            args._listen_shares = _ShareWatch(base, shares, store)
         return posts
     primary = _make_client(args)
     pair_name = pairing.parse_handle(getattr(args, "room", None))
+    shared_name = sharing.parse_handle(getattr(args, "room", None))
     if getattr(args, "lobby", False):
         role = "lobby"
     elif getattr(args, "invite", None):
@@ -3189,8 +3298,9 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     else:
         role = "room"
     # What every pair's rooms are built on: this environment's own hub token,
-    # never the token a code carried for one pair in particular.
-    base = primary.config if pair_name is None else _pair_base(args)
+    # never the token a code or an offer carried for one room in particular.
+    handled = pair_name is not None or shared_name is not None
+    base = _pair_base(args) if handled else primary.config
     posts = [_Post(role, primary, None if pair_name is not None else args.channel)]
     if pair_name is not None:
         resolved = _cached_pair(args)
@@ -3210,18 +3320,35 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     # and any it names. The book, not the agent, is what remembers them: on
     # 2026-09-03 a session sat parked in two rooms while its peer waited in a
     # third it had been invited to an hour earlier (knownrooms.py).
-    for label in getattr(args, "in_rooms", None) or []:
-        add(_labelled_post(book, store, base, label, identity))
+    in_rooms = list(getattr(args, "in_rooms", None) or [])
+    for label in in_rooms:
+        add(_labelled_post(book, store, base, label, identity, shares))
     for room in book.recent():
         add(_known_post(book, room.label, identity, quiet=True))
-    # Every pair used lately, in its current work room, and every pairing
-    # still waiting on an answer, in its handshake room. The second is what
-    # makes a turn-based initiator collect within seconds of the answer rather
-    # than whenever a human next types: it printed a code and ended its turn,
-    # and this is the process still running.
-    if not getattr(args, "no_pairs", False):
-        now = _pairing_now()
-        active = pairing.active(store, now=now)
+    now = _pairing_now()
+    # Shared rooms used here lately, as pairs are: `--room shared:` and every
+    # share command stamp a room's use, and parking does not. A shared room is
+    # never in the book — its key has no reference the book could keep — so
+    # without this an agent working in one all week, parked the way the skill
+    # says, would be woken by nothing said there.
+    parked_shared = {n for n in (shared_name, *map(sharing.parse_handle, in_rooms))
+                     if n is not None}
+    if _shares_kept(shares):
+        for name, config in sharing.recent_rooms(base, store=shares, now=now):
+            if name not in parked_shared:
+                parked_shared.add(name)
+                add(_shared_room_post(name, config, identity))
+        if not args.quiet:
+            _say_idle_shared(shares, base, parked_shared, now)
+    # Every pair used lately or carrying shared rooms, in its current work
+    # room, and every pairing still waiting on an answer, in its handshake
+    # room. The second is what makes a turn-based initiator collect within
+    # seconds of the answer rather than whenever a human next types: it
+    # printed a code and ended its turn, and this is the process still running.
+    no_pairs = getattr(args, "no_pairs", False)
+    active: list[str] = []
+    if not no_pairs:
+        active = _active_pairs(store, shares, now)
         for name in active:
             if name != pair_name:   # already parked in, as the room named
                 add(_pair_post(name, base, identity, store))
@@ -3230,11 +3357,17 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
         if not args.quiet:
             # Not the active ones: those parked, or said why they could not.
             _say_idle_pairs(store, {*active, *(p.pair for p in posts if p.pair)}, now)
+    if not no_pairs or shares.enabled:
         # A pairing begun after this listener was armed — `pair start`, or
-        # `pair accept`, in the very turn that armed it — is picked up while
-        # parked (`_Rescan`), rather than collected by nobody until a re-arm.
-        args._listen_rescan = _Rescan(store, base, {*active, *(
-            [pair_name] if pair_name is not None else [])})
+        # `pair accept`, in the very turn that armed it — and a shared room
+        # first used after it are picked up while parked (`_Rescan`), rather
+        # than watched by nobody until a re-arm.
+        args._listen_rescan = _Rescan(
+            store, base, {*active, *([pair_name] if pair_name is not None else [])},
+            shares=shares if shares.enabled else None, pairs=not no_pairs,
+            rooms=parked_shared)
+    if shares.enabled:
+        args._listen_shares = _ShareWatch(base, shares, store)
     # `getattr`, like the flags above: a caller building the namespace by hand
     # — a test, a wrapper — gets the default rather than a crash.
     if getattr(args, "no_lobby", False) or role == "lobby":
@@ -3242,8 +3375,9 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     # Under `--room pair:<name>` the lobby is this environment's, from its own
     # key — never one derived from the work room's. That key is the pair's,
     # it opens one generation of one room, and a lobby computed from it is a
-    # room nobody else will ever be in.
-    lobby_base = primary.config if pair_name is None else base
+    # room nobody else will ever be in. Under `--room shared:<name>` likewise:
+    # that key is the room's, minted for it alone, not this environment's.
+    lobby_base = base if handled else primary.config
     key = getattr(lobby_base, "key", None) or _saved_key(Path(".").resolve())
     if not key:
         # The lobby is derived from the key, so without one there is no lobby
@@ -3266,18 +3400,90 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
 
 def _labelled_post(book: knownrooms.Book, store: pairing.Store,
                    base: ClientConfig | None, label: str,
-                   identity: Identity) -> _Post | None:
-    """A room named by `--in` / `--only`: a pair's through pairing, else the book's.
+                   identity: Identity, shares: sharing.Store) -> _Post | None:
+    """A room named by `--in` / `--only`: a pair's through pairing, a shared
+    room's through the share store, else the book's.
 
-    A `pair:` label never reaches the book (`_refuse_pair_label`), and a pair
-    is resolved fresh here for the reason `--room` resolves it fresh: a heal
-    moves its work room, and the book would still name the one left behind.
+    Neither handle ever reaches the book (`_refuse_reserved_label`). A pair is
+    resolved fresh here for the reason `--room` resolves it fresh: a heal
+    moves its work room, and the book would still name the one left behind;
+    and a shared room is never in the book at all.
     """
+    shared_name = sharing.parse_handle(label)
+    if shared_name is not None:
+        assert base is not None
+        return _shared_post(shared_name, base, identity, shares)
     name = pairing.parse_handle(label)
     if name is None:
         return _known_post(book, label, identity)
     assert base is not None
     return _pair_post(name, base, identity, store)
+
+
+def _shared_post(name: str, base: ClientConfig, identity: Identity,
+                 shares: sharing.Store) -> _Post | None:
+    """A shared room named to park in, or None with a line saying why.
+
+    Fails soft, as a pair does: a room left here, or only offered and not
+    accepted, costs this one room — with the refusal that says which, since
+    "no known room" would send somebody looking in the book.
+    """
+    try:
+        room = sharing.resolve_room(name, base, store=shares, now=_pairing_now())
+    except pairing.PairingError as exc:
+        print(f"listen: not parking in {sharing.handle(name)}: {exc}", file=sys.stderr)
+        return None
+    return _shared_room_post(name, room.config, identity)
+
+
+def _shared_room_post(name: str, config: ClientConfig, identity: Identity) -> _Post | None:
+    """A shared room's post, or None with a line saying why it cannot be opened.
+
+    Its key and URL came from another machine. `sharing` refuses an offer
+    whose key no cipher takes, or whose URL no client takes, but a room kept
+    before that check was there — or one this release reads differently —
+    must cost that room, never the listener: `Client()` raising here stopped
+    `listen` before it parked anywhere, and mid-park ended one that had.
+    """
+    try:
+        client = Client(config, agent_id=identity.agent_id)
+    except Exception as exc:  # noqa: BLE001 - one room, never the park
+        # The class only: the text can quote the key or URL that broke it.
+        print(f"listen: not parking in {sharing.handle(name)}: it cannot be opened "
+              f"({exc.__class__.__name__}); `switchboard share leave {name}` drops it",
+              file=sys.stderr)
+        return None
+    return _Post(sharing.handle(name), client, None)
+
+
+def _active_pairs(store: pairing.Store, shares: sharing.Store | None,
+                  now: float | None) -> list[str]:
+    """The pairs a listener parks in: used here lately, or carrying shared rooms.
+
+    A pair that is only a conduit for shared rooms — on a held room's list, or
+    offering one here — is not used in pairing's sense, and goes idle within a
+    day; its work room is where a peer's share wake lands, so it counts as
+    active as long as it carries one (`sharing.active_pairs`).
+    """
+    names = list(pairing.active(store, now=now))
+    if shares is not None and _shares_kept(shares):
+        names += [n for n in sharing.active_pairs(store=shares, pair_store=store)
+                  if n not in names]
+    return names
+
+
+def _say_idle_shared(shares: sharing.Store, base: ClientConfig, parked: set[str],
+                     now: float | None) -> None:
+    """Name each shared room this listener is leaving out, and how to add it.
+
+    `_say_idle_pairs`' reason: a room skipped in silence looks exactly like a
+    quiet one, while the machines on its list may be talking there now.
+    """
+    for name, _ in sharing.recent_rooms(base, store=shares, within=float("inf"), now=now):
+        if name not in parked:
+            room = sharing.handle(name)
+            print(f"listen: not parking in {room}: not used on this machine in the last "
+                  f"day; add --in {room} to park there too", file=sys.stderr)
 
 
 def _pair_post(name: str, base: ClientConfig, identity: Identity,
@@ -3396,11 +3602,18 @@ class _Rescan:
     read with no network. A pair that becomes active (a `pair accept` here)
     is resolved once, the first time it is seen, and never retried — a pair
     that cannot be parked in says why once, not every five seconds.
+
+    Shared rooms the same way, and for the same failure: a `share new` or
+    `share accept` in the turn after arming, then `--room shared:` work in
+    it, left the room unwatched by the listener the session relied on. One
+    first used after arming is parked in the first time it is seen.
     """
 
     def __init__(self, store: pairing.Store, base: ClientConfig,
-                 tried: set[str]) -> None:
+                 tried: set[str], *, shares: sharing.Store | None = None,
+                 pairs: bool = True, rooms: set[str] | None = None) -> None:
         self.store, self.base, self.tried = store, base, set(tried)
+        self.shares, self.pairs, self.rooms = shares, pairs, set(rooms or ())
 
     def fresh(self, posts: list[_Post], identity: Identity) -> list[_Post]:
         found: list[_Post] = []
@@ -3413,8 +3626,26 @@ class _Rescan:
 
         now = _pairing_now()
         try:
+            recent = (sharing.recent_rooms(self.base, store=self.shares, now=now)
+                      if self.shares is not None and _shares_kept(self.shares) else [])
+        except Exception:  # noqa: BLE001 - as below: one slice, never the park
+            recent = []
+        for name, config in recent:
+            if name in self.rooms:
+                continue
+            self.rooms.add(name)
+            # By room alone: `known` would take any room that is not a pair's
+            # for this one, since neither has a pair name.
+            if not any((p.hub.config.url, p.workspace) == (config.url, config.workspace)
+                       for p in [*posts, *found]):
+                post = _shared_room_post(name, config, identity)
+                if post is not None:
+                    found.append(post)
+        if not self.pairs:
+            return found
+        try:
             pending = pairing.pending_rooms(self.store, self.base, now=now)
-            active = pairing.active(self.store, now=now)
+            active = _active_pairs(self.store, self.shares, now)
         except Exception:  # noqa: BLE001 - a missed rescan costs one slice, never the park
             return found
         for name, config in pending:
@@ -3511,9 +3742,14 @@ def _pair_wake(post: _Post, messages: list[dict[str, Any]]) -> dict[str, Any]:
         return dict(post.outcome or {"name": post.pair, "room": post.role,
                                      "handshake": True, "state": "pending"})
     room = pairing.handle(post.pair or "")
+    # A wake that is share wakes alone has nothing in the work room to read:
+    # what it means is in the share store, and `inbox -c pair` would show the
+    # bare tag.
+    conversation = [m for m in messages if pairing.message_tag(m) != pairing.TAG_SHARED]
     report: dict[str, Any] = {"name": post.pair, "room": room,
                               "generation": post.generation,
-                              "next": _take_delivery(room, messages)}
+                              "next": (_SHARE_NEXT if messages and not conversation
+                                       else _take_delivery(room, conversation))}
     followed = post.followed or {}
     if followed.get("moved"):
         report["moved"] = True
@@ -3613,6 +3849,12 @@ def _outcomes_elsewhere(posts: list[_Post], chosen: _Post) -> list[dict[str, Any
     return found
 
 
+def _say_shared(notes: Sequence[dict[str, Any]]) -> None:
+    """Shared-room notes, on stderr, whatever `-q` says: each is a peer's doing."""
+    for note in notes:
+        print(f"listen: shared: {note.get('text')}", file=sys.stderr)
+
+
 def _say_outcome(outcome: dict[str, Any]) -> None:
     """A collected handshake's outcome, on stderr, whatever `-q` says."""
     room = outcome.get("room") or pairing.handle(str(outcome.get("name") or ""))
@@ -3703,8 +3945,143 @@ def _heartbeat(post: _Post, wake: "_Wake", deadline: float | None, described: st
 #: to re-announce, and for a pair's work room to look at the local store.
 _PARK_POLL = 25.0
 
-#: The pair notes that retire the work room a listener is parked in.
+#: The pair notes that retire the work room a listener is parked in. Not the
+#: share wake (`pairing.TAG_SHARED`): this path keeps a note only when the pair
+#: has moved or ended, and strips it otherwise — which a share wake always
+#: would be. It has its own check, `_share_notes_wake`.
 _PAIR_NOTES = frozenset({pairing.TAG_MOVED, pairing.TAG_ENDED})
+
+#: Share notes a listener says but does not wake for: this machine's own read
+#: of a pair room failing is nothing a peer did, and the next touch retries it.
+_SHARE_QUIET = frozenset({"cannot_read"})
+
+#: What a session woken by shared-room news runs next.
+_SHARE_NEXT = ("switchboard share status — every room, offer and note; each note says "
+               "what changed and, for an offer, how to keep it")
+
+
+class _ShareWatch:
+    """The share store as one listener reads it: what it has seen, and found.
+
+    A `swbp1/shared` note in a pair's work room only says "look"
+    (`pairing.TAG_SHARED`). It is sealed with the work room's key — the key a
+    heal exists for — and every write this machine makes posts one too, from
+    an id this listener does not skip as its own. So it is never a wake by
+    itself: it is one when a share read of that pair, done then, turns up a
+    note this listener has not seen, which a forged note or this machine's own
+    write never does. Note ids only grow (`sharing.notes`), so "not seen" is
+    one number kept here, in memory — and it also covers a note that another
+    process here (the MCP bridge's sweep, `share status`) applied first.
+
+    One per listener, shared by its rooms' threads; the lock keeps two wakes
+    read at once from both claiming the same note.
+    """
+
+    def __init__(self, base: ClientConfig, store: sharing.Store,
+                 pair_store: pairing.Store) -> None:
+        self.base, self.store, self.pair_store = base, store, pair_store
+        self.seen: int | None = None
+        #: The notes worth waking for, found so far; the wake carries them all,
+        #: whichever room's thread found them.
+        self.found: list[dict[str, Any]] = []
+        self.lock = threading.Lock()
+
+    def attach(self, post: _Post) -> None:
+        if post.pair is not None and not post.handshake:
+            post.shares = self
+
+    def _touch(self, pairs: list[str] | None) -> list[dict[str, Any]]:
+        return sharing.touch(self.base, pairs=pairs, store=self.store,
+                             pair_store=self.pair_store, connect=Client,
+                             now=_pairing_now()).summary()["notes"]
+
+    def _anything(self) -> bool:
+        """Whether a full read could find anything: a pair, or a share store.
+
+        Asked without opening the share store, whose lock creates the pair
+        directory — on a machine that never paired, there is nothing to read.
+        """
+        if _shares_kept(self.store):
+            return True
+        try:
+            return bool(self.pair_store.names())
+        except (pairing.PairingError, OSError):
+            return True
+
+    def _latest(self) -> int:
+        return max((int(n.get("id") or 0)
+                    for n in sharing.notes(store=self.store, now=_pairing_now())), default=0)
+
+    def _keep(self, notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        news = [n for n in notes if n.get("kind") not in _SHARE_QUIET]
+        self.found += news
+        return news
+
+    def arm(self) -> list[dict[str, Any]]:
+        """The one read a listener does as it arms: the notes that read produced.
+
+        What arrived while nothing was parked — an offer, an accept, a leave —
+        waits in a pair room until something reads it, and from now on a wake
+        only says "look". Every pair, not only those parked in: an offer can
+        arrive over a pair idle for days, whose work room nothing parks in, so
+        this read is the one place a CLI-only agent hears of it. (Reading
+        marks no pair used — `pairing.resolve(mark_used=False)` — so this does
+        not make every pair one the next listener parks in.) Notes other
+        processes here produced before this are taken as seen: they were said
+        where they were produced.
+        """
+        with self.lock:
+            try:
+                if not self._anything():
+                    self.seen = 0
+                    return []
+                arrived = self._touch(None)
+                self.seen = max([self._latest(), *(int(n.get("id") or 0) for n in arrived)])
+            except Exception as exc:  # noqa: BLE001 - a failed read costs the read, never the park
+                print(f"listen: could not read shared rooms as it armed "
+                      f"({exc.__class__.__name__}: {exc})", file=sys.stderr)
+                return []
+            self._keep(arrived)
+            return arrived
+
+    def read(self, pair: str) -> bool:
+        """Read one pair's share records on its wake; whether that found news."""
+        with self.lock:
+            try:
+                if self.seen is None:
+                    self.seen = self._latest()
+                self._touch([pair])
+                fresh = sharing.notes(store=self.store, after=self.seen, now=_pairing_now())
+            except Exception as exc:  # noqa: BLE001 - as in `arm`
+                print(f"listen: could not read pair {pair}'s shared rooms "
+                      f"({exc.__class__.__name__}: {exc})", file=sys.stderr)
+                return False
+            if fresh:
+                self.seen = max(int(n.get("id") or 0) for n in fresh)
+            for note in fresh:
+                if note.get("kind") in _SHARE_QUIET:
+                    print(f"listen: shared: {note.get('text')}", file=sys.stderr)
+            return bool(self._keep(fresh))
+
+
+def _share_notes_wake(post: _Post, messages: list[dict[str, Any]],
+                      matched: list[dict[str, Any]], wake: _Wake) -> list[dict[str, Any]]:
+    """`matched`, with this room's share wakes in it when a share read finds news.
+
+    Read from `messages`, not from what `-c` left: the pair channel polled
+    only for the pair's own notes (`protocol_only`) carries these too, and a
+    listener that asked for `general` still wants to hear that a peer offered
+    it a room. Never under do-not-disturb, which wakes on the types senders
+    declared: a share wake is a plain note, and news of a room is not urgent.
+    What the read found is on `post.shares`, for the wake to carry.
+    """
+    tagged = {id(m) for m in messages if pairing.message_tag(m) == pairing.TAG_SHARED}
+    if not tagged or post.shares is None or post.pair is None or wake.types:
+        return matched
+    if not post.shares.read(post.pair):
+        return matched
+    keep = {id(m) for m in matched} | tagged
+    return [m for m in messages if id(m) in keep]
 
 
 def _left_behind(post: _Post) -> bool:
@@ -3829,6 +4206,8 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
     on by itself (`_left_behind`). Either way the room being watched has been
     retired, and the peer's urgent message lands in one this listener cannot
     see — so staying parked would honour the filter by breaking its promise.
+    A share wake there is neither conversation nor a retirement: it wakes
+    only when reading the pair then finds news (`_share_notes_wake`).
     """
     wake = wake or _Wake()
     hub = post.hub
@@ -3890,8 +4269,11 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                 continue
             # Messages on a channel polled only for the pair's notes are not
             # this listener's: never a wake on their own, and not counted as
-            # deferred, since the session never asked to read them.
-            ours = [m for m in messages if m.get("channel") not in post.protocol_only]
+            # deferred, since the session never asked to read them. Nor is a
+            # share wake in a work room, on any channel: it is a wake only if
+            # reading the pair finds news (`_share_notes_wake`).
+            ours = [m for m in messages if m.get("channel") not in post.protocol_only
+                    and not (work_room and pairing.message_tag(m) == pairing.TAG_SHARED)]
             if post.handshake:
                 # Protocol traffic, so do-not-disturb does not apply: the
                 # wake is anything but the initiator's own hello, which was
@@ -3909,6 +4291,7 @@ def _park(post: _Post, identity: Identity, deadline: float | None, described: st
                 matched = wake.select(ours)
                 if work_room:
                     matched = _pair_notes_wake(post, messages, matched, identity)
+                    matched = _share_notes_wake(post, messages, matched, wake)
             if matched:
                 # What arrived alongside the wake and did not cause it is
                 # deferred too; the payload's count must include it.
@@ -4083,6 +4466,28 @@ def cmd_listen(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     _warn_key_left_behind(args, primary)
 
+    # One share read as it arms, of every pair (`_ShareWatch.arm`): what a
+    # peer wrote while nothing was parked is in a pair room until something
+    # reads it, and from here on a wake only says "look". Before the "parked"
+    # line, so a caller waiting for that line knows the read is done.
+    watch: _ShareWatch | None = getattr(args, "_listen_shares", None)
+    said = 0
+    if watch is not None:
+        for post in posts:
+            watch.attach(post)
+        arrived = watch.arm()
+        _say_shared(arrived)
+        said = len(watch.found)
+        if watch.found and not wake.types:
+            # Already news: woken at once, as a message already waiting wakes
+            # it at once. The next arming's read finds these applied.
+            _print_json({"messages": [], "room": None, "role": "shared",
+                         "shared": {"notes": list(watch.found), "next": _SHARE_NEXT}})
+            if not args.quiet:
+                print("listen: shared rooms changed while no listener was parked — "
+                      "waking the session", file=sys.stderr)
+            return EXIT_OK
+
     if not args.quiet:
         where = " and ".join(f"as {post.agent_id} in {post}" for post in posts)
         print(f"listen: parked {where}"
@@ -4121,6 +4526,8 @@ def cmd_listen(args: argparse.Namespace) -> int:
                 if rescan is not None and (deadline is None
                                            or time.time() < deadline + 2.0):
                     for new in rescan.fresh(posts, identity):
+                        if watch is not None:
+                            watch.attach(new)
                         posts.append(new)
                         watching.append(new)
                         start(new)
@@ -4142,6 +4549,10 @@ def cmd_listen(args: argparse.Namespace) -> int:
                 others = _outcomes_elsewhere(posts, chosen)
                 pair_report = (_pair_wake(chosen, chosen_messages)
                                if chosen.pair is not None else None)
+                # Whichever room's thread found it: a note read on one pair's
+                # wake is this listener's news, and is said here or only by
+                # `share status`.
+                shared_news = list(watch.found) if watch is not None else []
                 # To stdout, because the wake carries it: the session comes
                 # back already holding the event instead of having to ask.
                 # `messages` first and unchanged, so a reader written for the
@@ -4163,7 +4574,12 @@ def cmd_listen(args: argparse.Namespace) -> int:
                     # outcome is reported here or nowhere, since collecting
                     # deleted the pending handshake it came from.
                     **({"pairings": others} if others else {}),
+                    # What a share wake found, read from the share store: the
+                    # note in the work room only said to look.
+                    **({"shared": {"notes": shared_news, "next": _SHARE_NEXT}}
+                       if shared_news else {}),
                 })
+                _say_shared(shared_news[said:])
                 for outcome in others:
                     _say_outcome(outcome)
                 if chosen.handshake and chosen.outcome is not None:
@@ -5143,6 +5559,13 @@ def cmd_invite(args: argparse.Namespace) -> int:
     token = args.token or config.token or _saved_setting(
         Path(".").resolve(), "SWITCHBOARD_TOKEN"
     )
+    shared = _cached_shared(args)
+    if shared is not None:
+        # The token the room resolved with and no other: the offer's, or this
+        # environment's only when the room is on this environment's hub. The
+        # fallbacks above are this checkout's token, and the room's URL is one
+        # another machine chose.
+        token = config.token
     # A link is for a browser, and a browser is a viewer: it gets the key and
     # not the write key, so what it can do is decided by the hub rather than
     # by the page. `--read-only` asks for the same on the bare string.
@@ -5178,20 +5601,33 @@ def cmd_invite(args: argparse.Namespace) -> int:
     # stderr even under --json, because the agent asked to "let the reviewer
     # into our pair" is the caller least likely to read a field.
     pair = _cached_pair(args)
-    pair_note = (
+    room_note = (
         f"this invite opens work room generation {pair.generation} of pair "
         f"{pair.name} only; it does not follow a heal, and `switchboard pair heal "
         f"{pair.name}` is how you eject whoever holds it."
     ) if pair is not None else ""
+    # A shared room's invite is the room itself, the same keys every machine
+    # on its list holds — the one deliberate way they leave the share store —
+    # and nothing takes it back: the remedy is a new room, not a heal.
+    if shared is not None:
+        room_note = (
+            f"this invite is shared room {shared.name} itself: the same keys every "
+            "machine on its list holds, so whoever has it is in the room for as long as "
+            "it lives, and nothing revokes that. To work without them, make a new room "
+            f"(`switchboard share new NAME --from {shared.name}`) and move to it.")
     if args.json:
         _print_json({"invite": blob.encode(), "describes": blob.redacted(),
                      **({"link": handover} if args.link else {}),
-                     **({"carries_key": INVITE_KEY_NOTE} if blob.key and not pair else {}),
+                     **({"carries_key": INVITE_KEY_NOTE}
+                        if blob.key and not pair and not shared else {}),
                      **({"pair": {"name": pair.name, "room": pair.room,
-                                  "generation": pair.generation, "note": pair_note}}
-                        if pair is not None else {})})
-        if pair_note:
-            print(f"note: {pair_note}", file=sys.stderr)
+                                  "generation": pair.generation, "note": room_note}}
+                        if pair is not None else {}),
+                     **({"shared": {"name": shared.name, "room": shared.room,
+                                    "note": room_note}}
+                        if shared is not None else {})})
+        if room_note:
+            print(f"note: {room_note}", file=sys.stderr)
         return EXIT_OK
     print(handover)
     # Not inside the prompt block below: that one is gated on a TTY, and a
@@ -5202,8 +5638,8 @@ def cmd_invite(args: argparse.Namespace) -> int:
     # Not gated either, and for the same reason: the one most likely to mint
     # an invite for a chat is an agent, with no TTY, asked to "give ChatGPT
     # access to the repo room".
-    if pair_note:
-        print(f"\nnote: {pair_note}", file=sys.stderr)
+    if room_note:
+        print(f"\nnote: {room_note}", file=sys.stderr)
     elif blob.key:
         print(f"\nnote: {INVITE_KEY_NOTE}", file=sys.stderr)
     if _can_prompt(no_input=args.no_input, quiet=args.quiet, as_json=args.json):
@@ -5249,7 +5685,7 @@ def cmd_join(args: argparse.Namespace) -> int:
     One implementation, one wording, in the place the SDK already tests it.
     """
     fmt = Fmt(_use_color(sys.stdout))
-    _refuse_pair_label(args.save, "--save")
+    _refuse_reserved_label(args.save, "--save")
     blob = getattr(args, "invite", None)
     if not blob:
         print("error: join needs the invite string — `switchboard join swb1_...`, "
@@ -5875,6 +6311,203 @@ def _pair_export(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return EXIT_OK
+
+
+# --- shared rooms --------------------------------------------------------------
+#
+# A room one machine mints and offers to the pairs it names, carried sealed
+# through their pair rooms. The model and every rule about what a peer may
+# change live in `sharing.py`; what lives here is the surface, in the pair
+# group's shape: the handle or the outcome on stdout, what it cost and what
+# peers did on stderr as `share:` lines, one document under `--json`, and a
+# refusal as a sentence with its state. `--room shared:<name>` is
+# `_apply_known_room`'s, and a listener's share is `_listen_posts`'.
+
+
+def cmd_share(args: argparse.Namespace) -> int:
+    """Mint, accept, leave and list shared rooms.
+
+    Thin over `switchboard.sharing`, as `pair` is over pairing, so the CLI and
+    the MCP bridge cannot disagree about who a room was offered to. A
+    `SharingError` is a `PairingError`, so it is reported the pair group's way:
+    the sentence on stderr, `{error, state}` under `--json`, exit 1. Nothing a
+    share command prints carries a room key, write key or token; `--room
+    shared:<name> invite` is the one way they leave.
+    """
+    handlers: dict[str, Callable[[argparse.Namespace], int]] = {
+        "new": _share_new, "accept": _share_accept, "leave": _share_leave,
+        "status": _share_status,
+    }
+    try:
+        return handlers[args.share_action](args)
+    except pairing.PairingError as exc:
+        return _pairing_refusal(args, exc)
+    except OSError as exc:
+        # The share store's own failures arrive as refusals already
+        # (`state: store`); an OSError that gets this far is the pair store's,
+        # saving a pair that a share command resolved.
+        return _pairing_refusal(args, pairing.store_failure(exc))
+
+
+def _share_kw() -> dict[str, Any]:
+    """What every share call takes: the stores, the hub, this machine's clock."""
+    return {"store": _share_store(), "pair_store": _pair_store(), "connect": Client,
+            "now": _pairing_now()}
+
+
+def _say_share(lines: Sequence[str], notes: Sequence[dict[str, Any]]) -> None:
+    """A share result's warnings and the notes it produced, on stderr.
+
+    Whatever `-q` says, like a heal's: each says what a room cost or what a
+    peer did, and a note not said here is said only by `share status`.
+    """
+    for line in lines:
+        print(f"share: {line}", file=sys.stderr)
+    for note in notes:
+        print(f"share: {note.get('text')}", file=sys.stderr)
+
+
+def _share_new(args: argparse.Namespace) -> int:
+    """`share new NAME`: mint a room and offer it to exactly the list given.
+
+    stdout says who it was offered to, by name, because that is the claim the
+    command makes and the one a reader checks: a pair whose room could not be
+    reached is not on that line, and is said on stderr with why — the offer
+    lands on a later touch. With `--from`, the old room runs on in parallel,
+    and what that strands is said rather than discovered.
+    """
+    result = sharing.share_new(
+        args.share_name, _pair_base(args), pairs=args.with_pairs or None,
+        from_room=args.from_room, note=args.note or "", with_token=args.with_token,
+        agent_id=_pair_agent(args), **_share_kw(),
+    )
+    if args.json:
+        _print_json(result.summary())
+        return EXIT_OK
+    print(f"{result.room} offered to " + (", ".join(result.offered) if result.offered
+                                          else "nobody yet"))
+    lines = [f"could not reach {pair}: {reason}"
+             for pair, reason in sorted(result.unreached.items())]
+    if result.dropped:
+        lines.append(f"left off {result.name}'s list, though on {result.from_room}'s: "
+                     f"{', '.join(result.dropped)} — each left {result.from_room}, or its "
+                     "pair is over")
+    _say_share([*lines, *result.warnings], result.summary()["notes"])
+    return EXIT_OK
+
+
+def _share_accept(args: argparse.Namespace) -> int:
+    """`share accept OFFER`: keep an offered room; the handle on stdout.
+
+    The handle is what every later command takes, so it is all stdout says.
+    Whether the sharer has been told — this side's record carrying the offer
+    back is its "accepted" — is on stderr when it has not been yet.
+    """
+    kept = sharing.accept(args.offer, _pair_base(args), name=args.share_name,
+                          **_share_kw())
+    if args.json:
+        _print_json(kept.summary())
+        return EXIT_OK
+    print(kept.room)
+    lines = ([f"already held here as {kept.name}; {kept.pair} is on its list now"]
+             if kept.joined else [])
+    _say_share([*lines, *kept.warnings], kept.summary()["notes"])
+    return EXIT_OK
+
+
+def _share_leave(args: argparse.Namespace) -> int:
+    """`share leave NAME`: drop a room here, or refuse an offer, and ask the pairs.
+
+    Done here whatever the hub says (`sharing.leave`); which pairs know is
+    reported rather than assumed, because one not told yet can still include
+    this machine in its next `share new --from`. Exit 0 either way, as `pair
+    forget` is: what is left to do is retried by every touch.
+    """
+    left = sharing.leave(args.target, _pair_base(args), note=args.note or "",
+                         **_share_kw())
+    if args.json:
+        _print_json(left.summary())
+        return EXIT_OK
+    what = (f"left {sharing.handle(left.name)}" if left.kind == "room"
+            else f"refused the offer of {left.name}")
+    print(what + (f"; told {', '.join(left.told)}" if left.told else ""))
+    lines = [f"not told yet: {pair} ({reason})"
+             for pair, reason in sorted(left.untold.items())]
+    _say_share([*lines, *left.warnings], left.summary()["notes"])
+    return EXIT_OK
+
+
+def _list_entry(entry: dict[str, Any]) -> str:
+    """One pair on a room's list, and how far the room has got with it.
+
+    `has` is the pair's own record carrying the room back — what it says, not
+    what this side hopes; `offered` is this side's record to it having landed.
+    """
+    if entry.get("has"):
+        state = "has it"
+    elif entry.get("offered"):
+        state = "offered"
+    else:
+        state = "not offered yet"
+    return f"{entry.get('pair')} ({state})"
+
+
+def _share_status(args: argparse.Namespace) -> int:
+    """`share status [NAME]`: rooms, lists, offers, owed leaves and notes, after a touch.
+
+    Not read-only, deliberately: it is one of the touches (`sharing.status`),
+    so an offer waiting in a pair room is found here rather than by the
+    listener alone. Every note of the last seven days is shown every time —
+    several sessions share this store, and the first to look must not hide
+    them from the rest. With a NAME the exit code says whether it is a room
+    held or an offer waiting here (0) or neither (1), the question a script
+    passing a name was asking.
+    """
+    name = args.share_name
+    view = sharing.status(_pair_base(args), name=name, **_share_kw())
+    found = any(r["name"] == name for r in view["rooms"]) or \
+        any(o["name"] == name for o in view["offers"])
+    code = EXIT_ERROR if name is not None and not found else EXIT_OK
+    if args.json:
+        _print_json(view)
+        return code
+    fmt = Fmt(_use_color(sys.stdout))
+    if not (view["rooms"] or view["offers"] or view["left"]):
+        print(f"no shared room or offer called {name!r} on this machine" if name else
+              "no shared rooms on this machine — `switchboard share new NAME --with PAIR` "
+              "mints one and offers it to that pair.")
+    if view["rooms"]:
+        print(fmt.bold(f"{'ROOM':<30} {'ORIGIN':<22} LIST"))
+        for room in view["rooms"]:
+            origin = room["origin"]
+            where = (f"{origin.get('pair')}'s {origin.get('name')}"
+                     if isinstance(origin, dict) else "created here")
+            entries = ", ".join(_list_entry(e) for e in room["list"]) or "nobody"
+            print(f"{room['room'][:29]:<30} {where[:21]:<22} {entries}")
+            if room.get("from"):
+                print(f"  {fmt.dim('from')} {room['from']}")
+            if room.get("note"):
+                print(f"  {fmt.dim('note')} {room['note']}")
+    if view["offers"]:
+        print(fmt.bold("OFFERED TO THIS MACHINE"))
+        for offer in view["offers"]:
+            held = f" — already held here as {offer['held']}" if offer.get("held") else ""
+            print(f"  {offer['offer']}{held}"
+                  + (f": {offer['note']}" if offer.get("note") else "")
+                  + f"  {fmt.dim('(share accept ' + offer['offer'] + ' keeps it)')}")
+    if view["left"]:
+        print(fmt.bold("LEFT, NOT YET ACKNOWLEDGED"))
+        for left in view["left"]:
+            print(f"  {left['name']}: waiting on {', '.join(left['waiting'])}")
+    if view["unreached"]:
+        print(fmt.bold("NOT REACHED"))
+        for row in view["unreached"]:
+            print(f"  {fmt.yellow(str(row['pair']))} ({row.get('state')}): {row['reason']}")
+    if view["notes"]:
+        print(fmt.bold("NOTES, LAST 7 DAYS"))
+        for note in view["notes"]:
+            print(f"  {fmt.dim(str(note['at']))} {note['text']}")
+    return code
 
 
 def cmd_signer(args: argparse.Namespace) -> int:
@@ -8067,6 +8700,10 @@ _MISTAKEN_VERBS = {
     "pair_status": "pair status",
     "pair_heal": "pair heal <name>",
     "pair_forget": "pair forget <name>",
+    "share_new": "share new <name> --with <pair>",
+    "share_accept": "share accept <offer>",
+    "share_leave": "share leave <name>",
+    "share_status": "share status",
 }
 
 
@@ -8132,7 +8769,9 @@ def build_parser() -> argparse.ArgumentParser:
              "learned — the invite it arrived as, the checkout `init` set up, the "
              "variable that holds its key — never from a key typed here. "
              "`pair:NAME` is a paired machine's current work room (`switchboard "
-             "pair`), resolved through the pair room each time, so it follows a heal.",
+             "pair`), resolved through the pair room each time, so it follows a heal. "
+             "`shared:NAME` is a shared room this machine holds (`switchboard share`), "
+             "resolved from the share store each time.",
     )
     parser.add_argument(
         "--lobby", action="store_true",
@@ -8534,6 +9173,60 @@ def build_parser() -> argparse.ArgumentParser:
                         "own session")
     p.set_defaults(func=cmd_pair)
 
+    p = sub.add_parser(
+        "share",
+        help="rooms several paired machines work in, passed sealed through their pair rooms",
+        description="A shared room is an ordinary write-protected room that one machine "
+                    "mints and offers to the pairs it names; it travels sealed inside "
+                    "their pair rooms, so no human carries it and no conversation holds "
+                    "its key. Each machine keeps, per room, its own list of the pairs it "
+                    "shares it with. There is one action, `new`: no add, no remove — to "
+                    "work without someone, make a new room (`--from` the old one's list) "
+                    "and move to it; rooms run in parallel and nothing is revoked. `leave` "
+                    "drops a room here and asks the pairs on its list to take this machine "
+                    "off theirs. Nothing moves on its own: every change a peer makes is a "
+                    "note, and accepting, keeping and leaving are each an agent's decision. "
+                    "Work in a room with `--room shared:NAME`.",
+    )
+    ssub = p.add_subparsers(dest="share_action", required=True)
+    s = ssub.add_parser(
+        "new", help="mint a room and offer it to exactly the pairs named (or --from's list)")
+    s.add_argument("share_name", metavar="NAME",
+                   help="what this machine calls the room (`--room shared:NAME`)")
+    s.add_argument("--with", dest="with_pairs", action="extend", nargs="+", metavar="PAIR",
+                   help="a pair to offer it to (repeatable); its list is exactly these")
+    s.add_argument("--from", dest="from_room", metavar="ROOM",
+                   help="take the list from this held room, as it stands after reading "
+                        "its pairs: whoever left it is not offered the new one. ROOM is "
+                        "not changed and runs on in parallel")
+    s.add_argument("--note", help="one line the pairs see with the offer (at most "
+                                  f"{sharing.NOTE_MAX} characters)")
+    s.add_argument("--with-token", action="store_true",
+                   help="let the offer carry this hub's token, for pairs that do not hold "
+                        "it. Without it, each machine uses its own token for this hub, or "
+                        "none")
+    s = ssub.add_parser(
+        "accept", help="keep a room a pair offered; the sharer is told by your record")
+    s.add_argument("offer", metavar="OFFER",
+                   help="the sharer's name for it, or PAIR/NAME when two pairs offer "
+                        "rooms with the same name")
+    s.add_argument("--name", dest="share_name", metavar="NAME",
+                   help="what to call it here (default: the sharer's name), needed when "
+                        "that name is taken")
+    s = ssub.add_parser(
+        "leave", help="drop a room here, or refuse an offer, and ask the pairs to take "
+                      "this machine off their lists")
+    s.add_argument("target", metavar="NAME",
+                   help="a room held here (shared:NAME for the room alone), or an offer "
+                        "(NAME or PAIR/NAME) to refuse; again, to retry the pairs not "
+                        "told yet")
+    s.add_argument("--note", help="one line the pairs see about why")
+    s = ssub.add_parser(
+        "status", help="rooms held, who has each, offers waiting, leaves owed, and every "
+                       "note of the last 7 days — after reading every pair")
+    s.add_argument("share_name", nargs="?", metavar="NAME", help="only this room")
+    p.set_defaults(func=cmd_share)
+
     p = sub.add_parser("health", help="check the hub is reachable")
     p.set_defaults(func=cmd_health)
 
@@ -8808,19 +9501,24 @@ def build_parser() -> argparse.ArgumentParser:
                         "peer on another repo can find you — this is for a session "
                         "that specifically does not want to be found while it works.")
     p.add_argument("--in", dest="in_rooms", action="append", metavar="LABEL",
-                   help="also park in a known room, by label, or a pair's work room "
-                        "as pair:NAME (repeatable). Rooms this session joined, was "
-                        "invited into or minted in the last hour are parked in without "
+                   help="also park in a known room, by label, a pair's work room as "
+                        "pair:NAME, or a shared room as shared:NAME (repeatable). Rooms "
+                        "this session joined, was invited into or minted in the last hour, "
+                        "and shared rooms used here in the last day, are parked in without "
                         "asking.")
     p.add_argument("--only", dest="only_rooms", action="append", metavar="LABEL",
-                   help="park in these known rooms or pair:NAME rooms and nowhere else "
-                        "— not this room, not the lobby, not the other pairs (repeatable)")
+                   help="park in these known rooms, pair:NAME or shared:NAME rooms and "
+                        "nowhere else — not this room, not the lobby, not the other pairs "
+                        "(repeatable)")
     p.add_argument("--no-pairs", action="store_true",
                    help="do not park in paired rooms. By default one listener also "
-                        "parks in the work room of every pair used in the last day, "
-                        "waking on the pair channel, and in the handshake room of every "
-                        "pairing still waiting on its answer — which it collects the "
-                        "moment the answer lands, before waking you with the outcome.")
+                        "parks in the work room of every pair used in the last day or "
+                        "carrying shared rooms (on a held room's list, or offering one), "
+                        "waking on the pair channel — and on a peer's shared-room change "
+                        "there once reading the pair confirms it — and in the handshake "
+                        "room of every pairing still waiting on its answer, which it "
+                        "collects the moment the answer lands, before waking you with "
+                        "the outcome.")
     p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("watch", help="follow messages until interrupted")
