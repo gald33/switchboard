@@ -201,6 +201,11 @@ else's server shared with every other room. So the bridge doesn't serve them:
   peer. A `room="pair:…"` handle is refused for the same reason. Pair from a
   bridge on your own machine, or with `switchboard pair`; see
   [pairing.md](pairing.md).
+- `share_new`, `share_accept`, `share_leave` and `share_status`, and every
+  `room="shared:…"` handle, because shared rooms travel over pairs the hosted
+  bridge does not keep, and their keys would be kept on its operator's disk.
+  Share from a bridge on your own machine, or with `switchboard share`; see
+  [sharing.md](sharing.md).
 - The ordinary `join_room`, which would fill gaps in an invite from the
   server's environment. At `/mcp` it's replaced by the front door's own
   `join_room`, which takes nothing but the invite. To switch rooms, call it

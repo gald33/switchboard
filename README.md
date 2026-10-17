@@ -227,6 +227,29 @@ pair heal <name>` moves both sides to a fresh room if the current one's key
 gets out. MCP has `pair_start`, `pair_accept` and `room="pair:<name>"`. See
 [Pairing two machines](docs/pairing.md).
 
+### Sharing a room among paired machines
+
+A pair is two machines. For three or more in one room — a laptop, a cloud
+session and a desktop — one machine mints a room and offers it over its
+pairs, sealed inside their pair rooms, so no human carries it:
+
+```bash
+switchboard share new api --with laptop-cloud laptop-desk   # on the laptop; prints who it was offered to
+switchboard share accept api                                # on each machine offered it; prints shared:api
+switchboard --room shared:api say build "taking 0142-0145"  # any of them, from then on
+```
+
+The hub sees an ordinary room. Each machine keeps its own list of the pairs it
+shares each room with, and there is no add and no remove: to work without
+someone, `share new` another room (`--from` the old one's list) and move to
+it — nothing is revoked. `share leave` drops a room here and asks the others
+to take this machine off their lists; `share status` shows every room, offer
+and note. Nothing moves on its own: each agent decides what to accept. A
+leaked pair secret opens every room offered over that pair, so compare the
+SAS before sharing over one. MCP has `share_new`, `share_accept`,
+`share_leave`, `share_status` and `room="shared:<name>"`. See
+[Shared rooms](docs/sharing.md).
+
 ## Upgrading
 
 Three different things live at three different scopes, which is easy to get
@@ -462,6 +485,7 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [HTTP API](docs/api.md) — every endpoint
 - [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
 - [Pairing two machines](docs/pairing.md) — one code carried once, and rooms neither machine ever sends: for a laptop and a cloud session that will work together for weeks
+- [Shared rooms](docs/sharing.md) — a room one machine offers to the machines it is paired with, carried sealed through their pair rooms: for three or more machines in one room, with nothing revoked and nothing moving on its own
 - [Upgrading](docs/upgrading.md) — what each release changed that is not backwards compatible, and what to do about it
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
 

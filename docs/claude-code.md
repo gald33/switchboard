@@ -774,6 +774,10 @@ the case to log.
 | `pair_status` | After either of those — whether the other side answered, the SAS to compare on both screens, when the other side last used the pair, and each pair's warnings. Collects a waiting answer, so it is not read-only |
 | `pair_heal` | The pair's work-room key got out (an invite to it went somewhere it should not). Moves both sides to a fresh work room; leases, board entries and unread messages stay behind |
 | `pair_forget` | The pair is finished with, the other side ended it, or a SAS comparison failed. Deletes this machine's copy of the pair secret and tells the other side |
+| `share_new` | More than two machines need one room, or you are carrying on without somebody. Mints a room and offers it to the pairs named (or `from_room`'s list), sealed inside each pair room; `room="shared:<name>"` reaches it from any tool. No add and no remove: a new room with a new list is how the list changes — see [sharing.md](sharing.md) |
+| `share_accept` | A `share_notes` row says a pair offered you a room. Keeps it, after reading the live offer again; the sharer is told you accepted |
+| `share_leave` | Done with a shared room, or refusing an offer. Drops it here and asks the machines on its list to take this one off theirs; revokes nothing. `shared:<name>` names the held room alone, `<pair>/<name>` an offer alone |
+| `share_status` | When a `share_notes` row needs context, or before `share_new` with `from_room`. Every room, its list read from the live records, every offer waiting, every leave not yet acknowledged, and the last week's notes. Delivers what this machine still owes its pairs, so it is not read-only |
 
 ### Somebody you have never messaged
 

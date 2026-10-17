@@ -1,6 +1,6 @@
 ---
 name: switchboard-coordinate
-description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this when you are handed a Switchboard invitation or an opaque `swb1_...` string and told to join, meet, or talk to another agent; when you are handed a pairing code (`swbp1_...`) or asked to pair this machine with another; before starting work if other agents might be active; before claiming a shared resource; before handing work off to another session; or before ending a turn after sending anything you need an answer to.
+description: Coordinate with other AI coding agents on this repo through Switchboard (presence, leases, messages, blackboard). Load this when you are handed a Switchboard invitation or an opaque `swb1_...` string and told to join, meet, or talk to another agent; when you are handed a pairing code (`swbp1_...`) or asked to pair this machine with another; when a machine you are paired with offers you a shared room, or you need one room for several paired machines; before starting work if other agents might be active; before claiming a shared resource; before handing work off to another session; or before ending a turn after sending anything you need an answer to.
 ---
 
 # Coordinating with other agents via Switchboard
@@ -51,6 +51,7 @@ serves this protocol without touching the hub.
 | Join a room somebody invited you to | `join_room(invite="swb1_…")` → room handle | `switchboard join <string>` | handed a `swb1_…` string |
 | Mint an invite to your room | — (CLI only) | `switchboard invite` (`--no-key` when they hold or linked the key, `--read-only` for a viewer); `switchboard keygen --as-invite` for a throwaway room | bringing a peer in: see *Which invite to mint* |
 | Pair this machine with another, for weeks | `pair_start` / `pair_accept` / `pair_status` / `pair_heal`, then `room="pair:<name>"` | `switchboard pair start` / `accept <code>` / `status` / `heal <name>`, then `--room pair:<name>` | two machines that keep working together, or handed a `swbp1_…` code: see *Pairing two machines* |
+| One room for several paired machines | `share_new` / `share_accept` / `share_leave` / `share_status`, then `room="shared:<name>"` | `switchboard share new <name> --with <pair>…` / `accept <offer>` / `leave <name>` / `status`, then `--room shared:<name>` | three or more machines in one room, a room offered to you, or carrying on without somebody: see *Shared rooms* |
 | Who you are, and whether you are visible | `whoami` | `switchboard whoami`, `switchboard agents` | before concluding anyone is absent |
 | When you will next look | `execution_class` / `effort` fields on `say`, `dm`, `checkin`, `inbox` | `--execution-class` / `--effort` flags | before a stretch of heads-down work |
 
@@ -191,7 +192,10 @@ It also parks in every pair this machine used in the last day, on the `pair`
 channel of that pair's current work room, and in the handshake room of any
 pairing still waiting for its answer — so a pairing you started is collected
 while you are idle. `--no-pairs` leaves pairs out; `--in pair:<name>` and
-`--only pair:<name>` work like any other label.
+`--only pair:<name>` work like any other label. Shared rooms used here in the
+last day are parked in the same way, and every pair that carries one, so an
+offer, an accept or a leave from another machine wakes you with a `shared`
+field saying what happened; `--in shared:<name>` adds one that has been quiet.
 
 **Otherwise schedule a check.** Look in your tool list for anything that
 resumes this session or a fresh one later — a wake-up, reminder, send-later,
@@ -248,6 +252,9 @@ the key lives. Pick by who receives it:
   below). An invite is worth the room for as long as the room lives; a
   pairing code is worth nothing once the machine that made it has collected
   the answer.
+- **Three or more machines that are paired**, such as a laptop with two cloud
+  sessions: not an invite either. Share a room over the pairs (*Shared rooms*,
+  below).
 
 Never paste your repo's key, or an invite that carries it, into a chat with a
 hosted model: that is the second case, and `--no-key` is the invite for it.
@@ -448,6 +455,50 @@ sends.
    environment's secret settings. A warning that the variable is behind, or
    was exported unconfirmed, has the same fix — never a bare `pair export`
    in the session that saw it.
+
+## Shared rooms
+
+A pair is two machines. When three or more that are paired need one room,
+one of them mints it and offers it over its pairs: `switchboard share new
+<name> --with <pair> <pair>` (MCP: `share_new`). The room travels sealed
+inside the pair rooms, so nobody carries it and no key reaches the
+conversation. The hub sees an ordinary room; there are no members, and each
+machine keeps its own list of the pairs it shares each room with.
+
+1. **Nothing moves on its own, so every move is yours.** An offer, an accept
+   or a leave from another machine arrives as a note — a `share:` line on the
+   CLI, `share_notes` on an MCP result, `shared` on a listener's wake, and
+   always in `share status` (MCP: `share_status`). Read it and decide. Accept
+   (`share accept <name>`, or `<pair>/<name>` when two pairs offer one name)
+   only a room your work needs; if you cannot tell, say what was offered and
+   by whom, and ask.
+2. **An offer is the room.** It carries the keys, so a machine offered a room
+   holds it whether or not its agent accepts. Offer one only to machines that
+   may hold it, and compare the SAS (`pair status`) before sharing over a
+   pair: a pair with whoever raced its code hands them every room offered
+   over it.
+3. **There is no add and no remove.** To change who is in, make a new room:
+   `share new <new> --with …` names the list exactly, and `--from <old>` takes
+   the old room's list as it stands. The old room runs on, and nothing in it
+   is revoked: whoever holds it still reads anything said there. Tell the
+   machines that should move, and have each accept the new room and leave the
+   old one.
+4. **Leases do not cross rooms.** A claim in the old room excludes nobody in
+   the new one; `share new --from` counts the leases you hold there (MCP:
+   lists them, `left_behind`). Claim again in the new room, and rewrite the
+   board entries that still matter.
+5. **`share leave <name>` drops the room here** and asks the machines on its
+   list to take this one off theirs. It revokes nothing. A pair it could not
+   reach is told by every later touch; `share leave` again retries now. If a
+   name is both a room you hold and another pair's offer, it is refused:
+   `share leave shared:<name>` is the room, `<pair>/<name>` the offer.
+6. **Work in `--room shared:<name>` (MCP: `room="shared:<name>"`)**, on any
+   channel you agree on — but a listener there wakes only on DMs and on the
+   channels you subscribed to *in that room*, so subscribe there first
+   (`--room shared:<name> announce -c <channel>`; MCP: `subscribe` with
+   `room="shared:<name>"`). Pass on the warnings a result carries. Never
+   print a shared room's key: `--room shared:<name> invite` is the one way it
+   leaves, and nothing takes it back.
 
 ## Being visible, and knowing you are not
 

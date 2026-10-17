@@ -28,17 +28,20 @@ commands do, what they cost, and what they cannot promise.
 
 ## Pairing or an invite
 
-| | An invite (`swb1_…`) | A pairing code (`swbp1_…`) |
-|---|---|---|
-| What the string is | the room: hub, token, key, write key | half of a key exchange, and the address of a room to finish it in |
-| What it is worth once carried | the room, for as long as the room lives | the pairing, until the answer is collected; nothing after that, or once it expires unanswered — 15 minutes by default |
-| Right for | an afternoon; a viewer in a browser; a hosted model (`invite --no-key`) | two machines that will keep working together |
-| What the other side needs | anything that reads invites: the SDK, the CLI, either bridge, a browser | switchboard on a machine of its own, CLI or local MCP bridge — never a hosted one |
-| When a key leaks | mint a new room and hand it out again | `switchboard pair heal <name>`; both sides follow on their own |
+| | An invite (`swb1_…`) | A pairing code (`swbp1_…`) | A shared room (`shared:<name>`) |
+|---|---|---|---|
+| What the string is | the room: hub, token, key, write key | half of a key exchange, and the address of a room to finish it in | there is none: a room one machine passes to the machines it is paired with, sealed inside their pair rooms |
+| What it is worth once carried | the room, for as long as the room lives | the pairing, until the answer is collected; nothing after that, or once it expires unanswered — 15 minutes by default | nobody carries it |
+| Right for | an afternoon; a viewer in a browser; a hosted model (`invite --no-key`) | two machines that will keep working together | a room several paired machines work in |
+| What the other side needs | anything that reads invites: the SDK, the CLI, either bridge, a browser | switchboard on a machine of its own, CLI or local MCP bridge — never a hosted one | a confirmed pair with the machine sharing it, on a machine of its own |
+| When a key leaks | mint a new room and hand it out again | `switchboard pair heal <name>`; both sides follow on their own | a new room without whoever holds it (`share new`), and everyone moving; nothing is revoked |
 
-The two are not exclusive. A paired work room can still be handed to a third
+The three are not exclusive. A paired work room can still be handed to a third
 party as an ordinary invite (`switchboard --room pair:<name> invite`), and
-`pair heal` is then how you take it back.
+`pair heal` is then how you take it back. A room that more than two machines
+work in is a shared room: one machine mints it and offers it over its pairs,
+and each machine it is offered to decides whether to keep it — see
+[sharing.md](sharing.md).
 
 ## The three rooms
 
@@ -58,9 +61,13 @@ into it.
    initiator's public key is never in the room; it travels only in the code.
 2. **The pair room**, derived from the pair secret. Long-lived in the sense
    that the secret is; on the hub it holds two sealed records, one per side,
-   each rewritten while the pair is in use. It is used for nothing but keeping
-   the pair in step: which work room is current, and whether either side has
-   left.
+   each rewritten while the pair is in use, which keep the pair in step:
+   which work room is current, and whether either side has left. It also
+   carries, on purpose, the shared rooms each side offers the other
+   ([sharing.md](sharing.md)): one sealed record per room per side, under
+   `coord/share/`. Those rooms are minted, not derived, so their keys are in
+   the records — and the pair secret opens every room currently offered over
+   the pair as well as the pair's own.
 3. **The work room**, generation *n*, derived from the pair secret and *n*.
    This is where the two sides actually coordinate — say, claim, board,
    listen — exactly as in any other room. When its key is exposed, a heal
@@ -140,7 +147,9 @@ anything.
 
 Both sides then show the same **short authentication string**, `NNNN-NNNN`
 (about 26.6 bits). Comparing the two is optional, and it is the initiator's
-only defence against a raced code — see the threat model below. The nonce it
+only defence against a raced code — see the threat model below. Compare the
+SAS before sharing over a pair: a pair with whoever raced the code hands them
+every room offered over it ([sharing.md](sharing.md#what-a-leak-opens)). The nonce it
 is computed from was committed to in the code and disclosed only after the
 answer was fixed, so somebody racing for the code cannot grind their key until
 their string matches the real one.
@@ -243,7 +252,11 @@ move, and it is what a listener parked in a pair's work room watches. A plain
 `switchboard listen` parks in every pair used in the last day, and in every
 pair carried in `SWITCHBOARD_PAIR_<NAME>` — a fresh container's export says
 when the *exporting* machine last used it, which is no reason to skip it —
-alongside the rooms it always parks in. A pair it cannot read or resolve costs
+alongside the rooms it always parks in. Used means worked over: the share
+reads that look at every pair on a schedule (`share status`, a listener
+arming, the MCP bridge's sweep) do not count, or every pair would read as
+used within the minute; a pair that carries shared rooms is parked in for
+that reason instead ([sharing.md](sharing.md#listening)). A pair it cannot read or resolve costs
 only its own room, with a line on stderr saying why — even under `-q`, since
 that is a failure, not chatter; only the hint about a pair skipped for being
 idle, naming the `--in` flag that adds it, is dropped by `-q`. `--only
@@ -324,6 +337,7 @@ two machines only.
 | the answer — the responder's public key, a MAC, its note | handshake room, `pair` channel | until the collect deadline — the code's expiry plus 12 hours, so at most 24 hours |
 | the *consumed* marker — the collected transcript, the initiator's MAC, the SAS nonce — or an *aborted* one | handshake room, `pair` channel | until the collect deadline |
 | each side's record — its generation, strategy, last write, whether it ended the pair, and the initiator's proof once this side has it | pair room board, `coord/pair/side/<role>` | 7 days, the board ceiling; rewritten at most once a day while the pair is used |
+| each side's share records — per shared room, the room offered (its keys included) or a `left` ([sharing.md](sharing.md)) | pair room board, `coord/share/<role>/<rid>` | 7 days; rewritten at most once a day while the room is held, or until a `left` is acknowledged |
 | the *paired*, *moved* and *ended* notes | a work room, `pair` channel | an hour, like any message |
 | what agents put in a work room | work room *n* | what it would anywhere: messages an hour, board entries a day (seven at most), leases their TTL |
 | the pending handshake — `S`, the initiator's ephemeral private key, the nonce | the initiator only, `~/.switchboard/pairs/pending/<name>.json` | until the answer is collected and announced, or the pairing aborts. A code nobody answered in time is deleted by the first collection after its expiry plus four minutes — `pair status`, `pair wait`, a `--room pair:<name>` command, the MCP bridge's next call. Any pending handshake is deleted at its deadline (the code's expiry plus 12 hours) by the first thing on this machine to pass — a parked listener, `pair start`, `pair status`, `pair wait`, the MCP bridge |
@@ -344,7 +358,10 @@ will open. `pair status` lists only the pairs carried in
 there are none. It is per machine and per OS user — every agent running as
 this user can use the pair, which is the boundary `signing.py` states for
 everything else: the pair is between machines, not between processes. Losing
-it costs a fresh pairing, not data; there is nothing else the secret opens.
+it costs a fresh pairing, not data. Leaking it costs more than the pair's own
+rooms: every shared room currently offered over the pair travels sealed under
+the secret, so whoever copies a pair record holds those rooms too, and a heal
+does not take them back ([sharing.md](sharing.md#what-a-leak-opens)).
 
 Several processes on one machine — the CLI, the MCP bridge, a parked listener
 — can touch one pair at once, and they do not take turns across a hub call.
@@ -423,8 +440,11 @@ than write over a view newer than its own; run it again.
 
 **What a heal cannot do** is rescue a leaked pair secret. Every generation
 derives from it, so whoever holds it holds every room the pair will ever
-have. That is a copied store file, a printed `pair export`, a compromised
-machine — and the answer is `pair forget` on both sides and a fresh code.
+have — and a heal moves only the work room, never the pair room, so they
+also keep every shared room offered over the pair. That is a copied store
+file, a printed `pair export`, a compromised machine — and the answer is
+`pair forget` on both sides and a fresh code, then a new room for anything
+that was shared over the old pair ([sharing.md](sharing.md#what-a-leak-opens)).
 
 ### When the other side goes quiet
 
@@ -518,10 +538,12 @@ from the pair room like any other run.
 
 Stderr says what the value is, every time, `-q` or not: the pair's long-lived
 secret. Every work room the pair will ever have derives from it, a heal does
-not take it back, and only `pair forget` on both sides ends it. It goes in a
-secret store, never in a conversation, a ticket or a commit — and a
-`swbsecret1_` pasted where an invite or a code was expected is refused by
-name, with the advice to treat it as disclosed.
+not take it back, and only `pair forget` on both sides ends it. It opens more
+than the pair's own rooms, too: every shared room currently offered over the
+pair travels sealed under it ([sharing.md](sharing.md#what-a-leak-opens)), and
+nothing revokes those. It goes in a secret store, never in a conversation, a
+ticket or a commit — and a `swbsecret1_` pasted where an invite or a code was
+expected is refused by name, with the advice to treat it as disclosed.
 
 An export does not have to be kept current to keep working, but a stale one
 is said. After a heal, a fresh container still starts on the exported
@@ -597,7 +619,9 @@ rather than picking fields out of it, since a later release may add one.
 The calls are synchronous, with a synchronous `connect`; from an event loop,
 run each in a worker thread. The full contract is the docstring of
 `pairing.Store`, and the tests hold the core to it with a store that has
-those members and nothing else (`tests/test_pairing_store.py`).
+those members and nothing else (`tests/test_pairing_store.py`). Shared rooms
+are kept beside the pairs, through a protocol of their own, `sharing.Store`
+([sharing.md](sharing.md#the-store)).
 
 ## What it costs
 
@@ -654,8 +678,10 @@ over:
   pair or which code it belongs to.
 - **Sealed, padded traffic**: in the handshake room a hello, one answer (or
   more, if the code leaked) and a marker, on one blinded channel; in the pair
-  room two board entries under blinded keys, with their seven-day TTLs; in a
-  work room, whatever the agents do there. Every pairing message goes out as
+  room two board entries under blinded keys, with their seven-day TTLs, and
+  one more per shared room each side offers or has left
+  ([sharing.md](sharing.md#what-the-hub-sees)); in a work room, whatever the
+  agents do there. Every pairing message goes out as
   an ordinary `note`, with which step it is — hello, answer, marker,
   *paired*, *moved*, *ended* — sealed inside the body. A message's type
   travels in the clear, so a `pair.answer` type would have told the hub which
@@ -753,7 +779,11 @@ It does **not** protect against:
 - **A leaked pair secret.** Every generation derives from it, past and
   future, so the handshake has forward secrecy and the generations do not. A
   machine compromised, a store file copied or a `pair export` printed into a
-  transcript is a pair to forget and make again.
+  transcript is a pair to forget and make again. A leaked pair secret, or a
+  code somebody else answered, opens every room currently offered over that
+  pair as well; the remedy is a fresh pairing, then a new room whose list
+  leaves the old pair out ([sharing.md](sharing.md#what-a-leak-opens)), and a
+  heal does not help.
 - **Other processes running as the same OS user.** They can read the pair
   store, as they can read `.claude/settings.local.json` and a signer's
   memory. The OS user was always the boundary.
@@ -911,6 +941,16 @@ reveal). The current generation is the higher of the two, so between the two
 machines there is no compare-and-set and nothing to race, and the other
 side's record catching up is the acknowledgement. Processes on one machine
 do share a record, so there the write is conditional on the revision read.
+
+The pair room has one other tenant, on purpose: shared rooms
+([sharing.md](sharing.md)) travel through it, one record per room per side
+under `coord/share/<role>/`, by the same rule — each side writes only its own.
+The pair room already reaches exactly the two machines that hold `P`, sealed,
+write-protected and kept fresh by every use of the pair, so a room passed
+between them needs no channel of its own. What that costs is the exception to
+"nothing is minted or sent": a shared room is minted, its keys are in those
+records, and so `P` opens every room currently offered over the pair. A heal
+moves the work room, not the pair room, and does not change that.
 
 Beyond the four: every room is write-protected rather than only sealed, so a
 room's identifier — which the hub holds — admits no writes; the SAS, with its

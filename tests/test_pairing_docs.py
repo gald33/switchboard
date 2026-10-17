@@ -1,4 +1,4 @@
-"""The pairing docs, held to the code and the surfaces they describe.
+"""The pairing and sharing docs, held to the code and the surfaces they describe.
 
 `docs/pairing.md` is mostly lifetimes and commands, and both rot quietly. A
 lifetime that changes in `pairing.py` and not on the page is a reader who
@@ -6,7 +6,8 @@ trusts a code for fifteen minutes that is live for an hour. A command the page
 shows that the parser refuses is a reader who assumes their install is
 broken — or an agent that retries a flag that never existed. Neither is caught
 by reading the doc, because a doc is not run; `test_invite.py` does the same
-for every `switchboard <verb>` in the README, and this is that, for pairing.
+for every `switchboard <verb>` in the README, and this is that, for pairing —
+and for `docs/sharing.md`, whose rooms travel through the pairs.
 """
 
 from __future__ import annotations
@@ -17,12 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from switchboard import invite, pairing
+from switchboard import invite, pairing, sharing
 from switchboard.config import MAX_MESSAGE_TTL
 from switchboard.testing import hub
 
 ROOT = Path(__file__).resolve().parents[1]
 PAIRING_DOC = ROOT / "docs" / "pairing.md"
+SHARING_DOC = ROOT / "docs" / "sharing.md"
 
 
 def _fenced_lines(text: str) -> list[str]:
@@ -125,7 +127,9 @@ def test_the_lifetimes_the_pairing_doc_states_are_the_codes(what, actual, expect
 
 
 def _documented_invocations(text: str) -> list[tuple[str, list[str]]]:
-    """Fenced `switchboard …` lines that pair, or reach a pair's room."""
+    """Fenced `switchboard …` lines that pair or share, or reach a pair's or a
+    shared room."""
+    handles = (pairing.HANDLE_PREFIX, sharing.HANDLE_PREFIX)
     found = []
     for line in _fenced_lines(text):
         match = re.match(r"\s*(?:\$\s+)?switchboard\s+(.*)", line)
@@ -135,13 +139,13 @@ def _documented_invocations(text: str) -> list[tuple[str, list[str]]]:
             tokens = shlex.split(match.group(1), comments=True)
         except ValueError:
             continue
-        if tokens[:1] == ["pair"] or any(t.startswith(pairing.HANDLE_PREFIX)
-                                        for t in tokens):
+        if tokens[:1] in (["pair"], ["share"]) or any(t.startswith(handles)
+                                                      for t in tokens):
             found.append((line.strip(), tokens))
     return found
 
 
-@pytest.mark.parametrize("doc", ["docs/pairing.md", "README.md"])
+@pytest.mark.parametrize("doc", ["docs/pairing.md", "docs/sharing.md", "README.md"])
 def test_every_pairing_command_the_docs_show_is_one_the_cli_takes(doc):
     """Parsed the way `main()` parses, flags and all — not only the verb.
 
@@ -171,19 +175,21 @@ def test_every_pairing_command_the_docs_show_is_one_the_cli_takes(doc):
 
 
 def _documented_tool_calls(text: str) -> list[tuple[str, list[str], str]]:
-    """Fenced MCP calls (`tool  arg="…" → result`) that pair, or reach a pair."""
+    """Fenced MCP calls (`tool  arg="…" → result`) that pair or share, or reach
+    a pair or a shared room."""
     found = []
     for line in _fenced_lines(text):
         match = re.match(r"(?P<tool>[a-z][a-z_]*)\s+(?P<rest>.*)", line)
         if not match:
             continue
         call = match.group("rest").split("→")[0]
-        if match.group("tool").startswith("pair_") or 'room="pair:' in call:
+        if match.group("tool").startswith(("pair_", "share_")) \
+                or 'room="pair:' in call or 'room="shared:' in call:
             found.append((match.group("tool"), re.findall(r"(\w+)=", call), line.strip()))
     return found
 
 
-@pytest.mark.parametrize("doc", ["docs/pairing.md", "docs/claude-code.md"])
+@pytest.mark.parametrize("doc", ["docs/pairing.md", "docs/sharing.md", "docs/claude-code.md"])
 def test_every_pairing_tool_call_the_docs_show_is_one_the_bridge_takes(doc):
     """The MCP half of the same rule: the tool exists, and every argument the
     example passes is one its schema declares — `room` included, which the
@@ -225,7 +231,8 @@ def test_the_lapse_target_the_page_describes_is_the_one_the_code_picks():
 
 #: Every file in this repo that says something about pairing a reader acts on.
 PAIRING_PAGES = [
-    "docs/pairing.md", "docs/model.md", "docs/encryption.md", "docs/environments.md",
+    "docs/pairing.md", "docs/sharing.md", "docs/model.md", "docs/encryption.md",
+    "docs/environments.md",
     "README.md", "docs/claude-code.md", "docs/chatgpt.md", "docs/upgrading.md",
     "src/switchboard/skill/switchboard-coordinate/SKILL.md",
     "roadmap/items/safe-pairing.yaml",
@@ -256,6 +263,18 @@ FALSE_CLAIMS = [
     (r"leaked on its way here|somebody else answered first — the code leaked",
      "`already_redeemed` is also what this session's own replaced container's "
      "answer looks like, and what an answer that was sent and then voided reports"),
+    (r"nothing else the secret opens",
+     "the pair room carries every shared room offered over the pair, keys and all, "
+     "so a reader told the secret opens nothing else treats a copied pair record as "
+     "costing one pair, and leaves those rooms running"),
+    (r"used for nothing but keeping the pair in step",
+     "the pair room is also where shared rooms travel, by design"),
+    (r"wakes on all of them|Work in `--room shared:<name>`[^.]*\*\* on any channel\.",
+     "a listener parked in a shared room wakes on direct messages and on the channels "
+     "this agent subscribed to there, as in any room — not on every channel"),
+    (r"`left` is not written again once that pair's own record has lapsed",
+     "a leave is acknowledged only once the pair has used its pair room since the "
+     "`left` landed, so a machine away for weeks is still told"),
 ]
 
 
@@ -300,3 +319,119 @@ def test_the_states_table_names_every_state_a_refusal_can_carry():
     listed = set(re.findall(r"^\| `([a-z_]+)` \|", section, flags=re.MULTILINE))
     missing = sorted(_refusal_states() - listed)
     assert not missing, f"docs/pairing.md's state table does not list {missing}"
+
+
+# --- shared rooms --------------------------------------------------------------
+
+
+def test_every_page_says_what_a_leaked_pair_secret_opens():
+    """A pair secret opens more than the pair since shared rooms ride in the
+    pair room, keys and all. These pages once said "there is nothing else the
+    secret opens", which was true until then — and a reader who believes it
+    treats a copied pair record as one pair to forget, leaving every room
+    offered over it running for whoever copied it. So each page that says
+    what the secret is worth says the same three things: what it opens, that a
+    heal does not help, and what does."""
+    phrases = ["opens every room currently offered over that pair",
+               "heal does not help",
+               "a fresh pairing, then a new room whose list leaves the old pair out"]
+    missing = []
+    for page in ("docs/sharing.md", "docs/pairing.md", "docs/model.md"):
+        text = " ".join((ROOT / page).read_text().split()).lower()
+        missing += [f"{page}: {p!r}" for p in phrases if p.lower() not in text]
+    assert not missing, f"the leak scope is not stated where it must be: {missing}"
+
+
+def test_the_pages_that_share_over_a_pair_say_to_compare_the_sas_first():
+    """Before sharing, a code somebody else answered cost one pair's rooms.
+    After, it costs every room offered over that pair, and the SAS is still
+    the only check that does not run through the hub — `share new` cannot
+    make it for anybody."""
+    said = re.compile(r"compare the sas\b[^.]*\bbefore sharing over a pair", re.IGNORECASE)
+    missing = [page for page in ("docs/sharing.md", "docs/pairing.md",
+                                 "src/switchboard/skill/switchboard-coordinate/SKILL.md")
+               if not said.search(" ".join((ROOT / page).read_text().split()))]
+    assert not missing, f"no 'compare the SAS before sharing over a pair' in {missing}"
+
+
+#: (what the code has, what it must be, words docs/sharing.md uses for it).
+SHARING_NUMBERS = [
+    ("RECORD_TTL", sharing.RECORD_TTL, 7 * 86400, "with the board's seven-day TTL"),
+    ("REFRESH", sharing.REFRESH, 86400, "missing, different, or a day old"),
+    ("NOTE_KEEP", sharing.NOTE_KEEP, 7 * 86400, "Notes are kept seven days"),
+    ("NOTE_MAX", sharing.NOTE_MAX, 200, "at most 200 characters"),
+    ("RECENT", sharing.RECENT, 86400, "used on this machine in the last day"),
+    ("REFRESH_RETRY", sharing.REFRESH_RETRY, 3600, "is tried again an hour later"),
+    ("STORE_FILE", sharing.STORE_FILE, "shared_rooms.json",
+     "~/.switchboard/pairs/shared_rooms.json"),
+    ("LOCK_FILE", sharing.LOCK_FILE, "shared.lock", "`shared.lock`"),
+]
+
+
+@pytest.mark.parametrize("what, actual, expected, phrase", SHARING_NUMBERS,
+                         ids=[row[0] for row in SHARING_NUMBERS])
+def test_the_numbers_the_sharing_doc_states_are_the_codes(what, actual, expected, phrase):
+    assert actual == expected, (
+        f"{what} is {actual!r} in sharing.py; docs/sharing.md says {phrase!r}. "
+        "Change both, or neither.")
+    page = " ".join(SHARING_DOC.read_text().split())
+    assert phrase in page, f"docs/sharing.md no longer says {phrase!r} for {what}"
+
+
+def test_the_bridges_sweep_is_as_often_as_the_sharing_doc_says():
+    from switchboard import mcp_server
+
+    assert mcp_server.SHARE_SWEEP == 60.0, "docs/sharing.md says 'at most once a minute'"
+    assert "at most once a minute" in " ".join(SHARING_DOC.read_text().split())
+
+
+def _sharing_table(heading: str) -> set[str]:
+    """The first column of the table under one heading of docs/sharing.md."""
+    section = SHARING_DOC.read_text().split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+    return set(re.findall(r"^\| `([a-z_]+)` \|", section, flags=re.MULTILINE))
+
+
+def test_the_sharing_states_table_names_every_state_a_share_refusal_can_carry():
+    """`pairing.md`'s rule, for `sharing.py`: a state the code raises and the
+    table does not list is a refusal nobody can look up. `unreachable` is the
+    one passed on from a touch rather than raised by name, and `withheld` is
+    the hosted bridge's."""
+    raised = set(re.findall(r'state="([a-z_]+)"', Path(sharing.__file__).read_text()))
+    missing = sorted((raised | {"unreachable", "withheld"}) - _sharing_table("When it goes wrong"))
+    assert not missing, f"docs/sharing.md's state table does not list {missing}"
+
+
+def test_the_notes_table_names_every_kind_of_note():
+    """Every change a peer makes is a note, and a note is only as useful as
+    the reader's idea of what to do about it. A kind the core can say and the
+    table does not explain is one an agent acts on by guessing."""
+    from switchboard import mcp_server
+
+    kinds = set(re.findall(r'_say\(doc, now, "([a-z_]+)"', Path(sharing.__file__).read_text()))
+    kinds |= set(re.findall(r'_say_share_trouble\([^,]+, "([a-z_]+)"',
+                            Path(mcp_server.__file__).read_text()))
+    assert kinds, "no note kinds found in the code: the pattern above is stale"
+    missing = sorted(kinds - _sharing_table("Notes"))
+    assert not missing, f"docs/sharing.md's notes table does not explain {missing}"
+
+
+def test_the_hosted_page_names_everything_a_hosted_bridge_withholds():
+    """Conformance F7: the hosted bridge withholds the share tools and refuses
+    `shared:` handles, and a connector user reading "What it withholds" took
+    the list for the whole of it."""
+    from switchboard import mcp_server
+
+    section = (ROOT / "docs/chatgpt.md").read_text().split("### What it withholds", 1)[1]
+    section = section.split("\n#", 1)[0]
+    missing = sorted(t for t in mcp_server.HOSTED_WITHHELD if f"`{t}`" not in section)
+    assert not missing, f"docs/chatgpt.md does not say the hosted bridge withholds {missing}"
+    assert 'room="shared:' in section and 'room="pair:' in section
+
+
+def test_the_tool_table_has_a_row_for_every_pairing_and_sharing_tool():
+    from switchboard import mcp_server
+
+    table = set(re.findall(r"^\| `([a-z_]+)` \|", (ROOT / "docs/claude-code.md").read_text(),
+                           flags=re.MULTILINE))
+    missing = sorted(set(mcp_server._PAIRING_TOOLS + mcp_server._SHARING_TOOLS) - table)
+    assert not missing, f"docs/claude-code.md's tool table has no row for {missing}"
