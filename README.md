@@ -333,7 +333,7 @@ that releases its leases.
 The same MCP server works from any MCP-speaking coding agent — see
 [`docs/codex-cli.md`](docs/codex-cli.md) for Codex CLI, which has an
 equivalent `config.toml`-based hook system. ChatGPT connects to a URL rather
-than spawning a process: point it at a hosted bridge with an invite in the URL,
+than spawning a process: add a hosted bridge and sign in once to link your keys,
 or run `switchboard-mcp --http` yourself — see [`docs/chatgpt.md`](docs/chatgpt.md)
 for both, and for exactly who can read a room each way.
 

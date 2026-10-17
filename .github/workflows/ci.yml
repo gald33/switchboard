@@ -210,13 +210,14 @@ jobs:
           done
           curl -sf http://127.0.0.1:8787/health | grep -q '"ok":true'
       # The hosted bridge, end to end: its own image, in front of the hub
-      # above, reached the way ChatGPT reaches it — by an invite in the URL.
+      # above, reached the way ChatGPT reaches it — signed in, with a
+      # key-less invite in the conversation.
       - run: docker build -f Dockerfile.bridge --build-arg SWITCHBOARD_BUILD_COMMIT=${{ github.sha }} -t switchboard-bridge:ci .
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -e .
-      - name: hosted bridge serves an invite and says who runs it
+      - name: hosted bridge takes keys only on sign-in, and says who runs it
         run: |
           # With sign-in on, as deployed: the store on /data, which the image
           # must leave writable by its own user.
@@ -233,38 +234,67 @@ jobs:
             | python -c "import json,sys; i=json.load(sys.stdin); assert i['hosted'] and i['commit']=='${{ github.sha }}' and i['sign_in'], i"
           curl -sf http://127.0.0.1:8788/.well-known/oauth-authorization-server \
             | python -c "import json,sys; m=json.load(sys.stdin); assert m['code_challenge_methods_supported']==['S256'], m"
-          # The way ChatGPT uses it: one URL, initialize for a session, the
-          # invite passed to join_room, then tools that name no room at all.
+          # The way ChatGPT uses it: one URL, initialize for a session, an
+          # invite carrying a key refused, the OAuth sign-in with the key
+          # pasted on the bridge's page, then a key-less invite to join_room.
           python - <<'PY'
-          import json, httpx
+          import base64, hashlib, html, json, re, secrets
+          from urllib.parse import parse_qs, urlencode, urlsplit
+          import httpx
           from switchboard.crypto import generate_key
           from switchboard.invite import Invite
-          url = "http://127.0.0.1:8788/mcp"
-          invite = Invite(url="http://127.0.0.1:8787", workspace="ci-bridge", token="ci",
-                          key=generate_key(), note="").encode()
-          def rpc(method, session=None, **params):
+          base = "http://127.0.0.1:8788"
+          hub = "http://127.0.0.1:8787"
+          full = Invite(url=hub, workspace="ci-bridge", token="ci", key=generate_key(),
+                        note="").encode()
+          def rpc(method, session=None, token=None, **params):
               headers = {"Mcp-Session-Id": session} if session else {}
-              r = httpx.post(url, headers=headers, timeout=30,
+              if token:
+                  headers["Authorization"] = f"Bearer {token}"
+              r = httpx.post(base + "/mcp", headers=headers, timeout=30,
                              json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
               r.raise_for_status()
-              return r
-          init = rpc("initialize", protocolVersion="2025-06-18", capabilities={},
-                     clientInfo={"name": "openai-mcp"})
+              return r.json().get("result")
+          init = httpx.post(base + "/mcp", timeout=30, json={
+              "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                  "protocolVersion": "2025-06-18", "capabilities": {},
+                  "clientInfo": {"name": "openai-mcp"}}})
           session = init.headers["Mcp-Session-Id"]
-          joined = rpc("tools/call", session, name="join_room",
-                       arguments={"invite": invite}).json()["result"]
+          # A full invite in the conversation opens nothing: the app is sent to sign in.
+          refused = rpc("tools/call", session, name="join_room", arguments={"invite": full})
+          assert refused["isError"] and "mcp/www_authenticate" in refused["_meta"], refused
+          # Sign in as ChatGPT does, with the invite pasted on the sign-in page.
+          redirect = "https://chatgpt.com/connector_platform_oauth_redirect"
+          client_id = httpx.post(base + "/oauth/register", json={
+              "client_name": "ChatGPT", "redirect_uris": [redirect]}).json()["client_id"]
+          verifier = secrets.token_urlsafe(48)
+          challenge = base64.urlsafe_b64encode(
+              hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+          page = httpx.get(base + "/oauth/authorize?" + urlencode({
+              "response_type": "code", "client_id": client_id, "redirect_uri": redirect,
+              "state": "ci", "code_challenge": challenge, "code_challenge_method": "S256",
+              "scope": "keys", "resource": base}))
+          page.raise_for_status()
+          request = html.unescape(re.search(r'name="request" value="([^"]+)"', page.text).group(1))
+          back = httpx.post(base + "/oauth/authorize",
+                            data={"request": request, "invites": full, "action": "link"})
+          assert back.status_code == 302, back.text
+          code = parse_qs(urlsplit(back.headers["Location"]).query)["code"][0]
+          token = httpx.post(base + "/oauth/token", data={
+              "grant_type": "authorization_code", "code": code, "client_id": client_id,
+              "redirect_uri": redirect, "code_verifier": verifier,
+              "resource": base}).json()["access_token"]
+          # Signed in, a key-less invite opens the room with the linked key, and then
+          # tools name no room at all.
+          keyless = Invite(url=hub, workspace="ci-bridge", note="").encode()
+          joined = rpc("tools/call", session, token, name="join_room", arguments={"invite": keyless})
           assert not joined["isError"], joined
-          result = rpc("tools/call", session, name="whoami", arguments={}).json()["result"]
+          assert json.loads(joined["content"][0]["text"])["key_from"] == "your linked keys", joined
+          result = rpc("tools/call", session, token, name="whoami", arguments={})
           me = json.loads(result["content"][0]["text"])
           assert not result["isError"] and me["encrypted"], me
           assert me["relay"]["operator"] == "CI", me
           assert me["name"] == "ChatGPT (via hosted encryption bridge run by CI)", me
-          # A key-less invite, not signed in: the app is asked to sign the user in.
-          keyless = Invite(url="http://127.0.0.1:8787", workspace="ci-bridge", token="ci",
-                           note="").encode()
-          asked = rpc("tools/call", session, name="join_room",
-                      arguments={"invite": keyless}).json()["result"]
-          assert asked["isError"] and "mcp/www_authenticate" in asked["_meta"], asked
           print("hosted bridge ok:", me["name"])
           PY
           docker rm -f bridge swb

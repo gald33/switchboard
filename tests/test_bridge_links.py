@@ -1,14 +1,17 @@
 """Signing in to the hosted bridge, and the keys it holds for you.
 
-A throwaway room works from an invite in the conversation. A permanent one
-should not: its key is the team's, and a transcript is no place for it. So a
-person links their keys once, over OAuth, and gives the conversation a
-key-less invite (`switchboard invite --no-key`) that the bridge completes.
+A transcript is no place for a key, and OpenAI's plugin review says so too:
+a plugin does not solicit access credentials. So with sign-in on, keys reach
+the bridge on its sign-in page and no other way. A person links their keys
+once, over OAuth, and gives the conversation a room's name or a key-less
+invite (`switchboard invite --no-key`) that the bridge completes; an invite
+that carries a key is refused before anything is built from it.
 
-These tests hold the three promises that make this safe: the store keeps nothing that
-opens a keyring without the token that sealed it, a stolen refresh token
-burns the whole link rather than quietly working, and a room joined with
-linked keys answers only to that sign-in.
+These tests hold the four promises that make this safe: no key is taken in a
+tool call, the store keeps nothing that opens a keyring without the token
+that sealed it, a stolen refresh token burns the whole link rather than
+quietly working, and a room joined with linked keys answers only to that
+sign-in.
 """
 
 from __future__ import annotations
@@ -23,7 +26,13 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from test_mcp import call, make_bridge
-from test_mcp_hosted import OPERATOR, WS, hub, invite_for  # noqa: F401 - fixture
+from test_mcp_hosted import (  # noqa: F401 - hub is a fixture
+    OPERATOR,
+    WS,
+    assert_no_secret_parameters,
+    hub,
+    invite_for,
+)
 from test_mcp_http import rpc, send
 
 from switchboard import bridge_links, mcp_server
@@ -438,37 +447,86 @@ def test_a_linked_room_answers_only_to_its_sign_in(signed, hub):  # noqa: F811
 
 def test_a_stale_token_is_signed_out_not_refused(signed, hub):  # noqa: F811
     # Observed live: after unlink_keys, ChatGPT kept sending its old token.
-    # A 401 made it demand a sign-in before *any* call, a throwaway room's
-    # full invite included. Signing in is optional, so a token this bridge
-    # does not hold is just "not signed in".
+    # A 401 made it demand a sign-in before *any* call, with no word of why.
+    # A token this bridge does not hold is just "not signed in", and the call
+    # that needs keys asks for the sign-in inside its result.
     server, _, _ = signed
-    response = front(server, "join_room", "not-a-token", invite=invite_for(hub))
+    response = front(server, "join_room", "not-a-token", invite=invite_for(hub, key=None))
     assert response.status_code == 200
-    data, result = payload(response)
-    assert not result["isError"] and data["key_from"] == "invite", data
-    # Only what needs linked keys asks for a sign-in, inside the result.
-    asked, result = payload(front(server, "join_room", "not-a-token",
-                                  invite=invite_for(hub, key=None)))
+    asked, result = payload(response)
     assert asked["error"] == "sign_in_required"
     (challenge,) = result["_meta"]["mcp/www_authenticate"]
     assert "resource_metadata=" in challenge
 
 
-def test_a_full_invite_still_needs_no_sign_in(signed, hub):  # noqa: F811
+@pytest.mark.parametrize("carried", [
+    {},                                               # the key, as plain `invite` makes it
+    {"key": None, "write_key": "w" * 43},             # a write key alone
+    {"key": None, "token": "private-perimeter"},      # a hub's own token
+])
+def test_signed_out_an_invite_with_a_secret_in_it_asks_for_the_sign_in_page(
+        signed, hub, carried):  # noqa: F811
+    server, _, bridges = signed
+    response = front(server, "join_room", invite=invite_for(hub, **carried))
+    data, result = payload(response)
+    assert result["isError"] and data["error"] == "sign_in_required"
+    assert "sign-in page" in data["detail"] and "mcp/www_authenticate" in result["_meta"]
+    # Refused before anything is built from it: no agent holds that key.
+    assert len(bridges) == 0
+
+
+def test_signed_in_an_invite_with_a_key_is_refused_and_the_rooms_named(
+        signed, hub):  # noqa: F811
+    server, _, bridges = signed
+    tokens = sign_in(server, invite_for(hub, note="repo"))
+    response = front(server, "join_room", tokens["access_token"],
+                     invite=invite_for(hub, note="repo"))
+    data, result = payload(response)
+    assert result["isError"] and data["error"] == "invite_carries_secret"
+    assert data["rooms"] == ["repo", "lobby"]
+    assert "`switchboard invite --no-key`" in data["detail"]
+    assert hub.key not in response.text and len(bridges) == 0
+    # The way that works: the room by its name.
+    joined, result = payload(front(server, "join_room", tokens["access_token"], name="repo"))
+    assert not result["isError"] and joined["key_from"] == "your linked keys", joined
+
+
+def test_a_private_hub_token_is_named_with_its_own_flag(signed, hub):  # noqa: F811
     server, _, _ = signed
-    data, result = payload(front(server, "join_room", invite=invite_for(hub)))
-    assert not result["isError"] and data["key_from"] == "invite"
+    tokens = sign_in(server, invite_for(hub))
+    data, _ = payload(front(server, "join_room", tokens["access_token"],
+                            invite=invite_for(hub, key=None, token="private-perimeter")))
+    assert data["error"] == "invite_carries_secret" and "a hub token" in data["detail"]
+    assert "`switchboard invite --no-token`" in data["detail"]
 
 
-def test_tools_declare_both_ways_in(signed):
+def test_the_managed_hubs_published_token_is_not_a_secret():
+    from switchboard.config import MANAGED_HUB_TOKEN, MANAGED_HUB_URL
+    published = Invite(url=MANAGED_HUB_URL, workspace="ws", token=MANAGED_HUB_TOKEN)
+    assert mcp_server._carried_secrets(published) == []
+    private = Invite(url=MANAGED_HUB_URL, workspace="ws", token="something-else")
+    assert mcp_server._carried_secrets(private) == ["a hub token"]
+    elsewhere = Invite(url="https://hub.example", workspace="ws", token=MANAGED_HUB_TOKEN)
+    assert mcp_server._carried_secrets(elsewhere) == ["a hub token"]
+
+
+def test_every_tool_needs_the_sign_in(signed):
+    # Keys arrive only on the sign-in page, so nothing works without one, and
+    # declaring `noauth` would promise the reviewer a way in that is not there.
     server, _, _ = signed
     tools = send(server, path="/mcp", body=rpc("tools/list")).json()["result"]["tools"]
-    by_name = {t["name"]: t for t in tools}
-    assert by_name["join_room"]["securitySchemes"] == [
-        {"type": "noauth"}, {"type": "oauth2", "scopes": ["keys"]}]
-    for name in ("linked_keys", "unlink_keys"):
-        assert by_name[name]["securitySchemes"] == [{"type": "oauth2", "scopes": ["keys"]}]
-    assert "--no-key" in by_name["join_room"]["description"]
+    assert tools and all(t["securitySchemes"] == [{"type": "oauth2", "scopes": ["keys"]}]
+                         for t in tools)
+    join = {t["name"]: t for t in tools}["join_room"]
+    assert set(join["inputSchema"]["properties"]) == {"name", "invite"}
+    assert join["inputSchema"]["required"] == []
+    assert "--no-key" in join["description"] and "refused" in join["description"]
+
+
+def test_with_sign_in_on_the_front_door_offers_no_place_for_a_key(signed):
+    server, _, _ = signed
+    tools = send(server, path="/mcp", body=rpc("tools/list")).json()["result"]["tools"]
+    assert_no_secret_parameters(tools)
 
 
 #: How ChatGPT's "Suspicious Instruction" warning reads a tool: text telling the
@@ -612,10 +670,3 @@ def test_a_bare_key_on_the_sign_in_page_links(signed, hub):  # noqa: F811
     data, result = payload(front(server, "join_room", tokens["access_token"],
                                  invite=invite_for(hub, key=None, token=None)))
     assert not result["isError"], data
-
-
-def test_a_full_invite_for_a_linked_key_gets_a_tip(signed, hub):  # noqa: F811
-    server, _, _ = signed
-    tokens = sign_in(server, invite_for(hub))
-    data, _ = payload(front(server, "join_room", tokens["access_token"], invite=invite_for(hub)))
-    assert "--no-key" in data["tip"]

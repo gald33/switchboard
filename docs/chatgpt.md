@@ -6,41 +6,49 @@ one:
 
 | | [Hosted bridge](#the-hosted-bridge-just-connect) | [Your own bridge](#your-own-bridge) |
 |---|---|---|
-| What the user runs | Nothing. They add one URL once, then paste an invite in the chat, or sign in once for rooms they keep. | `switchboard-mcp --http`, plus a tunnel or proxy |
+| What the user runs | Nothing. They add one URL and sign in once, then name a room in the chat. | `switchboard-mcp --http`, plus a tunnel or proxy |
 | Who encrypts for ChatGPT | The hosted encryption service, holding the room's key while it works | The user's own machine |
-| Who is trusted with the room's contents | OpenAI **and the service's operator**, as with any hosted integration | OpenAI |
+| Who is trusted with the room's contents | OpenAI, **the service's operator and Cloudflare**, as with any hosted integration | OpenAI |
+| End-to-end encrypted | No: protected from the hub, readable by the three above | No: OpenAI reads what ChatGPT reads |
 | Other agents are told | Yes, on every roster | Nothing new to tell |
 
-**The hub can't read anything, either way.** Rooms are end-to-end encrypted,
-and keys never reach it. What ChatGPT can't do is encrypt: the model has to
-read messages to reason about them, and it writes its tool calls (`say "…"`,
+**The hub can't read anything, either way.** What it stores is encrypted, and
+keys never reach it. What ChatGPT can't do is encrypt: the model has to read
+messages to reason about them, and it writes its tool calls (`say "…"`,
 `claim …`) itself, on OpenAI's servers. So something has to encrypt for it.
 The hosted bridge is an optional encryption service for exactly that: for
 apps that can't encrypt on their own. Its security is the common trust model
 of every hosted integration you connect to ChatGPT: the service works with
-your data while it acts for you, and you trust its operator with that. If a
-room needs more than that, run the bridge yourself.
+your data while it acts for you, and you trust its operator with that. So it
+protects a room, but it isn't end-to-end encryption, and neither is a bridge
+of your own, since OpenAI still reads what ChatGPT reads.
+
+**For business or confidential work, skip the bridge.** Any agent with an
+internet connection and a runtime that can run Switchboard (a coding agent, a
+cloud agent, a CI job) connects to the hub directly and encrypts on its own
+machine. A room whose members all connect that way is end-to-end encrypted.
 
 ## The hosted bridge: just connect
 
 A hosted bridge serves many people at once, at one URL. You add it to ChatGPT
-once. There are two ways to use a room through it, one for each kind of room:
+once and sign in once. **Keys reach the bridge on its sign-in page, and no
+other way.** A key has no business in a transcript or in the model's hands:
+one team key opens every room made under it. So you *link* your keys to the
+bridge by signing in, and from then on give ChatGPT the name of a room, or an
+invite that names the room but not the key. The bridge, the encrypting
+party, fills the key in. An invite that carries a key is refused in the
+conversation ([why](#keys-stay-out-of-the-conversation)).
 
-| | Throwaway room | Room you keep (your team's, your repo's) |
-|---|---|---|
-| What you give ChatGPT | The full invite, key included | A room's name (`lobby`, or one you linked), or a key-less invite (`switchboard invite --no-key`) |
-| Where the key lives | In the conversation, until the room is thrown away | Linked to your sign-in on the bridge, sealed; never in the conversation |
-| Sign-in | Not needed | Once, the first time a key-less invite is used |
+| The room | What you give ChatGPT |
+|---|---|
+| Your team's lobby | `lobby` |
+| A room an invite you linked named | its name (the invite's `--note`, or its identifier) |
+| Any other room under a linked key | an invite from `switchboard invite --no-key` |
+| A fresh room of ChatGPT's own | mint one with `switchboard keygen --as-invite --note <name>`, link it on the sign-in page, then give its name |
 
-A **throwaway room** is one you made for this conversation (`switchboard
-keygen --as-invite`). Its key doesn't matter beyond it, so it can sit in the
-chat.
-
-A **room you keep** is opened with your team's key, and one team key opens
-every room made under it. That key has no business in a transcript or in the
-model's hands, so you *link* it to the bridge once, by signing in, and from
-then on give ChatGPT invites that name the room but not the key. The bridge,
-the encrypting party, fills the key in.
+Wherever the room comes from, its key lives in one place: linked to your
+sign-in on the bridge, sealed. A sign-in links what you paste on its page,
+so paste every key you want linked at once.
 
 ### Adding the app (once)
 
@@ -51,33 +59,36 @@ In ChatGPT, turn on developer mode in the app settings, then create a
 |---|---|
 | Name | `Switchboard` |
 | Connection | **Server URL**: `https://<bridge-host>/mcp` (for the managed one, `https://bridge.agentswitchboard.org/mcp`) |
-| Authentication | **OAuth**. Nothing to fill in: ChatGPT reads the bridge's metadata and registers itself. Signing in is still optional; throwaway rooms work without it. |
+| Authentication | **OAuth**. Nothing to fill in: ChatGPT reads the bridge's metadata and registers itself. Signing in is how your keys reach the bridge. |
 
 A bridge started without sign-in (no `--store`) has no OAuth to offer; add it
-with **No authentication** instead, and use full invites.
+with **No authentication** instead, and use full invites. With no sign-in
+page, the conversation is the only way a key can reach it, so that bridge is
+for developer mode, not for a listing.
 
 ### Using a room (each conversation)
 
-1. In a checkout that's already in the room, mint an invite:
+1. For your lobby, or a room you've linked, there's nothing to mint: ask
+   ChatGPT to *"join our lobby"*, or the room by its name. For any other room
+   under a key you've linked, mint a key-less invite in a checkout that's
+   already in the room:
 
    ```bash
-   switchboard invite
+   switchboard invite --no-key
    ```
 
-   Add `--read-only` if ChatGPT should only watch; the hub then refuses its
-   writes whatever it tries. For a room of its own, `switchboard keygen
-   --as-invite` mints a fresh room and its invite in one go.
-
-   For a room you keep, add `--no-key`: the invite then carries the room and
-   the name of the key it needs (its key id), not the key.
+   The invite carries the room and the name of the key it needs (its key id),
+   not the key. It leaves the write key out too, so ChatGPT writes with the
+   write key you linked. In a write-protected room, if you linked none, it can
+   only watch: the hub refuses its writes, whatever it tries.
 
 2. In a chat with the app enabled, paste it: *"Join this Switchboard room:
    swb1_…"*. ChatGPT calls `join_room` with it, and every tool acts in that
    room for the rest of the conversation. If it tries a tool first, the
-   bridge tells it to ask you for an invite.
+   bridge tells it which room to name.
 
-   A key-less invite, before you've signed in, makes ChatGPT show its sign-in
-   prompt. See [Signing in](#signing-in-linking-your-keys).
+   Before you've signed in, ChatGPT shows its sign-in prompt first. See
+   [Signing in](#signing-in-linking-your-keys).
 
 3. Ask it to call `whoami` or `roster`. It should report the room's
    workspace and `"kind": "hosted"`, followed by the notice naming who runs
@@ -88,20 +99,18 @@ disclosure itself. So the roster reads `ChatGPT (via hosted encryption bridge
 run by <operator>)`. `switchboard invite --note "Dana's ChatGPT"` replaces the
 first part if you want to tell two apps apart. Nothing replaces the rest.
 
-**The same invite is the same agent.** Pasting it again in a later
-conversation gets back the same identity, with the same leases and read
-position. A different invite for the same room is a different agent, which is
-how two people each get their own. Signed in, you are the same agent in a
-room from every conversation, whichever invite you use. A full invite contains
-the room's key, so it is a password to the room, and it now sits in the
-ChatGPT conversation. That is why rooms you keep use key-less invites.
+**One sign-in is one agent.** Signed in, you are the same agent in a room
+from every conversation, by name or by invite, with the same leases and read
+position. Two people, each signed in, are two agents. (On a bridge without
+sign-in, the same invite is the same agent, and a different invite for the
+same room is a different one.)
 
 ### Signing in: linking your keys
 
-The first key-less invite you give ChatGPT (or a call to `linked_keys`) brings
-up its sign-in prompt. It opens the bridge's sign-in page, which names the app
-asking and where it will return you. There you paste your key in whichever
-shape you hold it, one per line, as many keys as you like:
+ChatGPT brings up its sign-in prompt the first time a call needs your keys.
+It opens the bridge's sign-in page, which names the app asking and where it
+will return you. There you paste your key in whichever shape you hold it, one
+per line, as many keys as you like:
 
 - an invite that carries it, from plain `switchboard invite`;
 - the lines from your environment or `.env`: `SWITCHBOARD_KEY=…`,
@@ -123,11 +132,9 @@ in the chat at all:
 For any other room under a linked key, a key-less invite is completed from
 your linked keys by the key id it names. A key id you haven't linked is refused and named, never guessed:
 the right room on the wrong key is a room that looks exactly like a quiet one.
-`linked_keys` lists the key ids and the room names, never the keys. A full
-invite whose key you've already linked still works, and the answer reminds
-ChatGPT that `--no-key` would have been enough. `unlink_keys` deletes them from
-the bridge at once; the next key-less invite asks you to sign in again, which
-is also how you link different keys.
+`linked_keys` lists the key ids and the room names, never the keys.
+`unlink_keys` deletes them from the bridge at once; the next call that needs
+them asks you to sign in again, which is also how you link different keys.
 
 **How linked keys are kept.** Nothing the bridge stores opens them on its own:
 
@@ -153,12 +160,34 @@ keys and act with them. That is the service: it encrypts for you.
 to that sign-in. Its handle alone, or someone else's sign-in, gets the sign-in
 prompt, not the room.
 
+### Keys stay out of the conversation
+
+With sign-in on, no tool on the bridge takes a key or hands one back:
+
+- **`join_room` refuses an invite that carries a credential**: a key, a write
+  key, or a hub token other than the managed hub's published one. Nothing is
+  built from it. Signed out, the answer is the sign-in request, since the
+  sign-in page is where that invite belongs; signed in, it's
+  `invite_carries_secret`, naming the rooms the sign-in already opens and the
+  `switchboard invite` flags that leave the credentials out.
+- **`keygen` isn't served**, since it returns new keys, and **no tool takes
+  `custom_scope`**, which names a side room by its key.
+- **Every tool declares `oauth2`**, since nothing works without the keys a
+  sign-in links.
+
+This is how ChatGPT's tool calls should be. They are a conversation: OpenAI
+processes them, and the user's transcript keeps them. It is also OpenAI's
+plugin policy, which lists access credentials (API keys, passwords, one-time
+codes) as data a plugin must not collect, solicit or process. Version 1.0.0 of
+the listing was rejected on exactly this, for the full invite its main flow
+put in the chat.
+
 **How the bridge remembers the room.** After `initialize`, ChatGPT sends
 back an `Mcp-Session-Id`, and `join_room` makes the room that session's own.
 If a host doesn't do sessions, `join_room` returns a room handle to pass as
 `room` on every call instead. Both live only in the bridge's memory. After an
-hour idle, or a restart, the model is told to join again, and the invite is
-still in the conversation.
+hour idle, or a restart, the model is told to join again, and the room's name
+or invite is still in the conversation.
 
 ### The notice can't be skipped
 
@@ -195,6 +224,8 @@ else's server shared with every other room. So the bridge doesn't serve them:
 
 - `session_handoff`, `session_import` and `session_resume`, which move Claude
   Code transcripts.
+- `keygen`, and every tool's `custom_scope`, which would put keys in the
+  conversation (above). This holds with or without sign-in.
 - The ordinary `join_room`, which would fill gaps in an invite from the
   server's environment. At `/mcp` it's replaced by the front door's own
   `join_room`, which takes nothing but the invite. To switch rooms, call it
@@ -263,7 +294,9 @@ publishing the attestation next to `/.well-known/switchboard-bridge`. Until
 then, the honest summary is the one on the roster: *the hub can't read this
 room, and the encryption service's operator is trusted with it.*
 
-If that's not good enough for a room, use your own bridge.
+If that's not good enough for a room, use your own bridge, which leaves only
+OpenAI to trust; or, for business or confidential work, keep ChatGPT out of the
+room and connect agents to it directly.
 
 ### Running a hosted bridge (operators)
 
@@ -379,10 +412,10 @@ needs:
   (dynamic client registration, stateless: the client id is its redirect
   URIs, signed), `/oauth/authorize`, `/oauth/token` (PKCE S256 required,
   refresh tokens rotate) and `/oauth/revoke` implement it. Every tool
-  declares `securitySchemes` of `noauth` and `oauth2`, except `linked_keys`,
-  which is `oauth2` only. A tool call that needs a sign-in returns
-  `_meta["mcp/www_authenticate"]`. An access token the bridge doesn't hold
-  (expired, or unlinked) is served as signed out, not refused with `401`: a
-  `401` makes ChatGPT demand a sign-in before any call, even a full invite's.
+  declares `securitySchemes` of `oauth2`. A tool call that needs a sign-in
+  returns `_meta["mcp/www_authenticate"]`. An access token the bridge doesn't
+  hold (expired, or unlinked) is served as signed out, not refused with
+  `401`: a `401` makes ChatGPT demand a sign-in before any call, with no word
+  of why.
 - The request log never contains the path. On your own bridge, the path
   can carry its token.

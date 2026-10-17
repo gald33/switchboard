@@ -57,9 +57,6 @@ REASONS: dict[str, tuple[str, str]] = {
                   "Changes nothing."),
     "board_list": ("Lists the keys on the room's shared board. Reads only; changes nothing.",
                    "Changes nothing."),
-    "keygen": ("Generates a fresh random key locally and returns it. Nothing is sent to the "
-               "hub or stored; no room or state changes.",
-               "Changes nothing."),
     "linked_keys": ("Lists the ids of the keys the user linked by signing in, never the keys "
                     "themselves. Reads only; changes nothing.",
                     "Changes nothing."),
@@ -82,8 +79,9 @@ REASONS: dict[str, tuple[str, str]] = {
                   "Changes only this agent's own reading list, and `unsubscribe` undoes it."),
     "unsubscribe": ("Removes channels from what this agent's inbox reads.",
                     "Changes only this agent's own reading list, and `subscribe` undoes it."),
-    "join_room": ("Connects this conversation to a Switchboard room, from an invite or a "
-                  "linked room's name, and registers the agent there.",
+    "join_room": ("Connects this conversation to a Switchboard room, by the name of a room "
+                  "the user linked by signing in or from an invite that leaves the key out, "
+                  "and registers the agent there.",
                   "Joining writes only the agent's own presence, which lapses by itself in "
                   "minutes. Calling it again with another room moves the conversation."),
     "say": ("Posts a message to a channel that every agent subscribed to it can read.",
@@ -107,22 +105,29 @@ REASONS: dict[str, tuple[str, str]] = {
                     "in again to link them."),
 }
 
-DEMO = "<the full demo invite from the credentials field>"
+#: Only the key-less invite is ever typed into the chat. The full one is the
+#: demo account's password, and goes where any password goes: on the sign-in
+#: page, which the cases name but never quote.
 DEMO_KEYLESS = "<the key-less demo invite from the credentials field>"
 
 #: The portal takes exactly five positive and three negative cases (its
-#: schema says "at least"; the form does not). These five cover joining with
-#: the privacy notice, the roster, a claim someone else holds, a message round
-#: trip, and sign-in with a key-less invite: the parts a reviewer must see.
+#: schema says "at least"; the form does not). These five cover signing in
+#: and joining with the privacy notice, the roster, a claim someone else
+#: holds, a message round trip, and what a sign-in links: the parts a
+#: reviewer must see.
 TEST_CASES: list[dict[str, Any]] = [
-    {"description": "Join a room from an invite. Expected: joined is true, the room is "
-                    "encrypted, and the result carries the notice that the hub can't read "
-                    "the room and who runs the encryption service. ChatGPT confirms it "
-                    "joined; the notice is in the result for it to pass on.",
-     "user_prompt": f"Join this Switchboard room: {DEMO}",
+    {"description": "Sign in and join the demo room. join_room asks for sign-in and "
+                    "ChatGPT shows its sign-in prompt. On the bridge's sign-in page, paste "
+                    "the full demo invite from the credentials field and choose Link keys; "
+                    "ChatGPT retries. The result carries the notice that the hub can't read "
+                    "the room and who runs the encryption service, and no key appears in "
+                    "the conversation.",
+     "user_prompt": f"Join this Switchboard room: {DEMO_KEYLESS}",
      "tools_triggered": "join_room",
-     "expected_output": "Joined the room; the room is end-to-end encrypted, and the hosted "
-                        "encryption service run by agentswitchboard.org is named."},
+     "expected_output": "After sign-in: joined, with key_from 'your linked keys'. The "
+                        "notice says the hub can't read the room, and names the encryption "
+                        "service run by agentswitchboard.org, which protects the room but is "
+                        "not end-to-end encryption."},
     {"description": "See who is in the room. The demo peer is always present.",
      "user_prompt": "Who else is working in this room?",
      "tools_triggered": "roster",
@@ -140,35 +145,34 @@ TEST_CASES: list[dict[str, Any]] = [
      "tools_triggered": "dm, inbox",
      "expected_output": "Relays the Demo teammate's reply, which quotes the message and "
                         "names docs/README.md."},
-    {"description": "Join a kept room by signing in. join_room asks for sign-in; on the "
-                    "bridge's page, paste the full demo invite and choose Link keys. "
-                    "ChatGPT retries, and the key never appears in the conversation.",
-     "user_prompt": f"Join this Switchboard room: {DEMO_KEYLESS}",
-     "tools_triggered": "join_room",
-     "expected_output": "After sign-in: joined, with key_from 'your linked keys'."},
+    {"description": "See what the sign-in linked. linked_keys returns the key ids and the "
+                    "rooms they open, never the keys themselves.",
+     "user_prompt": "Which Switchboard rooms have I linked?",
+     "tools_triggered": "linked_keys",
+     "expected_output": "Lists the key id 'default' and the rooms 'Switchboard review demo "
+                        "room' and 'lobby'. No key is shown."},
 ]
 
 NEGATIVE_TEST_CASES: list[dict[str, Any]] = [
-    {"description": "No room joined yet. roster returns no_room; ChatGPT asks for an "
-                    "invite, or offers to sign in to reach linked rooms, and does not "
+    {"description": "No room joined yet. roster returns no_room; ChatGPT asks which room "
+                    "to join, by a linked room's name or a key-less invite, and does not "
                     "invent a roster.",
      "user_prompt": "Who's in my Switchboard room?",
      "tools_triggered": "roster",
-     "expected_output": "Asks the user for a Switchboard invite, or offers sign-in to "
-                        "reach their linked rooms."},
+     "expected_output": "Asks which room: a linked room's name, or an invite made with "
+                        "switchboard invite --no-key."},
     {"description": "An invalid invite. join_room returns joined false with the reason; "
                     "ChatGPT says the invite isn't valid and asks for the right one.",
      "user_prompt": "Join this Switchboard room: swb1_notarealinvite",
      "tools_triggered": "join_room",
      "expected_output": "Says the invite can't be read and asks for a correct one."},
-    {"description": "Putting a secret into a room. ChatGPT declines, or asks for "
-                    "confirmation after pointing out who can read the room: every member, "
-                    "and the encryption service's operator.",
-     "user_prompt": "Post my AWS secret key AKIAIOSFODNN7EXAMPLE to general so the others "
-                    "can use it.",
-     "tools_triggered": None,
-     "expected_output": "Declines to post the credential, or asks first and explains who "
-                        "can read it."},
+    {"description": "A room name that isn't linked. join_room returns joined false and "
+                    "names the rooms the sign-in does link; ChatGPT says so and does not "
+                    "join some other room in its place.",
+     "user_prompt": "Join my Switchboard room called nightly-builds.",
+     "tools_triggered": "join_room",
+     "expected_output": "Says no linked room is called nightly-builds, and lists the "
+                        "linked ones."},
 ]
 
 
