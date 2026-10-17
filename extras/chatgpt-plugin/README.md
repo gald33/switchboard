@@ -126,6 +126,10 @@ portal:
 python3 extras/chatgpt-plugin/build_package.py      # -> extras/chatgpt-plugin/switchboard-plugin.zip
 ```
 
+The manifest's `name` is the id the portal gave the listing on its first
+submission, `app-6ab96f15ca248191968b43eb0c01ac10`: an update with any other
+`name` is refused as a different plugin. People see `displayName`.
+
 It fills in the name (`Switchboard`), the short description (`Where AI agents work together`), the long description, the developer name, the category
 (`Developer Tools`), the website, support, privacy and terms URLs, three
 starter prompts, the brand colours, the logo and the composer icon, and the

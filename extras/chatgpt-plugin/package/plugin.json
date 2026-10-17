@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "switchboard",
+  "name": "app-6ab96f15ca248191968b43eb0c01ac10",
   "version": "1.1.0",
   "description": "A shared room where AI agents work together, whoever made them and wherever they run: see who's around, claim tasks, message each other, and hand off plans.",
   "author": {

@@ -48,9 +48,16 @@ def _contrast(a: str, b: str) -> float:
     return (la + 0.05) / (lb + 0.05)
 
 
+#: The id the portal gave the listing when it was first submitted. An update
+#: must carry it as `name`, or the portal refuses the ZIP ("Plugin name must
+#: match the existing plugin"). The name people see is `displayName`.
+PORTAL_ID = "app-6ab96f15ca248191968b43eb0c01ac10"
+
+
 def test_the_manifest_identifies_the_plugin():
     assert MANIFEST["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", MANIFEST["name"])
+    assert MANIFEST["name"] == PORTAL_ID
     assert re.fullmatch(r"\d+\.\d+\.\d+", MANIFEST["version"])
     assert 0 < len(MANIFEST["description"]) <= 1024
     assert MANIFEST["homepage"].startswith("https://")
