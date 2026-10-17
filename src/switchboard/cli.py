@@ -492,7 +492,7 @@ def _pairing_now() -> float | None:
     return None
 
 
-def _pair_store() -> pairing.PairStore:
+def _pair_store() -> pairing.Store:
     """This machine's pairs, read from `SWITCHBOARD_PAIRS` when asked for.
 
     Built per call rather than once, like the known-rooms book: the variable
@@ -3100,7 +3100,7 @@ class _Post:
         #: the pair room, through `base`, and this machine's own `store`, where
         #: a heal run here writes its new generation before anything else.
         self.base: ClientConfig | None = None
-        self.store: pairing.PairStore | None = None
+        self.store: pairing.Store | None = None
         #: Channels polled only for the pair's own moved and ended notes — the
         #: pair channel, under a `-c` that did not name it. Ordinary messages
         #: there are not this listener's to wake on.
@@ -3264,7 +3264,7 @@ def _listen_posts(args: argparse.Namespace, identity: Identity) -> list[_Post]:
     return posts
 
 
-def _labelled_post(book: knownrooms.Book, store: pairing.PairStore,
+def _labelled_post(book: knownrooms.Book, store: pairing.Store,
                    base: ClientConfig | None, label: str,
                    identity: Identity) -> _Post | None:
     """A room named by `--in` / `--only`: a pair's through pairing, else the book's.
@@ -3281,7 +3281,7 @@ def _labelled_post(book: knownrooms.Book, store: pairing.PairStore,
 
 
 def _pair_post(name: str, base: ClientConfig, identity: Identity,
-               store: pairing.PairStore) -> _Post | None:
+               store: pairing.Store) -> _Post | None:
     """A pair's current work room to park in, or None with a line saying why.
 
     Resolved through the pair room, so a heal by the other side is followed
@@ -3318,7 +3318,7 @@ def _pair_post(name: str, base: ClientConfig, identity: Identity,
 
 
 def _watch_pair(post: _Post, name: str, generation: int | None, base: ClientConfig,
-                store: pairing.PairStore, *, chosen: Sequence[str] | None = None) -> _Post:
+                store: pairing.Store, *, chosen: Sequence[str] | None = None) -> _Post:
     """Make `post` a pair's work room: what it polls, and what it can follow.
 
     By default the pair channel *and* this agent's own direct messages. The
@@ -3348,7 +3348,7 @@ def _watch_pair(post: _Post, name: str, generation: int | None, base: ClientConf
     return post
 
 
-def _say_idle_pairs(store: pairing.PairStore, parked: set[str | None],
+def _say_idle_pairs(store: pairing.Store, parked: set[str | None],
                     now: float | None) -> None:
     """Name each pair this listener is leaving out, and how to add it.
 
@@ -3398,7 +3398,7 @@ class _Rescan:
     that cannot be parked in says why once, not every five seconds.
     """
 
-    def __init__(self, store: pairing.PairStore, base: ClientConfig,
+    def __init__(self, store: pairing.Store, base: ClientConfig,
                  tried: set[str]) -> None:
         self.store, self.base, self.tried = store, base, set(tried)
 
@@ -3435,7 +3435,7 @@ class _Rescan:
 
 
 def _handshake_post(name: str, config: ClientConfig, base: ClientConfig,
-                    identity: Identity, store: pairing.PairStore) -> _Post:
+                    identity: Identity, store: pairing.Store) -> _Post:
     """A pending pairing's handshake room, watched for the answer.
 
     Watched under a throwaway agent id and without announcing anything — no
@@ -3454,7 +3454,7 @@ def _handshake_post(name: str, config: ClientConfig, base: ClientConfig,
 
 
 def _settle_handshake(name: str, base: ClientConfig, identity: Identity,
-                      store: pairing.PairStore) -> dict[str, Any] | None:
+                      store: pairing.Store) -> dict[str, Any] | None:
     """Collect a pairing whose handshake room just woke, in this process.
 
     In-process because the woken session should come back holding the
@@ -5603,7 +5603,7 @@ def _pair_status(args: argparse.Namespace) -> int:
     return code
 
 
-def _pair_check(name: str, base: ClientConfig, store: pairing.PairStore,
+def _pair_check(name: str, base: ClientConfig, store: pairing.Store,
                 agent_id: str) -> tuple[dict[str, Any], ClientConfig | None]:
     """One look at where a pairing stands, and the room to wait in for the next.
 

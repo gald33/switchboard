@@ -1042,7 +1042,7 @@ class Bridge:
     #: This machine's pair store, opened on first use (`_pairs`) — never by a
     #: hosted bridge, whose disk is somebody else's. A test gives each bridge
     #: its own, which is how two bridges in one process are two machines.
-    _pair_store: pairing.PairStore | None = None
+    _pair_store: pairing.Store | None = None
 
     #: Work-room clients for `room="pair:<name>"`, keyed by (name, the work
     #: room's workspace). Not (name, generation): every new pair starts at
@@ -1290,7 +1290,7 @@ class Bridge:
     def _now(self) -> float:
         return self._clock()
 
-    def _pairs(self) -> pairing.PairStore:
+    def _pairs(self) -> pairing.Store:
         """This machine's pair store, refused outright on a hosted bridge.
 
         The dispatcher already withholds every pair_* tool there; this is the

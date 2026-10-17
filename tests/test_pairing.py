@@ -13,6 +13,7 @@ deadlines are compared against the hub's timestamps.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
@@ -30,6 +31,69 @@ from switchboard.pairing import (
 )
 from switchboard.testing import hub as make_hub
 
+#: The members of `pairing.Store`: all the core may touch on a store.
+STORE_MEMBERS = frozenset(n for n in vars(pairing.Store) if not n.startswith("_"))
+
+#: Every way a pairing call broke the store contract during the current test.
+BROKEN: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def store_contract_kept():
+    """Every test here also checks what an embedder's store is promised.
+
+    A server keeping pairs in its own table implements `pairing.Store` and
+    nothing more, and takes an advisory lock for `lock()`. So the core must
+    reach past those members nowhere, never nest the lock (a second advisory
+    lock in one session deadlocks or silently succeeds), and never hold it
+    across a hub call (it would serialise every owner's pairing on the hub).
+    """
+    BROKEN.clear()
+    yield
+    assert not BROKEN, "the core broke the Store contract: " + "; ".join(BROKEN)
+
+
+class Strict:
+    """The directory store, as the core is allowed to see it."""
+
+    def __init__(self, inner: PairStore) -> None:
+        self.inner = inner
+        self.held = False
+
+    @property
+    def enabled(self) -> bool:
+        return self.inner.enabled
+
+    @contextlib.contextmanager
+    def lock(self):
+        if self.held:
+            BROKEN.append("lock() taken while already held")
+            raise AssertionError("lock() nested")
+        with self.inner.lock():
+            self.held = True
+            try:
+                yield
+            finally:
+                self.held = False
+
+    def __getattr__(self, attr: str):
+        if attr not in STORE_MEMBERS:
+            BROKEN.append(f"reached past the Store protocol for {attr!r}")
+            raise AttributeError(attr)
+        return getattr(self.inner, attr)
+
+
+def guarded(connect, machine: Machine):
+    """`connect`, failing the test on any hub call made with the store locked."""
+
+    class Guarded(connect):
+        def _call(self, method, path, **kwargs):
+            if machine.strict.held:
+                BROKEN.append(f"{method} {path} with the store lock held")
+            return super()._call(method, path, **kwargs)
+
+    return Guarded
+
 
 class Machine:
     """One side: its own pair store, the shared hub, its own agent id."""
@@ -39,14 +103,24 @@ class Machine:
         self.label = label
         self.store = PairStore(tmp_path / label / "pairs", env=env if env is not None else {})
         self.base = h.client_config(workspace=f"team-{label}", agent_id=label)
-        self.connect = h.client_class()
+        self.connect = guarded(h.client_class(), self)
+        self._strict: Strict | None = None
+
+    @property
+    def strict(self) -> Strict:
+        """What the pairing calls get: `store`, through the protocol only.
+
+        Rebuilt when a test swaps `store`, so the swap still takes effect."""
+        if self._strict is None or self._strict.inner is not self.store:
+            self._strict = Strict(self.store)
+        return self._strict
 
     def kw(self, **extra):
-        return {"store": self.store, "connect": self.connect, "now": self.h.now,
+        return {"store": self.strict, "connect": self.connect, "now": self.h.now,
                 "agent_id": self.label, **extra}
 
     def start(self, **extra):
-        return pairing.start(self.base, store=self.store, connect=self.connect,
+        return pairing.start(self.base, store=self.strict, connect=self.connect,
                              now=self.h.now, **extra)
 
     def accept(self, code, **extra):
@@ -1001,6 +1075,20 @@ def test_a_side_that_ended_here_is_not_resurrected_by_a_racing_resolve(a, b, h):
         pairing._keep(a.store, record)
     assert exc.value.state == "ended"
     assert a.store.get(name) is None
+
+
+def test_a_stale_copy_never_overwrites_a_pair_made_again_under_its_name(a, b):
+    """Forgotten and paired again while a slow resolve held the old record:
+    the name now holds another pair, whose only copy that write would end."""
+    name, _ = paired(a, b, name="desk")
+    stale = a.store.get(name)
+    a.forget(name)
+    b.forget(name)
+    assert paired(a, b, name="desk")[0] == name
+    with pytest.raises(PairingError) as exc:
+        pairing._keep(a.strict, stale)
+    assert exc.value.state == "ended"
+    assert a.store.get(name).secret != stale.secret
 
 
 def test_a_lower_generation_never_overwrites_a_higher_one_on_disk(a, b):

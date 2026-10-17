@@ -86,7 +86,7 @@ import time
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Protocol
 
 import httpx
 
@@ -773,6 +773,9 @@ class PendingHandshake:
     paired_as: str | None = None
     v: int = PROTOCOL
 
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
     @classmethod
     def from_json(cls, data: Any, *, origin: str) -> PendingHandshake:
         if not isinstance(data, dict) or data.get("v") != PROTOCOL:
@@ -782,6 +785,83 @@ class PendingHandshake:
             return cls(**{k: v for k, v in data.items() if k in known})
         except TypeError as exc:
             raise PairingError(f"{origin} is missing a field ({exc})") from exc
+
+
+class Store(Protocol):
+    """Where pairs are kept: what every pairing call takes as `store=`.
+
+    `PairStore`, a directory, is the one this package uses. Anything with
+    these members works in its place — a server that pairs on its users'
+    behalf keeps each owner's pairs in its own encrypted table and passes one
+    of these per owner. What the core relies on:
+
+    - **`save` and `save_pending` are atomic and durable before they return.**
+      A pair record holds the only copy of its pair secret, and the core saves
+      before it sends anything: a save that raises leaves the code unspent,
+      and a save that returns and is then lost costs the pair.
+    - **A pending handshake holds a private key** (the initiator's ephemeral
+      key, and the code's secret). Keep it encrypted at rest, and gone once
+      `delete_pending` is called — the core calls it once the handshake is
+      over: collected and announced, aborted, or past its deadline.
+    - **`lock()` is exclusive per owner**, across every process or server
+      that shares the store; an advisory lock is enough. The core never nests
+      it and never makes a hub call while holding it — it holds it for the
+      store reads and writes of one read-modify-write, nothing longer.
+    - **`get`, `pending` and `verdict` return None when nothing is saved
+      under the name**, and `verdict` also once past the `until` it was saved
+      with (deleting it then is fine). A verdict is a dict with at least
+      `state`, `message` and `until`; `PairStore` keeps `name`, `state`,
+      `message`, `at` and `until = now + VERDICT_KEEP`, and holds no secret
+      in it. `delete`, `delete_pending` and `clear_verdict` return
+      whether there was anything to delete; the `*_names` calls list what is
+      saved, in any order.
+    - **`taken(name)`** is why `name` cannot be used for a new pair — a record
+      or a pending handshake under it — as a sentence, or None.
+    - **`require()` raises `PairingError(state="disabled")`** when the store
+      cannot keep pairs at all, and `enabled` is False then.
+    - **A storage failure raises `OSError` or `PairingError`.** Those are what
+      the fail-soft helpers (`active`, `pending_rooms`, `sweep_expired`) skip
+      per item and `status` turns into that pair's row; every other call
+      stops on them. The CLI and the MCP bridge report an `OSError` as state
+      `store`.
+
+    Records go in and come out as `PairRecord` and `PendingHandshake`;
+    `to_json()` and `from_json()` are their wire form. A record's `source`
+    (`"store"` or `"env"`) is not part of it: `get` says where it found one.
+    """
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def require(self) -> object: ...
+
+    def lock(self) -> contextlib.AbstractContextManager[None]: ...
+
+    def get(self, name: str) -> PairRecord | None: ...
+
+    def save(self, record: PairRecord) -> None: ...
+
+    def delete(self, name: str) -> bool: ...
+
+    def names(self) -> list[str]: ...
+
+    def pending(self, name: str) -> PendingHandshake | None: ...
+
+    def save_pending(self, pending: PendingHandshake) -> None: ...
+
+    def delete_pending(self, name: str) -> bool: ...
+
+    def pending_names(self) -> list[str]: ...
+
+    def verdict(self, name: str, *, now: float | None = None) -> dict[str, Any] | None: ...
+
+    def save_verdict(self, name: str, state: str, message: str, *, now: float) -> None: ...
+
+    def clear_verdict(self, name: str) -> bool: ...
+
+    def verdict_names(self) -> list[str]: ...
+
+    def taken(self, name: str) -> str | None: ...
 
 
 class PairStore:
@@ -808,7 +888,7 @@ class PairStore:
 
     # --- plumbing ---
 
-    def _require(self) -> Path:
+    def require(self) -> Path:
         if self.path is None:
             raise PairingError(
                 f"pairing is disabled on this machine: {ENV} is set to the empty "
@@ -817,8 +897,10 @@ class PairStore:
             )
         return self.path
 
+    _require = require
+
     def _dir(self, *parts: str) -> Path:
-        directory = self._require().joinpath(*parts)
+        directory = self.require().joinpath(*parts)
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         with contextlib.suppress(OSError):
             os.chmod(directory, 0o700)
@@ -953,7 +1035,7 @@ class PairStore:
         return None if data is None else PendingHandshake.from_json(data, origin=str(path))
 
     def save_pending(self, pending: PendingHandshake) -> None:
-        self._write(self._pending_path(pending.name), asdict(pending))
+        self._write(self._pending_path(pending.name), pending.to_json())
 
     def delete_pending(self, name: str) -> bool:
         if self.path is None:
@@ -1274,7 +1356,7 @@ class Started:
         return handle(self.name)
 
 
-def start(base: ClientConfig, *, store: PairStore, connect: Connect = _default_connect,
+def start(base: ClientConfig, *, store: Store, connect: Connect = _default_connect,
           name: str | None = None, note: str = "", ttl: float = DEFAULT_TTL,
           with_token: bool = False, now: float | None = None) -> Started:
     """Begin a pairing on this machine: the side that stays should run this.
@@ -1289,7 +1371,7 @@ def start(base: ClientConfig, *, store: PairStore, connect: Connect = _default_c
     never in anyone's hands that this machine could not collect.
     """
     _need_crypto()
-    store._require()
+    store.require()
     sweep_expired(store, now=now)
     ttl = float(ttl)
     if not MIN_TTL <= ttl <= MAX_TTL:
@@ -1404,7 +1486,7 @@ def _refuse_used(seen: _Channel, code: PairingCode) -> None:
             "made on. Nothing was sent.", state="wrong_hub")
 
 
-def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
+def accept(blob: str, base: ClientConfig | None = None, *, store: Store,
            connect: Connect = _default_connect, name: str | None = None,
            note: str = "", agent_id: str | None = None,
            now: float | None = None) -> Accepted:
@@ -1419,7 +1501,7 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
     """
     _need_crypto()
     code = PairingCode.decode(blob)
-    store._require()
+    store.require()
     local = _now(now)
     if local > code.expires_at + LOCAL_SLACK:
         raise PairingError(
@@ -1522,7 +1604,7 @@ def accept(blob: str, base: ClientConfig | None = None, *, store: PairStore,
 
 
 def _send_answer(record: PairRecord, hub: Any, base: ClientConfig | None, *,
-                 store: PairStore, connect: Connect, now: float,
+                 store: Store, connect: Connect, now: float,
                  already_there: bool = False) -> list[str]:
     """Get this side's saved answer onto the hub, then check nobody beat it.
 
@@ -1624,7 +1706,7 @@ def _confirm(record: PairRecord, reveal: bytes) -> None:
     record.initiator = None
 
 
-def _void(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
+def _void(record: PairRecord, base: ClientConfig | None, *, store: Store,
           connect: Connect, now: float, state: str = "aborted",
           message: str = "") -> None:
     """Drop a responder's pair that can never be confirmed, and say so.
@@ -1658,7 +1740,7 @@ class Collected:
         return handle(self.name)
 
 
-def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
+def collect(name: str, base: ClientConfig | None = None, *, store: Store,
             connect: Connect = _default_connect, agent_id: str | None = None,
             now: float | None = None) -> Collected:
     """Finish the initiator's side, if the answer is there. Idempotent.
@@ -1687,7 +1769,7 @@ def collect(name: str, base: ClientConfig | None = None, *, store: PairStore,
         if ended is not None:
             return Collected(name, str(ended.get("state") or "aborted"),
                              message=str(ended.get("message") or ""))
-        store._require()
+        store.require()
         raise PairingError(f"no pairing called {name!r} is waiting on this machine",
                            state="unknown")
     local = _now(now)
@@ -1827,7 +1909,7 @@ def _deadline_passed(pending: PendingHandshake) -> str:
             f"`switchboard pair forget {pending.name}`, and you start a new one.")
 
 
-def _decided_here(store: PairStore, name: str, now: float) -> Collected | None:
+def _decided_here(store: Store, name: str, now: float) -> Collected | None:
     """What another process on this machine decided about `name`, if it has."""
     with store.lock():
         pending = store.pending(name)
@@ -1847,7 +1929,7 @@ def _decided_here(store: PairStore, name: str, now: float) -> Collected | None:
     return None
 
 
-def _free_name(store: PairStore, name: str) -> str:
+def _free_name(store: Store, name: str) -> str:
     for i in range(2, 100):
         candidate = f"{name[:28]}-{i}"
         if store.taken(candidate) is None:
@@ -1856,7 +1938,7 @@ def _free_name(store: PairStore, name: str) -> str:
 
 
 def _announce(pending: PendingHandshake, record: PairRecord, base: ClientConfig | None,
-              *, store: PairStore, connect: Connect, agent_id: str | None,
+              *, store: Store, connect: Connect, agent_id: str | None,
               now: float) -> list[str]:
     """Tell the hub the handshake is over, then forget the ephemeral key.
 
@@ -2084,7 +2166,7 @@ def _days(seconds: float) -> str:
         f"{seconds / 3600:.0f} hours"
 
 
-def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
+def resolve(name: str, base: ClientConfig | None = None, *, store: Store,
             connect: Connect = _default_connect, agent_id: str | None = None,
             now: float | None = None, _retry: bool = True) -> Resolution:
     """The pair's current work room, after one read of the pair room.
@@ -2116,7 +2198,7 @@ def resolve(name: str, base: ClientConfig | None = None, *, store: PairStore,
                                    state=str(ended.get("state") or "aborted"))
             # A disabled store hides every pair it would have held; "no such
             # pair" would send somebody looking for one that was never lost.
-            store._require()
+            store.require()
             raise PairingError(
                 f"no pair called {name!r} on this machine — `switchboard pair "
                 "status` lists them. (A replaced container keeps no pair it was "
@@ -2308,7 +2390,7 @@ def _env_warnings(record: PairRecord, warnings: list[str]) -> None:
             "tell that it was")
 
 
-def _resend(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
+def _resend(record: PairRecord, base: ClientConfig | None, *, store: Store,
             connect: Connect, now: float, warnings: list[str]) -> None:
     """Finish an `accept` whose answer may never have reached the hub.
 
@@ -2376,7 +2458,7 @@ def _code_stub(record: PairRecord) -> PairingCode:
                        commit=_b64d(record.commit or ""))
 
 
-def _verdict(record: PairRecord, base: ClientConfig | None, *, store: PairStore,
+def _verdict(record: PairRecord, base: ClientConfig | None, *, store: Store,
              connect: Connect, now: float) -> bool:
     """Read the initiator's verdict on this answer from the handshake room.
 
@@ -2465,12 +2547,12 @@ def _lapse_target(record: PairRecord, generation: int) -> int:
     return floor + LAPSE_JUMP + secrets.randbelow(1 << 32)
 
 
-def _keep(store: PairStore, record: PairRecord) -> None:
-    """Save a record that changed, merged with whatever is on disk now.
+def _keep(store: Store, record: PairRecord) -> None:
+    """Save a record that changed, merged with whatever the store holds now.
 
     Another process on this machine may have healed or forgotten the pair
     while this one was talking to the hub. A forgotten pair is not brought
-    back, and a generation already on disk is never written over with a
+    back, and a generation already saved is never written over with a
     lower one. An environment-loaded pair in a container with no usable store
     still works — it just cannot remember a heal across containers, which the
     resolution already warns about.
@@ -2478,12 +2560,18 @@ def _keep(store: PairStore, record: PairRecord) -> None:
     if not store.enabled:
         return
     with store.lock():
-        path = store.path / f"{record.name}.json" if store.path else None
-        disk = None
-        if path is not None:
-            data = store._read(path)
-            if data is not None:
-                disk = PairRecord.from_json(data, origin=str(path))
+        disk = store.get(record.name)
+        if disk is not None and disk.source != "store":
+            # Only what the store itself holds counts; an environment's copy
+            # is where this record may have come from, not a newer view of it.
+            disk = None
+        if disk is not None and not hmac.compare_digest(disk.secret, record.secret):
+            # Forgotten and paired again under the same name meanwhile: that
+            # is another pair, whose only copy this write would destroy.
+            raise PairingError(
+                f"pair {record.name!r} was forgotten on this machine while this was "
+                "using it, and the name now holds a different pair; that one was "
+                "left as it is.", state="ended")
         if disk is None and record.source == "store":
             raise PairingError(
                 f"pair {record.name!r} was forgotten on this machine while this was "
@@ -2523,7 +2611,7 @@ class Healed:
     warnings: list[str] = field(default_factory=list)
 
 
-def heal(name: str, base: ClientConfig | None = None, *, store: PairStore,
+def heal(name: str, base: ClientConfig | None = None, *, store: Store,
          connect: Connect = _default_connect, reason: str = "",
          agent_id: str | None = None, now: float | None = None) -> Healed:
     """Move the pair to a new work room, because the current one's key leaked.
@@ -2614,7 +2702,7 @@ class Forgotten:
     warnings: list[str] = field(default_factory=list)
 
 
-def forget(name: str, base: ClientConfig | None = None, *, store: PairStore,
+def forget(name: str, base: ClientConfig | None = None, *, store: Store,
            connect: Connect = _default_connect, agent_id: str | None = None,
            now: float | None = None) -> Forgotten:
     """End a pair on this machine, and tell the other side it ended.
@@ -2631,7 +2719,7 @@ def forget(name: str, base: ClientConfig | None = None, *, store: PairStore,
     if record is None and pending is None:
         if store.clear_verdict(name):
             return Forgotten(name, False, [])
-        store._require()
+        store.require()
         raise PairingError(f"no pair called {name!r} on this machine", state="unknown")
     with store.lock():
         store.delete(name)
@@ -2657,7 +2745,7 @@ def forget(name: str, base: ClientConfig | None = None, *, store: PairStore,
     return Forgotten(name, told, warnings)
 
 
-def status(base: ClientConfig | None = None, *, store: PairStore,
+def status(base: ClientConfig | None = None, *, store: Store,
            connect: Connect = _default_connect, name: str | None = None,
            agent_id: str | None = None, now: float | None = None) -> list[dict[str, Any]]:
     """Every pair and pending handshake on this machine, brought up to date.
@@ -2670,7 +2758,7 @@ def status(base: ClientConfig | None = None, *, store: PairStore,
     names = [name] if name else sorted(set(store.names()) | set(store.pending_names())
                                        | set(store.verdict_names()))
     if not names and not store.enabled:
-        store._require()
+        store.require()
     rows: list[dict[str, Any]] = []
     for each in names:
         try:
@@ -2691,7 +2779,7 @@ class _Gone(Exception):
     """A name whose only trace was a verdict that has now lapsed."""
 
 
-def _status_row(each: str, base: ClientConfig | None, *, store: PairStore,
+def _status_row(each: str, base: ClientConfig | None, *, store: Store,
                 connect: Connect, agent_id: str | None,
                 now: float | None, listed: bool = False) -> dict[str, Any]:
     pending = store.pending(each)
@@ -2724,7 +2812,7 @@ def _status_row(each: str, base: ClientConfig | None, *, store: PairStore,
                    now=now).summary()
 
 
-def sweep_expired(store: PairStore, *, now: float | None = None) -> list[str]:
+def sweep_expired(store: Store, *, now: float | None = None) -> list[str]:
     """Delete pending handshakes past their deadline; return their names.
 
     Nothing can be collected after the deadline, so all an expired pending
@@ -2763,7 +2851,7 @@ def sweep_expired(store: PairStore, *, now: float | None = None) -> list[str]:
     return dropped
 
 
-def active(store: PairStore, *, within: float = 86400.0,
+def active(store: Store, *, within: float = 86400.0,
            now: float | None = None) -> list[str]:
     """Pairs worth parking a listener in: used lately, carried in, or unreadable.
 
@@ -2793,7 +2881,7 @@ def active(store: PairStore, *, within: float = 86400.0,
     return names
 
 
-def pending_rooms(store: PairStore, base: ClientConfig | None = None,
+def pending_rooms(store: Store, base: ClientConfig | None = None,
                   *, now: float | None = None) -> list[tuple[str, ClientConfig]]:
     """Handshake rooms this machine is waiting in, for a listener to park in.
 

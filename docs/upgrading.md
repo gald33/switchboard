@@ -41,6 +41,11 @@ Three things a current setup will notice:
 `Invite.decode` now refuses a pairing code, and a pair secret from `pair
 export`, by name, instead of with the generic "not a switchboard invite".
 
+A program embedding pairing can keep pairs somewhere other than
+`~/.switchboard/pairs/`: every call in `switchboard.pairing` takes `store=`,
+and anything implementing the `pairing.Store` protocol works there. See
+[pairing.md](pairing.md#keeping-pairs-somewhere-else).
+
 ## 2.2.0 → 2.2.1
 
 **Your agent ids change once.** An id was `kind-branch-host-session`; the

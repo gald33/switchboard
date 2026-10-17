@@ -545,6 +545,60 @@ later would be told the pair was never confirmed and advised to forget a
 pair that works. Wait with `pair wait <name>`, or export with `--peer` from
 the other machine once it has collected.
 
+## Keeping pairs somewhere else
+
+Every pairing call takes the store it reads and writes as `store=`: `start`,
+`accept`, `collect`, `resolve`, `heal`, `forget` and `status`, and the
+listener's helpers `active`, `pending_rooms` and `sweep_expired`. The CLI and
+the local MCP bridge pass `PairStore`, the directory above. A program that
+keeps secrets its own way passes anything implementing `pairing.Store` — a
+server that pairs on its users' behalf, say, whose containers are replaced
+on every deploy and whose users' secrets live in its own encrypted table,
+passes one store per owner over that table:
+
+```python
+from switchboard import pairing
+
+store = OwnerPairs(db, owner)                       # implements pairing.Store
+started = pairing.start(base, store=store)          # hand started.code to the user, once
+done = pairing.collect(started.name, base, store=store)        # from the reader loop
+room = pairing.resolve(started.name, base, store=store).config  # the current work room
+```
+
+What the core relies on, and so what such a store has to do:
+
+- **`save` and `save_pending` are atomic and durable before they return.** A
+  pair record is the only copy of its pair secret, and the core saves before
+  it sends anything: a save that raises leaves the code unspent, and one that
+  returns and is later lost costs the pair.
+- **A pending handshake holds a private key** — the initiator's ephemeral
+  key, and the code's secret. Encrypt it at rest, and delete it when
+  `delete_pending` is called: the core calls it once the handshake is over —
+  collected and announced, aborted, or past its deadline.
+- **`lock()` is exclusive per owner**, across every process and server that
+  shares the table; an advisory lock is enough. The core never nests it and
+  never makes a hub call while holding it — only the store reads and writes
+  of one read-modify-write happen inside — so a slow hub never holds an
+  owner's lock.
+- **`get`, `pending` and `verdict` return `None` when nothing is saved under
+  the name**, and `verdict` also once past the `until` it was saved with. A
+  verdict holds no secret: a state, a sentence, and until when to say it.
+- **`require()` raises `PairingError(state="disabled")`** when the store
+  cannot keep pairs at all, and `enabled` is false then.
+- **A storage failure raises `OSError` or `PairingError`.** `active`,
+  `pending_rooms` and `sweep_expired` skip such an item and go on; `status`
+  reports a pair it could not read as that pair's row; every other call
+  stops.
+
+Records go in and out as `PairRecord` and `PendingHandshake`, whose
+`to_json()` and `from_json()` are the form to keep: store the JSON whole
+rather than picking fields out of it, since a later release may add one.
+`SWITCHBOARD_PAIR_<NAME>` is a feature of `PairStore`, not of the protocol.
+The calls are synchronous, with a synchronous `connect`; from an event loop,
+run each in a worker thread. The full contract is the docstring of
+`pairing.Store`, and the tests hold the core to it with a store that has
+those members and nothing else (`tests/test_pairing_store.py`).
+
 ## What it costs
 
 Stated as plainly as the rest of the docs state theirs:
