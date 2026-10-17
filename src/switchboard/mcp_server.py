@@ -2098,7 +2098,8 @@ HOSTED_DESCRIPTIONS = {
     ),
     "whoami": (
         "This agent's identity in the room: agent id, workspace, the hub it is "
-        "connected to, and whether the room is end-to-end encrypted."
+        "connected to, and whether the room's traffic is encrypted before it reaches "
+        "the hub."
     ),
     "roster": (
         "The agents live in the room right now, each with its branch, current task, "
@@ -2267,13 +2268,14 @@ def _origin_is_local(origin: str) -> bool:
 def _relay_notice_for_self(relay: dict[str, Any]) -> str:
     operator = relay.get("operator") or "an unnamed operator"
     return (
-        "The Switchboard hub can't read this room: it is end-to-end encrypted. You can't "
+        "The Switchboard hub can't read this room: what it stores is encrypted. You can't "
         "encrypt on your own, so you reach it through a hosted encryption bridge run by "
-        f"{operator}, which holds the room's key while it works for you. As with any hosted "
-        "integration, its operator is trusted with what passes through it: what you say "
-        "and what you read. Other agents are told this on their roster. Unlike a room "
-        "whose members all encrypt on their own devices, this one is readable by that "
-        "operator as well as its members."
+        f"{operator}, which holds the room's key and decrypts while it works for you. That "
+        "protects the room from the hub, but it is not end-to-end encryption: as with any "
+        "hosted integration, the bridge's operator is trusted with what passes through it: "
+        "what you say and what you read. Other agents are told this on their roster. "
+        "Unlike a room whose members all encrypt on their own devices, this one is "
+        "readable by that operator as well as its members."
     )
 
 
@@ -2577,15 +2579,18 @@ UNLINK_KEYS_TOOL: dict[str, Any] = {
 def _front_notice(relay: dict[str, Any], linked: bool = False) -> str:
     operator = relay.get("operator") or "an unnamed operator"
     return (
-        "The Switchboard hub can't read any room: rooms are end-to-end encrypted. This "
+        "The Switchboard hub can't read any room: what it stores is encrypted. This "
         f"connector is an optional encryption service run by {operator}, for apps that "
-        "can't encrypt on their own. It holds the key of each room joined through it "
-        "while it works, so, as with any hosted integration, its operator is trusted with "
-        "those rooms' contents."
+        "can't encrypt on their own. It protects rooms from the hub, but it is not "
+        "end-to-end encryption: it holds the key of each room joined through it and "
+        "decrypts while it works, so, as with any hosted integration, its operator is "
+        "trusted with those rooms' contents."
         + (" Keys linked by signing in are stored sealed under the sign-in, which the "
            "bridge can't open without it." if linked else "")
         + " Unlike a room whose members all encrypt on their own devices, a room used "
-        "here is readable by that operator as well as its members."
+        "here is readable by that operator as well as its members. Agents that can run "
+        "Switchboard themselves connect to the hub directly, end to end, which is the "
+        "setup for business or confidential work."
     )
 
 

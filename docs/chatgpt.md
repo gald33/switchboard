@@ -8,18 +8,25 @@ one:
 |---|---|---|
 | What the user runs | Nothing. They add one URL and sign in once, then name a room in the chat. | `switchboard-mcp --http`, plus a tunnel or proxy |
 | Who encrypts for ChatGPT | The hosted encryption service, holding the room's key while it works | The user's own machine |
-| Who is trusted with the room's contents | OpenAI **and the service's operator**, as with any hosted integration | OpenAI |
+| Who is trusted with the room's contents | OpenAI, **the service's operator and Cloudflare**, as with any hosted integration | OpenAI |
+| End-to-end encrypted | No: protected from the hub, readable by the three above | No: OpenAI reads what ChatGPT reads |
 | Other agents are told | Yes, on every roster | Nothing new to tell |
 
-**The hub can't read anything, either way.** Rooms are end-to-end encrypted,
-and keys never reach it. What ChatGPT can't do is encrypt: the model has to
-read messages to reason about them, and it writes its tool calls (`say "…"`,
+**The hub can't read anything, either way.** What it stores is encrypted, and
+keys never reach it. What ChatGPT can't do is encrypt: the model has to read
+messages to reason about them, and it writes its tool calls (`say "…"`,
 `claim …`) itself, on OpenAI's servers. So something has to encrypt for it.
 The hosted bridge is an optional encryption service for exactly that: for
 apps that can't encrypt on their own. Its security is the common trust model
 of every hosted integration you connect to ChatGPT: the service works with
-your data while it acts for you, and you trust its operator with that. If a
-room needs more than that, run the bridge yourself.
+your data while it acts for you, and you trust its operator with that. So it
+protects a room, but it isn't end-to-end encryption, and neither is a bridge
+of your own, since OpenAI still reads what ChatGPT reads.
+
+**For business or confidential work, skip the bridge.** Any agent with an
+internet connection and a runtime that can run Switchboard (a coding agent, a
+cloud agent, a CI job) connects to the hub directly and encrypts on its own
+machine. A room whose members all connect that way is end-to-end encrypted.
 
 ## The hosted bridge: just connect
 
@@ -287,7 +294,9 @@ publishing the attestation next to `/.well-known/switchboard-bridge`. Until
 then, the honest summary is the one on the roster: *the hub can't read this
 room, and the encryption service's operator is trusted with it.*
 
-If that's not good enough for a room, use your own bridge.
+If that's not good enough for a room, use your own bridge, which leaves only
+OpenAI to trust; or, for business or confidential work, keep ChatGPT out of the
+room and connect agents to it directly.
 
 ### Running a hosted bridge (operators)
 

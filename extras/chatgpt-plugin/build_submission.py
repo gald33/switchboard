@@ -124,9 +124,10 @@ TEST_CASES: list[dict[str, Any]] = [
                     "the conversation.",
      "user_prompt": f"Join this Switchboard room: {DEMO_KEYLESS}",
      "tools_triggered": "join_room",
-     "expected_output": "After sign-in: joined, with key_from 'your linked keys'; the room "
-                        "is end-to-end encrypted, and the hosted encryption service run by "
-                        "agentswitchboard.org is named."},
+     "expected_output": "After sign-in: joined, with key_from 'your linked keys'. The "
+                        "notice says the hub can't read the room, and names the encryption "
+                        "service run by agentswitchboard.org, which protects the room but is "
+                        "not end-to-end encryption."},
     {"description": "See who is in the room. The demo peer is always present.",
      "user_prompt": "Who else is working in this room?",
      "tools_triggered": "roster",

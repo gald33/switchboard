@@ -183,10 +183,11 @@ any other credential, into the chat.
   sign-in prompt. On the bridge's page, paste the full demo invite and choose
   **Link keys**. ChatGPT retries `join_room`.
 - **Expected result:** `joined: true`, `key_from: "your linked keys"`, a room
-  handle, `encrypted: true`, and the notice that the hub can't read the room
+  handle, `encrypted: true`, and the notice that the hub can't read the room,
   and that the encryption service, run by agentswitchboard.org (via
-  Cloudflare), is trusted with it. ChatGPT confirms it joined and passes on
-  the notice. No key appears in the conversation.
+  Cloudflare), protects it but is not end-to-end encryption and is trusted
+  with it. ChatGPT confirms it joined and passes on the notice. No key
+  appears in the conversation.
 
 **2. See who's there**
 - **Prompt:** "Who else is working in this room?"
@@ -304,8 +305,9 @@ In the manifest, as `defaultPrompt` (the portal allows three):
 > never entered in the chat or passed to a tool: the service refuses an
 > invite that carries one. See who's active and what they're doing, claim
 > work, read and send messages, and share plans on the board. The hub can't
-> read any room; the hosted encryption service tells every room it joins who
-> runs it.
+> read any room. The hosted encryption service protects the rooms it joins
+> but isn't end-to-end encryption, and it tells every room it joins who runs
+> it.
 
 **Notes to the reviewer** (for the resubmission):
 
