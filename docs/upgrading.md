@@ -3,7 +3,7 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
-## 2.5.0 → next
+## 2.5.0 → 2.6.0
 
 Additive. Two machines can be **paired**: `switchboard pair start` on the
 machine that stays prints a one-off `swbp1_…` code, `switchboard pair accept
