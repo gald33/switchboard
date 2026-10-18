@@ -152,6 +152,24 @@ class Invite:
     @classmethod
     def decode(cls, blob: str) -> Invite:
         text = blob.strip()
+        if text.startswith(("swbp1_", "swbsecret1_")):
+            # Not an invite, and joining it as one would be the worst outcome
+            # on offer: a pairing code parsed as a room is a handshake room
+            # joined in the open, by every surface that reads invites.
+            from . import pairing
+
+            if pairing.looks_like_secret(text):
+                raise InviteError(
+                    "this is a pair's long-lived secret from `switchboard pair "
+                    "export`, not an invite — and having been pasted here it should "
+                    "be treated as disclosed: `switchboard pair forget <name>` on "
+                    "both machines, and pair again."
+                )
+            raise InviteError(
+                "this is a pairing code, not an invite. Pairing happens on your own "
+                "machine, which keeps the pair: redeem it there with `switchboard "
+                "pair accept <code>`, or the local MCP bridge's `pair_accept`."
+            )
         if not text.startswith(PREFIX):
             raise InviteError(
                 f"not a switchboard invite (expected it to start with {PREFIX!r}). "

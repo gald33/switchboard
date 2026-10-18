@@ -21,6 +21,17 @@ nothing new; a key that never appeared in the conversation is never copied
 into this file, printed, or retyped. There is no reference kind for a bare
 value, on purpose.
 
+Pairs do not bend that rule; they are outside the book entirely. A pair
+secret is agreed by two machines and never appears in any conversation, so
+there is no way it was acquired for an entry to point back at, and the only
+honest place for it is a store of its own: `pairing.PairStore`, owner-only.
+A `pair:<name>` handle resolves through pairing, never through this book, and
+a pair's work room is never recorded here — a heal would leave the entry
+naming a room both sides have abandoned. Shared rooms likewise: a
+`shared:<name>` handle resolves through the share store (`sharing.py`), and
+a shared room's key, which arrived sealed in a pair room and never in a
+conversation, has no way it was acquired for an entry to point back at.
+
 **The mechanism is the tool's, and costs the model nothing.** Entries are
 written by the commands that already hold the coordinates (`init`, `join`,
 `keygen --as-invite`, any `--invite <command>`). `rendezvous` sweeps the book

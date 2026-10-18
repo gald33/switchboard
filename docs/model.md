@@ -12,7 +12,9 @@ is stale.
 A **room** is identified by `hash(workspace_token)`. Two parties holding the
 same token compute the same identifier without being told, so nothing has to be
 registered, claimed or arbitrated. The **repo declares** which rooms it takes
-part in; the **environment holds keys**; an agent joins the intersection. What
+part in; the **environment holds keys** — and for two paired machines, each
+one's **pair store** holds a single secret that a room and its key are both
+derived from; an agent joins the intersection. What
 protects a room is that its identifier is unguessable and its contents are
 sealed with a key the hub never receives. The hub is a router with a front
 door, and one permission it enforces without storing anything: a room whose
@@ -28,7 +30,12 @@ announce, peers witness, and everything expires.
 | **key** | seals content; never transmitted. Scoped to whoever shares it — usually a person or a team, not one repo: one key opens every room whose `key_id` names it | anyone who may *read* the room | `SWITCHBOARD_KEY_<ID>` in the environment |
 | **write key** | proves a request may *change* a `ws_…` room; its public half is the room's token, so it names the room as well | anyone who may *write* the room — the key alone reads it | `SWITCHBOARD_WRITE_KEY_<ID>`, under the same id as the key |
 | **hub token** | gets you through the front door | everyone, or one operator's users | committed `.mcp.json` when public; the environment when it is a secret |
-| **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere |
+| **signing key** | proves *which agent* wrote something | one agent, one process | memory only, never written anywhere — a rule about attribution keys; the one private key this package writes down is pairing's pending ephemeral key, below |
+| **pairing code** (`swbp1_…`) | names a handshake room and carries one half of a key exchange; a bearer credential until the initiator collects the answer — anyone holding it can answer in place of the peer, or void the pairing — and worth nothing after that, or once it expires unanswered (15 minutes by default) | whoever a human handed it to | wherever it was carried — a chat, a ticket — and expected to stay there |
+| **pair secret** | agreed by two machines' handshake and never transmitted; the pair room and every work room derive from it | two machines | `~/.switchboard/pairs/` (owner-only), or `SWITCHBOARD_PAIR_<NAME>` from `pair export` |
+| **work-room key / write key** | seal and write-protect a pair's work room, generation *n*; derived from the pair secret and *n*, one-way | the two paired machines, and anyone handed a work-room invite until the next heal | nowhere: derived at each use |
+| **shared-room key / write key** | seal and write-protect a shared room; minted by the machine that ran `share new`, like any room's, and never rotated | the machine that minted it and every machine it was offered to — the offer carries the keys, whether or not it is accepted — and anyone handed its invite; nothing revokes either | delivered sealed through a pair room, inside the offer; kept owner-only in the share store, `~/.switchboard/pairs/shared_rooms.json` |
+| **pending ephemeral key** | the initiator's half of the handshake | the machine that ran `pair start` | `~/.switchboard/pairs/pending/`, until the answer is collected. One for a code nobody answered in time is deleted by the first collection a few minutes after the code expires; any other by the first parked listener, `pair start`, `pair status`, `pair wait` or MCP call after its deadline (the code's expiry plus 12 hours) |
 
 An **invite** is those first three bundled into one string, so the values that
 have to match a peer's cannot be assembled wrongly one at a time — every one
@@ -56,6 +63,10 @@ environment or your checkout:
 | CLI | `--invite <blob>` on any command — one invocation runs in that room |
 | CLI | `--lobby` on any command — the room this key already shares, `hash(HMAC(key, "switchboard-lobby"))`. Derived rather than named, so holders of one key meet without agreeing anything, and a constant would have given every user on earth one room id. The separator carries **no version, deliberately** — this is the room for agents that do not ship together, so a version in it would sort them by library version, silently |
 | MCP | `join_room` returns a handle; `room=` on any tool routes there |
+| CLI | `--room pair:NAME` on any command — the current work room of a pair this machine holds, `HKDF(pair secret, generation)`. Nothing to paste: the handle names the pair, the key never leaves the pair store, and each use reads the pair room, so it follows a heal |
+| MCP | `room="pair:NAME"` on any tool — the same room, re-resolved at most every 30 seconds and after any `pair_*` tool; local bridge only |
+| CLI | `--room shared:NAME` on any command — a shared room this machine holds, looked up in the share store on every use. Nothing to paste: the room arrived sealed in a pair room, and its key never leaves the store except as `--room shared:NAME invite` |
+| MCP | `room="shared:NAME"` on any tool — the same room, looked up on every call; local bridge only |
 | a browser | paste it into the viewer's settings sheet, or open `<page>#swb1_…` |
 
 `switchboard invite --link` prints that URL, onto the published viewer at
@@ -100,6 +111,26 @@ workspace on the wrong key. Registered, on a roster, reading nothing. A flag
 that contradicts an invite is refused rather than merged; a half-invite
 describes a room nobody is in.
 
+`switchboard pair start` and `switchboard pair accept` are the other way two
+machines come to share a room, for when the room should outlive the string
+that set it up. An invite *is* the room, so whatever carried it — a chat, a
+ticket — holds the room for as long as the room lives. A pairing code is one
+half of a key exchange, redeemable for minutes: both machines derive the
+rooms they share from a secret neither ever sends, and the code is worth
+nothing once the machine that made it has collected the other's answer. The
+two `pair:` rows in the table above are how those rooms are reached. See
+[pairing.md](pairing.md).
+
+`switchboard share new` is how more than two machines come to share one room
+without a string at all. One machine mints an ordinary write-protected room
+and offers it to the pairs it names, sealed inside their pair rooms; each
+machine offered it decides for itself whether to keep it. The hub sees a room
+like any other — a shared room has no members, and access is knowing it —
+and each machine keeps its own list of the pairs it shares each room with.
+There is no add and no remove: changing who is in is a new room, and nothing
+is revoked. The two `shared:` rows are how those rooms are reached. See
+[sharing.md](sharing.md).
+
 ## The five rules
 
 **1. Identifiers are derived, never assigned.**
@@ -115,7 +146,10 @@ a write permission with nothing stored (rule 3).
 
 *Consequence:* a leaked workspace token exposes that room's metadata forever,
 because the identifier never rotates. Recovery is minting a new token and
-updating the repo — a commit, not a protocol operation.
+updating the repo — a commit, not a protocol operation. The exception is a
+paired work room, whose identifier and key are derived from the pair secret
+and a generation number: there, recovery is `pair heal`, which moves both
+machines to the next generation and is a protocol operation on purpose.
 
 **2. The key and the room are chosen together.**
 One record carries both, so they cannot disagree. Every bug in #52, #53 and #55
@@ -159,6 +193,22 @@ route, so a rotating blind key would stop a channel matching itself.
 *Scope:* this bounds a leaked *derived* key to one period. It is **not**
 forward secrecy — the key derives every epoch, past and future.
 
+The same scope, stated for pairing: its **handshake has forward secrecy** and
+its **generations do not**. The handshake's keys are ephemeral and are
+deleted once used, so the pairing code and the hub's entire history together
+yield public keys and proofs, and nothing that opens a room. But every work
+room derives from the pair secret, so a leaked pair secret opens every
+generation, past and future, and no heal helps; a heal rescues one leaked
+*work-room* key.
+
+And for shared rooms, which are minted rather than derived and travel sealed
+under a pair room's key: a leaked pair secret, or a code somebody else
+answered, opens every room currently offered over that pair. The remedy is a
+fresh pairing, then a new room whose list leaves the old pair out; a heal
+does not help, because it moves the work room and not the pair room. A shared
+room's own key, once out, is out for as long as the room lives: nothing
+rotates it, and the answer is a new room.
+
 **5. Attribution is witnessed, not certified.**
 Each agent process generates an Ed25519 keypair in memory and never writes it
 anywhere, because the peers it distinguishes are usually sibling processes
@@ -195,6 +245,17 @@ server's memory. The OS user was always the boundary.
   in the clear even with encryption on.
 - **The `uvx` bootstrap caches.** An environment can sit on an old build until
   `uvx --refresh`.
+- **A pair is not an identity.** A pair record is durable, per machine and per
+  OS user, and says only "these two machines share rooms". Who wrote a
+  message inside them is still rule 5's per-process signature, and every
+  agent on either machine running as that user can use the pair. Nothing
+  about it is registered on the hub, which holds two expiring records it
+  cannot read and sees every pairing message as an ordinary note.
+- **A shared room is not a group.** It has no members and no owner, and the
+  hub cannot tell it from any other room. Who it is offered to is a list each
+  machine keeps for itself, never merged with anybody else's; leaving asks the
+  machines on this one's list to drop it from theirs, and takes the room from
+  nobody.
 
 ## Decisions that were made and rejected
 
@@ -205,6 +266,40 @@ compare-and-set on `(workspace, …)`, so rotation silently breaks mutual
 exclusion — two agents in adjacent epochs each acquire the same resource,
 correctly, having asked different rooms. Any room rotation period is bounded
 below by the longest-lived state keyed to the room.
+
+A pair's **heal** is a room rotation, and is the one kept — because it is
+never periodic. It happens on an event, a work-room key known to have leaked;
+both machines move only on the sealed signal each writes into the pair room,
+never on a clock; and what it strands is said rather than discovered. Leases,
+board entries and unread messages stay in the retired room, the healing agent
+is handed the list of leases it held there, and until the other side reads
+the pair room the two are in different rooms and do not exclude each other —
+which its resolution keeps saying until the other record catches up. A pair
+also rotates on one other event, and only that one: a side that has not read
+the pair room for six days, and finds the other side's record expired from
+it, cannot tell whether a heal happened while it was away, so it moves to a
+fresh room rather than risk resuming a leaked one. That is decided once per
+absence, from this side's own gap in reading — never on a side that kept
+working while its peer was idle — and said, like a heal.
+
+A shared room never rotates at all. `share new --from` is the nearest thing,
+and it is not a rotation but a second room beside the first: the old one runs
+on in parallel, unchanged, unrevoked and still held by everyone who had it,
+and each machine moves only when its own agent accepts the new one. It
+strands what a heal strands, for the same reason, and says so the same way:
+leases, board entries and unread messages stay in the old room, the agent
+that made the new one is handed the leases it held there, and until every
+machine has moved the two groups are in different rooms and do not exclude
+each other.
+
+**An unversioned derivation for a pair's rooms**, as the lobby has. Rejected,
+although it looks like the same case: it is the opposite one. The lobby joins
+agents that do not ship together and have agreed nothing, so a version in its
+label would sort them by library version, silently. A pair *has* agreed
+something — the handshake — so the protocol version travels with it, in the
+code, each machine's record and an export, and an older client refuses a
+newer pair by name instead of deriving rooms nobody else is in. The labels
+for protocol 1 are frozen; a change is a new protocol, never an edit.
 
 **Operator-curated tokens scoped to workspaces** (`StaticKeyResolver`).
 Rejected: it treats a workspace as ownable, which is the authority rule 1

@@ -119,6 +119,14 @@ def clean_switchboard_env(monkeypatch, tmp_path):
     # leave rows behind in a store that is supposed to be that machine's own
     # undelivered mail. Caught by writing one there while adding the feature.
     monkeypatch.setenv("SWITCHBOARD_STASH_DB", str(tmp_path / "stash.db"))
+    # Pairs are the one per-machine store that holds secrets — and the only
+    # copy of them. A test pairing into the developer's ~/.switchboard/pairs
+    # would leave a live pair secret behind, and a developer's exported
+    # SWITCHBOARD_PAIR_* would put a real pair into a test's view.
+    monkeypatch.setenv("SWITCHBOARD_PAIRS", str(tmp_path / "pairs"))
+    for name in list(os.environ):
+        if name.startswith("SWITCHBOARD_PAIR_"):
+            monkeypatch.delenv(name, raising=False)
     # Desktop registration writes into the Claude app's own session store. Point
     # every test at an empty directory that does not exist, so a test which
     # reaches for it finds nothing rather than the developer's real sidebar —

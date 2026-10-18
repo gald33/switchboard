@@ -33,11 +33,15 @@ value. `keygen --as-invite` mints a *new* room instead, and an invite somebody
 hands you is the third way in.
 
 The client reads all of them from the environment and nowhere else — there is no
-config file, no `~/.switchboard/config`, no user-level scope. What looks
-per-repo is your agent runner injecting environment from files in the repo:
-`.mcp.json`'s `env` block carries the two non-secrets, and (for Claude Code)
-`.claude/settings.local.json` carries the key — or the invite standing in for
-it — on a developer machine, where it is gitignored and never leaves.
+config file, no `~/.switchboard/config`, no user-level scope for any of them.
+What looks per-repo is your agent runner injecting environment from files in
+the repo: `.mcp.json`'s `env` block carries the two non-secrets, and (for
+Claude Code) `.claude/settings.local.json` carries the key — or the invite
+standing in for it — on a developer machine, where it is gitignored and never
+leaves. The one per-user store that holds a secret is the pair store, and it
+holds none of these values: it keeps the rooms two *paired machines* share,
+which derive from a secret of their own ([Paired machines](#paired-machines),
+below).
 
 That asymmetry is the thing to hold onto. **The two non-secrets are per-repo
 and travel with the clone. The two secrets are per-environment and are set
@@ -199,6 +203,66 @@ hooks do not exist: nothing registers the agent at session start or releases
 its leases at the end. The MCP tools all work, but the lifecycle that `init`
 normally makes automatic becomes something the model has to remember, via
 `checkin`. Say so in whatever instructions the platform does support.
+
+## Paired machines
+
+Everything above is about a room the *repo* names and a key the
+*environment* holds. Pairing is the other way two machines come to share a
+room: one short-lived code carried once, and rooms both sides derive from a
+secret neither ever sends ([pairing.md](pairing.md)). It needs nothing
+in `.mcp.json` and nothing in the environment's variables, which makes where
+the secret lives the whole question.
+
+**The pair store is per machine and per OS user.** `~/.switchboard/pairs/`
+holds one file per pair — the pair secret, the transcript, the current
+generation — and, on the machine that ran `pair start`, one pending
+handshake per pairing not yet collected. It is owner-only (0700, files 0600)
+and written atomically. Unlike every other store under `~/.switchboard`, it
+does **not** fail soft on write: it holds the only copy of each pair secret,
+so a pairing command that cannot save says so and stops before anything is
+sent. Every agent running as that user can use the pairs in it; the pair is
+between machines, not between processes.
+
+| Variable | What it does |
+|---|---|
+| `SWITCHBOARD_PAIRS` | moves the store; the empty string disables pairing on this machine. `pair start`, `accept`, `heal`, `forget`, `export` and `--room pair:<name>` then refuse with `disabled` rather than pair into nowhere — or report "no such pair" about one that is sitting on disk unread — and `pair status` lists only pairs carried in `SWITCHBOARD_PAIR_<NAME>`, refusing with `disabled` when there are none |
+| `SWITCHBOARD_PAIR_<NAME>` | one pair carried in the environment instead (`swbsecret1_…`, from `switchboard pair export`), for a machine that does not keep its home directory. Dashes in the name become underscores: pair `laptop-cloud` is `SWITCHBOARD_PAIR_LAPTOP_CLOUD` |
+
+When a pair is in both, they must be the same pair: two different secrets
+under one name are refused rather than chosen between, because picking either
+would put this side in rooms the other side of the *other* pair is in.
+
+**In a cloud container, start on the durable side.** A cloud session's home
+directory goes with the container, and so does anything in it:
+
+- Run `switchboard pair start` on the machine that stays — a laptop, a
+  server — and `switchboard pair accept` in the cloud session. Until the
+  answer is collected, the initiator's pending handshake is the only copy of
+  the pairing, and a container that is thrown away first takes it along.
+  `pair start` warns when it is run somewhere that looks like a cloud
+  session.
+- If the pair should outlive the session, run `switchboard pair export
+  <name> --peer` **on the durable machine** and put the line it prints into
+  the cloud environment's secret settings. `--peer` exports the other side's
+  half, so the secret goes from the machine that stays into the secret store
+  without passing through the cloud session's own transcript. Every container
+  that environment starts then comes up paired, and its listener parks in the
+  pair whatever the export says about when the laptop last used it. Export
+  once the laptop has collected the answer: a responder's own `pair export`
+  refuses while unconfirmed, because a copy frozen that way would later be
+  told the pair was never confirmed.
+- It is a long-lived secret — every work room the pair will ever have derives
+  from it — so it belongs in the secret store and nowhere else: not a
+  committed file, not a conversation. After a `pair heal`, a container
+  started from the exported value catches up on its first use and warns that
+  the variable is behind. The fix it names is the same as the first time:
+  `switchboard pair export <name> --peer` on the durable machine, and the
+  secret store's value replaced with what it prints — never a bare `pair
+  export` in the container, which would print the secret into its session.
+
+CI is the same case as a cloud session, with one more reason to think twice:
+a pair exported into a CI provider's secrets is reachable by every job that
+can read them.
 
 ## What the default workspace name means
 

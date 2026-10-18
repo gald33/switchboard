@@ -203,6 +203,53 @@ for it — a private side conversation is a room whose coordinates you invented
 rather than received, so it is handed over the same way. See
 [the model](docs/model.md) for the full picture.
 
+### Pairing two machines
+
+An invite *is* the room, so the chat or ticket that carried one holds the
+room for as long as the room lives. That is fine for an afternoon and wrong
+for a laptop and a cloud session that will work together for weeks. Pair
+them instead:
+
+```bash
+switchboard pair start                          # on the machine that stays; prints a swbp1_ code
+switchboard pair accept swbp1_...               # on the other one; prints pair:<name>
+switchboard --room pair:<name> say pair "hi"    # either side, from then on
+```
+
+The code is one half of a key exchange, redeemable for fifteen minutes, and
+both machines derive the rooms they share from a secret neither ever sends —
+so once the machine that made the code has collected the answer, finding it
+in a paper trail is worth nothing. Until then it is a credential that can
+answer in place of the other machine or void the pairing: hand it to one
+place, once. `switchboard pair status`
+shows each pair and a short code to compare on both screens; `switchboard
+pair heal <name>` moves both sides to a fresh room if the current one's key
+gets out. MCP has `pair_start`, `pair_accept` and `room="pair:<name>"`. See
+[Pairing two machines](docs/pairing.md).
+
+### Sharing a room among paired machines
+
+A pair is two machines. For three or more in one room — a laptop, a cloud
+session and a desktop — one machine mints a room and offers it over its
+pairs, sealed inside their pair rooms, so no human carries it:
+
+```bash
+switchboard share new api --with laptop-cloud laptop-desk   # on the laptop; prints who it was offered to
+switchboard share accept api                                # on each machine offered it; prints shared:api
+switchboard --room shared:api say build "taking 0142-0145"  # any of them, from then on
+```
+
+The hub sees an ordinary room. Each machine keeps its own list of the pairs it
+shares each room with, and there is no add and no remove: to work without
+someone, `share new` another room (`--from` the old one's list) and move to
+it — nothing is revoked. `share leave` drops a room here and asks the others
+to take this machine off their lists; `share status` shows every room, offer
+and note. Nothing moves on its own: each agent decides what to accept. A
+leaked pair secret opens every room offered over that pair, so compare the
+SAS before sharing over one. MCP has `share_new`, `share_accept`,
+`share_leave`, `share_status` and `room="shared:<name>"`. See
+[Shared rooms](docs/sharing.md).
+
 ## Upgrading
 
 Three different things live at three different scopes, which is easy to get
@@ -437,6 +484,8 @@ rather than inside the package. See [the viewer](docs/viewer.md).
 - [Testing](docs/testing.md) — `switchboard.testing`: a real hub in your test process, with a clock you can move
 - [HTTP API](docs/api.md) — every endpoint
 - [End-to-end encryption](docs/encryption.md) — run a hub that cannot read its own traffic
+- [Pairing two machines](docs/pairing.md) — one code carried once, and rooms neither machine ever sends: for a laptop and a cloud session that will work together for weeks
+- [Shared rooms](docs/sharing.md) — a room one machine offers to the machines it is paired with, carried sealed through their pair rooms: for three or more machines in one room, with nothing revoked and nothing moving on its own
 - [Upgrading](docs/upgrading.md) — what each release changed that is not backwards compatible, and what to do about it
 - [Managed hubs](docs/managed-hub.md) — running one *for other people*: multi-tenancy, what actually runs out first, and how congestion should degrade
 

@@ -24,6 +24,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`automatic-session-checkpoints`** — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
   - ↔ related: **`first-contact-needs-a-key-it-cannot-have`** — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - ↔ related: **`known-rooms-address-book`** — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - ↔ related: **`safe-pairing`** — That one is two agents with no key in common and a human carrying the coordinates, every time. This is the case where they will meet again and again: the human carries one code, once, and the rooms that come out of it are derived on both machines. It does not close that item — a stranger still needs a published meeting room — but it ends the repeat trips for a pair that already met.
   - ↔ related: **`selective-wake-for-the-listener`** — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - `next` **`discovery-is-uneven-and-delivery-is-unknowable`** — Three routes to an agent the roster does not show, one works per machine, and no send says whether it arrived
   - ↔ related: **`a-drain-that-retries-forever-never-escalates`** — Both are the same missing distinction — nothing happening versus nothing working. There it is a send whose fate the sender cannot learn; here it is a read loop whose failure its own operator cannot learn.
@@ -42,6 +43,7 @@ Claim before starting: `roadmap claim <key>`
   - ↔ related: **`cross-key-rendezvous`** — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - ↔ related: **`init-writes-rooms-file`** — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - ↔ related: **`one-resolved-context-across-surfaces`** — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
+  - ↔ related: **`safe-pairing`** — The same move, a room derived rather than named, made for the opposite audience. The lobby is for agents that agreed nothing, so its derivation carries no version; a pair agreed a handshake, so its derivations are versioned per pair (protocol 1, frozen labels) and an older client refuses a newer pair loudly. docs/model.md records why the two differ.
   - ↔ related: **`selective-wake-for-the-listener`** — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **`clients-that-cannot-post`** — Decide what a client that cannot hold a secret or issue arbitrary HTTP gets
   - ↔ related: **`joining-agent-sees-empty-inbox`** — Both are about a client that is present and getting nothing. That one is a bug in the answer Switchboard gives; this one is a gap in what Switchboard offers at all. Read that one first only if you want the pattern — they are independent work.
@@ -160,6 +162,7 @@ graph TD
   robots_policy_for_public_hosts["Decide the crawler policy for public hosts, rather than inheriting an edge default"]:::deferred
   roles_and_authority_between_agents["Decide what an agent may ask of another, before a room full of them decides by accident"]:::deferred
   rootless_warning_false_positive["✓ Stop telling a caller who named the room that their workspace was derived from the directory"]:::done
+  safe_pairing["✓ Two machines that will work together for weeks share rooms set up by one code carried once, which is worth nothing once collected"]:::done
   seal_agent_meta["Seal agent meta, so the hub stops reading the repo name off every announcement"]:::ready
   selective_wake_for_the_listener["Wake the listener on what matters, and on the time it promised, not on every message"]:::ready
   stale_resolver_references["Delete the comments describing auth machinery that no longer exists"]:::ready
@@ -175,6 +178,7 @@ graph TD
   a_lobby_derived_from_the_key -.- cross_key_rendezvous
   a_lobby_derived_from_the_key -.- init_writes_rooms_file
   a_lobby_derived_from_the_key -.- one_resolved_context_across_surfaces
+  a_lobby_derived_from_the_key -.- safe_pairing
   a_lobby_derived_from_the_key -.- selective_wake_for_the_listener
   abuse_control_after_authorization -.- ci_workspace_is_public
   an_empty_invite_is_not_no_invite -.- every_silent_failure_looks_like_a_quiet_room
@@ -194,6 +198,7 @@ graph TD
   connect_failure_message -.- stale_token_in_session_env
   cross_key_rendezvous -.- first_contact_needs_a_key_it_cannot_have
   cross_key_rendezvous -.- known_rooms_address_book
+  cross_key_rendezvous -.- safe_pairing
   cross_key_rendezvous -.- selective_wake_for_the_listener
   discovery_is_uneven_and_delivery_is_unknowable -.- first_contact_needs_a_key_it_cannot_have
   discovery_is_uneven_and_delivery_is_unknowable -.- known_rooms_address_book
@@ -210,6 +215,7 @@ graph TD
   identity_rebinds_on_branch_change -.- joining_agent_sees_empty_inbox
   intermittent_suite_failure -.- web_page_tests_fail_under_load
   joining_agent_sees_empty_inbox -.- write_parity_across_surfaces
+  known_rooms_address_book -.- safe_pairing
   known_rooms_address_book -.- selective_wake_for_the_listener
   presence_ttl_is_not_one_size -.- write_parity_across_surfaces
   read_only_rooms -.- roles_and_authority_between_agents
@@ -298,6 +304,7 @@ graph TD
   - `cross-key-rendezvous` — That one made the lobby unguessable by deriving it from the key, deliberately rejecting a well-known room. This is the cost of that decision, observed: holders of different keys have no lobby in common. Read it first; the fix here keeps its rejection and works around it, rather than reopening it.
   - `init-writes-rooms-file` — Decide that one first, or near it. A lobby is a room every checkout knows about without being told, which is exactly the record that item proposes writing down.
   - `one-resolved-context-across-surfaces` — The same problem, answered explicitly rather than by remembering: `--lobby` names the room on each invocation. If this item is ever built, that flag becomes the thing a session could set once.
+  - `safe-pairing` — The same move, a room derived rather than named, made for the opposite audience. The lobby is for agents that agreed nothing, so its derivation carries no version; a pair agreed a handshake, so its derivations are versioned per pair (protocol 1, frozen labels) and an older client refuses a newer pair loudly. docs/model.md records why the two differ.
   - `selective-wake-for-the-listener` — What makes a lobby worth having rather than merely tidy: an agent parked with `listen` is visible on a roster, so a lobby is a place peers can actually be found waiting rather than a room that is empty whenever nobody is mid-turn.
 - **refs:**
   - `docs/model.md`
@@ -829,6 +836,7 @@ graph TD
   - `automatic-session-checkpoints` — Shares the addressing problem from the other end. That one asks how a stranger finds you; this one asks which of several checkpoints is the one you meant. Both resolve to "the tool decides, the agent does not choose", so settle the rule in one place rather than twice.
   - `first-contact-needs-a-key-it-cannot-have` — That one is about two agents having no room in common. This one is about two agents *in the same room* still being unable to open each other's first message. They compounded on 2026-09-07: the room gap cost eight hours, and once it was crossed, this gap cost another one.
   - `known-rooms-address-book` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
+  - `safe-pairing` — That one is two agents with no key in common and a human carrying the coordinates, every time. This is the case where they will meet again and again: the human carries one code, once, and the rooms that come out of it are derived on both machines. It does not close that item — a stranger still needs a published meeting room — but it ends the repeat trips for a pair that already met.
   - `selective-wake-for-the-listener` — The other half of the same evening: a turn-based session that cannot park a listener returns on shared slots instead, which worked. Meeting failed one layer up — there was no shared room for the slots to be in.
 - **refs:**
   - `src/switchboard/rooms.py`
@@ -1809,6 +1817,7 @@ graph TD
 - **related to** (not a dependency — both are startable):
   - `cross-key-rendezvous` — That one gives a project a room strangers can find. This is what an agent does with rooms once it knows them: a published meeting room, an invite it was handed, a side room it minted, its repo rooms — one list, swept when searching, chosen from when parking. Do that one first; this consumes what it publishes.
   - `discovery-is-uneven-and-delivery-is-unknowable` — The book this item wants seeded from the hub. It was built to be a per-machine reference list and it does that; what was not anticipated is that an empty book is indistinguishable from a searched-and-empty one.
+  - `safe-pairing` — Pairs are deliberately outside the book. Its rule is that a key is stored as the way it was acquired; a pair secret was never in any conversation, so it has no such way, and lives in its own owner-only store instead. `listen` parks in pairs the way it parks in rooms used lately.
   - `selective-wake-for-the-listener` — Same primitive, other axis. That one is about which *messages* wake a parked listener; this is about which *rooms* it is parked in, and why it need not be all of them.
 - **refs:**
   - `src/switchboard/rooms.py`
@@ -2399,6 +2408,101 @@ graph TD
 > **How you know it worked.** Outside a checkout with a room named, by any tier:
 > silence, and the hub puts the agent in the named room. Outside a checkout with
 > nothing named: the warning, unchanged, because that is the case it is for.
+
+</details>
+
+### `safe-pairing`
+
+- **title:** Two machines that will work together for weeks share rooms set up by one code carried once, which is worth nothing once collected
+- **status:** done
+- **arc:** setup-and-first-run
+- **related to** (not a dependency — both are startable):
+  - `a-lobby-derived-from-the-key` — The same move, a room derived rather than named, made for the opposite audience. The lobby is for agents that agreed nothing, so its derivation carries no version; a pair agreed a handshake, so its derivations are versioned per pair (protocol 1, frozen labels) and an older client refuses a newer pair loudly. docs/model.md records why the two differ.
+  - `cross-key-rendezvous` — That one is two agents with no key in common and a human carrying the coordinates, every time. This is the case where they will meet again and again: the human carries one code, once, and the rooms that come out of it are derived on both machines. It does not close that item — a stranger still needs a published meeting room — but it ends the repeat trips for a pair that already met.
+  - `known-rooms-address-book` — Pairs are deliberately outside the book. Its rule is that a key is stored as the way it was acquired; a pair secret was never in any conversation, so it has no such way, and lives in its own owner-only store instead. `listen` parks in pairs the way it parks in rooms used lately.
+- **refs:**
+  - `docs/pairing.md`
+  - `docs/model.md`
+  - `docs/encryption.md`
+  - `src/switchboard/pairing.py`
+  - `tests/test_pairing.py`
+
+<details><summary>evidence</summary>
+
+> **Requested by the owner as a design sketch, and built after a review of
+> that sketch.** The failure is the paper trail. An invite (`swb1_…`) is the
+> room itself, so the chat, ticket or email that carried one holds the room
+> for as long as it lives — fine for an afternoon, wrong for a laptop and a
+> cloud session that work together for weeks.
+>
+> **The sketch:** three throwaway rooms, none of them the team key's — a
+> handshake room named by a one-off code a human carries, a long-lived pair
+> room that keeps the two sides in step, and a work room that can be healed
+> when its key leaks. What shipped keeps all three. The review changed how
+> each is reached, in four places where the sketch's safety rested on the
+> hub's good behaviour or on a race:
+>
+> - **D1. The pair secret is agreed, never sent.** The sketch sealed the pair
+>   room's key into the handshake room under the code's key, so a leaked code
+>   plus a hub that kept its history would open the pair. Now an ephemeral
+>   X25519 exchange authenticated by the code's secret (Noise `NNpsk0`'s
+>   shape) agrees it; the code and the hub's whole history yield public keys.
+> - **D2. The initiator's ephemeral key rides in the code**, so the responder
+>   finishes in one step; the initiator writes only a sealed hello, which
+>   anchors expiry on the hub's clock and turns "wrong hub" into a refusal.
+> - **D3. The answer is a message on an append-only channel.** Every code
+>   holder holds the handshake room's write key, so a first-writer board
+>   entry would exclude nobody who matters. Exactly one in-time answer pairs;
+>   two abort both sides, and so do a marker the initiator did not write or a
+>   room flooded past what one read returns; a redeemer after collection is
+>   told "already used"; a late answer is ignored by both. Detection, not
+>   exclusion, with a commitment-backed SAS for the case detection cannot
+>   reach.
+> - **D4. Work rooms are derived, `HKDF(P, n)`**, and each side writes only
+>   its own record in the pair room. A heal is one integer, the current
+>   generation is the higher of two, and the other side's record catching up
+>   is the acknowledgement — between the two machines, nothing
+>   compare-and-set and nothing to race.
+>
+> A review of the core before the surfaces were built found three more,
+> fixed in its second commit: an unsent answer saved under a name could be
+> resumed against a *different* code; `forget` reported the peer told when
+> the side record had not landed; and a work-room config without a base
+> quietly built a default one.
+>
+> A review of the built feature found more, all fixed in the core before the
+> docs were held to it: 499 filler posts or one forged marker let a code
+> holder win, or split the two sides, without the two-redeemer abort firing
+> — now a full read or a marker the initiator did not write aborts both, and
+> a *consumed* marker confirms only with the initiator's MAC; a rival after
+> collection voided the responder alone; once the other side's record
+> lapsed, every read jumped another 2²⁰ rooms, and lapses from one stale
+> export all landed in the same one — now a jump happens once per absence
+> of *this* side, to a random room; an answer the hub never acknowledged
+> was shown as waiting; an export taken unconfirmed was later called never
+> confirmed; a dead peer looked healthy for 13 days; and every pairing
+> message carried a plaintext `pair.*` type.
+>
+> **What it deliberately does not do**, stated in `docs/pairing.md` and
+> `docs/model.md`: the code is a live bearer credential until the answer is
+> collected (detected, not prevented); a heal rescues a leaked work-room key
+> and not a leaked pair secret, which opens every generation — the record's
+> strategy field `s` is where a ratcheting heal would go; and a heal is a room
+> rotation, the decision `docs/model.md` rejects for periodic use, so it is
+> event-driven only and says what it strands.
+>
+> **How you will know it worked**, asserted in `tests/test_pairing.py`
+> against a real hub with a moved clock: a code read after the pairing
+> opens nothing; the hub's database holds no plaintext tag, role or secret,
+> and every pairing message is an ordinary note; two redeemers, a flood or a
+> forged marker void the pairing on both sides; a heal moves both sides to a
+> room the old key cannot open; a side back from a week away moves both
+> sides to a fresh room once, and lapses from one stale export never share
+> a room; a side that keeps working while its peer is idle never moves and
+> is told the peer has gone quiet; and the v1 derivations are pinned by
+> known answers, so an edit that would split paired machines across an
+> upgrade fails. `tests/test_pairing_docs.py` holds `docs/pairing.md`'s
+> lifetimes, states and claims to the code.
 
 </details>
 

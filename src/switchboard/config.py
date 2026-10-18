@@ -540,7 +540,7 @@ class ClientConfig:
     workspace: str = field(default_factory=default_workspace)
     #: Which tier supplied `workspace`: `"env"`, `"flag"`, `"rooms"`,
     #: `"write-key"`, `"mcp.json"`, `"invite"`, `"known-room"`, `"lobby"`,
-    #: `"explicit"`, `"keygen"` — or `"derived"`, meaning nobody named a room
+    #: `"explicit"`, `"keygen"`, `"pair"` — or `"derived"`, meaning nobody named a room
     #: and one was computed from the directory. Carried for the reason
     #: `url_source` is, and with the same failure behind it in mirror image:
     #: once the fallback is substituted, a room somebody chose and a room
@@ -994,6 +994,9 @@ def isolation_warning(config: ClientConfig, kind: str) -> str | None:
         "mcp.json": "the committed .mcp.json",
         "rooms": "this repo's rooms file",
         "invite": "the invite this agent was given",
+        "pair": "the pairing code this machine's pair was made from",
+        "shared": "the shared room, minted on the hub of whichever machine created "
+                  "it (`switchboard share status` shows its origin)",
     }.get(config.url_source, "the built-in default")
     corroboration = ""
     if config.token or config.key:

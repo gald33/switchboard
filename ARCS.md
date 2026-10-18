@@ -81,7 +81,7 @@ under pressure.
 
 ### 🟠 The first ten minutes, for somebody who has not read the docs
 
-`setup-and-first-run` · 25 item(s), 14 startable
+`setup-and-first-run` · 26 item(s), 14 startable
 
 `https://github.com/gald33/switchboard/issues/86` · `https://github.com/gald33/switchboard/issues/88` · `https://github.com/gald33/switchboard/issues/89` · `docs/environments.md`
 
@@ -121,6 +121,7 @@ wrong says so.
 | `one-resolved-context-across-surfaces` | deferred | — |
 | `presence-ttl-is-not-one-size` | ready | — |
 | `robots-policy-for-public-hosts` | deferred | — |
+| `safe-pairing` | done | — |
 | `selective-wake-for-the-listener` | ready | — |
 | `stale-token-in-session-env` | ready | — |
 | `timing-cold-start-in-ephemeral-environments` | deferred | — |

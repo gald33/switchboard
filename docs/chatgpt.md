@@ -224,6 +224,17 @@ else's server shared with every other room. So the bridge doesn't serve them:
 
 - `session_handoff`, `session_import` and `session_resume`, which move Claude
   Code transcripts.
+- `pair_start`, `pair_accept`, `pair_status`, `pair_heal` and `pair_forget`,
+  which keep pairing secrets on the bridge's own machine — and a hosted
+  operator holding a pairing code could answer it in place of the intended
+  peer. A `room="pair:…"` handle is refused for the same reason. Pair from a
+  bridge on your own machine, or with `switchboard pair`; see
+  [pairing.md](pairing.md).
+- `share_new`, `share_accept`, `share_leave` and `share_status`, and every
+  `room="shared:…"` handle, because shared rooms travel over pairs the hosted
+  bridge does not keep, and their keys would be kept on its operator's disk.
+  Share from a bridge on your own machine, or with `switchboard share`; see
+  [sharing.md](sharing.md).
 - `keygen`, and every tool's `custom_scope`, which would put keys in the
   conversation (above). This holds with or without sign-in.
 - The ordinary `join_room`, which would fill gaps in an invite from the

@@ -3,6 +3,82 @@
 What changes for you between releases that are not backwards compatible, in
 the order you will hit them. Everything not listed here kept its behaviour.
 
+## 2.5.0 → next
+
+Additive. Two machines can be **paired**: `switchboard pair start` on the
+machine that stays prints a one-off `swbp1_…` code, `switchboard pair accept
+<code>` on the other redeems it, and both then reach the rooms they share as
+`--room pair:<name>` — or `room="pair:<name>"` on the local MCP bridge, which
+gains `pair_start`, `pair_accept`, `pair_status`, `pair_heal` and
+`pair_forget`. `pair status`, `wait`, `heal`, `forget` and `export` complete
+the group. See [pairing.md](pairing.md). Nothing that worked in 2.5.0
+changed.
+
+Both ends need the new release. **The hub needs nothing**: pairing is board
+values, messages and client-side cryptography, on endpoints every hub already
+serves. An older client handed a code refuses it rather than misreading it —
+`swbp1_` is deliberately not the invite prefix, so `join` and `--invite` say
+"not a switchboard invite" and the MCP `join_room` says the same, `pair` is an
+unknown command, and `--room pair:<name>` is a room the book does not know.
+Nothing is joined or sent.
+
+Three things a current setup will notice:
+
+- **`listen` parks in pairs.** Each pair this machine used in the last day
+  or carries in `SWITCHBOARD_PAIR_<NAME>`, on the `pair` channel of its
+  current work room, and the handshake room of any pairing waiting for its
+  answer. A machine with no pairs parks exactly where it did; `--no-pairs`
+  opts out on one that has some.
+- **A new per-machine store**, `~/.switchboard/pairs/`, owner-only, moved by
+  `SWITCHBOARD_PAIRS` (empty disables pairing), and `SWITCHBOARD_PAIR_<NAME>`
+  for a pair carried in an environment's secrets. Unlike the other stores it
+  does not fail soft on write, because it holds the only copy of each pair
+  secret. See [environments.md](environments.md#paired-machines).
+- **`--room` is accepted after the subcommand**, like `--invite` and `-w`:
+  `switchboard say --room <label> …`, which 2.5.0 refused as an
+  unrecognized argument, now runs in that room.
+
+`Invite.decode` now refuses a pairing code, and a pair secret from `pair
+export`, by name, instead of with the generic "not a switchboard invite".
+
+A program embedding pairing can keep pairs somewhere other than
+`~/.switchboard/pairs/`: every call in `switchboard.pairing` takes `store=`,
+and anything implementing the `pairing.Store` protocol works there. See
+[pairing.md](pairing.md#keeping-pairs-somewhere-else).
+
+Also additive: **shared rooms**, for more than two paired machines in one
+room. `switchboard share new <name> --with <pair>…` mints a write-protected
+room and offers it over those pairs, sealed inside their pair rooms; `share
+accept`, `share leave` and `share status` complete the group, and `--room
+shared:<name>` reaches a room on any command. The local MCP bridge gains
+`share_new`, `share_accept`, `share_leave`, `share_status` and
+`room="shared:<name>"`; the hosted bridge withholds them, as it does pairing.
+There is no add and no remove — a new room is how the list changes — and
+nothing is revoked. See [sharing.md](sharing.md). Every machine on a room's
+list needs the new release; the hub needs nothing, since a shared room is an
+ordinary room and its records are board values in a pair room. An older
+client has no `share` command and reads `--room shared:<name>` as a known
+room it does not have.
+
+What a current setup will notice — the first on any machine with pairs, the
+rest only once it shares a room:
+
+- **Each pair room is read for share records**, since an offer can arrive
+  over any pair: by `listen` once as it arms, and by the MCP bridge at most
+  once a minute. Neither counts as using the pair, which is what a listener
+  parks by; the read leaves an empty `shared.lock` beside the pair store.
+- **A new file beside the pair store**, `~/.switchboard/pairs/shared_rooms.json`
+  with its own lock, `shared.lock`, owner-only and moved and disabled by
+  `SWITCHBOARD_PAIRS` with the pair store. It holds the keys of the rooms held
+  here, so like the pair store it does not fail soft on write.
+- **`listen` parks in shared rooms** used on this machine in the last day, and
+  counts as active every pair that carries one, parking in its work room,
+  where a peer's share wake lands.
+- **MCP results can carry `share_notes`**: offers, accepts and leaves from
+  other machines, read by a sweep of every pair room at most once a minute.
+- **`shared:` is reserved**, like `pair:`: a known-room label cannot start
+  with it.
+
 ## 2.2.0 → 2.2.1
 
 **Your agent ids change once.** An id was `kind-branch-host-session`; the
