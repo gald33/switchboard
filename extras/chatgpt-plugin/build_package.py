@@ -2,10 +2,12 @@
 """Zip the plugin package for OpenAI's plugin portal.
 
 The portal takes one ZIP with the plugin at its root: `plugin.json` (the
-listing, under `extensions.com.openai.interface`), `skills/` and `assets/`.
-The MCP server is not in it: a remote server is entered in the portal's
-**With MCP** form, and a package that bundles `mcp.json` or `.app.json` is
-refused for that reason.
+listing, under `extensions.com.openai.interface`), `mcp.json`, `skills/` and
+`assets/`. `mcp.json` declares the hosted bridge. The listing was created
+With MCP, and the portal refuses an update that omits that server
+("Removing the MCP isn't supported"). `.app.json` is the opposite case: ZIP
+uploads must not carry one, and `.mcp.json` is derived from `mcp.json` on
+ingestion, so neither belongs in the package.
 
     python3 extras/chatgpt-plugin/build_package.py            # -> switchboard-plugin.zip
     python3 extras/chatgpt-plugin/build_package.py out.zip
@@ -22,8 +24,9 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent / "package"
 DEFAULT_OUT = Path(__file__).resolve().parent / "switchboard-plugin.zip"
-#: What a With-MCP package must not carry; see the module docstring.
-EXCLUDED = {"mcp.json", ".mcp.json", ".app.json"}
+#: What the package must carry, and what it must not; see the module docstring.
+REQUIRED = {"plugin.json", "mcp.json"}
+EXCLUDED = {".mcp.json", ".app.json"}
 FIXED_TIME = (2026, 1, 1, 0, 0, 0)
 
 
@@ -36,10 +39,15 @@ def files(root: Path = PACKAGE) -> list[Path]:
 
 def build(out: Path = DEFAULT_OUT, root: Path = PACKAGE) -> Path:
     included = files(root)
-    stray = [p.name for p in included if p.name in EXCLUDED]
+    # Checked at the root rather than among `included`: `files` skips dotfiles,
+    # so a stray one would otherwise be left out without a word.
+    stray = sorted(name for name in EXCLUDED if (root / name).exists())
     if stray:
-        raise SystemExit(f"{', '.join(stray)} must not be in the package: the MCP "
-                         "server goes in the portal's With MCP form")
+        raise SystemExit(f"{', '.join(stray)} must not be in the package: the portal "
+                         "takes the MCP server from mcp.json")
+    missing = sorted(REQUIRED - {p.name for p in included if p.parent == root})
+    if missing:
+        raise SystemExit(f"the package needs {', '.join(missing)} at its root")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in included:
             info = zipfile.ZipInfo(path.relative_to(root).as_posix(), FIXED_TIME)

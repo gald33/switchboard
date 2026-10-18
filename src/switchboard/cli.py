@@ -5538,7 +5538,8 @@ INVITE_KEY_NOTE = (
     "room sealed with it, for as long as the key lives. Right for a teammate's "
     "machine. For a chat with a hosted model (ChatGPT through a hosted bridge), use "
     "`switchboard invite --no-key` and link the key once on the bridge's sign-in "
-    "page; for a room of its own, `switchboard keygen --as-invite`."
+    "page, which refuses an invite that carries one in the chat; for a room of its "
+    "own, `switchboard keygen --as-invite`, linked the same way."
 )
 
 

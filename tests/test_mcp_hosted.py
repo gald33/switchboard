@@ -16,6 +16,7 @@ gives. The bridge's clients reach the hub in-process through the hub's own
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from test_mcp import call, make_bridge
@@ -701,3 +702,55 @@ def test_a_hosted_send_does_not_advise_running_a_listener(hub, hosted):
     sent, _ = tool(server, invite_for(hub), "dm", to="someone", message="hi")
     assert "switchboard listen" not in sent["listener"]["next"]
     assert "waits in your inbox" in sent["listener"]["next"]
+
+
+# --- no key in a tool call ---------------------------------------------------
+#
+# A hosted app's tool calls are a conversation, and OpenAI's plugin review
+# rejects a plugin whose tools solicit access credentials. The front door
+# with sign-in on refuses an invite that carries a key (test_bridge_links.py);
+# these hold the rest on every hosted bridge: no tool takes a key as an
+# argument, and none hands one back.
+
+#: A parameter name that reads as a credential. A board entry's `key` is its
+#: name and says so; nothing else matching this is served.
+_SECRET_NAME = re.compile(r"(^|_)(key|token|secret|password|credential|passphrase)s?$",
+                          re.I)
+
+
+def _parameters(schema: dict, prefix: str = ""):
+    for name, spec in (schema.get("properties") or {}).items():
+        yield prefix + name, spec
+        if spec.get("type") == "object":
+            yield from _parameters(spec, prefix + name + ".")
+
+
+def assert_no_secret_parameters(tools: list[dict]) -> None:
+    assert tools and "keygen" not in {t["name"] for t in tools}
+    for t in tools:
+        for path, spec in _parameters(t["inputSchema"]):
+            if _SECRET_NAME.search(path.rsplit(".", 1)[-1]):
+                assert t["name"].startswith("board_") and path == "key" \
+                    and "name" in spec["description"], (t["name"], path, spec)
+
+
+def test_the_front_door_offers_no_place_for_a_key(hosted):
+    server, _ = hosted
+    tools = send(server, path="/mcp", body=rpc("tools/list")).json()["result"]["tools"]
+    assert_no_secret_parameters(tools)
+    # The side-room parameter is gone from every tool, not only renamed.
+    assert not any("custom_scope" in t["inputSchema"]["properties"] for t in tools)
+
+
+def test_keygen_is_withheld_and_says_why(hub, hosted):
+    server, _ = hosted
+    payload, is_error = tool(server, invite_for(hub), "keygen")
+    assert is_error and "returns new keys into the conversation" in payload["detail"]
+
+
+def test_a_side_room_key_sent_anyway_is_refused(hub, hosted):
+    server, _ = hosted
+    payload, is_error = tool(server, invite_for(hub), "say", channel="general",
+                             message="hi", custom_scope={"workspace": "side", "key": "k"})
+    assert is_error and payload["error"] == "unsupported_parameter"
+    assert "custom_scope" in payload["detail"]

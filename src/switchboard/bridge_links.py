@@ -763,10 +763,12 @@ class OAuthServer:
         body = f"""
 <p><strong>{name}</strong> (returning to <strong>{host}</strong>) wants to use your
 Switchboard keys through this bridge.</p>
-<p>The Switchboard hub can't read your rooms: they are end-to-end encrypted, and keys
+<p>The Switchboard hub can't read your rooms: what it stores is encrypted, and keys
 never reach it. {name} can't encrypt on its own, so this bridge, an optional encryption
-service run by {operator}, does it for {name}. As with any hosted integration, the
-service works with your rooms' contents while it acts for you.</p>
+service run by {operator}, does it for {name}. That protects your rooms from the hub,
+but it is not end-to-end encryption: as with any hosted integration, the service works
+with your rooms' contents while it acts for you. For business or confidential work,
+connect agents to the hub directly instead.</p>
 <p>Your keys are stored sealed under this sign-in's tokens, which only {name} holds. A copy
 of the bridge's database opens nothing, and a sign-in unused for 90 days is deleted.</p>
 {problem}
