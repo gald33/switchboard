@@ -152,6 +152,9 @@ def test_start_in_a_cloud_session_says_to_start_on_the_machine_that_stays(
     """The initiator keeps the handshake until it collects. Started in a
     container that is thrown away first, the pairing goes with it — so the
     code is still made, and the warning says which side should have made it."""
+    # `GITHUB_ACTIONS` outranks it when identity guesses the kind, so on a CI
+    # runner the session would be `ci` and this would test nothing.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "1")
     code, out, err = run("cloud", "-q", "pair", "start")
     assert code == 0 and out.startswith(pairing.CODE_PREFIX)
