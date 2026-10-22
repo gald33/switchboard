@@ -15,12 +15,13 @@ and whether the *sender* is decides whether their answer is read at all.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
 
 from switchboard import mcp_server, rendezvous
-from switchboard.cli import main
+from switchboard.cli import _read_body, build_parser, main
 from switchboard.client import Identity
 from switchboard.crypto import generate_key
 from switchboard.mcp_server import Bridge, handle_request
@@ -110,6 +111,20 @@ def _dm(args, capsys) -> dict:
 
 
 # --- the CLI ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [
+    ["say", "build", "-"],
+    ["dm", "peer", "-"],
+    ["whisper", "peer", "-"],
+])
+def test_stdin_message_body_preserves_boundary_whitespace(monkeypatch, argv):
+    """The `-` sentinel carries a complete payload, including its tail."""
+    body = "\n  patch body\n\n"
+    args = build_parser().parse_args(argv)
+    monkeypatch.setattr("switchboard.cli.sys.stdin", io.StringIO(body))
+
+    assert _read_body(args) == body
 
 
 def test_a_dm_reports_both_ends_unparked(cli_hub, capsys):
