@@ -54,6 +54,7 @@ roles:
     period_hours: 96
   checks-watch:
     name: Gus
+    enabled: false   # no checks port (ports.checks.tool: absent); re-enable when a registry exists
     cadence: "45 6 * * 1,4"
     cadence_label: "Mon & Thu 06:45Z"
     period_hours: 96
